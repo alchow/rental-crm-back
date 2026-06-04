@@ -47,3 +47,91 @@ jobs:
 
       - name: Service-role quarantine
         run: pnpm lint:service-role
+
+  isolation:
+    # Ephemeral Postgres service container; full migrations applied; two
+    # real (non-privileged) auth users in two accounts; the test asserts
+    # that under each user's RLS context, every public table returns ZERO
+    # rows belonging to the OTHER account. Red on leak.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: '5432'
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install psql (postgresql-client)
+        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Wait for postgres
+        run: |
+          for i in $(seq 1 30); do
+            pg_isready -h 127.0.0.1 -U postgres && exit 0
+            sleep 1
+          done
+          echo "postgres did not become ready" >&2
+          exit 1
+
+      - name: Supabase compat primer
+        run: psql -v ON_ERROR_STOP=1 -f db/test/supabase_compat.sql
+
+      - name: Apply migrations
+        run: |
+          for f in db/supabase/migrations/*.sql; do
+            echo "  apply $(basename "$f")"
+            psql -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      - name: Seed two-account fixture
+        run: psql -v ON_ERROR_STOP=1 -f db/test/seed_two_accounts.sql
+
+      - name: Run isolation test (green path)
+        run: pnpm --filter ./db test:isolation
+
+      - name: Meaningfulness check (red on leak)
+        # Plant a deliberately broken policy on public.properties and verify
+        # the test detects the leak. Proves the harness is not vacuously
+        # passing. CI fails if the test stays green under the leak.
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "drop policy properties_member_all on public.properties; create policy properties_leak on public.properties for all using (true) with check (true);"
+          set +e
+          pnpm --filter ./db test:isolation
+          rc=$?
+          set -e
+          # Restore the real policy regardless of outcome.
+          psql -v ON_ERROR_STOP=1 -c "drop policy properties_leak on public.properties; create policy properties_member_all on public.properties for all using (public.is_account_member(account_id)) with check (public.is_account_member(account_id));"
+          if [ "$rc" -eq 0 ]; then
+            echo "FAIL: isolation test passed under a leaky policy on properties"
+            exit 1
+          fi
+          echo "Meaningfulness check PASS: planted leak detected"
