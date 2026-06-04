@@ -17,13 +17,17 @@
     "build": "pnpm -r --filter=./api --filter=./sdk --filter=./cli build",
     "dev": "pnpm --filter ./api dev",
     "lint:service-role": "bash scripts/lint-service-role.sh",
-    "check": "pnpm lint && pnpm typecheck && pnpm lint:service-role"
+    "secrets:scan": "gitleaks git --staged --no-banner --redact -v",
+    "secrets:scan-all": "gitleaks git . --no-banner --redact -v",
+    "check": "pnpm lint && pnpm typecheck && pnpm lint:service-role",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@eslint/js": "^9.14.0",
     "@types/node": "^22.9.0",
     "eslint": "^9.14.0",
     "eslint-config-prettier": "^9.1.0",
+    "husky": "^9.1.7",
     "prettier": "^3.3.3",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",

@@ -6,6 +6,21 @@ on:
   pull_request:
 
 jobs:
+  secrets-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so gitleaks can scan all commits on PRs.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No GITLEAKS_LICENSE: this repo is private-org-scoped under a
+          # personal account / small org. If gitleaks-action ever requires
+          # it (paid-org enforcement), set it as a repo secret.
+
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 10

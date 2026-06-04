@@ -1,0 +1,27 @@
+title = "rentalcrm gitleaks"
+
+# Extend the built-in ruleset (AWS keys, GitHub PATs, generic JWTs, etc.).
+[extend]
+useDefault = true
+
+# Repo-wide allowlist. Be conservative — only allow files that are intentionally
+# templates/placeholders or contain non-secret identifiers.
+[[allowlists]]
+description = "template + non-secret config files"
+targetRules = []
+paths = [
+  '''(^|/)\.env\.example$''',
+  '''(^|/)\.env\.local$''',
+  '''(^|/)\.env\.[^/]*\.local$''',
+  '''(^|/)\.gitleaks\.toml$''',
+  '''(^|/)db/supabase/config\.toml$''',
+  '''(^|/)pnpm-lock\.yaml$''',
+]
+
+# The Supabase project ref (wywfplbylmpfafxyaqpq) is public — it's in
+# SUPABASE_URL, in client-side bundles, etc. Don't flag it as a generic
+# secret if it appears bare anywhere in tracked sources.
+[[allowlists]]
+description = "supabase project ref is public"
+targetRules = ["generic-api-key"]
+regexes = ['''wywfplbylmpfafxyaqpq''']
