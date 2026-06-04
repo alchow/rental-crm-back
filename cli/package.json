@@ -1,0 +1,12 @@
+{
+  "name": "@rentalcrm/cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Reference CLI that walks the full end-to-end flow against /v1 using only the generated SDK.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "echo 'cli build wired in Phase 11' && exit 0",
+    "typecheck": "echo 'cli has no sources yet' && exit 0"
+  }
+}

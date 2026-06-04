@@ -1,0 +1,30 @@
+# Secrets — never commit
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Node
+node_modules/
+.pnpm-store/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Supabase CLI
+db/supabase/.branches/
+db/supabase/.temp/
+db/supabase/.env
+
+# Generated artifacts (regenerated in CI; kept out of source-of-truth)
+openapi/openapi.json
+sdk/dist/
+sdk/src/generated/
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp

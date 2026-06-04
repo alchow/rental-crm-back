@@ -1,0 +1,32 @@
+{
+  "name": "rental-crm-back",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Landlord CRM backend — records-as-evidence; API-first.",
+  "type": "module",
+  "packageManager": "pnpm@11.1.2",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "pnpm -r --parallel typecheck",
+    "build": "pnpm -r --filter=./api --filter=./sdk --filter=./cli build",
+    "dev": "pnpm --filter ./api dev",
+    "lint:service-role": "bash scripts/lint-service-role.sh",
+    "check": "pnpm lint && pnpm typecheck && pnpm lint:service-role"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.14.0",
+    "@types/node": "^22.9.0",
+    "eslint": "^9.14.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.3.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.14.0"
+  }
+}

@@ -1,0 +1,12 @@
+packages:
+  - api
+  - db
+  - openapi
+  - sdk
+  - cli
+
+allowBuilds:
+  esbuild: true
+
+onlyBuiltDependencies:
+  - esbuild

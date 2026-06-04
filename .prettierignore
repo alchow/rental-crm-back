@@ -1,0 +1,9 @@
+node_modules
+dist
+build
+coverage
+openapi/openapi.json
+sdk/src/generated
+db/supabase/.branches
+db/supabase/.temp
+pnpm-lock.yaml

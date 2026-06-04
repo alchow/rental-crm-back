@@ -1,0 +1,12 @@
+{
+  "name": "@rentalcrm/sdk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Generated TypeScript client for the /v1 contract. Regenerated from openapi/openapi.json; CI fails on drift.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "echo 'sdk build wired in Phase 5' && exit 0",
+    "typecheck": "echo 'sdk has no sources yet' && exit 0"
+  }
+}

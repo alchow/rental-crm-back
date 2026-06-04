@@ -1,0 +1,12 @@
+{
+  "name": "@rentalcrm/db",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Postgres schema, RLS policies, triggers, and seeds. Source of truth for the data spine.",
+  "scripts": {
+    "migrate:new": "supabase migration new",
+    "migrate:up": "supabase db push --db-url \"$SUPABASE_DB_URL\"",
+    "migrate:reset": "supabase db reset --db-url \"$SUPABASE_DB_URL\"",
+    "typecheck": "echo 'db package has no TS sources' && exit 0"
+  }
+}

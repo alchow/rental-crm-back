@@ -1,0 +1,9 @@
+{
+  "name": "@rentalcrm/openapi",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Emitted OpenAPI 3.1 spec for the /v1 contract. Source of truth lives in api/ zod schemas.",
+  "scripts": {
+    "typecheck": "echo 'openapi package has no TS sources' && exit 0"
+  }
+}
