@@ -1,28 +1,56 @@
 import { z } from 'zod';
 
-const EnvSchema = z.object({
+// Access tokens are verified via Supabase's asymmetric signing keys (ES256)
+// served at the project's JWKS endpoint — not the HS256 shared secret. The
+// JWKS URL, issuer, and audience are derived from SUPABASE_URL by default,
+// but may be overridden explicitly (e.g. for self-hosted deployments or
+// test fixtures). See api/src/middleware/auth.ts (added in phase 4).
+
+const RawEnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(8787),
 
   SUPABASE_URL: z.string().url(),
   SUPABASE_ANON_KEY: z.string().min(20),
-  SUPABASE_SERVICE_ROLE_KEY: z.string().min(20),
-  SUPABASE_JWT_SECRET: z.string().min(20),
+  // The privileged service-role env var is intentionally NOT declared here.
+  // It lives in api/src/admin/ so non-admin code can't read it.
+
+  SUPABASE_JWKS_URL: z.string().url().optional(),
+  SUPABASE_JWT_ISSUER: z.string().url().optional(),
+  SUPABASE_JWT_AUDIENCE: z.string().min(1).default('authenticated'),
 });
 
-export type Env = z.infer<typeof EnvSchema>;
+export interface Env {
+  NODE_ENV: 'development' | 'test' | 'production';
+  PORT: number;
+  SUPABASE_URL: string;
+  SUPABASE_ANON_KEY: string;
+  SUPABASE_JWKS_URL: string;
+  SUPABASE_JWT_ISSUER: string;
+  SUPABASE_JWT_AUDIENCE: string;
+}
 
 let cached: Env | null = null;
 
 export function loadEnv(): Env {
   if (cached) return cached;
-  const parsed = EnvSchema.safeParse(process.env);
+  const parsed = RawEnvSchema.safeParse(process.env);
   if (!parsed.success) {
     const issues = parsed.error.issues
       .map((i) => `  - ${i.path.join('.')}: ${i.message}`)
       .join('\n');
     throw new Error(`Invalid environment configuration:\n${issues}`);
   }
-  cached = parsed.data;
+  const raw = parsed.data;
+  const supabaseOrigin = raw.SUPABASE_URL.replace(/\/+$/, '');
+  cached = {
+    NODE_ENV: raw.NODE_ENV,
+    PORT: raw.PORT,
+    SUPABASE_URL: raw.SUPABASE_URL,
+    SUPABASE_ANON_KEY: raw.SUPABASE_ANON_KEY,
+    SUPABASE_JWKS_URL: raw.SUPABASE_JWKS_URL ?? `${supabaseOrigin}/auth/v1/.well-known/jwks.json`,
+    SUPABASE_JWT_ISSUER: raw.SUPABASE_JWT_ISSUER ?? `${supabaseOrigin}/auth/v1`,
+    SUPABASE_JWT_AUDIENCE: raw.SUPABASE_JWT_AUDIENCE,
+  };
   return cached;
 }

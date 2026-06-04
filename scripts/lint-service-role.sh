@@ -28,7 +28,6 @@ EXCLUDES=(
   ':!**/node_modules/**'
   ':!.env*'
   ':!.env.example'
-  ':!api/src/env.ts'
 )
 
 violations=0
