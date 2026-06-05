@@ -28,5 +28,32 @@ export default tseslint.config(
       'no-console': ['warn', { allow: ['warn', 'error', 'info'] }],
     },
   },
+  // Admin quarantine: the privileged Supabase client (constructed only in
+  // api/src/admin/supabase-admin.ts) must not be imported outside src/admin/.
+  // The grep-based lint catches the env var; this catches the wrapper module.
+  // User-facing routes can still import other admin modules (e.g. an admin
+  // function that signs up a user) -- just not the client itself.
+  {
+    files: ['api/src/**/*.ts'],
+    ignores: ['api/src/admin/**'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: [
+                '**/admin/supabase-admin',
+                '**/admin/supabase-admin.js',
+                '**/admin/supabase-admin.ts',
+              ],
+              message:
+                'The privileged Supabase admin client is quarantined to src/admin/. Wrap your call in an admin function (e.g. createAccountForNewUser in src/admin/signup.ts) and import THAT instead, never the client.',
+            },
+          ],
+        },
+      ],
+    },
+  },
   prettier,
 );

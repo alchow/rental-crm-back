@@ -16,6 +16,11 @@ const RawEnvSchema = z.object({
   // It lives in api/src/admin/ so non-admin code can't read it.
 
   SUPABASE_JWKS_URL: z.string().url().optional(),
+  // Optional override: a literal JWKS JSON. When set, the auth middleware
+  // verifies tokens against THIS key set instead of fetching SUPABASE_JWKS_URL.
+  // Used in test environments where we mint our own ES256 keys; also useful
+  // for air-gapped deployments. In prod, leave unset and let the URL fetch.
+  SUPABASE_JWKS_JSON: z.string().min(1).optional(),
   SUPABASE_JWT_ISSUER: z.string().url().optional(),
   SUPABASE_JWT_AUDIENCE: z.string().min(1).default('authenticated'),
 });
@@ -26,6 +31,7 @@ export interface Env {
   SUPABASE_URL: string;
   SUPABASE_ANON_KEY: string;
   SUPABASE_JWKS_URL: string;
+  SUPABASE_JWKS_JSON: string | null;
   SUPABASE_JWT_ISSUER: string;
   SUPABASE_JWT_AUDIENCE: string;
 }
@@ -49,8 +55,15 @@ export function loadEnv(): Env {
     SUPABASE_URL: raw.SUPABASE_URL,
     SUPABASE_ANON_KEY: raw.SUPABASE_ANON_KEY,
     SUPABASE_JWKS_URL: raw.SUPABASE_JWKS_URL ?? `${supabaseOrigin}/auth/v1/.well-known/jwks.json`,
+    SUPABASE_JWKS_JSON: raw.SUPABASE_JWKS_JSON ?? null,
     SUPABASE_JWT_ISSUER: raw.SUPABASE_JWT_ISSUER ?? `${supabaseOrigin}/auth/v1`,
     SUPABASE_JWT_AUDIENCE: raw.SUPABASE_JWT_AUDIENCE,
   };
   return cached;
+}
+
+// Test-only: clear the cached env so a subsequent loadEnv() picks up
+// process.env changes the test made. Production code should never call this.
+export function _resetEnvCacheForTests(): void {
+  cached = null;
 }

@@ -45,8 +45,14 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Service-role quarantine
+      - name: Service-role quarantine (grep)
         run: pnpm lint:service-role
+
+      - name: Admin quarantine (ESLint rule regression)
+        run: pnpm lint:admin-quarantine
+
+      - name: JWT middleware unit test
+        run: pnpm --filter ./api test:auth
 
   isolation:
     # Ephemeral Postgres service container; full migrations applied; two

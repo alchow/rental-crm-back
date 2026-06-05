@@ -603,6 +603,75 @@ async function main(): Promise<void> {
     failures,
   );
 
+  // =======================================================================
+  // Phase 4 amendment: actor integrity (B from review)
+  // =======================================================================
+
+  // -----------------------------------------------------------------------
+  // (B) An authenticated user cannot forge actor via audit.actor. Even when
+  // the user explicitly sets the GUC inside their transaction, the trigger
+  // resolves actor from the verified auth.uid() and ignores the GUC.
+  //
+  // Pre-fix: audit.actor took precedence -> user could attribute writes to
+  //          'system', or 'user:<victim>', or 'tenant:<fake-token>'.
+  // Post-fix: with auth.uid() set, the GUC is ignored; actor is always
+  //           'user:<the JWT sub>'.
+  // -----------------------------------------------------------------------
+  await check(
+    'B: authenticated user cannot forge actor via audit.actor',
+    async () => {
+      // Run as authenticated user A. Inside the same txn, set audit.actor to
+      // a series of would-be spoof values and write a row each time. The
+      // trigger fires under the same transaction context and sees auth.uid().
+      const spoofs = [
+        'user:00000000-0000-0000-0000-000000000000',
+        'system',
+        'tenant:fake-token-id',
+        'other:nobody',
+        '',
+      ];
+      const nameTag = `actor-spoof-${Date.now()}`;
+      await asUserA(async (c) => {
+        for (const spoof of spoofs) {
+          await c.query(`select set_config('audit.actor', $1, true)`, [spoof]);
+          await c.query(
+            `insert into public.vendors (account_id, name) values ($1, $2)`,
+            [ACCOUNT_A, `${nameTag} ${spoof || 'empty'}`],
+          );
+        }
+      });
+
+      // Read back the events the trigger inserted for these vendors. Every
+      // actor must be the JWT-derived 'user:<USER_A>'.
+      const expected = `user:${USER_A}`;
+      await asSuper(async (c) => {
+        const r = await c.query<{ actor: string; payload: { after?: { name?: string } } }>(
+          `select actor, payload
+             from public.events
+            where account_id = $1
+              and entity_type = 'vendors'
+              and event_type = 'inserted'
+              and payload -> 'after' ->> 'name' like $2
+            order by account_seq asc`,
+          [ACCOUNT_A, `${nameTag}%`],
+        );
+        if (r.rowCount !== spoofs.length) {
+          throw new Error(
+            `expected ${spoofs.length} spoof-attempt insert events, got ${r.rowCount}`,
+          );
+        }
+        for (const row of r.rows) {
+          if (row.actor !== expected) {
+            throw new Error(
+              `actor spoofed: expected ${expected}, got ${row.actor} (row name: ${row.payload?.after?.name})`,
+            );
+          }
+        }
+      });
+    },
+    failures,
+  );
+
   // -----------------------------------------------------------------------
   // Summary
   // -----------------------------------------------------------------------

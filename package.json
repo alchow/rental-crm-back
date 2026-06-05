@@ -17,6 +17,7 @@
     "build": "pnpm -r --filter=./api --filter=./sdk --filter=./cli build",
     "dev": "pnpm --filter ./api dev",
     "lint:service-role": "bash scripts/lint-service-role.sh",
+    "lint:admin-quarantine": "bash scripts/test-admin-quarantine.sh",
     "secrets:scan": "gitleaks git --staged --no-banner --redact -v",
     "secrets:scan-all": "gitleaks git . --no-banner --redact -v",
     "check": "pnpm lint && pnpm typecheck && pnpm lint:service-role",
