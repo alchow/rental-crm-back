@@ -1,0 +1,258 @@
+import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { requireAuth } from '../middleware/auth';
+import { requireAccountMembership } from '../middleware/account-context';
+import { getUserClient } from '../supabase/user-client';
+import { ApiError, errorResponses } from './_lib/error';
+import { decodeCursor, encodeCursor } from './_lib/cursor';
+
+// =====================================================================
+// schemas
+// =====================================================================
+
+const Property = z
+  .object({
+    id: z.string().uuid(),
+    account_id: z.string().uuid(),
+    name: z.string(),
+    address: z.record(z.unknown()).nullable(),
+    created_at: z.string(),
+    updated_at: z.string(),
+    deleted_at: z.string().nullable(),
+  })
+  .openapi('Property');
+
+const CreatePropertyBody = z
+  .object({
+    name: z.string().min(1).max(200),
+    address: z.record(z.unknown()).optional(),
+  })
+  .openapi('CreatePropertyBody');
+
+const PatchPropertyBody = z
+  .object({
+    name: z.string().min(1).max(200).optional(),
+    address: z.record(z.unknown()).optional(),
+  })
+  .refine((b) => Object.keys(b).length > 0, {
+    message: 'at least one field is required',
+  })
+  .openapi('PatchPropertyBody');
+
+const AccountParam = z.object({
+  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+});
+
+const AccountAndIdParam = z.object({
+  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+});
+
+const ListQuery = z.object({
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(100).default(50),
+});
+
+const ListResponse = z
+  .object({
+    data: z.array(Property),
+    next_cursor: z.string().nullable(),
+  })
+  .openapi('PropertyListResponse');
+
+// =====================================================================
+// routes
+// =====================================================================
+
+const list = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/properties',
+  tags: ['properties'],
+  summary: 'List properties in an account',
+  request: { params: AccountParam, query: ListQuery },
+  responses: {
+    200: { description: 'page', content: { 'application/json': { schema: ListResponse } } },
+    ...errorResponses,
+  },
+});
+
+const get = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/properties/{id}',
+  tags: ['properties'],
+  summary: 'Get one property',
+  request: { params: AccountAndIdParam },
+  responses: {
+    200: { description: 'property', content: { 'application/json': { schema: Property } } },
+    ...errorResponses,
+  },
+});
+
+const create = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/properties',
+  tags: ['properties'],
+  summary: 'Create a property',
+  request: {
+    params: AccountParam,
+    body: { content: { 'application/json': { schema: CreatePropertyBody } }, required: true },
+  },
+  responses: {
+    201: { description: 'created', content: { 'application/json': { schema: Property } } },
+    ...errorResponses,
+  },
+});
+
+const patch = createRoute({
+  method: 'patch',
+  path: '/accounts/{accountId}/properties/{id}',
+  tags: ['properties'],
+  summary: 'Update a property (partial)',
+  request: {
+    params: AccountAndIdParam,
+    body: { content: { 'application/json': { schema: PatchPropertyBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'updated', content: { 'application/json': { schema: Property } } },
+    ...errorResponses,
+  },
+});
+
+const remove = createRoute({
+  method: 'delete',
+  path: '/accounts/{accountId}/properties/{id}',
+  tags: ['properties'],
+  summary: 'Soft-delete a property',
+  request: { params: AccountAndIdParam },
+  responses: {
+    204: { description: 'deleted' },
+    ...errorResponses,
+  },
+});
+
+// =====================================================================
+// handlers
+// =====================================================================
+
+export const propertiesApp = new OpenAPIHono();
+propertiesApp.use('/accounts/:accountId/*', requireAuth(), requireAccountMembership());
+
+propertiesApp.openapi(list, async (c) => {
+  const { accountId } = c.req.valid('param');
+  const { cursor, limit } = c.req.valid('query');
+  const auth = c.get('auth');
+  const sb = getUserClient(auth.accessToken);
+
+  let query = sb
+    .from('properties')
+    .select('*')
+    .eq('account_id', accountId)
+    .is('deleted_at', null)
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true })
+    .limit(limit + 1);
+
+  if (cursor) {
+    const cur = decodeCursor(cursor);
+    if (cur) {
+      // Keyset: created_at > X OR (created_at = X AND id > Y).
+      query = query.or(
+        `created_at.gt.${cur.created_at},and(created_at.eq.${cur.created_at},id.gt.${cur.id})`,
+      );
+    }
+  }
+
+  const { data, error } = await query;
+  if (error) throw new ApiError(500, 'database_error', error.message);
+
+  const rows = data ?? [];
+  const hasMore = rows.length > limit;
+  const items = hasMore ? rows.slice(0, limit) : rows;
+  const last = items[items.length - 1];
+  const nextCursor =
+    hasMore && last
+      ? encodeCursor({ created_at: String(last.created_at), id: String(last.id) })
+      : null;
+
+  return c.json({ data: items, next_cursor: nextCursor } as z.infer<typeof ListResponse>, 200);
+});
+
+propertiesApp.openapi(get, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const auth = c.get('auth');
+  const sb = getUserClient(auth.accessToken);
+
+  const { data, error } = await sb
+    .from('properties')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .maybeSingle();
+
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  return c.json(data as z.infer<typeof Property>, 200);
+});
+
+propertiesApp.openapi(create, async (c) => {
+  const { accountId } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const auth = c.get('auth');
+  const sb = getUserClient(auth.accessToken);
+
+  const { data, error } = await sb
+    .from('properties')
+    .insert({
+      account_id: accountId,
+      name: body.name,
+      address: body.address ?? {},
+    })
+    .select('*')
+    .single();
+
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  return c.json(data as z.infer<typeof Property>, 201);
+});
+
+propertiesApp.openapi(patch, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const auth = c.get('auth');
+  const sb = getUserClient(auth.accessToken);
+
+  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (body.name !== undefined) update.name = body.name;
+  if (body.address !== undefined) update.address = body.address;
+
+  const { data, error } = await sb
+    .from('properties')
+    .update(update)
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .select('*')
+    .maybeSingle();
+
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  return c.json(data as z.infer<typeof Property>, 200);
+});
+
+propertiesApp.openapi(remove, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const auth = c.get('auth');
+  const sb = getUserClient(auth.accessToken);
+
+  const { data, error } = await sb
+    .from('properties')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .select('id')
+    .maybeSingle();
+
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  return c.body(null, 204);
+});

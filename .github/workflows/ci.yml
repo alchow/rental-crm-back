@@ -54,6 +54,24 @@ jobs:
       - name: JWT middleware unit test
         run: pnpm --filter ./api test:auth
 
+      - name: Contract drift (OpenAPI + SDK regenerated cleanly)
+        # The committed openapi/openapi.json and sdk/src/generated/types.ts
+        # are the source-of-truth client contract. Regenerate them from the
+        # zod schemas; if the diff is non-empty, a route or schema changed
+        # without the spec/SDK being committed -- the brief calls this
+        # "SDK builds from the spec with no drift".
+        run: |
+          pnpm --filter @rentalcrm/openapi emit
+          pnpm --filter @rentalcrm/sdk generate
+          if ! git diff --exit-code openapi/openapi.json sdk/src/generated/; then
+            echo ""
+            echo "FAIL: OpenAPI spec or generated SDK is stale. Run:"
+            echo "  pnpm --filter @rentalcrm/openapi emit"
+            echo "  pnpm --filter @rentalcrm/sdk generate"
+            echo "and commit the result."
+            exit 1
+          fi
+
   isolation:
     # Ephemeral Postgres service container; full migrations applied; two
     # real (non-privileged) auth users in two accounts; the test asserts
@@ -148,3 +166,44 @@ jobs:
         # direct DB write produces an event; verify_chain detects a tampered
         # event; soft-delete emits a tombstone; logged_at is immutable.
         run: pnpm --filter ./db test:audit
+
+  integration:
+    # Higher-fidelity tier: real GoTrue token issuance + real PostgREST claim
+    # handling. This is the test that catches drift between our hand-minted
+    # JWT path and what Supabase actually issues -- exactly where a cross-
+    # tenant leak would hide. Slower than the other jobs (image pulls ~3min on
+    # cold cache), so kept on its own tier rather than blocking the fast loop.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: '2.105.0'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Boot Supabase stack
+        # `supabase start` auto-applies the migrations in db/supabase/migrations
+        # and brings up Postgres + GoTrue + PostgREST + Storage + Realtime.
+        working-directory: db
+        run: supabase start
+
+      - name: Run API-level cross-tenant isolation
+        run: pnpm --filter ./api test:api-isolation
+
+      - name: Stop Supabase stack
+        if: always()
+        working-directory: db
+        run: supabase stop --no-backup

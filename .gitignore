@@ -18,13 +18,19 @@ db/supabase/.branches/
 db/supabase/.temp/
 db/supabase/.env
 
-# Generated artifacts (regenerated in CI; kept out of source-of-truth)
-openapi/openapi.json
+# Generated artifacts -- COMMITTED. CI regenerates and runs `git diff --exit-code`
+# against the committed copies; the diff is the contract-drift check the brief
+# requires ("SDK builds from the spec with no drift").
+#   openapi/openapi.json       (emitted from api/ zod schemas)
+#   sdk/src/generated/types.ts (emitted from openapi/openapi.json)
+# Build artefacts that ARE ignored:
 sdk/dist/
-sdk/src/generated/
 
 # Editors / OS
 .DS_Store
 .vscode/
 .idea/
 *.swp
+
+# Claude Code per-project state
+.claude/
