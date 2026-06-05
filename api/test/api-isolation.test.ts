@@ -91,10 +91,18 @@ interface ApiCall {
 async function api(
   method: string,
   path: string,
-  opts: { token?: string; body?: unknown } = {},
+  opts: { token?: string; body?: unknown; idempotencyKey?: string } = {},
 ): Promise<ApiCall> {
   const headers: Record<string, string> = { accept: 'application/json' };
   if (opts.token) headers.authorization = `Bearer ${opts.token}`;
+  // Phase 6 middleware requires Idempotency-Key on all mutating requests
+  // under /v1/accounts/*. Generate a unique one per call by default;
+  // tests that explicitly want to exercise replay-or-conflict pass their
+  // own.
+  const mutating = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase());
+  if (mutating && path.startsWith('/v1/accounts/')) {
+    headers['idempotency-key'] = opts.idempotencyKey ?? `t-${crypto.randomUUID()}`;
+  }
   let init: RequestInit = { method, headers };
   if (opts.body !== undefined) {
     headers['content-type'] = 'application/json';
@@ -139,10 +147,10 @@ async function signup(label: string): Promise<SignupResult> {
   };
 }
 
-// Dependency chain per user. Each user gets a property + a unit area + a
-// common area + a tenant + a tenancy + a vendor. The resource-specific
-// CRUD assertions then use these to construct create-bodies that reference
-// real, account-owned rows.
+// Dependency chain per user. Each user gets the full row-graph the tier-1
+// resources reference so the cross-tenant assertions have real account-
+// owned rows to point at. Phase 6 adds the money rows (rent_schedule,
+// charge, payment).
 interface UserFixture extends SignupResult {
   propertyId: string;
   unitAreaId: string;
@@ -153,6 +161,9 @@ interface UserFixture extends SignupResult {
   assetId: string;
   leaseId: string;
   memberId: string;
+  rentScheduleId: string;
+  chargeId: string;
+  paymentId: string;
 }
 
 async function expectStatus(
@@ -228,6 +239,39 @@ async function setupFixture(label: string): Promise<UserFixture> {
     { tenant_id: tenant.id, role: 'primary' },
   );
 
+  // Phase 6 money rows.
+  const rentSchedule = await post<{ id: string }>(
+    `/v1/accounts/${ac}/rent-schedules`,
+    {
+      tenancy_id: tenancy.id,
+      kind: 'rent',
+      amount_cents: 120000,
+      currency: 'USD',
+      due_day: 1,
+      start_date: '2026-01-01',
+    },
+  );
+  const charge = await post<{ id: string }>(
+    `/v1/accounts/${ac}/charges`,
+    {
+      tenancy_id: tenancy.id,
+      type: 'rent',
+      amount_cents: 120000,
+      currency: 'USD',
+      due_date: '2026-02-01',
+    },
+  );
+  const payment = await post<{ payment: { id: string } }>(
+    `/v1/accounts/${ac}/payments`,
+    {
+      tenancy_id: tenancy.id,
+      amount_cents: 70000,
+      currency: 'USD',
+      received_at: '2026-02-03T12:00:00Z',
+      method: 'check',
+    },
+  );
+
   return {
     ...u,
     propertyId: property.id,
@@ -239,6 +283,9 @@ async function setupFixture(label: string): Promise<UserFixture> {
     assetId: asset.id,
     leaseId: lease.id,
     memberId: member.id,
+    rentScheduleId: rentSchedule.id,
+    chargeId: charge.id,
+    paymentId: payment.payment.id,
   };
 }
 
@@ -260,6 +307,27 @@ const topLevelResources: TopLevelResource[] = [
   { name: 'tenancies',  fixtureKey: 'tenancyId',  patchBody: { status: 'ended' } },
   { name: 'leases',     fixtureKey: 'leaseId',    patchBody: { status: 'expired' } },
   { name: 'assets',     fixtureKey: 'assetId',    patchBody: { name: 'evil' } },
+];
+// Money resources don't have a PATCH endpoint (the brief: reversal-not-
+// mutation -- corrections are voids + new rows, not edits). So the
+// cross-tenant matrix is reduced: list / get / void-attempt where applicable.
+interface MoneyResource {
+  name: 'rent-schedules' | 'charges' | 'payments';
+  fixtureKey: keyof UserFixture;
+  voidPath?: (accountId: string, id: string) => string;
+}
+const moneyResources: MoneyResource[] = [
+  { name: 'rent-schedules', fixtureKey: 'rentScheduleId' },
+  {
+    name: 'charges',
+    fixtureKey: 'chargeId',
+    voidPath: (a, id) => `/v1/accounts/${a}/charges/${id}/void`,
+  },
+  {
+    name: 'payments',
+    fixtureKey: 'paymentId',
+    voidPath: (a, id) => `/v1/accounts/${a}/payments/${id}/void`,
+  },
 ];
 
 // --- runner ------------------------------------------------------------------
@@ -362,19 +430,15 @@ async function main(): Promise<void> {
   });
 
   await check(
-    "tenancy-members: A with A's accountId but B's tenancyId -> 200 with empty data",
+    "tenancy-members: A with A's accountId but B's tenancyId -> 404 (immediate-parent resolver)",
     async () => {
+      // Phase 6 added the immediate-parent resolver: the tenancyId in the
+      // URL must belong to the resolved account. Before P6 this returned
+      // 200-with-empty (RLS-invisible rows, no leak); now it returns a
+      // uniform 404 so cross-account refs in the PATH behave the same as
+      // cross-account refs in a BODY (which already 404 via composite FK).
       const res = await api('GET', mACrossList, { token: A.accessToken });
-      // Path is well-formed for the resolver (A IS in account A). The
-      // tenancy_id refers to B's tenancy; under RLS it's invisible, so the
-      // list returns 200 with empty data. Crucially, NO member rows are
-      // leaked.
-      const body = (await expectStatus('GET cross-tenancy members', res, 200)) as {
-        data: unknown[];
-      };
-      if (body.data.length !== 0) {
-        throw new Error(`leak: got ${body.data.length} cross-tenancy members`);
-      }
+      await expectStatus('GET cross-tenancy members', res, 404);
     },
   );
 
@@ -493,6 +557,238 @@ async function main(): Promise<void> {
         },
       });
       await expectStatus('POST cross-account tenancy_id', res, 404);
+    },
+  );
+
+  // -----------------------------------------------------------------------
+  // Phase 6 money resources: list / get / cross-account 404.
+  // -----------------------------------------------------------------------
+  for (const r of moneyResources) {
+    const bId = B[r.fixtureKey] as string;
+    const aId = A[r.fixtureKey] as string;
+    const otherList   = `/v1/accounts/${B.accountId}/${r.name}`;
+    const otherIdUrl  = `/v1/accounts/${B.accountId}/${r.name}/${bId}`;
+    const ownIdUrl    = `/v1/accounts/${A.accountId}/${r.name}/${aId}`;
+
+    await check(`${r.name}: A gets own row -> 200`, async () => {
+      const res = await api('GET', ownIdUrl, { token: A.accessToken });
+      await expectStatus('GET own id', res, 200);
+    });
+    await check(`${r.name}: A listing B's account URL -> 404`, async () => {
+      const res = await api('GET', otherList, { token: A.accessToken });
+      await expectStatus('GET B list', res, 404);
+    });
+    await check(`${r.name}: A GET B's row by id -> 404`, async () => {
+      const res = await api('GET', otherIdUrl, { token: A.accessToken });
+      await expectStatus('GET B id', res, 404);
+    });
+    if (r.voidPath) {
+      const voidUrl = r.voidPath(B.accountId, bId);
+      await check(`${r.name}: A POST B's .../void -> 404`, async () => {
+        const res = await api('POST', voidUrl, {
+          token: A.accessToken,
+          body: { void_reason: 'attack' },
+        });
+        await expectStatus('POST B void', res, 404);
+      });
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Cross-account creates that reference parent rows from the OTHER account
+  // -- the DB allocation-integrity trigger / composite FK should reject.
+  // -----------------------------------------------------------------------
+  await check(
+    "rent-schedules: A POST with B's tenancy_id under A's URL -> 404",
+    async () => {
+      const res = await api('POST', `/v1/accounts/${A.accountId}/rent-schedules`, {
+        token: A.accessToken,
+        body: {
+          tenancy_id: B.tenancyId,
+          kind: 'rent',
+          amount_cents: 100000,
+          currency: 'USD',
+          due_day: 1,
+          start_date: '2026-01-01',
+        },
+      });
+      await expectStatus('POST cross-account rent-schedule', res, 404);
+    },
+  );
+  await check(
+    "charges: A POST with B's tenancy_id under A's URL -> 404",
+    async () => {
+      const res = await api('POST', `/v1/accounts/${A.accountId}/charges`, {
+        token: A.accessToken,
+        body: {
+          tenancy_id: B.tenancyId,
+          type: 'rent',
+          amount_cents: 100000,
+          currency: 'USD',
+          due_date: '2026-02-01',
+        },
+      });
+      await expectStatus('POST cross-account charge', res, 404);
+    },
+  );
+  await check(
+    "payments: A POST with B's tenancy_id under A's URL -> 404",
+    async () => {
+      const res = await api('POST', `/v1/accounts/${A.accountId}/payments`, {
+        token: A.accessToken,
+        body: {
+          tenancy_id: B.tenancyId,
+          amount_cents: 50000,
+          currency: 'USD',
+          received_at: '2026-02-03T12:00:00Z',
+          method: 'check',
+        },
+      });
+      await expectStatus('POST cross-account payment', res, 404);
+    },
+  );
+  await check(
+    "payments: A POST with allocation to B's charge under A's tenancy -> 400 (cross-tenancy/account)",
+    async () => {
+      const res = await api('POST', `/v1/accounts/${A.accountId}/payments`, {
+        token: A.accessToken,
+        body: {
+          tenancy_id: A.tenancyId,
+          amount_cents: 50000,
+          currency: 'USD',
+          received_at: '2026-02-03T12:00:00Z',
+          method: 'check',
+          allocations: [{ charge_id: B.chargeId, amount_cents: 50000 }],
+        },
+      });
+      // The payment INSERT succeeds (it's account A's). The allocation
+      // INSERT triggers _assert_allocation_integrity which rejects -- our
+      // route maps to 400 ('cross-tenancy ... ' message) or 404 (FK).
+      // Either way the operation is denied.
+      if (res.status !== 400 && res.status !== 404) {
+        throw new Error(`expected 400/404, got ${res.status}: ${JSON.stringify(res.body)}`);
+      }
+    },
+  );
+
+  // -----------------------------------------------------------------------
+  // Per-tenancy ledger: cross-account / cross-tenancy paths 404 via the
+  // immediate-parent resolver. Own ledger returns a derived view.
+  // -----------------------------------------------------------------------
+  const ownLedger   = `/v1/accounts/${A.accountId}/tenancies/${A.tenancyId}/ledger`;
+  const crossLedger = `/v1/accounts/${A.accountId}/tenancies/${B.tenancyId}/ledger`;
+  const otherAccLedger = `/v1/accounts/${B.accountId}/tenancies/${B.tenancyId}/ledger`;
+
+  await check('ledger: A reads own tenancy ledger -> 200', async () => {
+    const res = await api('GET', ownLedger, { token: A.accessToken });
+    const body = (await expectStatus('GET own ledger', res, 200)) as {
+      tenancy_id: string;
+      totals: { rent_charges_cents: number; rent_payments_cents: number };
+      entries: unknown[];
+    };
+    if (body.tenancy_id !== A.tenancyId) throw new Error(`wrong tenancy_id`);
+    if (body.totals.rent_charges_cents !== 120000) {
+      throw new Error(`expected rent_charges 120000, got ${body.totals.rent_charges_cents}`);
+    }
+  });
+  await check(
+    "ledger: A with A's accountId but B's tenancyId -> 404 (immediate-parent)",
+    async () => {
+      const res = await api('GET', crossLedger, { token: A.accessToken });
+      await expectStatus('GET cross-tenancy ledger', res, 404);
+    },
+  );
+  await check("ledger: A on B's full account URL -> 404", async () => {
+    const res = await api('GET', otherAccLedger, { token: A.accessToken });
+    await expectStatus('GET B ledger', res, 404);
+  });
+
+  // -----------------------------------------------------------------------
+  // Idempotency-Key contract:
+  //   (1) Mutating endpoints REQUIRE the header (missing -> 400).
+  //   (2) Same key + same body returns the cached response (no double-create).
+  //   (3) Same key + DIFFERENT body returns 409 (conflict).
+  // -----------------------------------------------------------------------
+  await check('idempotency: missing Idempotency-Key on POST -> 400', async () => {
+    // Drive the request directly so we can omit the header (the api()
+    // helper auto-injects one).
+    const req = new Request(`http://test/v1/accounts/${A.accountId}/properties`, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${A.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ name: 'no idem' }),
+    });
+    const res = await app.fetch(req);
+    if (res.status !== 400) throw new Error(`expected 400, got ${res.status}`);
+    const body = (await res.json()) as { error?: { code?: string; message?: string } };
+    if (body.error?.code !== 'invalid_request') throw new Error(`wrong code: ${body.error?.code}`);
+    if (!/idempotency-key/i.test(body.error?.message ?? '')) {
+      throw new Error(`message did not mention idempotency-key: ${body.error?.message}`);
+    }
+  });
+
+  await check(
+    'idempotency: replay same key + same body -> cached response (no double-create)',
+    async () => {
+      const key = `replay-${crypto.randomUUID()}`;
+      const body = { name: `idempotent-prop-${rnd()}` };
+      const r1 = await api('POST', `/v1/accounts/${A.accountId}/properties`, {
+        token: A.accessToken,
+        body,
+        idempotencyKey: key,
+      });
+      await expectStatus('first replay POST', r1, 201);
+      const id1 = (r1.body as { id: string }).id;
+
+      // Now list properties; capture the count BEFORE the replay so we can
+      // assert no new row landed.
+      const list1 = await api('GET', `/v1/accounts/${A.accountId}/properties`, {
+        token: A.accessToken,
+      });
+      const before = (list1.body as { data: unknown[] }).data.length;
+
+      const r2 = await api('POST', `/v1/accounts/${A.accountId}/properties`, {
+        token: A.accessToken,
+        body,
+        idempotencyKey: key,
+      });
+      await expectStatus('replayed POST', r2, 201);
+      const id2 = (r2.body as { id: string }).id;
+      if (id1 !== id2) {
+        throw new Error(`replay returned DIFFERENT id: ${id1} vs ${id2} (double-create)`);
+      }
+
+      const list2 = await api('GET', `/v1/accounts/${A.accountId}/properties`, {
+        token: A.accessToken,
+      });
+      const after = (list2.body as { data: unknown[] }).data.length;
+      if (after !== before) {
+        throw new Error(`property count changed: ${before} -> ${after} (replay double-created)`);
+      }
+    },
+  );
+
+  await check(
+    'idempotency: same key + DIFFERENT body -> 409 conflict',
+    async () => {
+      const key = `mismatch-${crypto.randomUUID()}`;
+      const r1 = await api('POST', `/v1/accounts/${A.accountId}/vendors`, {
+        token: A.accessToken,
+        body: { name: 'first' },
+        idempotencyKey: key,
+      });
+      await expectStatus('first POST', r1, 201);
+      const r2 = await api('POST', `/v1/accounts/${A.accountId}/vendors`, {
+        token: A.accessToken,
+        body: { name: 'second' }, // different body, same key
+        idempotencyKey: key,
+      });
+      await expectStatus('mismatched replay', r2, 409);
+      const body = r2.body as { error?: { code?: string } };
+      if (body.error?.code !== 'conflict') throw new Error(`expected conflict code`);
     },
   );
 

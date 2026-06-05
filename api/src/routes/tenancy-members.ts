@@ -1,6 +1,4 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { requireAuth } from '../middleware/auth';
-import { requireAccountMembership } from '../middleware/account-context';
 import { getUserClient } from '../supabase/user-client';
 import { ApiError, errorResponses } from './_lib/error';
 
@@ -106,7 +104,6 @@ const remove = createRoute({
 });
 
 export const tenancyMembersApp = new OpenAPIHono();
-tenancyMembersApp.use('/accounts/:accountId/*', requireAuth(), requireAccountMembership());
 
 tenancyMembersApp.openapi(list, async (c) => {
   const { accountId, tenancyId } = c.req.valid('param');

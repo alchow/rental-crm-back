@@ -110,3 +110,9 @@ echo ">> meaningfulness check PASS: planted leak was detected"
 echo ""
 echo ">> run audit-spine DoD checks"
 DATABASE_URL="$DATABASE_URL" pnpm --filter ./db test:audit
+
+# Phase 6 money-spine DoD: derived balance, reversal, allocation integrity,
+# concurrent allocations, deposit segregation.
+echo ""
+echo ">> run money-spine DoD checks"
+DATABASE_URL="$DATABASE_URL" pnpm --filter ./db test:money

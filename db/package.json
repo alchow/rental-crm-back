@@ -10,6 +10,7 @@
     "migrate:reset": "supabase db reset --db-url \"$SUPABASE_DB_URL\"",
     "test:isolation": "tsx test/isolation.test.ts",
     "test:audit": "tsx test/audit.test.ts",
+    "test:money": "tsx test/money.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

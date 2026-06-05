@@ -10,7 +10,15 @@ import { tenanciesApp } from './routes/tenancies';
 import { tenancyMembersApp } from './routes/tenancy-members';
 import { leasesApp } from './routes/leases';
 import { assetsApp } from './routes/assets';
+import { rentSchedulesApp } from './routes/rent-schedules';
+import { chargesApp } from './routes/charges';
+import { paymentsApp } from './routes/payments';
+import { ledgerApp } from './routes/ledger';
 import { ApiError } from './routes/_lib/error';
+import { requireAuth } from './middleware/auth';
+import { requireAccountMembership } from './middleware/account-context';
+import { requireIdempotency } from './middleware/idempotency';
+import { requireImmediateParent } from './middleware/immediate-parent';
 
 // The Hono app, configured but NOT listening. index.ts mounts it on a
 // node-server port; tests call app.fetch(request) directly without binding
@@ -58,8 +66,41 @@ export function buildApp(): OpenAPIHono {
   // Authenticated, account-agnostic
   app.route('/v1', meRoutes);
 
-  // Authenticated + account-scoped. Order is informational; all mount at /v1
-  // and the resolver runs per-app via its `.use('/accounts/:accountId/*', …)`.
+  // ----- Account-scoped middleware stack ---------------------------------
+  // Mounted ONCE at the v1 level rather than per-resource-sub-app. With
+  // per-sub-app `.use('/accounts/:accountId/*', ...)` each sub-app's
+  // middleware fired for EVERY account-scoped URL, so an /areas POST would
+  // run propertiesApp's and areasApp's idempotency middleware in series and
+  // claim the same key twice. One mount = one execution.
+  //
+  // Order matters: auth -> membership -> immediate-parent (specific
+  // sub-paths only) -> idempotency.
+
+  app.use(
+    '/v1/accounts/:accountId/*',
+    requireAuth(),
+    requireAccountMembership(),
+  );
+
+  // Sub-resources whose URL has an extra path-parent (tenancyId / areaId)
+  // get an immediate-parent resolver scoped to that sub-path. The narrower
+  // pattern fires only when the URL actually has the additional segment.
+  app.use(
+    '/v1/accounts/:accountId/tenancies/:tenancyId/*',
+    requireImmediateParent({ table: 'tenancies', paramName: 'tenancyId' }),
+  );
+  app.use(
+    '/v1/accounts/:accountId/areas/:areaId/*',
+    requireImmediateParent({ table: 'areas', paramName: 'areaId' }),
+  );
+
+  // Idempotency last so a request that fails account-membership or
+  // immediate-parent doesn't even claim a key.
+  app.use('/v1/accounts/:accountId/*', requireIdempotency());
+
+  // Account-scoped sub-apps. They no longer carry their own `.use(...)`
+  // (the stack above handles it). They simply expose the OpenAPIHono
+  // routes; mounting at '/v1' inherits the v1-level middleware.
   app.route('/v1', propertiesApp);
   app.route('/v1', vendorsApp);
   app.route('/v1', tenantsApp);
@@ -69,6 +110,10 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', tenancyMembersApp);
   app.route('/v1', leasesApp);
   app.route('/v1', assetsApp);
+  app.route('/v1', rentSchedulesApp);
+  app.route('/v1', chargesApp);
+  app.route('/v1', paymentsApp);
+  app.route('/v1', ledgerApp);
 
   // Emitted OpenAPI document. The /openapi.json route also serves clients
   // that want to fetch the spec at runtime.

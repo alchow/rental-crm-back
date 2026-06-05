@@ -43,6 +43,10 @@ const USER_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 
 const SELF_ONLY_TABLES = new Set(['users']);
 const ACCOUNT_PK_TABLE = 'accounts';
+// Tables we do NOT seed with domain rows. They still get the cross-tenant
+// isolation check (cross-account count == 0), but we skip the
+// "must-have-own-rows" assertion because there's no natural seed entry.
+const NO_SEED_REQUIRED = new Set(['idempotency_keys']);
 
 interface ColumnInfo {
   has_account_id: boolean;
@@ -90,7 +94,7 @@ async function assertSeededOwn(superClient: pg.Client, tables: string[]): Promis
   // rows for both accounts. If the seed didn't write to a table, the under-
   // RLS check below would pass vacuously.
   for (const t of tables) {
-    if (t === ACCOUNT_PK_TABLE || SELF_ONLY_TABLES.has(t)) continue;
+    if (t === ACCOUNT_PK_TABLE || SELF_ONLY_TABLES.has(t) || NO_SEED_REQUIRED.has(t)) continue;
     const colRes = await superClient.query(
       `select 1 from information_schema.columns
         where table_schema='public' and table_name=$1 and column_name='account_id'`,
@@ -235,7 +239,7 @@ async function checkTable(
       detail: `${crossN} rows from other account visible`,
     });
   }
-  if (ownN === 0) {
+  if (ownN === 0 && !NO_SEED_REQUIRED.has(table)) {
     failures.push({
       user: asUser,
       table,

@@ -167,6 +167,12 @@ jobs:
         # event; soft-delete emits a tombstone; logged_at is immutable.
         run: pnpm --filter ./db test:audit
 
+      - name: Run money-spine DoD checks (Phase 6)
+        # Derived balance / reversal-not-mutation / allocation integrity at
+        # the DB / per-charge concurrent allocations / deposit segregation.
+        # All enforcement-at-the-DB, runs against the same seeded fixtures.
+        run: pnpm --filter ./db test:money
+
   integration:
     # Higher-fidelity tier: real GoTrue token issuance + real PostgREST claim
     # handling. This is the test that catches drift between our hand-minted

@@ -1,6 +1,4 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { requireAuth } from '../middleware/auth';
-import { requireAccountMembership } from '../middleware/account-context';
 import { getUserClient } from '../supabase/user-client';
 import { ApiError, errorResponses } from './_lib/error';
 
@@ -66,11 +64,6 @@ const put = createRoute({
 });
 
 export const unitDetailsApp = new OpenAPIHono();
-unitDetailsApp.use(
-  '/accounts/:accountId/*',
-  requireAuth(),
-  requireAccountMembership(),
-);
 
 unitDetailsApp.openapi(get, async (c) => {
   const { accountId, areaId } = c.req.valid('param');
