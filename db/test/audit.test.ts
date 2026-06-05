@@ -35,6 +35,7 @@ if (!DATABASE_URL) {
 }
 
 const ACCOUNT_A = '11111111-1111-1111-1111-111111111111';
+const ACCOUNT_B = '22222222-2222-2222-2222-222222222222';
 const USER_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
 interface Failure {
@@ -282,11 +283,12 @@ async function main(): Promise<void> {
     async () => {
       await asSuper(async (c) => {
         // Find a tamper target -- pick the second event in chain order so we
-        // can later restore and re-check.
+        // can later restore and re-check. Phase 3.1: order by account_seq,
+        // the only valid chain order key.
         const target = await c.query<{ id: string; payload: unknown }>(
           `select id, payload from public.events
             where account_id = $1
-            order by occurred_at asc, id asc
+            order by account_seq asc
             limit 1 offset 1`,
           [ACCOUNT_A],
         );
@@ -398,6 +400,204 @@ async function main(): Promise<void> {
           },
           [/logged_at is immutable/i],
         );
+      });
+    },
+    failures,
+  );
+
+  // =======================================================================
+  // Phase 3.1 amendments
+  // =======================================================================
+
+  // -----------------------------------------------------------------------
+  // (A robustness) Pathological payload containing pipes, quotes, and braces
+  // must not break the chain. With the pre-3.1 pipe-delimited canonical, a
+  // payload like `"foo|bar"` could be confused with the entity_type | entity_id
+  // boundary. The jsonb canonical encoding escapes these inside the JSON
+  // string and removes the ambiguity.
+  // -----------------------------------------------------------------------
+  await check(
+    'A: payload containing |, ", { does not break the chain',
+    async () => {
+      const pathological = `"x|y"|{"prev":"forge"}|"||"|}{|"sub":"forge"`;
+      await asSuper(async (c) => {
+        await c.query(
+          `insert into public.vendors (account_id, name, notes) values ($1, $2, $3)`,
+          [ACCOUNT_A, `pathological ${Date.now()}`, pathological],
+        );
+      });
+      await asSuper(async (c) => {
+        const v = await c.query<{ ok: boolean; reason: string | null }>(
+          `select ok, reason from public.verify_chain($1)`,
+          [ACCOUNT_A],
+        );
+        if (!v.rows[0]!.ok) {
+          throw new Error(
+            `chain broken by pathological payload (delimiter escaping bug): ${v.rows[0]!.reason}`,
+          );
+        }
+      });
+    },
+    failures,
+  );
+
+  // -----------------------------------------------------------------------
+  // (C) account_seq is gap-free, starts at 1 per account, and ordering by
+  // account_seq matches the count -- proves the seq monotonicity contract.
+  // -----------------------------------------------------------------------
+  await check(
+    'C: account_seq starts at 1 and is gap-free per account',
+    async () => {
+      await asSuper(async (c) => {
+        for (const acc of [ACCOUNT_A, ACCOUNT_B]) {
+          const res = await c.query<{ min: string; max: string; n: string }>(
+            `select coalesce(min(account_seq), 0)::text as min,
+                    coalesce(max(account_seq), 0)::text as max,
+                    count(*)::text as n
+               from public.events where account_id = $1`,
+            [acc],
+          );
+          const mn = Number(res.rows[0]!.min);
+          const mx = Number(res.rows[0]!.max);
+          const n = Number(res.rows[0]!.n);
+          if (n === 0) throw new Error(`${acc}: no events`);
+          if (mn !== 1) throw new Error(`${acc}: account_seq min=${mn}, expected 1`);
+          if (mx !== n) throw new Error(`${acc}: account_seq max=${mx} != count=${n} (gap)`);
+        }
+      });
+    },
+    failures,
+  );
+
+  // -----------------------------------------------------------------------
+  // (D) Concurrency: many writers to account A in parallel plus simultaneous
+  // writes to account B. After the dust settles:
+  //   - verify_chain(A) ok = true
+  //   - verify_chain(B) ok = true
+  //   - A's account_seq is gap-free and equals A's event count
+  //   - B's account_seq is gap-free and equals B's event count
+  // This is the keystone path -- the advisory lock is the only thing making
+  // the chain correct under load, and we now demonstrate it rather than
+  // asserting it.
+  // -----------------------------------------------------------------------
+  await check(
+    'D: concurrent writers (A in parallel, B simultaneous) keep both chains intact',
+    async () => {
+      const N_A = 25;
+      const N_B = 15;
+
+      // Snapshot counts before the storm so we can compare deltas.
+      const before = await asSuper(async (c) => {
+        const r = await c.query<{ acc: string; n: string }>(
+          `select account_id::text as acc, count(*)::text as n
+             from public.events
+            where account_id in ($1, $2)
+            group by account_id`,
+          [ACCOUNT_A, ACCOUNT_B],
+        );
+        const m = new Map<string, number>();
+        for (const row of r.rows) m.set(row.acc, Number(row.n));
+        return m;
+      });
+
+      const writeOne = (acc: string, label: string) =>
+        asSuper(async (c) => {
+          await c.query(
+            `insert into public.vendors (account_id, name) values ($1, $2)`,
+            [acc, label],
+          );
+        });
+
+      // Interleave A and B work in one Promise.all so the runtime really does
+      // schedule them concurrently against the same pool.
+      const tasks: Promise<void>[] = [];
+      for (let i = 0; i < N_A; i++) tasks.push(writeOne(ACCOUNT_A, `concA-${i}-${Date.now()}`));
+      for (let i = 0; i < N_B; i++) tasks.push(writeOne(ACCOUNT_B, `concB-${i}-${Date.now()}`));
+      await Promise.all(tasks);
+
+      await asSuper(async (c) => {
+        for (const [acc, expectedDelta, label] of [
+          [ACCOUNT_A, N_A, 'A'] as const,
+          [ACCOUNT_B, N_B, 'B'] as const,
+        ]) {
+          // Chain still valid?
+          const v = await c.query<{ ok: boolean; reason: string | null }>(
+            `select ok, reason from public.verify_chain($1)`,
+            [acc],
+          );
+          if (!v.rows[0]!.ok) {
+            throw new Error(
+              `verify_chain(${label}) broken after concurrent writes: ${v.rows[0]!.reason}`,
+            );
+          }
+
+          // Seq gap-free? max == count?
+          const seq = await c.query<{ max: string; n: string }>(
+            `select max(account_seq)::text as max, count(*)::text as n
+               from public.events where account_id = $1`,
+            [acc],
+          );
+          const mx = Number(seq.rows[0]!.max);
+          const n = Number(seq.rows[0]!.n);
+          if (mx !== n) {
+            throw new Error(
+              `${label}: account_seq has gaps after concurrent writes (max=${mx}, count=${n})`,
+            );
+          }
+
+          // Delta matches the writes we issued? (one event per insert; the
+          // inserts on each account that succeeded contribute exactly one
+          // 'inserted' event each.)
+          const beforeN = before.get(acc) ?? 0;
+          const delta = n - beforeN;
+          if (delta < expectedDelta) {
+            throw new Error(
+              `${label}: expected at least ${expectedDelta} new events, got ${delta}`,
+            );
+          }
+        }
+      });
+    },
+    failures,
+  );
+
+  // -----------------------------------------------------------------------
+  // (F) Clearing deleted_at emits a 'restored' event (not a generic 'updated').
+  // -----------------------------------------------------------------------
+  await check(
+    'F: clearing deleted_at emits a "restored" event type',
+    async () => {
+      await asSuper(async (c) => {
+        const ins = await c.query<{ id: string }>(
+          `insert into public.vendors (account_id, name) values ($1, $2) returning id`,
+          [ACCOUNT_A, `restore-target ${Date.now()}`],
+        );
+        const id = ins.rows[0]!.id;
+        await c.query(
+          `update public.vendors set deleted_at = now() where id = $1`,
+          [id],
+        );
+        await c.query(
+          `update public.vendors set deleted_at = null where id = $1`,
+          [id],
+        );
+        const hist = await c.query<{ event_type: string }>(
+          `select event_type from public.entity_history('vendors', $1)
+            order by occurred_at asc`,
+          [id],
+        );
+        const types = hist.rows.map((r) => r.event_type);
+        if (!types.includes('restored')) {
+          throw new Error(
+            `expected a "restored" event in history, got [${types.join(', ')}]`,
+          );
+        }
+        // And the original "deleted" tombstone must still be present.
+        if (!types.includes('deleted')) {
+          throw new Error(
+            `restore must follow a delete; expected a "deleted" event in history, got [${types.join(', ')}]`,
+          );
+        }
       });
     },
     failures,
