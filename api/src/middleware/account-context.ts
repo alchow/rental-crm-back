@@ -14,12 +14,12 @@ import { getUserClient } from '../supabase/user-client';
 //      zero rows if they aren't, regardless of what's in the URL. RLS is
 //      the backstop; this middleware is convenience on top.
 //
-//   2. The account id comes ONLY from the URL path param. The
-//      X-Account-Id header (and every other client-controlled field) is
-//      IGNORED. If a caller passes their own id in the URL and someone
-//      else's in a header, the URL wins -- meaning the header is a no-op,
-//      not a different attack surface. Never scope a service-role client by
-//      a client-supplied account id; that would bypass RLS.
+//   2. The account id comes ONLY from the URL path param. No header, no
+//      query string, no body field is ever consulted. There is no
+//      X-Account-Id contract -- intentionally, so a future wire-up can't
+//      recreate the cross-account bypass this resolver guards against.
+//      Never scope a service-role client by a client-supplied account id;
+//      that would bypass RLS.
 //
 // On membership-miss we return 404, not 403. We do not confirm the account
 // exists to non-members.

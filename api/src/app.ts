@@ -4,6 +4,12 @@ import authRoutes from './routes/auth';
 import { propertiesApp } from './routes/properties';
 import { vendorsApp } from './routes/vendors';
 import { tenantsApp } from './routes/tenants';
+import { areasApp } from './routes/areas';
+import { unitDetailsApp } from './routes/unit-details';
+import { tenanciesApp } from './routes/tenancies';
+import { tenancyMembersApp } from './routes/tenancy-members';
+import { leasesApp } from './routes/leases';
+import { assetsApp } from './routes/assets';
 import { ApiError } from './routes/_lib/error';
 
 // The Hono app, configured but NOT listening. index.ts mounts it on a
@@ -52,10 +58,17 @@ export function buildApp(): OpenAPIHono {
   // Authenticated, account-agnostic
   app.route('/v1', meRoutes);
 
-  // Authenticated + account-scoped
+  // Authenticated + account-scoped. Order is informational; all mount at /v1
+  // and the resolver runs per-app via its `.use('/accounts/:accountId/*', …)`.
   app.route('/v1', propertiesApp);
   app.route('/v1', vendorsApp);
   app.route('/v1', tenantsApp);
+  app.route('/v1', areasApp);
+  app.route('/v1', unitDetailsApp);
+  app.route('/v1', tenanciesApp);
+  app.route('/v1', tenancyMembersApp);
+  app.route('/v1', leasesApp);
+  app.route('/v1', assetsApp);
 
   // Emitted OpenAPI document. The /openapi.json route also serves clients
   // that want to fetch the spec at runtime.

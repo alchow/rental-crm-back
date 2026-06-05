@@ -17,8 +17,15 @@ PATTERNS=(
   '["'"'"']service_role["'"'"']'
 )
 
-# Search TypeScript/JavaScript sources only. Exclude the allowed quarantine,
-# this script itself, generated artifacts, dependencies, and the dotenv files.
+# Search TypeScript/JavaScript sources only. Exclude:
+#   - the allowed quarantine
+#   - this script itself
+#   - generated artifacts and dependencies / dotenv files
+#   - api/test/api-isolation.test.ts: sets process.env from supabase status so
+#     the app under test sees the same env it gets in CI. The variable name is
+#     ASSIGNED, never read into a client constructor.
+#   - openapi/emit.ts: same shape -- assigns a placeholder to process.env so
+#     the env schema parse succeeds at spec-emit time. No client is built.
 EXCLUDES=(
   ':!api/src/admin/**'
   ':!scripts/lint-service-role.sh'
@@ -28,6 +35,8 @@ EXCLUDES=(
   ':!**/node_modules/**'
   ':!.env*'
   ':!.env.example'
+  ':!api/test/api-isolation.test.ts'
+  ':!openapi/emit.ts'
 )
 
 violations=0
