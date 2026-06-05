@@ -104,3 +104,9 @@ if [ "$leak_rc" -eq 0 ]; then
   exit 1
 fi
 echo ">> meaningfulness check PASS: planted leak was detected"
+
+# Phase 3 audit-spine DoD checks. Same DB; runs after the seed so the events
+# table already has the seed-derived chain populated.
+echo ""
+echo ">> run audit-spine DoD checks"
+DATABASE_URL="$DATABASE_URL" pnpm --filter ./db test:audit

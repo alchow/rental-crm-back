@@ -135,3 +135,10 @@ jobs:
             exit 1
           fi
           echo "Meaningfulness check PASS: planted leak detected"
+
+      - name: Run audit-spine DoD checks (Phase 3)
+        # Runs against the same seeded DB. Verifies: edit -> new event; pre-edit
+        # value in history; events immutable & undeletable for authenticated;
+        # direct DB write produces an event; verify_chain detects a tampered
+        # event; soft-delete emits a tombstone; logged_at is immutable.
+        run: pnpm --filter ./db test:audit

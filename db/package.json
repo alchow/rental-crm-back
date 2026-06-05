@@ -9,6 +9,7 @@
     "migrate:up": "supabase db push --db-url \"$SUPABASE_DB_URL\"",
     "migrate:reset": "supabase db reset --db-url \"$SUPABASE_DB_URL\"",
     "test:isolation": "tsx test/isolation.test.ts",
+    "test:audit": "tsx test/audit.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
