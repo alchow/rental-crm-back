@@ -14,6 +14,10 @@ import { rentSchedulesApp } from './routes/rent-schedules';
 import { chargesApp } from './routes/charges';
 import { paymentsApp } from './routes/payments';
 import { ledgerApp } from './routes/ledger';
+import { intakeTokensApp } from './routes/intake-tokens';
+import { maintenanceRequestsApp } from './routes/maintenance-requests';
+import { interactionsApp } from './routes/interactions';
+import { intakeApp } from './admin/intake';
 import { ApiError } from './routes/_lib/error';
 import { requireAuth } from './middleware/auth';
 import { requireAccountMembership } from './middleware/account-context';
@@ -114,6 +118,17 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', chargesApp);
   app.route('/v1', paymentsApp);
   app.route('/v1', ledgerApp);
+  app.route('/v1', intakeTokensApp);
+  app.route('/v1', maintenanceRequestsApp);
+  app.route('/v1', interactionsApp);
+
+  // PUBLIC, UNAUTHENTICATED. Lives in src/admin/ because it uses the
+  // service-role client (RLS is bypassed; the handler is the sole guard).
+  // Token verification + per-token + per-IP rate limits are inside the
+  // handler. Mounted OUTSIDE the v1-level auth/idempotency stack since
+  // it can't pass requireAuth (there is no JWT) and account-id comes from
+  // the verified token, not the URL.
+  app.route('/v1', intakeApp);
 
   // Emitted OpenAPI document. The /openapi.json route also serves clients
   // that want to fetch the spec at runtime.

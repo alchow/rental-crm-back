@@ -46,7 +46,7 @@ const ACCOUNT_PK_TABLE = 'accounts';
 // Tables we do NOT seed with domain rows. They still get the cross-tenant
 // isolation check (cross-account count == 0), but we skip the
 // "must-have-own-rows" assertion because there's no natural seed entry.
-const NO_SEED_REQUIRED = new Set(['idempotency_keys']);
+const NO_SEED_REQUIRED = new Set(['idempotency_keys', 'intake_tokens']);
 
 interface ColumnInfo {
   has_account_id: boolean;

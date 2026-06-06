@@ -10,7 +10,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:auth": "tsx test/auth.test.ts",
-    "test:api-isolation": "tsx test/api-isolation.test.ts"
+    "test:api-isolation": "tsx test/api-isolation.test.ts",
+    "test:intake": "tsx test/intake.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

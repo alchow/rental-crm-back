@@ -49,7 +49,7 @@ export type ErrorCode =
 
 export class ApiError extends Error {
   constructor(
-    public readonly status: 400 | 401 | 403 | 404 | 409 | 500,
+    public readonly status: 400 | 401 | 403 | 404 | 409 | 429 | 500 | 502,
     public readonly code: ErrorCode,
     message: string,
     public readonly details?: unknown,

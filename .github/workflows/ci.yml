@@ -209,6 +209,13 @@ jobs:
       - name: Run API-level cross-tenant isolation
         run: pnpm --filter ./api test:api-isolation
 
+      - name: Run intake DoD checks (Phase 7)
+        # The public, unauthenticated, RLS-bypassing surface. Covers
+        # forged-token rejection, area-scope-from-token, dedup, per-token
+        # rate limit, auto-revoke on tenancy-end, and the actor='tenant:<id>'
+        # audit attribution.
+        run: pnpm --filter ./api test:intake
+
       - name: Stop Supabase stack
         if: always()
         working-directory: db
