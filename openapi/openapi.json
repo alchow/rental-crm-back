@@ -2138,10 +2138,9 @@
           "severity": {
             "type": "string",
             "enum": [
-              "low",
-              "medium",
-              "high",
-              "urgent"
+              "emergency",
+              "urgent",
+              "routine"
             ]
           },
           "status": {
@@ -2227,10 +2226,9 @@
           "severity": {
             "type": "string",
             "enum": [
-              "low",
-              "medium",
-              "high",
-              "urgent"
+              "emergency",
+              "urgent",
+              "routine"
             ]
           }
         },
@@ -2253,10 +2251,9 @@
           "severity": {
             "type": "string",
             "enum": [
-              "low",
-              "medium",
-              "high",
-              "urgent"
+              "emergency",
+              "urgent",
+              "routine"
             ]
           },
           "status": {
@@ -2551,10 +2548,9 @@
           "severity": {
             "type": "string",
             "enum": [
-              "low",
-              "medium",
-              "high",
-              "urgent"
+              "emergency",
+              "urgent",
+              "routine"
             ]
           },
           "occurred_at": {

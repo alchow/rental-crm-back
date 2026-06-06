@@ -633,6 +633,104 @@ async function main(): Promise<void> {
   });
 
   // -----------------------------------------------------------------------
+  // (6) Ledger unapplied-credit: a payment whose charge was later voided is
+  //     real money still owed back. The ledger surfaces it as
+  //     unapplied_credit_cents = sum(non-voided payments) - sum(allocations
+  //     on non-voided charges where the payment is also non-voided). This
+  //     test replicates the SAME computation directly in SQL so the API
+  //     handler's derivation can be cross-checked at the data layer.
+  // -----------------------------------------------------------------------
+  await check(
+    'ledger unapplied credit: void-after-allocation surfaces as credit owed',
+    async () => {
+      let tenancyId = '';
+      await withClient(async (c) => {
+        const t = await c.query<{ id: string }>(
+          `insert into public.tenancies (account_id, area_id, start_date, status)
+           select $1, area_id, '2026-01-01', 'active' from public.tenancies where id = $2
+           returning id`,
+          [ACCOUNT_A, tenancyA],
+        );
+        tenancyId = t.rows[0]!.id;
+
+        // $1000 rent charge, $1000 payment, fully allocated.
+        const ch = await c.query<{ id: string }>(
+          `insert into public.charges (account_id, tenancy_id, type, amount_cents, currency, due_date)
+           values ($1, $2, 'rent', 100000, 'USD', '2026-11-01') returning id`,
+          [ACCOUNT_A, tenancyId],
+        );
+        const chargeId = ch.rows[0]!.id;
+        const p = await c.query<{ id: string }>(
+          `insert into public.payments (account_id, tenancy_id, amount_cents, currency, received_at, method)
+           values ($1, $2, 100000, 'USD', '2026-11-03T00:00:00Z', 'check') returning id`,
+          [ACCOUNT_A, tenancyId],
+        );
+        const paymentId = p.rows[0]!.id;
+        await c.query(
+          `insert into public.payment_allocations (account_id, payment_id, charge_id, amount_cents)
+           values ($1, $2, $3, 100000)`,
+          [ACCOUNT_A, paymentId, chargeId],
+        );
+
+        // Pre-void: nothing unapplied (the payment is fully allocated to a
+        // live charge).
+        const pre = await c.query<{ credit: string }>(
+          `select
+             coalesce(sum(p.amount_cents) filter (where p.voided_at is null), 0)
+             -
+             coalesce(sum(a.amount_cents) filter (
+               where p.voided_at is null
+                 and exists (
+                   select 1 from public.charges c
+                    where c.id = a.charge_id and c.voided_at is null
+                 )
+             ), 0)
+             as credit
+             from public.payments p
+             left join public.payment_allocations a on a.payment_id = p.id
+            where p.account_id = $1 and p.tenancy_id = $2 and p.deleted_at is null`,
+          [ACCOUNT_A, tenancyId],
+        );
+        if (Number(pre.rows[0]!.credit) !== 0) {
+          throw new Error(`pre-void unapplied credit expected 0, got ${pre.rows[0]!.credit}`);
+        }
+
+        // Void the charge. The payment stays. The allocation row stays.
+        // Ledger derivation says: payment counts toward total_received,
+        // allocation does NOT count toward total_allocated (charge voided),
+        // so unapplied_credit = 100000.
+        await c.query(
+          `update public.charges set voided_at = now(), void_reason = 'mistake' where id = $1`,
+          [chargeId],
+        );
+
+        const post = await c.query<{ credit: string }>(
+          `select
+             coalesce(sum(p.amount_cents) filter (where p.voided_at is null), 0)
+             -
+             coalesce(sum(a.amount_cents) filter (
+               where p.voided_at is null
+                 and exists (
+                   select 1 from public.charges c
+                    where c.id = a.charge_id and c.voided_at is null
+                 )
+             ), 0)
+             as credit
+             from public.payments p
+             left join public.payment_allocations a on a.payment_id = p.id
+            where p.account_id = $1 and p.tenancy_id = $2 and p.deleted_at is null`,
+          [ACCOUNT_A, tenancyId],
+        );
+        if (Number(post.rows[0]!.credit) !== 100000) {
+          throw new Error(
+            `post-void unapplied credit expected 100000, got ${post.rows[0]!.credit}`,
+          );
+        }
+      });
+    },
+  );
+
+  // -----------------------------------------------------------------------
   // Summary
   // -----------------------------------------------------------------------
   if (failures.length > 0) {

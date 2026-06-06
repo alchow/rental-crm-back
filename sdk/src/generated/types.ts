@@ -4524,7 +4524,7 @@ export interface components {
             title: string;
             description: string | null;
             /** @enum {string} */
-            severity: "low" | "medium" | "high" | "urgent";
+            severity: "emergency" | "urgent" | "routine";
             /** @enum {string} */
             status: "open" | "triaged" | "in_progress" | "resolved" | "closed";
             created_at: string;
@@ -4543,12 +4543,12 @@ export interface components {
             title: string;
             description?: string;
             /** @enum {string} */
-            severity: "low" | "medium" | "high" | "urgent";
+            severity: "emergency" | "urgent" | "routine";
         };
         PatchMaintenanceRequestBody: {
             description?: string | null;
             /** @enum {string} */
-            severity?: "low" | "medium" | "high" | "urgent";
+            severity?: "emergency" | "urgent" | "routine";
             /** @enum {string} */
             status?: "open" | "triaged" | "in_progress" | "resolved" | "closed";
             /** Format: uuid */
@@ -4627,7 +4627,7 @@ export interface components {
             title: string;
             description?: string;
             /** @enum {string} */
-            severity: "low" | "medium" | "high" | "urgent";
+            severity: "emergency" | "urgent" | "routine";
             /** Format: date-time */
             occurred_at?: string;
         };

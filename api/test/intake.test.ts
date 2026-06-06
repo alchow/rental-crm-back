@@ -240,7 +240,7 @@ async function main(): Promise<void> {
     const r = await submitIntake('forged-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaa', {
       area_id: A.unitAreaId,
       title: 'leak',
-      severity: 'low',
+      severity: 'routine',
     });
     assertStatus(r, 404, 'forged');
   });
@@ -277,7 +277,7 @@ async function main(): Promise<void> {
       area_id: A.unitAreaId,
       title: 'sink leak',
       description: 'kitchen sink drips constantly',
-      severity: 'medium',
+      severity: 'routine',
       occurred_at: '2026-02-15T09:00:00Z',
     });
     const body = assertStatus(r, 201, 'happy path') as {
@@ -339,23 +339,28 @@ async function main(): Promise<void> {
     const r = await submitIntake(tokenA!.secret, {
       area_id: B.unitAreaId,
       title: 'attack',
-      severity: 'low',
+      severity: 'routine',
     });
     assertStatus(r, 404, 'cross-property area');
   });
 
   // -----------------------------------------------------------------------
-  // Dedup: a second submission with the SAME area + title must link onto
-  // the existing OPEN request (returning the same id), not create a duplicate.
+  // Dedup: a second submission with the SAME area + title links onto the
+  // existing OPEN request. CRUCIALLY: the tenant's new description is
+  // RECORDED as a second interaction on that request -- not dropped. The
+  // dedupe is on the maintenance_request, never on the words.
   // -----------------------------------------------------------------------
-  await check('dedup: same area+title submission returns the existing request id', async () => {
+  const dedupedDescription = `tenant follow-up: getting worse today ${rnd()}`;
+  await check('dedup: same area+title links to existing request AND records new description as a 2nd interaction', async () => {
     const r = await submitIntake(tokenA!.secret, {
       area_id: A.unitAreaId,
       title: 'sink leak',
-      severity: 'medium',
+      description: dedupedDescription,
+      severity: 'routine',
     });
     const body = assertStatus(r, 201, 'dedup attempt') as {
       maintenance_request_id: string;
+      interaction_id: string;
       deduped_onto_existing: boolean;
     };
     if (!body.deduped_onto_existing) {
@@ -365,6 +370,54 @@ async function main(): Promise<void> {
       throw new Error(
         `dedup landed on a NEW request id: ${body.maintenance_request_id} (expected ${firstRequestId})`,
       );
+    }
+
+    // Read interactions for that request via the admin client. We expect
+    // AT LEAST two: the original submission's interaction and this one
+    // (the deduped follow-up). The follow-up's body must be the new
+    // description -- proof we didn't drop it.
+    const { createClient } = await import('@supabase/supabase-js');
+    const admin = createClient(status.API_URL, status.SERVICE_ROLE_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+    const { data, error } = await admin
+      .from('interactions')
+      .select('id, body')
+      .eq('maintenance_request_id', firstRequestId)
+      .order('logged_at', { ascending: true });
+    if (error) throw new Error(`interactions query failed: ${error.message}`);
+    if (!data || data.length < 2) {
+      throw new Error(
+        `expected >= 2 interactions on the deduped request, got ${data?.length ?? 0}`,
+      );
+    }
+    const bodies = data.map((r) => r.body);
+    if (!bodies.includes(dedupedDescription)) {
+      throw new Error(
+        `dedup dropped the tenant's new description; bodies seen: ${JSON.stringify(bodies)}`,
+      );
+    }
+  });
+
+  // Dedup is intentionally CONSERVATIVE: an OPEN + same area + same title.
+  // A different title for the same area creates a NEW request (better
+  // two-requests-for-one-issue than over-dedup hiding a real second
+  // problem). Verify.
+  await check('dedup: different title on same area creates a NEW request (no over-dedup)', async () => {
+    const r = await submitIntake(tokenA!.secret, {
+      area_id: A.unitAreaId,
+      title: 'completely separate issue, broken stove',
+      severity: 'urgent',
+    });
+    const body = assertStatus(r, 201, 'distinct title') as {
+      maintenance_request_id: string;
+      deduped_onto_existing: boolean;
+    };
+    if (body.deduped_onto_existing) {
+      throw new Error(`over-deduped: a different-title submission should create a new request`);
+    }
+    if (body.maintenance_request_id === firstRequestId) {
+      throw new Error(`returned the original request id for a different-title submission`);
     }
   });
 
@@ -379,7 +432,7 @@ async function main(): Promise<void> {
       const r = await submitIntake(tokenA!.secret, {
         area_id: A.unitAreaId,
         title: `flood-test-${i}-${rnd()}`,
-        severity: 'low',
+        severity: 'routine',
       });
       if (r.status === 429) {
         saw429 = true;
@@ -414,7 +467,7 @@ async function main(): Promise<void> {
     const ok = await submitIntake(fresh.secret, {
       area_id: A.unitAreaId,
       title: `revoke-test-pre ${rnd()}`,
-      severity: 'low',
+      severity: 'routine',
     });
     assertStatus(ok, 201, 'fresh token works pre-revoke');
 
@@ -429,7 +482,7 @@ async function main(): Promise<void> {
     const denied = await submitIntake(fresh.secret, {
       area_id: A.unitAreaId,
       title: 'should not land',
-      severity: 'low',
+      severity: 'routine',
     });
     assertStatus(denied, 404, 'submit after explicit revoke');
   });
@@ -449,7 +502,7 @@ async function main(): Promise<void> {
     const pre = await submitIntake(t.secret, {
       area_id: u.unitAreaId,
       title: `pre-end ${rnd()}`,
-      severity: 'low',
+      severity: 'routine',
     });
     assertStatus(pre, 201, 'pre-end submit');
 
@@ -465,7 +518,7 @@ async function main(): Promise<void> {
     const after = await submitIntake(t.secret, {
       area_id: u.unitAreaId,
       title: `post-end ${rnd()}`,
-      severity: 'low',
+      severity: 'routine',
     });
     assertStatus(after, 404, 'submit after tenancy-ended auto-revoke');
   });

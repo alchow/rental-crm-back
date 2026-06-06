@@ -195,7 +195,9 @@ const IntakeBody = z
     area_id: z.string().uuid(),
     title: z.string().min(1).max(200),
     description: z.string().max(5000).optional(),
-    severity: z.enum(['low', 'medium', 'high', 'urgent']),
+    // Triage-actionable: emergency (drop everything), urgent (today),
+    // routine (schedule). Carried through into maintenance_request.severity.
+    severity: z.enum(['emergency', 'urgent', 'routine']),
     // Tenant-stated time-of-occurrence. logged_at is server-set on the
     // interaction row (and immutable per Phase 3.1).
     occurred_at: z.string().datetime().optional(),

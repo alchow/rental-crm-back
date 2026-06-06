@@ -127,8 +127,8 @@ begin
   insert into public.maintenance_requests (
     id, account_id, area_id, asset_id, opened_by, title, severity, status
   ) values
-    (v_req_a, v_acc_a, v_unit_a, v_asset_a, v_user_a, 'A leak', 'medium', 'open'),
-    (v_req_b, v_acc_b, v_unit_b, v_asset_b, v_user_b, 'B leak', 'medium', 'open');
+    (v_req_a, v_acc_a, v_unit_a, v_asset_a, v_user_a, 'A leak', 'routine', 'open'),
+    (v_req_b, v_acc_b, v_unit_b, v_asset_b, v_user_b, 'B leak', 'routine', 'open');
 
   v_wo_a := gen_random_uuid(); v_wo_b := gen_random_uuid();
   insert into public.work_orders (

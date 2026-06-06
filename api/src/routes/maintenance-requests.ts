@@ -13,7 +13,10 @@ import { decodeCursor, encodeCursor } from './_lib/cursor';
 // requirement: every state change is a recorded step, not an arbitrary
 // edit.
 
-const Severity = z.enum(['low', 'medium', 'high', 'urgent']);
+// Triage-actionable buckets. emergency = drop everything (habitability
+// emergency: heat in winter, flood, gas). urgent = today/tomorrow.
+// routine = schedule.
+const Severity = z.enum(['emergency', 'urgent', 'routine']);
 const Status   = z.enum(['open', 'triaged', 'in_progress', 'resolved', 'closed']);
 
 // Allowed forward transitions. 'closed' is terminal. There's no path from
