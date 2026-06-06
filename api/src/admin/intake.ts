@@ -2,6 +2,7 @@ import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { randomBytes, createHash } from 'node:crypto';
 import { ApiError, errorResponses } from '../routes/_lib/error';
 import { getAdminClient } from './supabase-admin';
+import { uploadAttachment, ALLOWED_MIME_TYPES, MAX_BYTES } from './storage';
 
 // ============================================================================
 // Tenant intake -- the single public, unauthenticated, RLS-bypassing route.
@@ -379,4 +380,125 @@ intakeApp.openapi(intake, async (c) => {
     },
     201,
   );
+});
+
+// ============================================================================
+// Intake attachment endpoint.
+// ============================================================================
+//
+// POST /v1/intake/:token/attachments
+// multipart/form-data: file=<binary>, maintenance_request_id=<uuid>
+//
+// Storage path is derived STRICTLY from the verified token's account_id
+// (NEVER from submitter input). The submitter-provided
+// maintenance_request_id MUST already be a request landed via THIS token's
+// tenancy -- a request_id from another tenancy / property / account is
+// rejected with 404.
+
+const IntakeAttachmentResponse = z.object({
+  attachment_id: z.string().uuid(),
+  content_hash: z.string(),
+  size_bytes: z.number().int(),
+}).openapi('IntakeAttachmentResponse');
+
+const intakeAttachment = createRoute({
+  method: 'post',
+  path: '/intake/{token}/attachments',
+  tags: ['intake'],
+  summary: 'Attach a file to a maintenance request via tenant magic link',
+  request: {
+    params: z.object({
+      token: z.string().min(8).max(200).openapi({ param: { name: 'token', in: 'path' } }),
+    }),
+    body: { content: { 'multipart/form-data': { schema: z.object({
+      file: z.any(),
+      maintenance_request_id: z.string().uuid(),
+    }) } }, required: true },
+  },
+  responses: {
+    201: { description: 'attached', content: { 'application/json': { schema: IntakeAttachmentResponse } } },
+    ...errorResponses,
+  },
+});
+
+intakeApp.openapi(intakeAttachment, async (c) => {
+  // Same IP rate-limit gate as the main intake endpoint.
+  const ip =
+    c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ??
+    c.req.header('cf-connecting-ip') ??
+    'unknown';
+  const ipCheck = checkIpLimit(ip);
+  if (!ipCheck.ok) {
+    throw new ApiError(429, 'conflict', 'rate limit exceeded for this IP; try again later');
+  }
+
+  const { token } = c.req.valid('param');
+  const tokenRow = await lookupAndRateLimitToken(token);
+
+  type BodyVal = string | File | undefined;
+  const form = (await c.req.parseBody()) as Record<string, BodyVal>;
+  const requestId = typeof form.maintenance_request_id === 'string' ? form.maintenance_request_id : '';
+  const file = form.file;
+
+  if (!/^[0-9a-f-]{36}$/i.test(requestId)) {
+    throw new ApiError(400, 'invalid_request', 'maintenance_request_id missing or invalid');
+  }
+  if (!file || typeof file === 'string' || !('arrayBuffer' in file)) {
+    throw new ApiError(400, 'invalid_request', 'file part missing');
+  }
+  const mime = (file as File).type || 'application/octet-stream';
+  if (!ALLOWED_MIME_TYPES.has(mime)) {
+    throw new ApiError(400, 'invalid_request', `unsupported mime_type ${mime}`);
+  }
+  const size = (file as File).size;
+  if (size <= 0 || size > MAX_BYTES) {
+    throw new ApiError(400, 'invalid_request', `file size out of range (${size})`);
+  }
+
+  // The maintenance_request MUST belong to THIS token's account AND be on
+  // an area of THIS token's property (the same scope the main intake
+  // handler validates -- a tenant can report against their unit OR any
+  // common area of their property). The schema doesn't carry tenancy_id
+  // on maintenance_requests (they attach to areas, not tenancies); we
+  // join through areas.property_id to enforce the token-scoped check.
+  const admin = getAdminClient();
+  const { data: req, error: rqErr } = await admin
+    .from('maintenance_requests')
+    .select('id, account_id, area_id, areas!inner(property_id)')
+    .eq('id', requestId)
+    .eq('account_id', tokenRow.account_id)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (rqErr) throw new ApiError(500, 'database_error', rqErr.message);
+  const reqPropertyId = req
+    ? Array.isArray(req.areas)
+      ? (req.areas[0] as { property_id: string } | undefined)?.property_id
+      : (req.areas as { property_id: string } | null)?.property_id
+    : undefined;
+  if (!req || reqPropertyId !== tokenRow.property_id) {
+    // Forged id, another tenancy's request, another property, another
+    // account -- all collapse to 404 here. No existence oracle.
+    throw new ApiError(404, 'not_found', 'maintenance_request not found for this token');
+  }
+
+  // Bytes. The path passed to uploadAttachment is constructed from
+  // tokenRow.account_id (NEVER submitter input). uploadAttachment hashes
+  // server-side and stores with the right content-type.
+  const bytes = new Uint8Array(await (file as File).arrayBuffer());
+  const row = await uploadAttachment({
+    accountId: tokenRow.account_id,
+    entityType: 'maintenance_requests',
+    entityId: req.id as string,
+    bytes,
+    mimeType: mime,
+    filename: (file as File).name,
+    uploadedBy: null,
+    auditActor: `tenant:${tokenRow.id}`,
+  });
+
+  return c.json({
+    attachment_id: row.id,
+    content_hash: row.content_hash,
+    size_bytes: row.size_bytes ?? bytes.byteLength,
+  }, 201);
 });

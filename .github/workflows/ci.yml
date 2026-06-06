@@ -216,6 +216,14 @@ jobs:
         # audit attribution.
         run: pnpm --filter ./api test:intake
 
+      - name: Run attachments + inspections DoD checks (Phase 8)
+        # Server-side content hash; cross-account read denial; forced
+        # Content-Disposition: attachment + nosniff + CSP on download;
+        # intake attachments land at token-derived account path; PDF
+        # determinism (same input -> same hash); completed-inspection
+        # immutability; HTML upload rejected.
+        run: pnpm --filter ./api test:attachments
+
       - name: Stop Supabase stack
         if: always()
         working-directory: db

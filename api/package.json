@@ -11,7 +11,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:auth": "tsx test/auth.test.ts",
     "test:api-isolation": "tsx test/api-isolation.test.ts",
-    "test:intake": "tsx test/intake.test.ts"
+    "test:intake": "tsx test/intake.test.ts",
+    "test:attachments": "tsx test/attachments.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
@@ -19,6 +20,10 @@
     "@supabase/supabase-js": "^2.46.1",
     "hono": "^4.6.10",
     "jose": "^5.10.0",
+    "pdfkit": "^0.15.2",
     "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/pdfkit": "^0.17.6"
   }
 }

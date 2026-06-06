@@ -18,6 +18,12 @@ import { intakeTokensApp } from './routes/intake-tokens';
 import { maintenanceRequestsApp } from './routes/maintenance-requests';
 import { interactionsApp } from './routes/interactions';
 import { intakeApp } from './admin/intake';
+import { attachmentsApp } from './routes/attachments';
+import {
+  inspectionTemplatesApp,
+  inspectionsApp,
+  inspectionItemsApp,
+} from './routes/inspections';
 import { ApiError } from './routes/_lib/error';
 import { requireAuth } from './middleware/auth';
 import { requireAccountMembership } from './middleware/account-context';
@@ -121,6 +127,10 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', intakeTokensApp);
   app.route('/v1', maintenanceRequestsApp);
   app.route('/v1', interactionsApp);
+  app.route('/v1', attachmentsApp);
+  app.route('/v1', inspectionTemplatesApp);
+  app.route('/v1', inspectionsApp);
+  app.route('/v1', inspectionItemsApp);
 
   // PUBLIC, UNAUTHENTICATED. Lives in src/admin/ because it uses the
   // service-role client (RLS is bypassed; the handler is the sole guard).
