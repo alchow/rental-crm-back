@@ -45,7 +45,7 @@ const CreateChargeBody = z
   .object({
     tenancy_id: z.string().uuid(),
     type: ChargeType,
-    amount_cents: z.number().int().nonnegative(),
+    amount_cents: z.number().int().positive(),
     currency: CurrencyCode,
     due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     period_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),

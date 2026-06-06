@@ -683,14 +683,94 @@ async function main(): Promise<void> {
     const res = await api('GET', ownLedger, { token: A.accessToken });
     const body = (await expectStatus('GET own ledger', res, 200)) as {
       tenancy_id: string;
-      totals: { rent_charges_cents: number; rent_payments_cents: number };
+      totals: {
+        rent_charges_cents: number;
+        rent_payments_cents: number;
+        total_received_cents: number;
+        total_allocated_cents: number;
+        unapplied_credit_cents: number;
+      };
       entries: unknown[];
     };
     if (body.tenancy_id !== A.tenancyId) throw new Error(`wrong tenancy_id`);
     if (body.totals.rent_charges_cents !== 120000) {
       throw new Error(`expected rent_charges 120000, got ${body.totals.rent_charges_cents}`);
     }
+    // The fixture creates a $1200 charge and a $700 unallocated payment.
+    // Unapplied credit is the full $700 because no allocations were made.
+    if (body.totals.total_received_cents !== 70000) {
+      throw new Error(`expected total_received 70000, got ${body.totals.total_received_cents}`);
+    }
+    if (body.totals.total_allocated_cents !== 0) {
+      throw new Error(`expected total_allocated 0, got ${body.totals.total_allocated_cents}`);
+    }
+    if (body.totals.unapplied_credit_cents !== 70000) {
+      throw new Error(
+        `expected unapplied_credit 70000, got ${body.totals.unapplied_credit_cents}`,
+      );
+    }
   });
+
+  await check(
+    'ledger: unapplied credit reflects a void-after-allocation (real money still owed back)',
+    async () => {
+      // Create a charge, fully allocate a payment to it, then void the
+      // charge. The allocation rows stay; the ledger should show the
+      // payment as UNAPPLIED CREDIT because the target charge is gone.
+      // This is exactly the dispute the ledger exists to prevent: a tenant
+      // who paid, where the charge was later voided, has a balance the
+      // landlord owes back -- and the ledger surfaces it.
+      const ch = await api('POST', `/v1/accounts/${A.accountId}/charges`, {
+        token: A.accessToken,
+        body: {
+          tenancy_id: A.tenancyId,
+          type: 'rent',
+          amount_cents: 100000,
+          currency: 'USD',
+          due_date: '2026-03-01',
+        },
+      });
+      const chargeId = (ch.body as { id: string }).id;
+      const pay = await api('POST', `/v1/accounts/${A.accountId}/payments`, {
+        token: A.accessToken,
+        body: {
+          tenancy_id: A.tenancyId,
+          amount_cents: 100000,
+          currency: 'USD',
+          received_at: '2026-03-03T00:00:00Z',
+          method: 'check',
+          allocations: [{ charge_id: chargeId, amount_cents: 100000 }],
+        },
+      });
+      await expectStatus('void-after-alloc POST payment', pay, 201);
+      // Void the charge -- allocations now don't count against it; the
+      // payment becomes unapplied credit.
+      const voidRes = await api(
+        'POST',
+        `/v1/accounts/${A.accountId}/charges/${chargeId}/void`,
+        { token: A.accessToken, body: { void_reason: 'mistake' } },
+      );
+      await expectStatus('void-after-alloc POST void', voidRes, 200);
+
+      const lr = await api('GET', ownLedger, { token: A.accessToken });
+      const lb = (await expectStatus('GET ledger after void', lr, 200)) as {
+        totals: {
+          total_received_cents: number;
+          total_allocated_cents: number;
+          unapplied_credit_cents: number;
+        };
+      };
+      // total_received counts non-voided payments; the $100k payment is not
+      // voided, so it contributes. total_allocated excludes allocations
+      // against voided charges, so the $100k allocation is dropped from
+      // the count. The difference is real money owed back.
+      if (lb.totals.unapplied_credit_cents < 100000) {
+        throw new Error(
+          `expected unapplied_credit >= 100000 after void, got ${lb.totals.unapplied_credit_cents}`,
+        );
+      }
+    },
+  );
   await check(
     "ledger: A with A's accountId but B's tenancyId -> 404 (immediate-parent)",
     async () => {

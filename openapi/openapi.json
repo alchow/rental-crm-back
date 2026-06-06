@@ -1455,7 +1455,7 @@
           },
           "amount_cents": {
             "type": "integer",
-            "minimum": 0
+            "exclusiveMinimum": 0
           },
           "currency": {
             "type": "string",
@@ -1962,6 +1962,15 @@
               },
               "deposit_balance_cents": {
                 "type": "integer"
+              },
+              "total_received_cents": {
+                "type": "integer"
+              },
+              "total_allocated_cents": {
+                "type": "integer"
+              },
+              "unapplied_credit_cents": {
+                "type": "integer"
               }
             },
             "required": [
@@ -1970,7 +1979,10 @@
               "rent_balance_cents",
               "deposit_charges_cents",
               "deposit_payments_cents",
-              "deposit_balance_cents"
+              "deposit_balance_cents",
+              "total_received_cents",
+              "total_allocated_cents",
+              "unapplied_credit_cents"
             ]
           }
         },

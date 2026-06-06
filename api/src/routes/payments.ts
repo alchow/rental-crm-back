@@ -228,59 +228,58 @@ paymentsApp.openapi(create, async (c) => {
   const body = c.req.valid('json');
   const sb = getUserClient(c.get('auth').accessToken);
 
-  const { data: payment, error: payErr } = await sb
-    .from('payments')
-    .insert({
-      account_id: accountId,
-      tenancy_id: body.tenancy_id,
-      amount_cents: body.amount_cents,
-      currency: body.currency,
-      received_at: body.received_at,
-      method: body.method,
-      reference: body.reference ?? null,
-      payer_tenant_id: body.payer_tenant_id ?? null,
-      notes: body.notes ?? null,
-    })
-    .select('*')
-    .single();
-  if (payErr) {
-    if (payErr.code === '23503') {
-      throw new ApiError(404, 'not_found', 'tenancy_id or payer_tenant_id does not belong to this account');
+  // Atomicity: a payment with allocations[] is ONE Postgres transaction.
+  // Without this, an allocation that trips the integrity trigger would
+  // leave a phantom payment row (money in limbo). The RPC takes both pieces
+  // and lets postgres roll back the lot on any failure.
+  const { data: rpcData, error: rpcErr } = await sb.rpc(
+    'create_payment_with_allocations',
+    {
+      p_account_id:      accountId,
+      p_tenancy_id:      body.tenancy_id,
+      p_amount_cents:    body.amount_cents,
+      p_currency:        body.currency,
+      p_received_at:     body.received_at,
+      p_method:          body.method,
+      p_reference:       body.reference ?? null,
+      p_payer_tenant_id: body.payer_tenant_id ?? null,
+      p_notes:           body.notes ?? null,
+      p_allocations:     body.allocations ?? [],
+    },
+  );
+  if (rpcErr) {
+    // Map the trigger / FK / membership errors the function can raise to
+    // the right HTTP status. Anything else is a real 500.
+    if (rpcErr.code === '42501' || rpcErr.code === '28000') {
+      throw new ApiError(404, 'not_found', 'not found');
     }
-    if (payErr.code === '23514') throw new ApiError(400, 'invalid_request', payErr.message);
-    throw new ApiError(500, 'database_error', payErr.message);
+    if (/cross-tenancy|cross-account|account mismatch|currency mismatch|voided/i.test(rpcErr.message)) {
+      throw new ApiError(400, 'invalid_request', rpcErr.message);
+    }
+    if (/exceed (payment|charge) amount/i.test(rpcErr.message)) {
+      throw new ApiError(400, 'invalid_request', rpcErr.message);
+    }
+    if (rpcErr.code === '23503') {
+      throw new ApiError(404, 'not_found', 'a referenced row (tenancy / charge / tenant) does not belong to this account');
+    }
+    if (rpcErr.code === '23514') {
+      throw new ApiError(400, 'invalid_request', rpcErr.message);
+    }
+    throw new ApiError(500, 'database_error', rpcErr.message);
   }
 
-  let allocations: z.infer<typeof PaymentAllocation>[] = [];
-  if (body.allocations && body.allocations.length > 0) {
-    const rows = body.allocations.map((a) => ({
-      account_id: accountId,
-      payment_id: payment.id as string,
-      charge_id: a.charge_id,
-      amount_cents: a.amount_cents,
-    }));
-    const { data: allocData, error: allocErr } = await sb
-      .from('payment_allocations')
-      .insert(rows)
-      .select('*');
-    if (allocErr) {
-      // The DB trigger emits descriptive messages; bubble them.
-      if (/cross-tenancy|cross-account|account mismatch|currency mismatch|voided/i.test(allocErr.message)) {
-        throw new ApiError(400, 'invalid_request', allocErr.message);
-      }
-      if (/exceed (payment|charge) amount/i.test(allocErr.message)) {
-        throw new ApiError(400, 'invalid_request', allocErr.message);
-      }
-      if (allocErr.code === '23503') {
-        throw new ApiError(404, 'not_found', 'charge_id does not belong to this account');
-      }
-      throw new ApiError(500, 'database_error', allocErr.message);
-    }
-    allocations = (allocData ?? []) as z.infer<typeof PaymentAllocation>[];
+  // RPC returns a setof; supabase-js gives us an array.
+  const row = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as
+    | { payment: unknown; allocations: unknown }
+    | null;
+  if (!row || !row.payment) {
+    throw new ApiError(500, 'database_error', 'RPC returned no payment row');
   }
-
   return c.json(
-    { payment: payment as z.infer<typeof Payment>, allocations },
+    {
+      payment:     row.payment     as z.infer<typeof Payment>,
+      allocations: row.allocations as z.infer<typeof PaymentAllocation>[],
+    },
     201,
   );
 });

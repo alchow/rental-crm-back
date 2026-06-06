@@ -3783,6 +3783,9 @@ export interface components {
                 deposit_charges_cents: number;
                 deposit_payments_cents: number;
                 deposit_balance_cents: number;
+                total_received_cents: number;
+                total_allocated_cents: number;
+                unapplied_credit_cents: number;
             };
         };
     };

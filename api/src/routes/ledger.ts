@@ -72,6 +72,17 @@ const LedgerResponse = z
       deposit_charges_cents:  z.number().int(),
       deposit_payments_cents: z.number().int(),
       deposit_balance_cents:  z.number().int(),
+      // The total a tenant has paid into this tenancy that has NOT yet been
+      // applied to a charge. Equals
+      //     sum(non-voided payments.amount_cents) - sum(active allocations)
+      // where an "active allocation" is one whose payment AND charge are
+      // both non-voided. A payment that was allocated to a charge which
+      // was later voided will show up here -- it's real money still owed
+      // back to the tenant. This is the credit number a litigant could
+      // point to and say "you have my money".
+      total_received_cents:    z.number().int(),
+      total_allocated_cents:   z.number().int(),
+      unapplied_credit_cents:  z.number().int(),
     }),
   })
   .openapi('LedgerResponse');
@@ -191,13 +202,27 @@ ledgerApp.openapi(get, async (c) => {
   }
   // Payments aren't intrinsically rent-vs-deposit; the split is decided by
   // what they're allocated to.
+  let totalAllocatedC = 0;
   for (const a of tenancyAllocations) {
     if (voidedPayments.has(a.payment_id)) continue;
     if (voidedCharges.has(a.charge_id)) continue;
+    totalAllocatedC += a.amount_cents;
     const isDeposit = chargeRows.find((cr) => cr.id === a.charge_id)?.type === 'deposit';
     if (isDeposit) depositPaymentsC += a.amount_cents;
     else rentPaymentsC += a.amount_cents;
   }
+  // Total received: every non-voided payment, regardless of where (or
+  // whether) it was allocated.
+  let totalReceivedC = 0;
+  for (const pr of paymentRows) {
+    if (pr.voided_at) continue;
+    totalReceivedC += pr.amount_cents;
+  }
+  // Unapplied credit: money received but not currently applied to a
+  // (non-voided) charge. The trigger prevents over-allocation per payment,
+  // so this is always >= 0. > 0 means either a partial allocation or a
+  // payment whose target charge was later voided.
+  const unappliedCreditC = totalReceivedC - totalAllocatedC;
 
   const entries: z.infer<typeof LedgerEntry>[] = [];
   for (const cr of chargeRows) {
@@ -245,6 +270,9 @@ ledgerApp.openapi(get, async (c) => {
         deposit_charges_cents:  depositChargesC,
         deposit_payments_cents: depositPaymentsC,
         deposit_balance_cents:  depositChargesC - depositPaymentsC,
+        total_received_cents:   totalReceivedC,
+        total_allocated_cents:  totalAllocatedC,
+        unapplied_credit_cents: unappliedCreditC,
       },
     } satisfies z.infer<typeof LedgerResponse>,
     200,

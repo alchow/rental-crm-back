@@ -485,6 +485,112 @@ async function main(): Promise<void> {
   });
 
   // -----------------------------------------------------------------------
+  // (4.5) Atomicity: a payment created via create_payment_with_allocations
+  //       with a BAD allocation rolls back the ENTIRE function. No phantom
+  //       payment row. This is the Phase 6.1 fix.
+  // -----------------------------------------------------------------------
+  await check(
+    'atomicity: rejected inline allocation rolls back the payment (no phantom row)',
+    async () => {
+      // Make ONE valid charge in tenancyA and ONE in tenancyB. Then try to
+      // call the RPC for a payment in tenancyA whose allocations[] mixes a
+      // valid charge in A with an INVALID charge in B (cross-tenancy). The
+      // function should reject the whole thing -- no payment row left
+      // behind.
+      let chargeA = '';
+      let chargeB = '';
+      await withClient(async (c) => {
+        const a = await c.query<{ id: string }>(
+          `insert into public.charges (account_id, tenancy_id, type, amount_cents, currency, due_date)
+           values ($1, $2, 'rent', 50000, 'USD', '2026-10-01') returning id`,
+          [ACCOUNT_A, tenancyA],
+        );
+        chargeA = a.rows[0]!.id;
+        const b = await c.query<{ id: string }>(
+          `insert into public.charges (account_id, tenancy_id, type, amount_cents, currency, due_date)
+           values ($1, $2, 'rent', 50000, 'USD', '2026-10-01') returning id`,
+          [ACCOUNT_B, tenancyB],
+        );
+        chargeB = b.rows[0]!.id;
+      });
+
+      // Snapshot the payment count before the attempt.
+      const before = await withClient(async (c) => {
+        const r = await c.query<{ n: string }>(
+          `select count(*)::text as n from public.payments where account_id = $1`,
+          [ACCOUNT_A],
+        );
+        return Number(r.rows[0]!.n);
+      });
+
+      // Run the RPC as a superuser session. The function checks
+      // is_account_member(...) via auth.uid(); to bypass that for this
+      // direct-DB test we set the JWT claim manually before calling.
+      let threw = false;
+      let errMessage = '';
+      try {
+        await withClient(async (c) => {
+          // Pretend to be a user-of-account-A by setting the JWT sub claim
+          // to USER_A_ID. The seed inserted that user as a member of A.
+          // set_config(..., true) is local to the current transaction, so
+          // we need to BEGIN before setting it and COMMIT after the RPC
+          // call -- otherwise each c.query runs in its own auto-commit and
+          // the setting is lost between queries.
+          await c.query('begin');
+          await c.query(
+            `select set_config('request.jwt.claims', $1, true)`,
+            [JSON.stringify({ sub: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', role: 'authenticated' })],
+          );
+          await c.query(
+            `select * from public.create_payment_with_allocations(
+              $1::uuid, $2::uuid, $3::bigint, $4::text, $5::timestamptz, $6::text,
+              $7::text, $8::uuid, $9::text, $10::jsonb)`,
+            [
+              ACCOUNT_A,
+              tenancyA,
+              100000,
+              'USD',
+              '2026-10-02T00:00:00Z',
+              'cash',
+              null,
+              null,
+              null,
+              JSON.stringify([
+                { charge_id: chargeA, amount_cents: 50000 },
+                { charge_id: chargeB, amount_cents: 50000 }, // cross-tenancy -- rejected
+              ]),
+            ],
+          );
+          await c.query('commit');
+        });
+      } catch (e) {
+        threw = true;
+        errMessage = (e as Error).message;
+      }
+      if (!threw) {
+        throw new Error('expected the RPC to reject; it did not');
+      }
+      if (!/cross-tenancy|account mismatch/i.test(errMessage)) {
+        throw new Error(`unexpected error: ${errMessage}`);
+      }
+
+      // Count payments in A again. Must be unchanged.
+      const after = await withClient(async (c) => {
+        const r = await c.query<{ n: string }>(
+          `select count(*)::text as n from public.payments where account_id = $1`,
+          [ACCOUNT_A],
+        );
+        return Number(r.rows[0]!.n);
+      });
+      if (after !== before) {
+        throw new Error(
+          `payment count changed: ${before} -> ${after} (phantom row written by failed RPC)`,
+        );
+      }
+    },
+  );
+
+  // -----------------------------------------------------------------------
   // (5) Deposit segregation: deposit charges don't show up in rent_balance.
   // -----------------------------------------------------------------------
   await check('deposits are NOT counted toward the rent balance', async () => {
