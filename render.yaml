@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: rental-crm-api
+    runtime: node
+    region: oregon
+    plan: starter
+    buildCommand: npm install -g pnpm@11.1.2 && pnpm install --frozen-lockfile
+    startCommand: pnpm --filter ./api start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "20"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
