@@ -23,6 +23,12 @@ const RawEnvSchema = z.object({
   SUPABASE_JWKS_JSON: z.string().min(1).optional(),
   SUPABASE_JWT_ISSUER: z.string().url().optional(),
   SUPABASE_JWT_AUDIENCE: z.string().min(1).default('authenticated'),
+
+  // Extra browser origins allowed to call the API via CORS, beyond the
+  // built-in Lovable defaults (see middleware/cors.ts). Comma-separated;
+  // each entry is either an exact origin (https://app.example.com) or a
+  // wildcard subdomain pattern (*.example.com).
+  CORS_ALLOWED_ORIGINS: z.string().optional(),
 });
 
 export interface Env {
@@ -34,6 +40,7 @@ export interface Env {
   SUPABASE_JWKS_JSON: string | null;
   SUPABASE_JWT_ISSUER: string;
   SUPABASE_JWT_AUDIENCE: string;
+  CORS_ALLOWED_ORIGINS: string[];
 }
 
 let cached: Env | null = null;
@@ -58,6 +65,9 @@ export function loadEnv(): Env {
     SUPABASE_JWKS_JSON: raw.SUPABASE_JWKS_JSON ?? null,
     SUPABASE_JWT_ISSUER: raw.SUPABASE_JWT_ISSUER ?? `${supabaseOrigin}/auth/v1`,
     SUPABASE_JWT_AUDIENCE: raw.SUPABASE_JWT_AUDIENCE,
+    CORS_ALLOWED_ORIGINS: raw.CORS_ALLOWED_ORIGINS
+      ? raw.CORS_ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
+      : [],
   };
   return cached;
 }

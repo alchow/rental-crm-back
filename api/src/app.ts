@@ -26,6 +26,7 @@ import {
   inspectionItemsApp,
 } from './routes/inspections';
 import { ApiError } from './routes/_lib/error';
+import { corsMiddleware } from './middleware/cors';
 import { requireAuth } from './middleware/auth';
 import { requireAccountMembership } from './middleware/account-context';
 import { requireIdempotency } from './middleware/idempotency';
@@ -76,6 +77,11 @@ export function buildApp(): OpenAPIHono {
   // The /healthz endpoint surfaces the result so an external monitor can
   // alert on degraded evidence-rendering capability.
   void assertImageStackAtBoot();
+
+  // Mounted before any routes (incl. /v1/auth) so browser preflight
+  // (OPTIONS) requests are answered -- and Access-Control-Allow-Origin is
+  // set on actual responses -- for every endpoint, authenticated or not.
+  app.use('*', corsMiddleware());
 
   app.get('/healthz', (c) => {
     const heic = heicSupported();
