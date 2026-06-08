@@ -511,12 +511,12 @@ Magic links for unauthenticated tenant submissions. See §11 for the public inta
 
 | Method | Path | Body / Notes |
 |---|---|---|
-| `POST` | `/intake-tokens` | `tenancy_id` (required). Returns the secret **once** — it is not recoverable. |
-| `GET` | `/intake-tokens` | Returns token rows (no secrets). |
-| `POST` | `/intake-tokens/{id}/revoke` | Revokes the token immediately. Auto-revoked when the tenancy ends. |
+| `POST` | `/tenancies/{tenancyId}/intake-tokens` | No body. Returns the secret **once** — it is not recoverable. |
+| `GET` | `/tenancies/{tenancyId}/intake-tokens` | Returns token rows (no secrets). |
+| `POST` | `/tenancies/{tenancyId}/intake-tokens/{id}/revoke` | Revokes the token immediately. Auto-revoked when the tenancy ends. |
 
 ```jsonc
-// POST /intake-tokens → 201
+// POST /v1/accounts/{accountId}/tenancies/{tenancyId}/intake-tokens → 201
 {
   "id":          "tok_abc...",     // public row ID; safe to log
   "secret":      "y3Jq...",       // shown ONCE; treat like a password
@@ -816,7 +816,14 @@ At least one of `tenancy_id` or `area_id` is required. Blank-scope exports are r
 |---|---|---|
 | `GET` | `/evidence-exports` | List all exports for this account. |
 | `GET` | `/evidence-exports/{id}` | Single export row with `chain_verified`, `chain_message`, etc. |
-| `GET` | `/evidence-exports/{id}/download` | Raw PDF bytes with same hardened headers as attachment downloads. |
+
+Download (binary; like attachment downloads, deliberately not a typed spec route — see §9):
+
+```
+GET /v1/accounts/{accountId}/evidence-exports/{id}/download
+```
+
+Raw PDF bytes with the same hardened headers as attachment downloads (`Content-Disposition: attachment`, `X-Content-Sha256`, `Cache-Control: private, no-store`, etc).
 
 ```bash
 # Create and immediately download

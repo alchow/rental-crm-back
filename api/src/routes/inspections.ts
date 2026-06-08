@@ -211,6 +211,17 @@ const tplPatch = createRoute({
     ...errorResponses,
   },
 });
+const tplRemove = createRoute({
+  method: 'delete',
+  path: '/accounts/{accountId}/inspection-templates/{id}',
+  tags: ['inspection_templates'],
+  summary: 'Soft-delete an inspection template',
+  request: { params: AccountAndIdParam },
+  responses: {
+    204: { description: 'deleted' },
+    ...errorResponses,
+  },
+});
 
 export const inspectionTemplatesApp = new OpenAPIHono();
 
@@ -271,6 +282,21 @@ inspectionTemplatesApp.openapi(tplPatch, async (c) => {
   if (error) throw new ApiError(500, 'database_error', error.message);
   if (!data) throw new ApiError(404, 'not_found', 'not found');
   return c.json(data as z.infer<typeof InspectionTemplate>, 200);
+});
+
+inspectionTemplatesApp.openapi(tplRemove, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const sb = getUserClient(c.get('auth').accessToken);
+  const { data, error } = await sb.from('inspection_templates')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .select('id')
+    .maybeSingle();
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  return c.body(null, 204);
 });
 
 // ============================================================================
@@ -487,6 +513,17 @@ const itemPatch = createRoute({
     ...errorResponses,
   },
 });
+const itemRemove = createRoute({
+  method: 'delete',
+  path: '/accounts/{accountId}/inspections/{inspectionId}/items/{id}',
+  tags: ['inspection_items'],
+  summary: 'Soft-delete an inspection item (rejected with 409 if the parent inspection is completed)',
+  request: { params: InspectionAndItemParam },
+  responses: {
+    204: { description: 'deleted' },
+    ...errorResponses,
+  },
+});
 
 export const inspectionItemsApp = new OpenAPIHono();
 
@@ -546,4 +583,25 @@ inspectionItemsApp.openapi(itemPatch, async (c) => {
   }
   if (!data) throw new ApiError(404, 'not_found', 'not found');
   return c.json(data as z.infer<typeof InspectionItem>, 200);
+});
+
+inspectionItemsApp.openapi(itemRemove, async (c) => {
+  const { accountId, inspectionId, id } = c.req.valid('param');
+  const sb = getUserClient(c.get('auth').accessToken);
+  const { data, error } = await sb.from('inspection_items')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('account_id', accountId)
+    .eq('inspection_id', inspectionId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .select('id')
+    .maybeSingle();
+  if (error) {
+    if (/parent inspection .* is completed/i.test(error.message)) {
+      throw new ApiError(409, 'conflict', 'parent inspection is completed; items are immutable');
+    }
+    throw new ApiError(500, 'database_error', error.message);
+  }
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  return c.body(null, 204);
 });
