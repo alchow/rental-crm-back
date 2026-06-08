@@ -88,24 +88,6 @@
           "session"
         ]
       },
-      "SignupPendingVerification": {
-        "type": "object",
-        "properties": {
-          "pending_verification": {
-            "type": "boolean",
-            "enum": [
-              true
-            ]
-          },
-          "message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "pending_verification",
-          "message"
-        ]
-      },
       "ErrorEnvelope": {
         "type": "object",
         "properties": {
@@ -3513,16 +3495,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SignupResponse"
-                }
-              }
-            }
-          },
-          "202": {
-            "description": "pending email verification",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SignupPendingVerification"
                 }
               }
             }

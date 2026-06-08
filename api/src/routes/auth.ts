@@ -39,12 +39,6 @@ const SignupSuccess = z
   })
   .openapi('SignupResponse');
 
-const SignupPending = z
-  .object({
-    pending_verification: z.literal(true),
-    message: z.string(),
-  })
-  .openapi('SignupPendingVerification');
 
 const LoginBody = z
   .object({
@@ -84,7 +78,6 @@ const signupRoute = createRoute({
   },
   responses: {
     200: { description: 'created', content: { 'application/json': { schema: SignupSuccess } } },
-    202: { description: 'pending email verification', content: { 'application/json': { schema: SignupPending } } },
     ...errorResponses,
   },
 });
@@ -151,10 +144,7 @@ auth.openapi(signupRoute, async (c) => {
     throw new ApiError(400, 'invalid_request', error.message);
   }
   if (!data.user || !data.session) {
-    return c.json({
-      pending_verification: true as const,
-      message: 'user created but pending email verification; account is not created until verification completes',
-    }, 202);
+    throw new ApiError(400, 'invalid_request', 'email confirmation is required; disable it in Supabase Auth settings to use this endpoint');
   }
 
   const userClient = getUserClient(data.session.access_token);
