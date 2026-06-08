@@ -24,9 +24,11 @@ PATTERNS=(
 #   - api/test/api-isolation.test.ts: sets process.env from supabase status so
 #     the app under test sees the same env it gets in CI. The variable name is
 #     ASSIGNED, never read into a client constructor.
-#   - api/test/attachments.test.ts / intake.test.ts / phase9.test.ts: integration
-#     tests that read rows back via the admin client to verify what the system
-#     actually stored (audit attribution, storage path, derived_from chain).
+#   - api/test/attachments.test.ts / intake.test.ts / phase9.test.ts /
+#     phase10.test.ts / phase11.test.ts / phase12.test.ts: integration tests
+#     that read rows back via the admin client to verify what the system
+#     actually stored (audit attribution, storage path, derived_from chain,
+#     unreachable fixture states like a soft-deleted membership).
 #     These are TEST code, never shipped; the quarantine defends production
 #     runtime, and verification of that runtime sits on the other side of the
 #     boundary by design.
@@ -47,6 +49,7 @@ EXCLUDES=(
   ':!api/test/phase9.test.ts'
   ':!api/test/phase10.test.ts'
   ':!api/test/phase11.test.ts'
+  ':!api/test/phase12.test.ts'
   ':!openapi/emit.ts'
 )
 

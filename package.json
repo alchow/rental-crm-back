@@ -19,9 +19,10 @@
     "lint:service-role": "bash scripts/lint-service-role.sh",
     "lint:admin-quarantine": "bash scripts/test-admin-quarantine.sh",
     "check:drift": "bash scripts/check-contract-drift.sh",
+    "check:guide-drift": "tsx scripts/check-guide-drift.ts",
     "secrets:scan": "gitleaks git --staged --no-banner --redact -v",
     "secrets:scan-all": "gitleaks git . --no-banner --redact -v",
-    "check": "pnpm lint && pnpm typecheck && pnpm lint:service-role && pnpm check:drift",
+    "check": "pnpm lint && pnpm typecheck && pnpm lint:service-role && pnpm check:drift && pnpm check:guide-drift",
     "prepare": "husky"
   },
   "devDependencies": {
