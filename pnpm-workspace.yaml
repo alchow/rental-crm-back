@@ -7,7 +7,4 @@ packages:
 
 allowBuilds:
   esbuild: true
-  sharp: set this to true or false
-
-onlyBuiltDependencies:
-  - esbuild
+  sharp: true
