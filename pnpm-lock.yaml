@@ -66,6 +66,9 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
+      '@rentalcrm/sdk':
+        specifier: workspace:*
+        version: link:../sdk
       '@types/pdfkit':
         specifier: ^0.17.6
         version: 0.17.6

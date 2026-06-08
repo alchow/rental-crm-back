@@ -878,11 +878,11 @@ async function main(): Promise<void> {
   await check('/v1/me as A returns only A account', async () => {
     const res = await api('GET', '/v1/me', { token: A.accessToken });
     const body = (await expectStatus('GET /v1/me', res, 200)) as {
-      user_id: string;
-      accounts: Array<{ account_id: string }>;
+      user: { id: string };
+      memberships: Array<{ account_id: string }>;
     };
-    if (body.user_id !== A.userId) throw new Error(`wrong user_id`);
-    const ids = body.accounts.map((m) => m.account_id);
+    if (body.user.id !== A.userId) throw new Error(`wrong user id`);
+    const ids = body.memberships.map((m) => m.account_id);
     if (!ids.includes(A.accountId)) throw new Error(`A's own account missing`);
     if (ids.includes(B.accountId)) throw new Error(`B's account leaked into A's /v1/me`);
   });

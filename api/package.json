@@ -15,7 +15,8 @@
     "test:attachments": "tsx test/attachments.test.ts",
     "test:phase9": "tsx test/phase9.test.ts",
     "test:phase10": "tsx test/phase10.test.ts",
-    "test:phase11": "tsx test/phase11.test.ts"
+    "test:phase11": "tsx test/phase11.test.ts",
+    "test:phase12": "tsx test/phase12.test.ts"
   },
   "dependencies": {
     "tsx": "^4.19.2",
@@ -29,6 +30,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@rentalcrm/sdk": "workspace:*",
     "@types/pdfkit": "^0.17.6",
     "@types/pg": "^8.11.10",
     "pg": "^8.13.1"
