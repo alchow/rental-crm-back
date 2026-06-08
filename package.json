@@ -18,9 +18,10 @@
     "dev": "pnpm --filter ./api dev",
     "lint:service-role": "bash scripts/lint-service-role.sh",
     "lint:admin-quarantine": "bash scripts/test-admin-quarantine.sh",
+    "check:drift": "bash scripts/check-contract-drift.sh",
     "secrets:scan": "gitleaks git --staged --no-banner --redact -v",
     "secrets:scan-all": "gitleaks git . --no-banner --redact -v",
-    "check": "pnpm lint && pnpm typecheck && pnpm lint:service-role",
+    "check": "pnpm lint && pnpm typecheck && pnpm lint:service-role && pnpm check:drift",
     "prepare": "husky"
   },
   "devDependencies": {
@@ -33,5 +34,8 @@
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "typescript-eslint": "^8.14.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["sharp"]
   }
 }

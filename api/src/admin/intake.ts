@@ -2,7 +2,7 @@ import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { randomBytes, createHash } from 'node:crypto';
 import { ApiError, errorResponses } from '../routes/_lib/error';
 import { getAdminClient } from './supabase-admin';
-import { uploadAttachment, ALLOWED_MIME_TYPES, MAX_BYTES } from './storage';
+import { processAndStoreBytes, ALLOWED_MIME_TYPES, MAX_BYTES } from './storage';
 
 // ============================================================================
 // Tenant intake -- the single public, unauthenticated, RLS-bypassing route.
@@ -28,23 +28,26 @@ import { uploadAttachment, ALLOWED_MIME_TYPES, MAX_BYTES } from './storage';
 //     ESLint quarantine still passes (the only place that imports
 //     supabase-admin.ts).
 //
-//   * audit.actor is set on the connection BEFORE the write, so the audit
+//   * audit.actor is set inside the RPC BEFORE the writes, so the audit
 //     trigger captures actor='tenant:<token_id>'. This works because the
 //     Phase 4 actor-integrity fix says: when auth.uid() is NULL (no JWT --
 //     our case), audit.actor wins. When auth.uid() IS set (user-facing
 //     path), audit.actor is IGNORED. Intake therefore can't impersonate a
 //     real user, and a user can't impersonate an intake.
 //
-//   * Per-token AND per-IP rate limits (token via DB columns; IP via an
-//     in-process sliding window). Both bound the spam blast-radius of a
-//     leaked link.
+//   * Phase 9: the attachment INSERT is folded into the RPC, so a single
+//     transaction lands maintenance_request + interaction + attachment
+//     (+ optional HEIC-derived JPEG). Three failure modes are eliminated
+//     by construction: "request without its photo", "photo without its
+//     request", and "photo audited as 'system' instead of the tenant".
+//
+//   * Phase 9: per-IP rate limit moved to the DB (bump_ip_rate_bucket).
+//     The Phase 7 in-memory bucket reset on every restart and was useless
+//     across instances; the DB sliding window survives both.
 //
 //   * Tokens are reusable until revoked. Auto-revoke triggers when the
 //     bound tenancy.status moves to 'ended' or the tenancy is soft-deleted.
 //     A landlord can also revoke explicitly via the authenticated route.
-//     Single-use was considered and rejected: a standing "report an issue"
-//     link matches the frictionless-capture goal and the leaked-link blast
-//     radius is just spam (covered by rate limits).
 
 // ----- token helpers ---------------------------------------------------------
 
@@ -68,27 +71,11 @@ export interface MintedToken {
   created_at: string;
 }
 
-/**
- * Mint a fresh intake token for a tenancy. SECURITY DEFINER-equivalent at the
- * application layer: uses the admin client (RLS-bypass) but BEFORE doing so
- * the caller (the authenticated route) is expected to have verified
- * account membership + immediate-parent (tenancy belongs to account). This
- * function trusts those checks and doesn't re-verify them.
- *
- * Returns the plaintext secret EXACTLY ONCE. The hash is what persists.
- * The unique-partial index on (tenancy_id where revoked_at is null) means a
- * second mint without revoke first will fail with a 23505; the caller must
- * map to a 409 "active token exists" so the operator knows to revoke first.
- */
 export async function mintIntakeToken(
   accountId: string,
   tenancyId: string,
 ): Promise<MintedToken> {
   const admin = getAdminClient();
-
-  // We need property_id for the token. Look it up off the tenancy -> area ->
-  // property chain. The admin client bypasses RLS so this just reads the
-  // canonical rows.
   const { data: t, error: tErr } = await admin
     .from('tenancies')
     .select('id, account_id, area_id, deleted_at, status, areas!inner(property_id)')
@@ -98,13 +85,9 @@ export async function mintIntakeToken(
     .maybeSingle();
   if (tErr) throw new ApiError(500, 'database_error', tErr.message);
   if (!t) throw new ApiError(404, 'not_found', 'tenancy not found in this account');
-  // Refuse to mint for a tenancy that's already terminal.
   if (t.status === 'ended') {
     throw new ApiError(409, 'conflict', 'cannot mint intake token for an ended tenancy');
   }
-
-  // The supabase-js join unwraps `areas!inner` to either a single object or
-  // an array depending on the row count it inferred; narrow both shapes.
   const propertyId = Array.isArray(t.areas)
     ? (t.areas[0] as { property_id: string } | undefined)?.property_id
     : (t.areas as { property_id: string } | null)?.property_id;
@@ -114,9 +97,6 @@ export async function mintIntakeToken(
 
   const secret = generateSecret();
   const secretHash = hashSecret(secret);
-
-  // The unique partial index will trip a 23505 if there's an active token
-  // for this tenancy; we surface that as 409.
   const { data: row, error: insErr } = await admin
     .from('intake_tokens')
     .insert({
@@ -161,32 +141,34 @@ export async function revokeIntakeToken(
   return { id: data.id as string, revoked_at: data.revoked_at as string };
 }
 
-// ----- per-IP sliding-window rate limit (in-memory) --------------------------
+// ----- per-IP rate limit (DB sliding window) --------------------------------
 
-interface IpBucket {
-  count: number;
-  windowStart: number; // epoch ms
-}
-const ipBuckets = new Map<string, IpBucket>();
-const IP_WINDOW_MS = 10 * 60 * 1000; // 10 min
-const IP_LIMIT = 50;                  // 50 requests / IP / 10 min
-const TOKEN_WINDOW_S = 10 * 60;       // matches per-token window
-const TOKEN_LIMIT = 20;
+const TOKEN_WINDOW_S = 10 * 60;
+const TOKEN_LIMIT    = 20;
+const IP_WINDOW_S    = 10 * 60;
+const IP_LIMIT       = 50;
 
-/** Test-only: clears the per-IP buckets so retries don't leak across runs. */
-export function _resetIntakeIpBucketsForTests(): void {
-  ipBuckets.clear();
-}
-
-function checkIpLimit(ip: string): { ok: boolean; remaining: number } {
-  const now = Date.now();
-  const b = ipBuckets.get(ip);
-  if (!b || now - b.windowStart > IP_WINDOW_MS) {
-    ipBuckets.set(ip, { count: 1, windowStart: now });
-    return { ok: true, remaining: IP_LIMIT - 1 };
+async function bumpIpRateBucket(ip: string): Promise<{ ok: boolean }> {
+  const admin = getAdminClient();
+  const { data, error } = await admin.rpc('bump_ip_rate_bucket', {
+    p_ip: ip.slice(0, 64),
+    p_scope: 'intake',
+    p_window_sec: IP_WINDOW_S,
+  });
+  if (error) {
+    // Fail closed: if rate-limit infra is down we drop the request rather
+    // than leaving it un-bounded. A leaked link with a misconfigured DB is
+    // strictly worse than a temporary 429.
+    return { ok: false };
   }
-  b.count += 1;
-  return { ok: b.count <= IP_LIMIT, remaining: Math.max(0, IP_LIMIT - b.count) };
+  const count = typeof data === 'number' ? data : Number(data);
+  return { ok: count <= IP_LIMIT };
+}
+
+/** Test-only: clears the per-IP DB buckets so tests don't leak across runs. */
+export async function _resetIntakeIpBucketsForTests(): Promise<void> {
+  const admin = getAdminClient();
+  await admin.from('ip_rate_buckets').delete().eq('scope', 'intake');
 }
 
 // ----- public intake handler -------------------------------------------------
@@ -196,11 +178,7 @@ const IntakeBody = z
     area_id: z.string().uuid(),
     title: z.string().min(1).max(200),
     description: z.string().max(5000).optional(),
-    // Triage-actionable: emergency (drop everything), urgent (today),
-    // routine (schedule). Carried through into maintenance_request.severity.
     severity: z.enum(['emergency', 'urgent', 'routine']),
-    // Tenant-stated time-of-occurrence. logged_at is server-set on the
-    // interaction row (and immutable per Phase 3.1).
     occurred_at: z.string().datetime().optional(),
   })
   .openapi('IntakeBody');
@@ -209,13 +187,22 @@ const IntakeResponse = z
   .object({
     maintenance_request_id: z.string().uuid(),
     interaction_id: z.string().uuid(),
-    // true if an existing open request matched and this submission was
-    // appended as an interaction rather than creating a new request. The
-    // dedupe key is (area_id, title) on the OPEN requests for this tenancy.
+    // Phase 9: when the submitter included a file, attachment_id is the
+    // INSERTed attachments row. For HEIC uploads, derivative_id is the
+    // server-derived JPEG row whose derived_from = attachment_id.
+    attachment_id: z.string().uuid().nullable(),
+    derivative_id: z.string().uuid().nullable(),
     deduped_onto_existing: z.boolean(),
   })
   .openapi('IntakeResponse');
 
+// We deliberately describe the body in the OpenAPI spec but DO NOT use
+// zod-openapi's auto-validation: the handler accepts EITHER
+// application/json (text-only intake) or multipart/form-data (intake +
+// photo), and with two declared content-types zod-openapi picks one
+// validator and rejects the other shape with 400. Parsing happens in
+// the handler, validated by the IntakeBody schema directly. The body
+// description below stays accurate for the OpenAPI client.
 const intake = createRoute({
   method: 'post',
   path: '/intake/{token}',
@@ -225,7 +212,6 @@ const intake = createRoute({
     params: z.object({
       token: z.string().min(8).max(200).openapi({ param: { name: 'token', in: 'path' } }),
     }),
-    body: { content: { 'application/json': { schema: IntakeBody } }, required: true },
   },
   responses: {
     201: { description: 'created', content: { 'application/json': { schema: IntakeResponse } } },
@@ -257,11 +243,9 @@ async function lookupAndRateLimitToken(secret: string): Promise<TokenRow> {
     .eq('secret_hash', '\\x' + hash.toString('hex'))
     .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
-  // Don't distinguish "not found" from "revoked" -- 404 either way.
   if (!data) throw new ApiError(404, 'not_found', 'invalid token');
   if (data.revoked_at) throw new ApiError(404, 'not_found', 'invalid token');
 
-  // Also verify the bound tenancy is still in a state that can receive intake.
   const { data: t, error: tErr } = await admin
     .from('tenancies')
     .select('status, deleted_at')
@@ -273,7 +257,6 @@ async function lookupAndRateLimitToken(secret: string): Promise<TokenRow> {
     throw new ApiError(404, 'not_found', 'invalid token');
   }
 
-  // Per-token rate limit: sliding window via (use_window_start, use_count).
   const nowMs = Date.now();
   const windowStartMs = new Date(data.use_window_start as string).getTime();
   let nextCount = data.use_count + 1;
@@ -298,207 +281,130 @@ async function lookupAndRateLimitToken(secret: string): Promise<TokenRow> {
   return data as TokenRow;
 }
 
+function clientIp(c: { req: { header: (n: string) => string | undefined } }): string {
+  return (
+    c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ??
+    c.req.header('cf-connecting-ip') ??
+    'unknown'
+  );
+}
+
 // ----- intake app ------------------------------------------------------------
 
 export const intakeApp = new OpenAPIHono();
 
 intakeApp.openapi(intake, async (c) => {
-  // Per-IP limit. With multiple proxies we'd take the leftmost forwarded
-  // address; for now the connection peer is fine.
-  const ip =
-    c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ??
-    c.req.header('cf-connecting-ip') ??
-    'unknown';
-  const ipCheck = checkIpLimit(ip);
+  const ipCheck = await bumpIpRateBucket(clientIp(c));
   if (!ipCheck.ok) {
     throw new ApiError(429, 'conflict', 'rate limit exceeded for this IP; try again later');
   }
 
   const { token } = c.req.valid('param');
-  const body = c.req.valid('json');
-
-  // 1. Token verification + per-token rate limit. Returns the scope.
   const tokenRow = await lookupAndRateLimitToken(token);
 
-  // 2. Validate area belongs to the TOKEN's property (not just the account).
-  // The admin client bypasses RLS but we still scope by property_id derived
-  // from the verified token row.
+  // Parse body in either JSON or multipart shape. We do this ourselves
+  // because zod-openapi's auto-validator picks ONE content-type and we
+  // accept both -- relying on c.req.valid('json') silently drops the
+  // multipart path, and vice versa.
+  const contentType = c.req.header('content-type') ?? '';
+  type IntakeFields = z.infer<typeof IntakeBody>;
+  let candidate: Record<string, unknown>;
+  let file: File | null = null;
+
+  if (contentType.toLowerCase().startsWith('multipart/')) {
+    type BodyVal = string | File | undefined;
+    const form = (await c.req.parseBody()) as Record<string, BodyVal>;
+    candidate = {
+      area_id:     typeof form.area_id     === 'string' ? form.area_id     : undefined,
+      title:       typeof form.title       === 'string' ? form.title       : undefined,
+      description: typeof form.description === 'string' ? form.description : undefined,
+      severity:    typeof form.severity    === 'string' ? form.severity    : undefined,
+      occurred_at: typeof form.occurred_at === 'string' ? form.occurred_at : undefined,
+    };
+    const maybeFile = form.file;
+    if (maybeFile && typeof maybeFile !== 'string' && 'arrayBuffer' in maybeFile) {
+      file = maybeFile as File;
+    }
+  } else {
+    candidate = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+  }
+  const parsed = IntakeBody.safeParse(candidate);
+  if (!parsed.success) {
+    throw new ApiError(400, 'invalid_request', parsed.error.issues.map((i) => i.message).join('; '));
+  }
+  const fields: IntakeFields = parsed.data;
+
   const admin = getAdminClient();
   const { data: area, error: aErr } = await admin
     .from('areas')
     .select('id, kind, property_id, account_id')
     .eq('account_id', tokenRow.account_id)
     .eq('property_id', tokenRow.property_id)
-    .eq('id', body.area_id)
+    .eq('id', fields.area_id)
     .is('deleted_at', null)
     .maybeSingle();
   if (aErr) throw new ApiError(500, 'database_error', aErr.message);
   if (!area) {
-    // Don't confirm whether the area exists in another property within the
-    // same account; 404 either way.
     throw new ApiError(404, 'not_found', 'area not found in this property');
   }
 
-  // 3. Audit actor. The audit trigger reads current_setting('audit.actor');
-  // setting it BEFORE the writes is what makes the chain entries land as
-  // actor='tenant:<token_id>'. We use the public token id (a uuid), not
-  // the secret.
-  // Set as session-local for the duration of this request's DB work. We
-  // wrap subsequent writes in a single supabase-js call so the GUC stays
-  // in scope... actually supabase-js calls are stateless HTTP, so each
-  // call is a fresh connection. We need to call a Postgres function that
-  // sets the GUC AND does the writes atomically. Use an RPC.
-  //
-  // Define an admin RPC: submit_intake(account_id, tenancy_id, area_id,
-  //   title, description, severity, occurred_at, actor_token_id) returns
-  //   (maintenance_request_id, interaction_id, deduped). The function sets
-  //   audit.actor inside, does the dedup logic and inserts, and returns.
+  // If a file came in, validate + store the bytes BEFORE calling the RPC.
+  // The RPC just records the metadata; the bytes need to be findable in
+  // storage by the time anyone reads the attachment row. On RPC failure
+  // we have orphan blobs in storage, which a future cron prunes by
+  // storage_path NOT IN (SELECT storage_path FROM attachments).
+  let putResult: Awaited<ReturnType<typeof processAndStoreBytes>> | null = null;
+  if (file) {
+    const mime = file.type || 'application/octet-stream';
+    if (!ALLOWED_MIME_TYPES.has(mime)) {
+      throw new ApiError(400, 'invalid_request', `unsupported mime_type ${mime}`);
+    }
+    const size = file.size;
+    if (size <= 0 || size > MAX_BYTES) {
+      throw new ApiError(400, 'invalid_request', `file size out of range (${size})`);
+    }
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    putResult = await processAndStoreBytes(tokenRow.account_id, bytes, mime);
+  }
 
-  const { data: rpcData, error: rpcErr } = await admin.rpc('submit_intake', {
-    p_account_id:   tokenRow.account_id,
-    p_tenancy_id:   tokenRow.tenancy_id,
-    p_area_id:      area.id,
-    p_title:        body.title,
-    p_description:  body.description ?? null,
-    p_severity:     body.severity,
-    p_occurred_at:  body.occurred_at ?? new Date().toISOString(),
-    p_actor:        `tenant:${tokenRow.id}`,
+  const { data: rpcData, error: rpcErr } = await admin.rpc('submit_intake_with_attachment', {
+    p_account_id:        tokenRow.account_id,
+    p_tenancy_id:        tokenRow.tenancy_id,
+    p_area_id:           area.id,
+    p_title:             fields.title,
+    p_description:       fields.description ?? null,
+    p_severity:          fields.severity,
+    p_occurred_at:       fields.occurred_at ?? new Date().toISOString(),
+    p_actor:             `tenant:${tokenRow.id}`,
+    p_attachment_hash:   putResult?.primary.hash ?? null,
+    p_attachment_mime:   putResult?.primary.mimeType ?? null,
+    p_attachment_size:   putResult?.primary.sizeBytes ?? null,
+    p_attachment_path:   putResult?.primary.storagePath ?? null,
+    p_derivative_hash:   putResult?.derivative?.hash ?? null,
+    p_derivative_mime:   putResult?.derivative?.mimeType ?? null,
+    p_derivative_size:   putResult?.derivative?.sizeBytes ?? null,
+    p_derivative_path:   putResult?.derivative?.storagePath ?? null,
   });
   if (rpcErr) {
     throw new ApiError(500, 'database_error', rpcErr.message);
   }
-  const row = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as
-    | { maintenance_request_id: string; interaction_id: string; deduped: boolean }
-    | null;
+  const row = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as {
+    maintenance_request_id: string;
+    interaction_id: string;
+    attachment_id: string | null;
+    derivative_id: string | null;
+    deduped: boolean;
+  } | null;
   if (!row) throw new ApiError(500, 'database_error', 'intake RPC returned no row');
 
   return c.json(
     {
       maintenance_request_id: row.maintenance_request_id,
       interaction_id: row.interaction_id,
+      attachment_id: row.attachment_id,
+      derivative_id: row.derivative_id,
       deduped_onto_existing: row.deduped,
     },
     201,
   );
-});
-
-// ============================================================================
-// Intake attachment endpoint.
-// ============================================================================
-//
-// POST /v1/intake/:token/attachments
-// multipart/form-data: file=<binary>, maintenance_request_id=<uuid>
-//
-// Storage path is derived STRICTLY from the verified token's account_id
-// (NEVER from submitter input). The submitter-provided
-// maintenance_request_id MUST already be a request landed via THIS token's
-// tenancy -- a request_id from another tenancy / property / account is
-// rejected with 404.
-
-const IntakeAttachmentResponse = z.object({
-  attachment_id: z.string().uuid(),
-  content_hash: z.string(),
-  size_bytes: z.number().int(),
-}).openapi('IntakeAttachmentResponse');
-
-const intakeAttachment = createRoute({
-  method: 'post',
-  path: '/intake/{token}/attachments',
-  tags: ['intake'],
-  summary: 'Attach a file to a maintenance request via tenant magic link',
-  request: {
-    params: z.object({
-      token: z.string().min(8).max(200).openapi({ param: { name: 'token', in: 'path' } }),
-    }),
-    body: { content: { 'multipart/form-data': { schema: z.object({
-      file: z.any(),
-      maintenance_request_id: z.string().uuid(),
-    }) } }, required: true },
-  },
-  responses: {
-    201: { description: 'attached', content: { 'application/json': { schema: IntakeAttachmentResponse } } },
-    ...errorResponses,
-  },
-});
-
-intakeApp.openapi(intakeAttachment, async (c) => {
-  // Same IP rate-limit gate as the main intake endpoint.
-  const ip =
-    c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ??
-    c.req.header('cf-connecting-ip') ??
-    'unknown';
-  const ipCheck = checkIpLimit(ip);
-  if (!ipCheck.ok) {
-    throw new ApiError(429, 'conflict', 'rate limit exceeded for this IP; try again later');
-  }
-
-  const { token } = c.req.valid('param');
-  const tokenRow = await lookupAndRateLimitToken(token);
-
-  type BodyVal = string | File | undefined;
-  const form = (await c.req.parseBody()) as Record<string, BodyVal>;
-  const requestId = typeof form.maintenance_request_id === 'string' ? form.maintenance_request_id : '';
-  const file = form.file;
-
-  if (!/^[0-9a-f-]{36}$/i.test(requestId)) {
-    throw new ApiError(400, 'invalid_request', 'maintenance_request_id missing or invalid');
-  }
-  if (!file || typeof file === 'string' || !('arrayBuffer' in file)) {
-    throw new ApiError(400, 'invalid_request', 'file part missing');
-  }
-  const mime = (file as File).type || 'application/octet-stream';
-  if (!ALLOWED_MIME_TYPES.has(mime)) {
-    throw new ApiError(400, 'invalid_request', `unsupported mime_type ${mime}`);
-  }
-  const size = (file as File).size;
-  if (size <= 0 || size > MAX_BYTES) {
-    throw new ApiError(400, 'invalid_request', `file size out of range (${size})`);
-  }
-
-  // The maintenance_request MUST belong to THIS token's account AND be on
-  // an area of THIS token's property (the same scope the main intake
-  // handler validates -- a tenant can report against their unit OR any
-  // common area of their property). The schema doesn't carry tenancy_id
-  // on maintenance_requests (they attach to areas, not tenancies); we
-  // join through areas.property_id to enforce the token-scoped check.
-  const admin = getAdminClient();
-  const { data: req, error: rqErr } = await admin
-    .from('maintenance_requests')
-    .select('id, account_id, area_id, areas!inner(property_id)')
-    .eq('id', requestId)
-    .eq('account_id', tokenRow.account_id)
-    .is('deleted_at', null)
-    .maybeSingle();
-  if (rqErr) throw new ApiError(500, 'database_error', rqErr.message);
-  const reqPropertyId = req
-    ? Array.isArray(req.areas)
-      ? (req.areas[0] as { property_id: string } | undefined)?.property_id
-      : (req.areas as { property_id: string } | null)?.property_id
-    : undefined;
-  if (!req || reqPropertyId !== tokenRow.property_id) {
-    // Forged id, another tenancy's request, another property, another
-    // account -- all collapse to 404 here. No existence oracle.
-    throw new ApiError(404, 'not_found', 'maintenance_request not found for this token');
-  }
-
-  // Bytes. The path passed to uploadAttachment is constructed from
-  // tokenRow.account_id (NEVER submitter input). uploadAttachment hashes
-  // server-side and stores with the right content-type.
-  const bytes = new Uint8Array(await (file as File).arrayBuffer());
-  const row = await uploadAttachment({
-    accountId: tokenRow.account_id,
-    entityType: 'maintenance_requests',
-    entityId: req.id as string,
-    bytes,
-    mimeType: mime,
-    filename: (file as File).name,
-    uploadedBy: null,
-    auditActor: `tenant:${tokenRow.id}`,
-  });
-
-  return c.json({
-    attachment_id: row.id,
-    content_hash: row.content_hash,
-    size_bytes: row.size_bytes ?? bytes.byteLength,
-  }, 201);
 });

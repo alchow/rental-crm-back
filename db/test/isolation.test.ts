@@ -43,10 +43,31 @@ const USER_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 
 const SELF_ONLY_TABLES = new Set(['users']);
 const ACCOUNT_PK_TABLE = 'accounts';
+// Tables that are intentionally NOT account-scoped at the schema level
+// (operational/security infra). They're locked down by REVOKE for the
+// public/anon/authenticated roles rather than by per-tenant RLS, so
+// nothing's expected to be visible under the unprivileged role. Skipped
+// in the cross-tenant column-based check.
+const NOT_ACCOUNT_SCOPED = new Set(['ip_rate_buckets']);
 // Tables we do NOT seed with domain rows. They still get the cross-tenant
 // isolation check (cross-account count == 0), but we skip the
 // "must-have-own-rows" assertion because there's no natural seed entry.
-const NO_SEED_REQUIRED = new Set(['idempotency_keys', 'intake_tokens']);
+const NO_SEED_REQUIRED = new Set([
+  'idempotency_keys',
+  'intake_tokens',
+  // Phase 9: cron-emitted; no static seed row.
+  'scheduled_task_runs',
+  // Phase 9: operational rate-limit table. Not account-scoped (no
+  // account_id column) -- the test's column probe already skips it for
+  // cross-tenant leak checks; included here so assertSeededOwn does too.
+  'ip_rate_buckets',
+  // Phase 10: created on-demand by an explicit API call; nothing to seed
+  // in a static two-account fixture.
+  'evidence_exports',
+  // Phase 11: only written by the chain-sweep cron on tamper detection;
+  // an untampered fixture has nothing to seed here.
+  'chain_verification_alerts',
+]);
 
 interface ColumnInfo {
   has_account_id: boolean;
@@ -207,6 +228,24 @@ async function checkTable(
   }
 
   if (!info.has_account_id) {
+    if (NOT_ACCOUNT_SCOPED.has(table)) {
+      // Locked down by REVOKE; nothing should be visible from the
+      // authenticated role at all. Verify count == 0 under RLS.
+      const all = await client.query<{ n: string }>(
+        `select count(*)::text as n from public.${table}`,
+      ).catch(() => ({ rows: [{ n: '-1' }] }));
+      const n = Number(all.rows[0]!.n);
+      // -1 means a permission_denied error -- exactly what we want.
+      if (n > 0) {
+        failures.push({
+          user: asUser,
+          table,
+          kind: 'cross_tenant_leak',
+          detail: `${table}: ${n} rows visible under authenticated role (expected 0 or denied)`,
+        });
+      }
+      return;
+    }
     // Unexpected — every other domain table should have account_id. Flag.
     failures.push({
       user: asUser,

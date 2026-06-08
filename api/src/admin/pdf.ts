@@ -232,27 +232,54 @@ export async function generateAndStoreInspectionReport(opts: {
     .is('deleted_at', null);
   if (items.error) throw new Error(`items query failed: ${items.error.message}`);
 
-  // Photos = attachments tied to this inspection that we can embed.
+  // Photos = attachments tied to this inspection. Phase 9: an iPhone HEIC
+  // upload produces TWO rows -- the original HEIC plus a server-derived
+  // JPEG with derived_from = original.id. We list the ORIGINALS only
+  // (derived_from is null) and then, for each HEIC original, look up its
+  // JPEG derivative and embed THAT into the PDF in place of the HEIC. The
+  // photo's identity in the report stays the original's content_hash so
+  // chain of custody points at the bytes the tenant actually uploaded;
+  // the JPEG is just the renderable substitute the server produced. If
+  // the derivative is missing (transcoding failed at upload time), we
+  // fall through to the HEIC bytes, which pdfkit will placeholder.
   const photoMetas = await admin
     .from('attachments')
-    .select('id, received_at, content_hash, mime_type, storage_path')
+    .select('id, received_at, content_hash, mime_type, storage_path, derived_from')
     .eq('account_id', opts.accountId)
     .eq('entity_type', 'inspections')
     .eq('entity_id', i.id)
     .is('deleted_at', null);
   if (photoMetas.error) throw new Error(`photo metas query failed: ${photoMetas.error.message}`);
+  const allRows = (photoMetas.data ?? []) as Array<{
+    id: string; received_at: string; content_hash: string;
+    mime_type: string | null; storage_path: string; derived_from: string | null;
+  }>;
+  const originals = allRows.filter((r) => r.derived_from === null);
+  const derivativesByOriginal = new Map<string, typeof allRows[number]>();
+  for (const r of allRows) {
+    if (r.derived_from !== null) derivativesByOriginal.set(r.derived_from, r);
+  }
+
   const photos = await Promise.all(
-    (photoMetas.data ?? []).map(async (p) => {
-      const dl = await admin.storage.from('attachments').download(p.storage_path as string);
+    originals.map(async (p) => {
+      const isHeic = p.mime_type === 'image/heic' || p.mime_type === 'image/heif';
+      const renderRow = isHeic ? (derivativesByOriginal.get(p.id) ?? p) : p;
+      const dl = await admin.storage.from('attachments').download(renderRow.storage_path);
       if (dl.error || !dl.data) {
         throw new Error(`photo download failed for ${p.id}: ${dl.error?.message}`);
       }
       const bytes = new Uint8Array(await dl.data.arrayBuffer());
       return {
-        id: p.id as string,
-        received_at: p.received_at as string,
-        content_hash: p.content_hash as string,
-        mime_type: p.mime_type as string | null,
+        id: p.id,
+        // Always show the ORIGINAL's content_hash in the report -- that's
+        // the chain-of-custody identity. The derivative is an
+        // implementation detail of rendering.
+        received_at: p.received_at,
+        content_hash: p.content_hash,
+        // mime_type drives the embedder branch in renderInspectionPdf; use
+        // the renderable row's mime so JPEG-derived-from-HEIC actually
+        // embeds (instead of hitting the HEIC placeholder branch).
+        mime_type: renderRow.mime_type,
         bytes,
       };
     }),
@@ -267,8 +294,10 @@ export async function generateAndStoreInspectionReport(opts: {
   });
 
   const contentHash = createHash('sha256').update(pdfBytes).digest('hex');
-  const storagePath =
-    `${opts.accountId}/inspection_report/${i.id}/${contentHash}.pdf`;
+  // Phase 9: content-addressed path -- same scheme as
+  // processAndStoreBytes() uses for user uploads. The inspection_id is
+  // captured on the attachments row's entity_id, not in the path.
+  const storagePath = `${opts.accountId}/${contentHash}.pdf`;
   const { error: upErr } = await admin.storage.from('attachments').upload(
     storagePath,
     pdfBytes,

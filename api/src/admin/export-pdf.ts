@@ -1,0 +1,963 @@
+import PDFDocument from 'pdfkit';
+import { createHash } from 'node:crypto';
+import { getAdminClient } from './supabase-admin';
+import { MAX_BYTES as UPLOAD_MAX_BYTES } from './storage';
+
+// ============================================================================
+// Evidence export bundle renderer.
+// ============================================================================
+//
+// This is the product's reason to exist. A PDF that holds up in a dispute.
+// It must:
+//
+//   (1) Embed the audit-chain verification result prominently. If the chain
+//       is broken, say so. A clean-looking PDF over a tampered chain would
+//       be worse than no PDF -- it's a credibility trap.
+//   (2) Include EVERYTHING in scope: lease(s), full rent ledger
+//       (charges/payments/allocations/derived balances/unapplied credit),
+//       interactions (channels + occurred_at vs logged_at), maintenance
+//       requests + work orders + status history, inspections + reports,
+//       notices, photos, and the audit trail.
+//   (3) Per-photo chain of custody: original content_hash, server-set
+//       received_at, uploader actor (incl. tenant:<token_id> for intake).
+//       HEIC originals embed via the derived JPEG; identity stays the
+//       original's hash.
+//   (4) Work on ENDED / soft-deleted tenancies -- that's precisely WHEN
+//       disputes happen.
+//   (5) Stamp generated_at. Unlike the inspection report (pinned to
+//       completed_at, deterministic across rerenders), an export is a
+//       point-in-time snapshot; two exports of the same scope produce
+//       different bytes, and that's by design. The bundle's content hash
+//       identifies THIS generation.
+//   (6) Use a much higher size cap than user uploads; long tenancies with
+//       many photos can blow past 20 MiB easily.
+
+// 200 MiB cap on generated artifacts. The user-upload cap stays at 20 MiB
+// (DOS protection on tenant intake + landlord uploads); generated bundles
+// have a different threat model -- they're server-controlled bytes, not
+// untrusted input. We still cap to keep one runaway export from filling
+// the storage bucket.
+export const MAX_GENERATED_BYTES = 200 * 1024 * 1024;
+
+export interface ExportScope {
+  accountId: string;
+  tenancyId?: string | null;
+  areaId?: string | null;
+  fromDate?: string | null;   // ISO date
+  toDate?: string | null;     // ISO date
+  exporter: string | null;    // auth.users.id of the operator
+}
+
+export interface BuildExportResult {
+  evidence_export_id: string;
+  attachment_id: string;
+  content_hash: string;
+  size_bytes: number;
+  generated_at: string;
+  chain_verified: boolean;
+  chain_message: string;
+}
+
+interface ChainStatus {
+  ok: boolean;
+  message: string;
+  broken_at: string | null;
+  broken_event_no: number | null;
+}
+
+// ---- top-level orchestrator -------------------------------------------------
+
+/**
+ * Builds the export bundle: loads everything in scope, computes the ledger,
+ * verifies the audit chain, renders the PDF, stores it as a content-hashed
+ * attachment, and inserts the evidence_exports row. Returns the resulting
+ * identifiers + chain status.
+ *
+ * Sets audit.actor = 'user:<exporter>' for the duration of the writes so
+ * the audit events on attachments + evidence_exports both attribute the
+ * action to the operator.
+ */
+export async function buildEvidenceExport(scope: ExportScope): Promise<BuildExportResult> {
+  const admin = getAdminClient();
+  const generatedAt = new Date();
+
+  if (!scope.tenancyId && !scope.areaId) {
+    throw new Error('export scope must include at least tenancy_id or area_id');
+  }
+
+  // 1. Verify the audit chain BEFORE rendering. We embed the result inside
+  //    the PDF; a generated-but-broken chain is exactly the case the
+  //    verification banner exists to surface.
+  const chain = await verifyChain(scope.accountId);
+
+  // Out-of-band signal (Phase 11 flag A): a broken chain is a security
+  // incident (DB-owner-level tampering). The PDF banner is reactive --
+  // someone has to export and look. Surface it to stderr in a structured
+  // shape so log pipelines / on-call alerting catch it the moment it
+  // happens. The proactive cron (verify_chain_sweep) is what catches it
+  // when no one is exporting; this log is the export-time companion.
+  if (!chain.ok) {
+    console.error(JSON.stringify({
+      level: 'error',
+      event: 'audit_chain_broken',
+      account_id: scope.accountId,
+      broken_at: chain.broken_at,
+      broken_event_no: chain.broken_event_no,
+      message: chain.message,
+      detected_via: 'evidence_export',
+      exporter: scope.exporter,
+      ts: new Date().toISOString(),
+    }));
+  }
+
+  // 2. Load every entity in scope. These queries use the admin client; the
+  //    caller (the route handler) is responsible for verifying the user is
+  //    a member of `accountId` before invoking this builder.
+  const data = await loadExportData(scope);
+
+  // 3. Render PDF.
+  const pdfBytes = await renderExportPdf({
+    scope,
+    generatedAt,
+    chain,
+    data,
+  });
+
+  if (pdfBytes.byteLength > MAX_GENERATED_BYTES) {
+    throw new Error(
+      `generated export exceeds MAX_GENERATED_BYTES (${pdfBytes.byteLength} > ${MAX_GENERATED_BYTES})`,
+    );
+  }
+
+  // 4. Hash + store. We bypass processAndStoreBytes' MAX_BYTES (20 MiB
+  //    user-upload cap) by uploading directly via the same content-addressed
+  //    path scheme. Caps are different threat models: user uploads = DOS
+  //    protection on untrusted input; generated bytes = server-controlled.
+  const contentHash = createHash('sha256').update(pdfBytes).digest('hex');
+  const storagePath = `${scope.accountId}/${contentHash}.pdf`;
+  const { error: upErr } = await admin.storage.from('attachments').upload(
+    storagePath,
+    pdfBytes,
+    { contentType: 'application/pdf', upsert: true },
+  );
+  if (upErr) {
+    throw new Error(`evidence-export storage upload failed: ${upErr.message}`);
+  }
+
+  // 5. Persist via the record_evidence_export RPC: ONE txn, audit.actor
+  //    pinned to 'user:<exporter>' inside the function so both the
+  //    attachment INSERT and the evidence_exports INSERT carry the right
+  //    operator attribution in their audit-trigger-emitted events. This is
+  //    the same atomicity discipline as submit_intake_with_attachment (the
+  //    Phase 9 elevated requirement applied to a parallel surface).
+  const evidenceExportId = crypto.randomUUID();
+  const attachmentId = crypto.randomUUID();
+
+  const rpcRes = await admin.rpc('record_evidence_export', {
+    p_account_id:         scope.accountId,
+    p_evidence_export_id: evidenceExportId,
+    p_attachment_id:      attachmentId,
+    p_storage_path:       storagePath,
+    p_content_hash:       contentHash,
+    p_size_bytes:         pdfBytes.byteLength,
+    p_tenancy_id:         scope.tenancyId ?? null,
+    p_area_id:            scope.areaId ?? null,
+    p_from_date:          scope.fromDate ?? null,
+    p_to_date:            scope.toDate ?? null,
+    p_generated_at:       generatedAt.toISOString(),
+    p_chain_verified:     chain.ok,
+    p_chain_message:      chain.message,
+    p_exporter:           scope.exporter,
+  });
+  if (rpcRes.error) {
+    // Storage bytes are orphan-safe; a future janitor prunes paths that
+    // have no attachments row. Don't try to remove() here -- a transient
+    // network blip would re-orphan a legitimate generation.
+    throw new Error(`record_evidence_export failed: ${rpcRes.error.message}`);
+  }
+
+  return {
+    evidence_export_id: evidenceExportId,
+    attachment_id: attachmentId,
+    content_hash: contentHash,
+    size_bytes: pdfBytes.byteLength,
+    generated_at: generatedAt.toISOString(),
+    chain_verified: chain.ok,
+    chain_message: chain.message,
+  };
+}
+
+void UPLOAD_MAX_BYTES; // kept-imported for callers that read both caps
+
+// ---- audit chain verification ----------------------------------------------
+
+async function verifyChain(accountId: string): Promise<ChainStatus> {
+  const admin = getAdminClient();
+  const { data, error } = await admin.rpc('verify_chain', { p_account_id: accountId });
+  if (error) {
+    return {
+      ok: false,
+      message: `audit chain check FAILED to run: ${error.message}`,
+      broken_at: null,
+      broken_event_no: null,
+    };
+  }
+  const row = (Array.isArray(data) ? data[0] : data) as {
+    ok: boolean;
+    broken_at: string | null;
+    broken_event_no: number | null;
+    reason: string | null;
+  } | null;
+  if (!row) {
+    return {
+      ok: true,
+      message: 'audit chain verified intact (no events recorded for this account)',
+      broken_at: null,
+      broken_event_no: null,
+    };
+  }
+  if (row.ok) {
+    return {
+      ok: true,
+      message: 'audit chain verified intact (every event hash chains correctly)',
+      broken_at: null,
+      broken_event_no: null,
+    };
+  }
+  return {
+    ok: false,
+    message: `AUDIT CHAIN BROKEN at event #${row.broken_event_no} (id ${row.broken_at}): ${row.reason ?? 'unknown'}`,
+    broken_at: row.broken_at,
+    broken_event_no: row.broken_event_no,
+  };
+}
+
+// ---- data loader ------------------------------------------------------------
+
+interface AttachmentRow {
+  id: string;
+  entity_type: string;
+  entity_id: string;
+  storage_path: string;
+  content_hash: string;
+  mime_type: string | null;
+  size_bytes: number | null;
+  uploaded_by: string | null;
+  derived_from: string | null;
+  received_at: string;
+}
+
+interface ExportData {
+  account_name: string;
+  tenancy: Record<string, unknown> | null;
+  area: Record<string, unknown> | null;
+  property: Record<string, unknown> | null;
+  occupants: Array<Record<string, unknown>>;
+  leases: Array<Record<string, unknown>>;
+  rentSchedules: Array<Record<string, unknown>>;
+  charges: Array<Record<string, unknown>>;
+  payments: Array<Record<string, unknown>>;
+  allocations: Array<Record<string, unknown>>;
+  interactions: Array<Record<string, unknown>>;
+  maintenanceRequests: Array<Record<string, unknown>>;
+  workOrders: Array<Record<string, unknown>>;
+  inspections: Array<Record<string, unknown>>;
+  inspectionItems: Array<Record<string, unknown>>;
+  notices: Array<Record<string, unknown>>;
+  attachments: AttachmentRow[];
+  events: Array<Record<string, unknown>>;
+  uploaderNames: Map<string, string>;
+  intakeTokenById: Map<string, string>;
+}
+
+async function loadExportData(scope: ExportScope): Promise<ExportData> {
+  const admin = getAdminClient();
+
+  const acct = await admin.from('accounts').select('name').eq('id', scope.accountId).single();
+  const accountName = (acct.data as { name?: string } | null)?.name ?? scope.accountId;
+
+  // Tenancy / area / property -- DO NOT filter deleted_at. Disputes
+  // happen AFTER tenancies end; the export must still find them.
+  let tenancy: Record<string, unknown> | null = null;
+  let area: Record<string, unknown> | null = null;
+  let property: Record<string, unknown> | null = null;
+  if (scope.tenancyId) {
+    const t = await admin
+      .from('tenancies')
+      .select('*')
+      .eq('account_id', scope.accountId)
+      .eq('id', scope.tenancyId)
+      .maybeSingle();
+    tenancy = t.data as Record<string, unknown> | null;
+  }
+  const areaId = scope.areaId ?? (tenancy?.area_id as string | undefined);
+  if (areaId) {
+    const a = await admin.from('areas').select('*').eq('account_id', scope.accountId).eq('id', areaId).maybeSingle();
+    area = a.data as Record<string, unknown> | null;
+  }
+  const propertyId = area?.property_id as string | undefined;
+  if (propertyId) {
+    const p = await admin.from('properties').select('*').eq('account_id', scope.accountId).eq('id', propertyId).maybeSingle();
+    property = p.data as Record<string, unknown> | null;
+  }
+
+  // Tenancy-scoped rows.
+  const tenancyId = scope.tenancyId ?? null;
+
+  // Date-range narrowing (Phase 11 flag B): the filter applies ONLY to
+  // activity sections. Standing context -- leases, occupants, rent
+  // schedules -- always loads fully; balances depend on
+  // pre-range history (charges + allocations) so we load those whole
+  // too and the renderer derives an "opening balance as of from_date"
+  // line. Hard date-cuts on ledger queries would silently drop the
+  // governing context a dispute usually turns on.
+  const [occRes, leaseRes, schedRes, chargeRes, payRes, allocRes] = await Promise.all([
+    tenancyId
+      ? admin.from('tenancy_tenants').select('*, tenants(*)').eq('account_id', scope.accountId).eq('tenancy_id', tenancyId)
+      : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
+    tenancyId
+      ? admin.from('leases').select('*').eq('account_id', scope.accountId).eq('tenancy_id', tenancyId)
+      : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
+    tenancyId
+      ? admin.from('rent_schedules').select('*').eq('account_id', scope.accountId).eq('tenancy_id', tenancyId)
+      : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
+    tenancyId
+      ? admin.from('charges').select('*').eq('account_id', scope.accountId).eq('tenancy_id', tenancyId)
+      : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
+    tenancyId
+      ? admin.from('payments').select('*').eq('account_id', scope.accountId).eq('tenancy_id', tenancyId)
+      : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
+    admin.from('payment_allocations').select('*').eq('account_id', scope.accountId),
+  ]);
+  const fromDate = scope.fromDate ?? null;
+  const toDate = scope.toDate ?? null;
+  const occupants: Record<string, unknown>[] = (occRes.data as Record<string, unknown>[]) ?? [];
+  const leases: Record<string, unknown>[] = (leaseRes.data as Record<string, unknown>[]) ?? [];
+  const rentSchedules: Record<string, unknown>[] = (schedRes.data as Record<string, unknown>[]) ?? [];
+  const charges: Record<string, unknown>[] = (chargeRes.data as Record<string, unknown>[]) ?? [];
+  const payments: Record<string, unknown>[] = (payRes.data as Record<string, unknown>[]) ?? [];
+  const allocations: Record<string, unknown>[] = (allocRes.data as Record<string, unknown>[]) ?? [];
+
+  // Area-scoped rows.
+  let interactions: Record<string, unknown>[] = [];
+  let maintenanceRequests: Record<string, unknown>[] = [];
+  let workOrders: Record<string, unknown>[] = [];
+  let inspections: Record<string, unknown>[] = [];
+  let inspectionItems: Record<string, unknown>[] = [];
+  let notices: Record<string, unknown>[] = [];
+
+  if (tenancyId || areaId) {
+    let intQ = admin.from('interactions').select('*').eq('account_id', scope.accountId);
+    if (tenancyId) intQ = intQ.eq('tenancy_id', tenancyId);
+    if (fromDate)  intQ = intQ.gte('occurred_at', fromDate);
+    if (toDate)    intQ = intQ.lte('occurred_at', `${toDate}T23:59:59Z`);
+    const intRes = await intQ;
+    interactions = (intRes.data as Record<string, unknown>[]) ?? [];
+  }
+  if (areaId) {
+    const [mr, ins] = await Promise.all([
+      admin.from('maintenance_requests').select('*').eq('account_id', scope.accountId).eq('area_id', areaId),
+      admin.from('inspections').select('*').eq('account_id', scope.accountId).eq('area_id', areaId),
+    ]);
+    maintenanceRequests = (mr.data as Record<string, unknown>[]) ?? [];
+    inspections = (ins.data as Record<string, unknown>[]) ?? [];
+
+    if (maintenanceRequests.length > 0) {
+      const ids = maintenanceRequests.map((r) => r.id as string);
+      const wo = await admin
+        .from('work_orders').select('*')
+        .eq('account_id', scope.accountId)
+        .in('maintenance_request_id', ids);
+      workOrders = (wo.data as Record<string, unknown>[]) ?? [];
+    }
+    if (inspections.length > 0) {
+      const ids = inspections.map((r) => r.id as string);
+      const items = await admin
+        .from('inspection_items').select('*')
+        .eq('account_id', scope.accountId)
+        .in('inspection_id', ids);
+      inspectionItems = (items.data as Record<string, unknown>[]) ?? [];
+    }
+  }
+  if (tenancyId) {
+    const n = await admin.from('notices').select('*').eq('account_id', scope.accountId).eq('tenancy_id', tenancyId);
+    notices = (n.data as Record<string, unknown>[]) ?? [];
+  }
+
+  // All attachments tied to any in-scope entity.
+  const entityIds: string[] = [];
+  for (const r of maintenanceRequests) entityIds.push(r.id as string);
+  for (const r of inspections) entityIds.push(r.id as string);
+  for (const r of interactions) entityIds.push(r.id as string);
+  let attachments: AttachmentRow[] = [];
+  if (entityIds.length > 0) {
+    const a = await admin
+      .from('attachments')
+      .select('id, entity_type, entity_id, storage_path, content_hash, mime_type, size_bytes, uploaded_by, derived_from, received_at')
+      .eq('account_id', scope.accountId)
+      .in('entity_id', entityIds)
+      .is('deleted_at', null);
+    attachments = (a.data as AttachmentRow[]) ?? [];
+  }
+
+  // Audit events for everything in scope.
+  let events: Record<string, unknown>[] = [];
+  const eventEntityIds = new Set<string>(entityIds);
+  if (tenancyId) eventEntityIds.add(tenancyId);
+  if (areaId) eventEntityIds.add(areaId);
+  for (const r of charges) eventEntityIds.add(r.id as string);
+  for (const r of payments) eventEntityIds.add(r.id as string);
+  for (const r of notices) eventEntityIds.add(r.id as string);
+  for (const r of leases) eventEntityIds.add(r.id as string);
+  for (const r of workOrders) eventEntityIds.add(r.id as string);
+  if (eventEntityIds.size > 0) {
+    const e = await admin
+      .from('events')
+      .select('id, account_id, actor, entity_type, entity_id, event_type, occurred_at, account_seq')
+      .eq('account_id', scope.accountId)
+      .in('entity_id', Array.from(eventEntityIds))
+      .order('account_seq', { ascending: true });
+    events = (e.data as Record<string, unknown>[]) ?? [];
+  }
+
+  // Resolve uploader display names for chain-of-custody.
+  const uploaderIds = new Set<string>();
+  for (const att of attachments) {
+    if (att.uploaded_by) uploaderIds.add(att.uploaded_by);
+  }
+  const uploaderNames = new Map<string, string>();
+  if (uploaderIds.size > 0) {
+    const u = await admin.from('users').select('id, display_name').in('id', Array.from(uploaderIds));
+    for (const row of (u.data as Array<{ id: string; display_name: string | null }>) ?? []) {
+      uploaderNames.set(row.id, row.display_name ?? row.id);
+    }
+  }
+  // For intake-uploaded photos, uploaded_by is null but the audit event
+  // captures actor='tenant:<token_id>'. Build a map: attachment.id -> token id.
+  const intakeTokenById = new Map<string, string>();
+  for (const ev of events) {
+    if (ev.entity_type === 'attachments' && ev.event_type === 'inserted') {
+      const actor = ev.actor as string;
+      if (actor && actor.startsWith('tenant:')) {
+        intakeTokenById.set(ev.entity_id as string, actor.slice('tenant:'.length));
+      }
+    }
+  }
+
+  return {
+    account_name: accountName,
+    tenancy,
+    area,
+    property,
+    occupants,
+    leases,
+    rentSchedules,
+    charges,
+    payments,
+    allocations,
+    interactions,
+    maintenanceRequests,
+    workOrders,
+    inspections,
+    inspectionItems,
+    notices,
+    attachments,
+    events,
+    uploaderNames,
+    intakeTokenById,
+  };
+}
+
+// ---- ledger derivation ------------------------------------------------------
+
+interface DerivedLedger {
+  // Standing context (Phase 11 flag B): opening_balance is what's owed
+  // entering the date range. With no from_date, opening_balance is 0
+  // and rent_charges_in_range / rent_payments_in_range are the totals.
+  opening_balance_cents: number;
+  rent_charges_in_range_cents: number;
+  rent_payments_in_range_cents: number;
+  // Closing balance = opening + in-range charges - in-range payments.
+  // This is the "balance you'd see if you looked just at the slice."
+  closing_balance_cents: number;
+  // Whole-history (deposits + unapplied credit don't care about the slice
+  // -- a deposit was either taken or wasn't; an unapplied credit is real
+  // money regardless of when it landed).
+  deposit_charges_cents: number;
+  deposit_payments_cents: number;
+  unapplied_credit_cents: number;
+  // The dates used; surfaced so the renderer can label the opening line.
+  from_date: string | null;
+  to_date: string | null;
+  currency: string | null;
+}
+
+function inRangeISO(iso: string | null | undefined, from: string | null, to: string | null): boolean {
+  if (!iso) return false;
+  // Compare lexically. Postgres dates render as YYYY-MM-DD; timestamps
+  // render as YYYY-MM-DD... -- both compare correctly against ISO date
+  // bounds at the prefix.
+  if (from && iso < from) return false;
+  if (to && iso > `${to}T23:59:59Z`) return false;
+  return true;
+}
+
+function deriveLedger(data: ExportData, from: string | null, to: string | null): DerivedLedger {
+  const chargeIds = new Set(data.charges.map((c) => c.id as string));
+  const paymentIds = new Set(data.payments.map((p) => p.id as string));
+  const voidedCharges = new Set(data.charges.filter((c) => c.voided_at).map((c) => c.id as string));
+  const voidedPayments = new Set(data.payments.filter((p) => p.voided_at).map((p) => p.id as string));
+  const tenancyAllocs = data.allocations.filter(
+    (a) => chargeIds.has(a.charge_id as string) && paymentIds.has(a.payment_id as string),
+  );
+
+  // ---- whole-history aggregates (deposit + unapplied credit) -------------
+  let depositChargesC = 0, depositPaymentsC = 0;
+  for (const cr of data.charges) {
+    if (cr.voided_at) continue;
+    if (cr.type === 'deposit') depositChargesC += cr.amount_cents as number;
+  }
+  let totalAllocatedC = 0;
+  for (const a of tenancyAllocs) {
+    if (voidedPayments.has(a.payment_id as string)) continue;
+    if (voidedCharges.has(a.charge_id as string)) continue;
+    totalAllocatedC += a.amount_cents as number;
+    const isDeposit = data.charges.find((c) => c.id === a.charge_id)?.type === 'deposit';
+    if (isDeposit) depositPaymentsC += a.amount_cents as number;
+  }
+  let totalReceivedC = 0;
+  for (const pr of data.payments) {
+    if (pr.voided_at) continue;
+    totalReceivedC += pr.amount_cents as number;
+  }
+  const unappliedCredit = Math.max(0, totalReceivedC - totalAllocatedC);
+
+  // ---- opening balance + in-range slice ----------------------------------
+  // Opening balance = rent charges due strictly BEFORE from_date minus the
+  // RENT-charge-allocated portion of payments received before from_date.
+  // (Deposit charges don't roll into the rent balance.)
+  const isRentCharge = (id: string) =>
+    data.charges.find((c) => c.id === id)?.type !== 'deposit'
+    && !voidedCharges.has(id);
+
+  let openingChargedC = 0;
+  for (const cr of data.charges) {
+    if (cr.voided_at) continue;
+    if (cr.type === 'deposit') continue;
+    if (from && (cr.due_date as string) < from) {
+      openingChargedC += cr.amount_cents as number;
+    }
+  }
+  let openingPaidC = 0;
+  for (const a of tenancyAllocs) {
+    const pay = data.payments.find((p) => p.id === a.payment_id);
+    if (!pay) continue;
+    if (pay.voided_at) continue;
+    if (!isRentCharge(a.charge_id as string)) continue;
+    if (from && (pay.received_at as string) < from) {
+      openingPaidC += a.amount_cents as number;
+    }
+  }
+  const openingBalanceC = from ? (openingChargedC - openingPaidC) : 0;
+
+  let inRangeChargesC = 0;
+  for (const cr of data.charges) {
+    if (cr.voided_at) continue;
+    if (cr.type === 'deposit') continue;
+    const dd = cr.due_date as string;
+    // due_date is a YYYY-MM-DD; treat the range bounds the same way.
+    if (from && dd < from) continue;
+    if (to && dd > to) continue;
+    inRangeChargesC += cr.amount_cents as number;
+  }
+  let inRangePaymentsC = 0;
+  for (const a of tenancyAllocs) {
+    const pay = data.payments.find((p) => p.id === a.payment_id);
+    if (!pay) continue;
+    if (pay.voided_at) continue;
+    if (!isRentCharge(a.charge_id as string)) continue;
+    if (!inRangeISO(pay.received_at as string, from, to)) continue;
+    inRangePaymentsC += a.amount_cents as number;
+  }
+  const closingBalanceC = openingBalanceC + inRangeChargesC - inRangePaymentsC;
+
+  const currency =
+    (data.charges[0]?.currency as string | undefined) ??
+    (data.payments[0]?.currency as string | undefined) ??
+    null;
+
+  return {
+    opening_balance_cents:        openingBalanceC,
+    rent_charges_in_range_cents:  inRangeChargesC,
+    rent_payments_in_range_cents: inRangePaymentsC,
+    closing_balance_cents:        closingBalanceC,
+    deposit_charges_cents:        depositChargesC,
+    deposit_payments_cents:       depositPaymentsC,
+    unapplied_credit_cents:       unappliedCredit,
+    from_date:                    from,
+    to_date:                      to,
+    currency,
+  };
+}
+
+// ---- PDF rendering ----------------------------------------------------------
+
+interface RenderInput {
+  scope: ExportScope;
+  generatedAt: Date;
+  chain: ChainStatus;
+  data: ExportData;
+}
+
+function fmtMoney(cents: number, currency: string | null): string {
+  const sign = cents < 0 ? '-' : '';
+  const abs = Math.abs(cents);
+  return `${sign}${(abs / 100).toFixed(2)} ${currency ?? ''}`.trim();
+}
+
+async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
+  const { scope, generatedAt, chain, data } = input;
+  const fromDate = scope.fromDate ?? null;
+  const toDate = scope.toDate ?? null;
+  const ledger = deriveLedger(data, fromDate, toDate);
+
+  // PDF info dict + file id derived from (scope, generatedAt) so each
+  // export has a stable identity within its own bytes. Unlike the inspection
+  // report we do NOT pin info to a fixed timestamp -- two exports differ
+  // (that's the point: snapshot at THIS generation).
+  const fileIdSeed = createHash('sha256')
+    .update(`${scope.accountId}|${scope.tenancyId ?? ''}|${scope.areaId ?? ''}|${generatedAt.toISOString()}`)
+    .digest();
+  const fileId = [fileIdSeed.subarray(0, 16), fileIdSeed.subarray(16, 32)];
+
+  const doc = new PDFDocument({
+    autoFirstPage: false,
+    // compress: false makes the content streams human-readable in the
+    // PDF. The bundle gets a bit larger but stays well under the
+    // generated-artifact cap. The real reason: forensic readability --
+    // a litigant who needs to grep the PDF for a specific hash should be
+    // able to do that without a special tool.
+    compress: false,
+    info: {
+      Title: `Evidence Export — ${data.account_name}`,
+      Author: 'rentalcrm',
+      Producer: 'rentalcrm',
+      Creator: 'rentalcrm',
+      CreationDate: generatedAt,
+      ModDate: generatedAt,
+    },
+  });
+  (doc as unknown as { _id: Buffer[] })._id = fileId;
+
+  const chunks: Buffer[] = [];
+  doc.on('data', (chunk: Buffer) => chunks.push(chunk));
+  const done = new Promise<void>((resolve, reject) => {
+    doc.on('end', () => resolve());
+    doc.on('error', (e) => reject(e));
+  });
+
+  doc.addPage({ size: 'LETTER', margin: 54 });
+  doc.font('Helvetica');
+
+  // ----- Title + scope ------------------------------------------------------
+  doc.fontSize(20).text('Evidence Export', { align: 'left' });
+  doc.moveDown(0.3);
+  doc.fontSize(11).fillColor('#333');
+  doc.text(`Account:       ${data.account_name} (${scope.accountId})`);
+  if (data.property) doc.text(`Property:      ${data.property.name as string ?? ''}`);
+  if (data.area)     doc.text(`Area:          ${data.area.name as string ?? ''} (${data.area.kind as string ?? ''})`);
+  if (data.tenancy) {
+    doc.text(`Tenancy:       ${data.tenancy.id as string}`);
+    doc.text(`Tenancy span:  ${data.tenancy.start_date as string} → ${(data.tenancy.end_date as string) ?? 'open'}`);
+    doc.text(`Tenancy state: ${data.tenancy.status as string}${data.tenancy.deleted_at ? ' (soft-deleted)' : ''}`);
+  }
+  if (scope.fromDate || scope.toDate) {
+    doc.text(`Date range:    ${scope.fromDate ?? '∞'} → ${scope.toDate ?? '∞'}`);
+  }
+  doc.text(`Generated at:  ${generatedAt.toISOString()}`);
+  if (scope.exporter) doc.text(`Exported by:   user:${scope.exporter}`);
+  doc.fillColor('#000');
+
+  // ----- Chain verification banner -----------------------------------------
+  doc.moveDown(1);
+  const banner = chain.ok
+    ? { bg: '#e6f4ea', fg: '#1e5a2c', label: 'AUDIT CHAIN VERIFIED INTACT' }
+    : { bg: '#fbe9e7', fg: '#a02810', label: 'AUDIT CHAIN BROKEN — TAMPER SUSPECTED' };
+  const bannerY = doc.y;
+  doc.save();
+  doc.rect(54, bannerY, 504, 44).fill(banner.bg);
+  doc.restore();
+  doc.fillColor(banner.fg).fontSize(13)
+    .text(banner.label, 60, bannerY + 6, { width: 492 });
+  doc.fontSize(9).text(chain.message, 60, bannerY + 24, { width: 492 });
+  doc.fillColor('#000').y = bannerY + 50;
+
+  // ----- Lease(s) -----------------------------------------------------------
+  section(doc, 'Lease(s)');
+  if (data.leases.length === 0) {
+    italicNote(doc, '(no leases recorded for this tenancy)');
+  } else {
+    for (const ls of data.leases) {
+      doc.fontSize(10).text(
+        `• ${ls.status as string}   ${ls.term_start as string} → ${(ls.term_end as string) ?? 'open'}` +
+        `   rent ${fmtMoney(ls.rent_amount_cents as number, ls.rent_currency as string)}` +
+        (ls.deposit_amount_cents ? `   deposit ${fmtMoney(ls.deposit_amount_cents as number, (ls.deposit_currency as string) ?? (ls.rent_currency as string))}` : ''),
+      );
+    }
+  }
+
+  // ----- Occupants ----------------------------------------------------------
+  section(doc, 'Occupants');
+  if (data.occupants.length === 0) {
+    italicNote(doc, '(no occupants on file)');
+  } else {
+    for (const o of data.occupants) {
+      const t = (o as { tenants?: { full_name: string } }).tenants;
+      doc.fontSize(10).text(
+        `• ${t?.full_name ?? '(no name)'}   role=${o.role as string}`,
+      );
+    }
+  }
+
+  // ----- Rent ledger --------------------------------------------------------
+  section(doc, 'Rent ledger');
+  doc.fontSize(11);
+  if (fromDate) {
+    // Phase 11 flag B: the opening balance is the carried-in debt at the
+    // start of the date range. Without it, a narrowed-range bundle would
+    // misstate the actual obligation.
+    doc.text(`Opening balance as of ${fromDate}:  ${fmtMoney(ledger.opening_balance_cents, ledger.currency)}` +
+             (ledger.opening_balance_cents > 0 ? '  (carried in)' : ''));
+  }
+  doc.text(`Rent charged${fromDate || toDate ? ' (in range)' : ''}:  ${fmtMoney(ledger.rent_charges_in_range_cents, ledger.currency)}`);
+  doc.text(`Rent paid${fromDate || toDate ? ' (in range)' : ''}:     ${fmtMoney(ledger.rent_payments_in_range_cents, ledger.currency)}`);
+  doc.text(`Closing balance${fromDate ? ` as of ${toDate ?? 'now'}` : ''}:  ${fmtMoney(ledger.closing_balance_cents, ledger.currency)}` +
+           (ledger.closing_balance_cents > 0 ? '  (owed by tenant)' : ledger.closing_balance_cents < 0 ? '  (overpaid)' : ''));
+  doc.text(`Deposit held:   ${fmtMoney(ledger.deposit_payments_cents, ledger.currency)}` +
+           ` / charged ${fmtMoney(ledger.deposit_charges_cents, ledger.currency)}`);
+  if (ledger.unapplied_credit_cents > 0) {
+    doc.fillColor('#7a1e1e').text(
+      `Unapplied credit: ${fmtMoney(ledger.unapplied_credit_cents, ledger.currency)}  (money received but not allocated -- may be owed back)`,
+    ).fillColor('#000');
+  }
+
+  // Charge / payment listings: in-range only when a range is set. Charges
+  // BEFORE the range that are still open contribute via the opening
+  // balance above (their detail is intentionally suppressed -- the goal
+  // of a date-narrowed bundle is to spotlight activity, with carry-in
+  // summarised). We always include voided rows so a litigant sees that
+  // the void happened (not just the absence).
+  const isInRangeCharge = (due: string) =>
+    (!fromDate || due >= fromDate) && (!toDate || due <= toDate);
+  const isInRangePayment = (received: string) => inRangeISO(received, fromDate, toDate);
+
+  doc.moveDown(0.3);
+  doc.fontSize(9).fillColor('#333');
+  doc.text(`Charges${fromDate || toDate ? ' (in range)' : ''}:`);
+  const chargesSorted = [...data.charges].sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
+  let renderedCharges = 0;
+  for (const cr of chargesSorted) {
+    if (!isInRangeCharge(cr.due_date as string)) continue;
+    const v = cr.voided_at ? ' [VOID]' : '';
+    doc.text(`  ${cr.due_date as string}  ${(cr.type as string).padEnd(10)}  ${fmtMoney(cr.amount_cents as number, cr.currency as string)}${v}`);
+    renderedCharges += 1;
+  }
+  if (renderedCharges === 0) doc.text('  (none in range)');
+
+  doc.moveDown(0.3);
+  doc.text(`Payments + allocations${fromDate || toDate ? ' (in range)' : ''}:`);
+  const paymentsSorted = [...data.payments].sort((a, b) => String(a.received_at).localeCompare(String(b.received_at)));
+  let renderedPayments = 0;
+  for (const pr of paymentsSorted) {
+    if (!isInRangePayment(pr.received_at as string)) continue;
+    const v = pr.voided_at ? ' [VOID]' : '';
+    doc.text(`  ${pr.received_at as string}  via ${pr.method as string}  ${fmtMoney(pr.amount_cents as number, pr.currency as string)}${v}`);
+    const allocs = data.allocations.filter((a) => a.payment_id === pr.id);
+    for (const a of allocs) {
+      const ch = data.charges.find((c) => c.id === a.charge_id);
+      doc.text(`     → ${fmtMoney(a.amount_cents as number, (ch?.currency as string) ?? '')} to charge ${ch?.due_date as string ?? '?'} (${ch?.type as string ?? '?'})`);
+    }
+    renderedPayments += 1;
+  }
+  if (renderedPayments === 0) doc.text('  (none in range)');
+  doc.fillColor('#000');
+
+  // ----- Interactions -------------------------------------------------------
+  section(doc, 'Interactions');
+  if (data.interactions.length === 0) {
+    italicNote(doc, '(no interactions in scope)');
+  } else {
+    doc.fontSize(9).fillColor('#333');
+    for (const it of [...data.interactions].sort((a, b) => String(a.occurred_at).localeCompare(String(b.occurred_at)))) {
+      doc.text(
+        `• ${it.occurred_at as string}  ${(it.direction as string).padEnd(8)} ${(it.channel as string).padEnd(10)} ` +
+        `actor=${it.actor as string}  (logged ${it.logged_at as string})`,
+      );
+      if (it.body) doc.text(`    ${String(it.body).slice(0, 400)}`);
+    }
+    doc.fillColor('#000');
+  }
+
+  // ----- Maintenance requests ----------------------------------------------
+  section(doc, 'Maintenance requests');
+  if (data.maintenanceRequests.length === 0) {
+    italicNote(doc, '(no maintenance requests in scope)');
+  } else {
+    for (const mr of data.maintenanceRequests) {
+      doc.fontSize(10).text(
+        `• ${mr.created_at as string}  [${mr.severity as string}/${mr.status as string}]  ${mr.title as string}`,
+      );
+      if (mr.description) doc.fontSize(9).fillColor('#555').text(`    ${String(mr.description).slice(0, 400)}`).fillColor('#000');
+      // Status history derived from the events table.
+      const hist = data.events.filter((e) => e.entity_type === 'maintenance_requests' && e.entity_id === mr.id);
+      for (const h of hist) {
+        doc.fontSize(8).fillColor('#666').text(
+          `    audit: ${h.occurred_at as string}  ${h.event_type as string}  by ${h.actor as string}`,
+        ).fillColor('#000');
+      }
+      // Work orders for this request.
+      const wos = data.workOrders.filter((w) => w.maintenance_request_id === mr.id);
+      for (const w of wos) {
+        doc.fontSize(9).text(
+          `    work-order ${w.created_at as string}  [${w.status as string}]  ${w.summary as string}` +
+          (w.cost_cents ? `  cost ${fmtMoney(w.cost_cents as number, (w.cost_currency as string) ?? '')}` : ''),
+        );
+      }
+    }
+  }
+
+  // ----- Inspections --------------------------------------------------------
+  section(doc, 'Inspections');
+  if (data.inspections.length === 0) {
+    italicNote(doc, '(no inspections in scope)');
+  } else {
+    for (const insp of data.inspections) {
+      doc.fontSize(10).text(
+        `• ${insp.performed_at as string ?? insp.created_at as string}  ` +
+        (insp.completed_at ? `[COMPLETED ${insp.completed_at as string}]` : '[in progress]'),
+      );
+      const items = data.inspectionItems.filter((it) => it.inspection_id === insp.id);
+      for (const it of items) {
+        doc.fontSize(9).fillColor('#333').text(
+          `    ${it.label as string}` +
+          (it.condition ? `  condition=${it.condition as string}` : '') +
+          (it.notes ? `  notes=${String(it.notes).slice(0, 200)}` : ''),
+        ).fillColor('#000');
+      }
+    }
+  }
+
+  // ----- Notices ------------------------------------------------------------
+  section(doc, 'Notices');
+  if (data.notices.length === 0) {
+    italicNote(doc, '(no notices in scope)');
+  } else {
+    for (const n of data.notices) {
+      doc.fontSize(10).text(
+        `• ${(n.served_at as string) ?? '(not served)'}  ${n.notice_type as string}` +
+        (n.served_method ? `  via ${n.served_method as string}` : ''),
+      );
+    }
+  }
+
+  // ----- Photos (chain of custody + embedded preview) ----------------------
+  const photoOriginals = data.attachments.filter((a) => a.derived_from === null);
+  if (photoOriginals.length > 0) {
+    doc.addPage({ size: 'LETTER', margin: 54 });
+    doc.fontSize(14).text('Photos', { underline: true });
+    doc.moveDown(0.3);
+    doc.fontSize(9).fillColor('#555').text(
+      'Each photo shows the original content_hash (chain of custody to the bytes the uploader supplied), ' +
+      'when the server received it, and who uploaded it. HEIC originals are embedded via a server-derived ' +
+      'JPEG; the identity (hash) shown is the original.',
+    ).fillColor('#000');
+    doc.moveDown(0.5);
+
+    const derivativesByOriginal = new Map<string, AttachmentRow>();
+    for (const a of data.attachments) {
+      if (a.derived_from) derivativesByOriginal.set(a.derived_from, a);
+    }
+
+    const admin = getAdminClient();
+    for (const p of photoOriginals) {
+      const isHeic = p.mime_type === 'image/heic' || p.mime_type === 'image/heif';
+      const renderRow = isHeic ? (derivativesByOriginal.get(p.id) ?? p) : p;
+      let bytes: Uint8Array | null = null;
+      try {
+        const dl = await admin.storage.from('attachments').download(renderRow.storage_path);
+        if (!dl.error && dl.data) bytes = new Uint8Array(await dl.data.arrayBuffer());
+      } catch { /* fall through to placeholder */ }
+
+      // Chain-of-custody header for this photo (ALWAYS shown, even when
+      // bytes can't be downloaded -- the row is the evidence).
+      doc.fontSize(9).fillColor('#333').text(
+        `received_at: ${p.received_at}    original sha256: ${p.content_hash}`,
+      );
+      const uploaderActor = p.uploaded_by
+        ? `user:${p.uploaded_by} (${data.uploaderNames.get(p.uploaded_by) ?? p.uploaded_by})`
+        : data.intakeTokenById.has(p.id)
+          ? `tenant:${data.intakeTokenById.get(p.id)}`
+          : 'system';
+      doc.text(`uploader:   ${uploaderActor}    mime: ${p.mime_type ?? '?'}    size: ${p.size_bytes ?? '?'} bytes`);
+      doc.fillColor('#000');
+
+      const renderable = renderRow.mime_type === 'image/jpeg' || renderRow.mime_type === 'image/png';
+      if (bytes && renderable) {
+        try {
+          doc.image(Buffer.from(bytes), { fit: [400, 300] });
+        } catch (e) {
+          doc.fontSize(9).fillColor('#a00').text(
+            `[failed to embed: ${(e as Error).message}]`,
+          ).fillColor('#000');
+        }
+      } else {
+        doc.fontSize(9).fillColor('#a00').text(
+          `[photo ${p.id} of type ${p.mime_type ?? '?'} could not be embedded -- bytes available at storage_path]`,
+        ).fillColor('#000');
+      }
+      doc.moveDown(0.8);
+    }
+  }
+
+  // ----- Audit trail (entities in scope) -----------------------------------
+  doc.addPage({ size: 'LETTER', margin: 54 });
+  doc.fontSize(14).text('Audit trail', { underline: true });
+  doc.moveDown(0.3);
+  doc.fontSize(8).fillColor('#444').text(
+    'Every consequential write to the entities above is recorded as an immutable, ' +
+    'server-timestamped, attributed event. The hash chain over these events is ' +
+    'what the verification banner on page 1 attests to.',
+  ).fillColor('#000');
+  doc.moveDown(0.3);
+  if (data.events.length === 0) {
+    italicNote(doc, '(no audit events in scope)');
+  } else {
+    doc.fontSize(8);
+    for (const e of data.events) {
+      doc.text(
+        `#${(e.account_seq as number) ?? '?'}  ${e.occurred_at as string}  ${(e.event_type as string).padEnd(10)}  ` +
+        `${(e.entity_type as string).padEnd(22)}  ${(e.entity_id as string).slice(0, 8)}…  ${e.actor as string}`,
+      );
+    }
+  }
+
+  // ----- Footer with content-of-bundle hash placeholder --------------------
+  // The hash of these bytes is computed AFTER doc.end() and stored on the
+  // evidence_exports row; we don't write it into the PDF (would change the
+  // hash). The audit event for evidence_exports.insert is the canonical
+  // record of THIS bundle's identity.
+
+  doc.end();
+  await done;
+  return new Uint8Array(Buffer.concat(chunks));
+}
+
+function section(doc: PDFKit.PDFDocument, title: string): void {
+  doc.moveDown(0.8);
+  doc.fontSize(13).text(title, { underline: true });
+  doc.moveDown(0.2);
+}
+
+function italicNote(doc: PDFKit.PDFDocument, text: string): void {
+  doc.fontSize(9).fillColor('#777').text(text).fillColor('#000');
+}

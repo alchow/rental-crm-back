@@ -65,7 +65,7 @@ const { _resetIntakeIpBucketsForTests } = await import('../src/admin/intake');
 const { buildApp } = await import('../src/app');
 
 const app = buildApp();
-_resetIntakeIpBucketsForTests();
+await _resetIntakeIpBucketsForTests();
 
 // --- helpers ----------------------------------------------------------------
 
@@ -176,7 +176,7 @@ async function uploadAttachment(
   entity: { type: string; id: string },
   bytes: Uint8Array,
   mime: string,
-): Promise<{ id: string; content_hash: string }> {
+): Promise<{ id: string; content_hash: string; derivative_id: string | null }> {
   const fd = new FormData();
   fd.set('entity_type', entity.type);
   fd.set('entity_id', entity.id);
@@ -185,8 +185,15 @@ async function uploadAttachment(
     token: user.accessToken, multipart: fd,
   });
   if (r.status !== 201) throw new Error(`upload failed: ${r.status} ${JSON.stringify(r.body)}`);
-  const body = r.body as { id: string; content_hash: string };
-  return body;
+  const body = r.body as {
+    attachment: { id: string; content_hash: string };
+    derivative: { id: string } | null;
+  };
+  return {
+    id: body.attachment.id,
+    content_hash: body.attachment.content_hash,
+    derivative_id: body.derivative?.id ?? null,
+  };
 }
 
 interface Failure { name: string; detail: string }
@@ -297,12 +304,17 @@ async function main(): Promise<void> {
   });
 
   // -----------------------------------------------------------------------
-  // (5) Intake attachment: lands in TOKEN'S account path. Forged
-  // maintenance_request_id from B's account is rejected.
+  // (5) Phase 9: intake atomicity + provenance. Submit the request and
+  // attach the photo in a SINGLE call. The maintenance_request +
+  // interaction + attachment rows commit together; the attachment audit
+  // event is attributed to 'tenant:<token_id>' (Phase 4 actor integrity).
+  // The forged-maintenance_request_id failure mode from Phase 8 is gone
+  // by construction: the request is created inside the same RPC.
   // -----------------------------------------------------------------------
   let mintedToken = '';
   let intakeRequestId = '';
-  await check('intake: mint token + submit; capture maintenance_request_id', async () => {
+  let intakeAttachmentId = '';
+  await check('intake (unified): submit with attached photo in one call', async () => {
     const m = await api(
       'POST',
       `/v1/accounts/${A.accountId}/tenancies/${A.tenancyId}/intake-tokens`,
@@ -311,56 +323,80 @@ async function main(): Promise<void> {
     const minted = assertStatus(m, 201, 'mint') as { id: string; secret: string };
     mintedToken = minted.secret;
 
-    const sub = await api('POST', `/v1/intake/${mintedToken}`, {
-      body: {
-        area_id: A.unitAreaId,
-        title: 'attachment-test',
-        severity: 'routine',
-      },
-    });
-    const subBody = assertStatus(sub, 201, 'submit intake') as { maintenance_request_id: string };
+    const fd = new FormData();
+    fd.set('area_id', A.unitAreaId);
+    fd.set('title', 'attachment-test');
+    fd.set('severity', 'routine');
+    fd.set('file', pngFile());
+    const sub = await api('POST', `/v1/intake/${mintedToken}`, { multipart: fd });
+    const subBody = assertStatus(sub, 201, 'submit intake with attachment') as {
+      maintenance_request_id: string;
+      attachment_id: string | null;
+    };
     intakeRequestId = subBody.maintenance_request_id;
+    if (!subBody.attachment_id) {
+      throw new Error('expected attachment_id in intake response (unified flow)');
+    }
+    intakeAttachmentId = subBody.attachment_id;
   });
 
-  await check("intake attachment: lands at TOKEN'S account path", async () => {
-    const fd = new FormData();
-    fd.set('maintenance_request_id', intakeRequestId);
-    fd.set('file', pngFile());
-    const r = await api('POST', `/v1/intake/${mintedToken}/attachments`, {
-      multipart: fd,
-    });
-    const body = assertStatus(r, 201, 'intake attachment') as {
-      attachment_id: string;
-      content_hash: string;
-      size_bytes: number;
-    };
-    if (body.content_hash !== createHash('sha256').update(PNG_1X1).digest('hex')) {
-      throw new Error(`server-side hash mismatch on intake attachment`);
-    }
-    // The attachment row's account_id MUST be A's account, never derived
-    // from anywhere else. We read it back via the admin client.
+  await check("intake attachment: lands at TOKEN'S account, audited as tenant:<token>", async () => {
+    if (!intakeAttachmentId) throw new Error('no intake attachment to inspect');
     const { createClient } = await import('@supabase/supabase-js');
     const admin = createClient(status.API_URL, status.SERVICE_ROLE_KEY, {
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
     });
-    const { data } = await admin.from('attachments').select('account_id, storage_path').eq('id', body.attachment_id).single();
-    if (!data) throw new Error(`attachment row not found`);
-    if (data.account_id !== A.accountId) {
-      throw new Error(`attachment landed in wrong account: ${data.account_id}`);
+    const { data: row } = await admin
+      .from('attachments')
+      .select('account_id, storage_path, content_hash')
+      .eq('id', intakeAttachmentId).single();
+    if (!row) throw new Error('intake attachment row not found');
+    if (row.account_id !== A.accountId) {
+      throw new Error(`landed in wrong account: ${row.account_id}`);
     }
-    if (!String(data.storage_path).startsWith(`${A.accountId}/`)) {
-      throw new Error(`storage_path doesn't start with token's account: ${data.storage_path}`);
+    if (!String(row.storage_path).startsWith(`${A.accountId}/`)) {
+      throw new Error(`storage_path doesn't start with token's account: ${row.storage_path}`);
+    }
+    if (row.content_hash !== createHash('sha256').update(PNG_1X1).digest('hex')) {
+      throw new Error('server-side hash mismatch on intake attachment');
+    }
+    // Provenance: the audit event for the attachment INSERT must show
+    // actor='tenant:<token_id>'. With the Phase 8 two-step flow this row
+    // was 'system' -- Phase 9 closes that gap.
+    const { data: evt } = await admin
+      .from('events')
+      .select('actor, event_type')
+      .eq('account_id', A.accountId)
+      .eq('entity_type', 'attachments')
+      .eq('entity_id', intakeAttachmentId)
+      .eq('event_type', 'inserted')
+      .maybeSingle();
+    if (!evt) throw new Error('no audit event for intake attachment');
+    if (!String(evt.actor).startsWith('tenant:')) {
+      throw new Error(`audit actor should be tenant:<id>, got: ${evt.actor}`);
     }
   });
 
-  await check("intake attachment: forged maintenance_request_id (B's) is rejected", async () => {
+  await check('intake atomicity: title+area dedupe links new photo to existing request', async () => {
+    // Submitting a SECOND identical title against the same area MUST dedupe
+    // onto the existing open request (Phase 7.1 behaviour) -- but the new
+    // photo still lands and points at that same request_id.
     const fd = new FormData();
-    fd.set('maintenance_request_id', B.maintenanceRequestId);
+    fd.set('area_id', A.unitAreaId);
+    fd.set('title', 'attachment-test'); // same title as above
+    fd.set('severity', 'routine');
     fd.set('file', pngFile());
-    const r = await api('POST', `/v1/intake/${mintedToken}/attachments`, {
-      multipart: fd,
-    });
-    if (r.status !== 404) throw new Error(`expected 404, got ${r.status}`);
+    const sub = await api('POST', `/v1/intake/${mintedToken}`, { multipart: fd });
+    const body = assertStatus(sub, 201, 'second intake (dedupe)') as {
+      maintenance_request_id: string;
+      attachment_id: string | null;
+      deduped_onto_existing: boolean;
+    };
+    if (!body.deduped_onto_existing) throw new Error('expected deduped_onto_existing=true');
+    if (body.maintenance_request_id !== intakeRequestId) {
+      throw new Error('deduped onto a different request id');
+    }
+    if (!body.attachment_id) throw new Error('expected attachment_id on deduped submit');
   });
 
   // -----------------------------------------------------------------------

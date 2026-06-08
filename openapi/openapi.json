@@ -13,6 +13,238 @@
   ],
   "components": {
     "schemas": {
+      "AuthSession": {
+        "type": "object",
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "refresh_token": {
+            "type": "string"
+          },
+          "token_type": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer"
+          },
+          "expires_at": {
+            "type": "integer"
+          },
+          "user": {}
+        },
+        "required": [
+          "access_token",
+          "refresh_token",
+          "token_type",
+          "expires_in"
+        ]
+      },
+      "SignupResponse": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "email": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "email"
+            ]
+          },
+          "account": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "role": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "role"
+            ]
+          },
+          "session": {
+            "$ref": "#/components/schemas/AuthSession"
+          }
+        },
+        "required": [
+          "user",
+          "account",
+          "session"
+        ]
+      },
+      "SignupPendingVerification": {
+        "type": "object",
+        "properties": {
+          "pending_verification": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pending_verification",
+          "message"
+        ]
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "description": "Stable, machine-readable code. Clients branch on this; never on message.",
+                "example": "not_found"
+              },
+              "message": {
+                "type": "string",
+                "example": "not found"
+              },
+              "details": {}
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "SignupRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "password": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200
+          },
+          "account_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "email",
+          "password",
+          "account_name"
+        ]
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "email": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "email"
+            ]
+          },
+          "session": {
+            "$ref": "#/components/schemas/AuthSession"
+          }
+        },
+        "required": [
+          "user",
+          "session"
+        ]
+      },
+      "LoginRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "password": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ]
+      },
+      "RefreshResponse": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/components/schemas/AuthSession"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "RefreshRequest": {
+        "type": "object",
+        "properties": {
+          "refresh_token": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "refresh_token"
+        ]
+      },
+      "LogoutRequest": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "global",
+              "local",
+              "others"
+            ],
+            "default": "global"
+          }
+        }
+      },
       "Property": {
         "type": "object",
         "properties": {
@@ -76,33 +308,6 @@
         "required": [
           "data",
           "next_cursor"
-        ]
-      },
-      "ErrorEnvelope": {
-        "type": "object",
-        "properties": {
-          "error": {
-            "type": "object",
-            "properties": {
-              "code": {
-                "type": "string",
-                "description": "Stable, machine-readable code. Clients branch on this; never on message.",
-                "example": "not_found"
-              },
-              "message": {
-                "type": "string",
-                "example": "not found"
-              },
-              "details": {}
-            },
-            "required": [
-              "code",
-              "message"
-            ]
-          }
-        },
-        "required": [
-          "error"
         ]
       },
       "CreatePropertyBody": {
@@ -2551,6 +2756,13 @@
             ],
             "format": "uuid"
           },
+          "derived_from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
           "received_at": {
             "type": "string"
           },
@@ -2577,10 +2789,36 @@
           "mime_type",
           "size_bytes",
           "uploaded_by",
+          "derived_from",
           "received_at",
           "created_at",
           "updated_at",
           "deleted_at"
+        ]
+      },
+      "AttachmentUploadResponse": {
+        "type": "object",
+        "properties": {
+          "attachment": {
+            "$ref": "#/components/schemas/Attachment"
+          },
+          "derivative": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Attachment"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            ]
+          }
+        },
+        "required": [
+          "attachment",
+          "derivative"
         ]
       },
       "AttachmentUploadBody": {
@@ -2998,6 +3236,165 @@
           }
         }
       },
+      "EvidenceExportResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "attachment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer"
+          },
+          "generated_at": {
+            "type": "string"
+          },
+          "chain_verified": {
+            "type": "boolean"
+          },
+          "chain_message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "attachment_id",
+          "content_hash",
+          "size_bytes",
+          "generated_at",
+          "chain_verified",
+          "chain_message"
+        ]
+      },
+      "EvidenceExportRequest": {
+        "type": "object",
+        "properties": {
+          "tenancy_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "area_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "from_date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "to_date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        }
+      },
+      "EvidenceExport": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenancy_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "area_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "from_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "generated_at": {
+            "type": "string"
+          },
+          "chain_verified": {
+            "type": "boolean"
+          },
+          "chain_message": {
+            "type": "string"
+          },
+          "attachment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "exporter": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "deleted_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "tenancy_id",
+          "area_id",
+          "from_date",
+          "to_date",
+          "generated_at",
+          "chain_verified",
+          "chain_message",
+          "attachment_id",
+          "exporter",
+          "created_at",
+          "updated_at",
+          "deleted_at"
+        ]
+      },
+      "EvidenceExportList": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EvidenceExport"
+            }
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
       "IntakeResponse": {
         "type": "object",
         "properties": {
@@ -3009,6 +3406,20 @@
             "type": "string",
             "format": "uuid"
           },
+          "attachment_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "derivative_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
           "deduped_onto_existing": {
             "type": "boolean"
           }
@@ -3016,68 +3427,288 @@
         "required": [
           "maintenance_request_id",
           "interaction_id",
-          "deduped_onto_existing"
-        ]
-      },
-      "IntakeBody": {
-        "type": "object",
-        "properties": {
-          "area_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "title": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200
-          },
-          "description": {
-            "type": "string",
-            "maxLength": 5000
-          },
-          "severity": {
-            "type": "string",
-            "enum": [
-              "emergency",
-              "urgent",
-              "routine"
-            ]
-          },
-          "occurred_at": {
-            "type": "string",
-            "format": "date-time"
-          }
-        },
-        "required": [
-          "area_id",
-          "title",
-          "severity"
-        ]
-      },
-      "IntakeAttachmentResponse": {
-        "type": "object",
-        "properties": {
-          "attachment_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "content_hash": {
-            "type": "string"
-          },
-          "size_bytes": {
-            "type": "integer"
-          }
-        },
-        "required": [
           "attachment_id",
-          "content_hash",
-          "size_bytes"
+          "derivative_id",
+          "deduped_onto_existing"
         ]
       }
     },
     "parameters": {}
   },
   "paths": {
+    "/v1/auth/signup": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Create a user + account atomically",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "pending email verification",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupPendingVerification"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Exchange credentials for a session",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/refresh": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Refresh an access token using a refresh token",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "refreshed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefreshResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "refresh failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Revoke session(s) per scope",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LogoutRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "revoked"
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/accounts/{accountId}/properties": {
       "get": {
         "tags": [
@@ -8023,7 +8654,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Attachment"
+                  "$ref": "#/components/schemas/AttachmentUploadResponse"
                 }
               }
             }
@@ -9166,6 +9797,204 @@
         }
       }
     },
+    "/v1/accounts/{accountId}/evidence-exports": {
+      "post": {
+        "tags": [
+          "evidence-exports"
+        ],
+        "summary": "Generate a tamper-evident evidence bundle PDF",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvidenceExportRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceExportResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "evidence-exports"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceExportList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/evidence-exports/{id}": {
+      "get": {
+        "tags": [
+          "evidence-exports"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "export",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceExport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/intake/{token}": {
       "post": {
         "tags": [
@@ -9184,16 +10013,6 @@
             "in": "path"
           }
         ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/IntakeBody"
-              }
-            }
-          }
-        },
         "responses": {
           "201": {
             "description": "created",
@@ -9227,88 +10046,6 @@
           },
           "429": {
             "description": "rate limited",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/intake/{token}/attachments": {
-      "post": {
-        "tags": [
-          "intake"
-        ],
-        "summary": "Attach a file to a maintenance request via tenant magic link",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "minLength": 8,
-              "maxLength": 200
-            },
-            "required": true,
-            "name": "token",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "multipart/form-data": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "file": {},
-                  "maintenance_request_id": {
-                    "type": "string",
-                    "format": "uuid"
-                  }
-                },
-                "required": [
-                  "maintenance_request_id"
-                ]
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "attached",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IntakeAttachmentResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "not found / not a member",
             "content": {
               "application/json": {
                 "schema": {

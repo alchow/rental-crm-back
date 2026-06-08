@@ -6,7 +6,14 @@
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
-    "build": "echo 'cli build wired in Phase 11' && exit 0",
-    "typecheck": "echo 'cli has no sources yet' && exit 0"
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "walk": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@rentalcrm/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0"
   }
 }

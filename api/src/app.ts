@@ -19,6 +19,7 @@ import { maintenanceRequestsApp } from './routes/maintenance-requests';
 import { interactionsApp } from './routes/interactions';
 import { intakeApp } from './admin/intake';
 import { attachmentsApp } from './routes/attachments';
+import { evidenceExportsApp } from './routes/evidence-exports';
 import {
   inspectionTemplatesApp,
   inspectionsApp,
@@ -29,6 +30,7 @@ import { requireAuth } from './middleware/auth';
 import { requireAccountMembership } from './middleware/account-context';
 import { requireIdempotency } from './middleware/idempotency';
 import { requireImmediateParent } from './middleware/immediate-parent';
+import { assertImageStackAtBoot, heicSupported } from './admin/heic-probe';
 
 // The Hono app, configured but NOT listening. index.ts mounts it on a
 // node-server port; tests call app.fetch(request) directly without binding
@@ -68,7 +70,23 @@ export function buildApp(): OpenAPIHono {
     },
   });
 
-  app.get('/healthz', (c) => c.json({ status: 'ok' }));
+  // Fire-and-forget at boot: probe the sharp/libvips stack for HEIC
+  // support. If libheif is missing the probe logs a loud warning to
+  // stderr -- it does NOT throw, because non-HEIC workloads still work.
+  // The /healthz endpoint surfaces the result so an external monitor can
+  // alert on degraded evidence-rendering capability.
+  void assertImageStackAtBoot();
+
+  app.get('/healthz', (c) => {
+    const heic = heicSupported();
+    return c.json({
+      status: 'ok',
+      // null = probe still pending (first ~50ms after boot); true/false
+      // once it's run. Surface in /healthz so deploy-target monitors can
+      // alert when an environment regresses on libheif.
+      capabilities: { heic_decode: heic },
+    });
+  });
 
   // Unauthenticated leg
   app.route('/v1', authRoutes);
@@ -131,6 +149,7 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', inspectionTemplatesApp);
   app.route('/v1', inspectionsApp);
   app.route('/v1', inspectionItemsApp);
+  app.route('/v1', evidenceExportsApp);
 
   // PUBLIC, UNAUTHENTICATED. Lives in src/admin/ because it uses the
   // service-role client (RLS is bypassed; the handler is the sole guard).

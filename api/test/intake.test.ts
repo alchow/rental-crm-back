@@ -71,7 +71,7 @@ const { _resetIntakeIpBucketsForTests } = await import('../src/admin/intake');
 const { buildApp } = await import('../src/app');
 
 const app = buildApp();
-_resetIntakeIpBucketsForTests();
+await _resetIntakeIpBucketsForTests();
 
 // --- helpers ----------------------------------------------------------------
 
@@ -226,7 +226,7 @@ async function main(): Promise<void> {
   // Reset the per-IP rate limiter so a previous run's hits don't bleed
   // into this one (the in-memory map is process-local; if main() is run
   // multiple times in the same process the buckets persist).
-  _resetIntakeIpBucketsForTests();
+  await _resetIntakeIpBucketsForTests();
 
   const A = await setupUser('A');
   const B = await setupUser('B');
@@ -461,7 +461,7 @@ async function main(): Promise<void> {
     assertStatus(rev, 200, 'revoke existing');
 
     const fresh = await mintToken(A);
-    _resetIntakeIpBucketsForTests();
+    await _resetIntakeIpBucketsForTests();
 
     // Sanity: the fresh token works.
     const ok = await submitIntake(fresh.secret, {
@@ -496,7 +496,7 @@ async function main(): Promise<void> {
     // are all revoked now).
     const u = await setupUser('AutoRev');
     const t = await mintToken(u);
-    _resetIntakeIpBucketsForTests();
+    await _resetIntakeIpBucketsForTests();
 
     // Confirm pre-end the token works.
     const pre = await submitIntake(t.secret, {

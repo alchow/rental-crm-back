@@ -24,6 +24,12 @@ PATTERNS=(
 #   - api/test/api-isolation.test.ts: sets process.env from supabase status so
 #     the app under test sees the same env it gets in CI. The variable name is
 #     ASSIGNED, never read into a client constructor.
+#   - api/test/attachments.test.ts / intake.test.ts / phase9.test.ts: integration
+#     tests that read rows back via the admin client to verify what the system
+#     actually stored (audit attribution, storage path, derived_from chain).
+#     These are TEST code, never shipped; the quarantine defends production
+#     runtime, and verification of that runtime sits on the other side of the
+#     boundary by design.
 #   - openapi/emit.ts: same shape -- assigns a placeholder to process.env so
 #     the env schema parse succeeds at spec-emit time. No client is built.
 EXCLUDES=(
@@ -36,6 +42,11 @@ EXCLUDES=(
   ':!.env*'
   ':!.env.example'
   ':!api/test/api-isolation.test.ts'
+  ':!api/test/attachments.test.ts'
+  ':!api/test/intake.test.ts'
+  ':!api/test/phase9.test.ts'
+  ':!api/test/phase10.test.ts'
+  ':!api/test/phase11.test.ts'
   ':!openapi/emit.ts'
 )
 

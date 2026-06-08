@@ -1,212 +1,228 @@
-import { Hono } from 'hono';
-import { z } from 'zod';
+import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { getAnonClient } from '../supabase/anon-client';
 import { getUserClient } from '../supabase/user-client';
 import { loadEnv } from '../env';
+import { ApiError, errorResponses } from './_lib/error';
 
 // /v1/auth/* fronts Supabase Auth. Clients only see this contract; the
 // underlying supabase-js calls and the atomic account-creation RPC are
 // invisible to them.
+//
+// Phase 11: typed via @hono/zod-openapi so the routes appear in
+// openapi.json and the generated SDK -- "swappable front-end" is only
+// real if the auth surface is in the spec too.
 
-const auth = new Hono();
+const Session = z
+  .object({
+    access_token: z.string(),
+    refresh_token: z.string(),
+    token_type: z.string(),
+    expires_in: z.number().int(),
+    expires_at: z.number().int().optional(),
+    user: z.unknown().nullable().optional(),
+  })
+  .openapi('AuthSession');
 
-const SignupSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8).max(200),
-  account_name: z.string().min(1).max(200),
+const SignupBody = z
+  .object({
+    email: z.string().email(),
+    password: z.string().min(8).max(200),
+    account_name: z.string().min(1).max(200),
+  })
+  .openapi('SignupRequest');
+
+const SignupSuccess = z
+  .object({
+    user: z.object({ id: z.string().uuid(), email: z.string().nullable() }),
+    account: z.object({ id: z.string().uuid(), role: z.string() }),
+    session: Session,
+  })
+  .openapi('SignupResponse');
+
+const SignupPending = z
+  .object({
+    pending_verification: z.literal(true),
+    message: z.string(),
+  })
+  .openapi('SignupPendingVerification');
+
+const LoginBody = z
+  .object({
+    email: z.string().email(),
+    password: z.string().min(1),
+  })
+  .openapi('LoginRequest');
+
+const LoginResponse = z
+  .object({
+    user: z.object({ id: z.string().uuid(), email: z.string().nullable() }).nullable(),
+    session: Session,
+  })
+  .openapi('LoginResponse');
+
+const RefreshBody = z
+  .object({ refresh_token: z.string().min(1) })
+  .openapi('RefreshRequest');
+
+const RefreshResponse = z
+  .object({ session: Session })
+  .openapi('RefreshResponse');
+
+const LogoutBody = z
+  .object({
+    scope: z.enum(['global', 'local', 'others']).default('global'),
+  })
+  .openapi('LogoutRequest');
+
+const signupRoute = createRoute({
+  method: 'post',
+  path: '/auth/signup',
+  tags: ['auth'],
+  summary: 'Create a user + account atomically',
+  request: {
+    body: { content: { 'application/json': { schema: SignupBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'created', content: { 'application/json': { schema: SignupSuccess } } },
+    202: { description: 'pending email verification', content: { 'application/json': { schema: SignupPending } } },
+    ...errorResponses,
+  },
 });
 
-const LoginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(1),
+const loginRoute = createRoute({
+  method: 'post',
+  path: '/auth/login',
+  tags: ['auth'],
+  summary: 'Exchange credentials for a session',
+  request: {
+    body: { content: { 'application/json': { schema: LoginBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'authenticated', content: { 'application/json': { schema: LoginResponse } } },
+    401: { description: 'invalid credentials', content: { 'application/json': { schema: errorResponses[400].content['application/json'].schema } } },
+    ...errorResponses,
+  },
 });
 
-const RefreshSchema = z.object({
-  refresh_token: z.string().min(1),
+const refreshRoute = createRoute({
+  method: 'post',
+  path: '/auth/refresh',
+  tags: ['auth'],
+  summary: 'Refresh an access token using a refresh token',
+  request: {
+    body: { content: { 'application/json': { schema: RefreshBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'refreshed', content: { 'application/json': { schema: RefreshResponse } } },
+    401: { description: 'refresh failed', content: { 'application/json': { schema: errorResponses[400].content['application/json'].schema } } },
+    ...errorResponses,
+  },
 });
 
-const LogoutSchema = z.object({
-  // global: invalidate all sessions for the user
-  // local:  invalidate only this access token's session
-  // others: invalidate every session except the current one
-  scope: z.enum(['global', 'local', 'others']).default('global'),
+const logoutRoute = createRoute({
+  method: 'post',
+  path: '/auth/logout',
+  tags: ['auth'],
+  summary: 'Revoke session(s) per scope',
+  request: {
+    body: { content: { 'application/json': { schema: LogoutBody } }, required: false },
+  },
+  responses: {
+    204: { description: 'revoked' },
+    401: { description: 'token invalid', content: { 'application/json': { schema: errorResponses[400].content['application/json'].schema } } },
+    ...errorResponses,
+  },
 });
 
-function badRequest(message: string, details?: unknown): Response {
-  return new Response(
-    JSON.stringify({ error: { code: 'invalid_request', message, details } }),
-    { status: 400, headers: { 'content-type': 'application/json' } },
-  );
-}
+const auth = new OpenAPIHono();
 
-async function readJson(req: Request): Promise<unknown> {
-  try {
-    return await req.json();
-  } catch {
-    return {};
-  }
-}
+// Auth handlers throw ApiError for the non-2xx paths (the global onError
+// formats those into the typed ErrorEnvelope). The 202 pending-verification
+// case is a normal 2xx-shape response and is returned directly.
 
-auth.post('/auth/signup', async (c) => {
-  const body = SignupSchema.safeParse(await readJson(c.req.raw));
-  if (!body.success) {
-    return badRequest('invalid signup body', body.error.flatten());
-  }
-
+auth.openapi(signupRoute, async (c) => {
+  const body = c.req.valid('json');
   const anon = getAnonClient();
   const { data, error } = await anon.auth.signUp({
-    email: body.data.email,
-    password: body.data.password,
+    email: body.email,
+    password: body.password,
   });
   if (error) {
-    return c.json(
-      { error: { code: 'signup_failed', message: error.message } },
-      400,
-    );
+    throw new ApiError(400, 'invalid_request', error.message);
   }
   if (!data.user || !data.session) {
-    // Email confirmation required by the project's Auth settings.
-    return c.json(
-      {
-        pending_verification: true,
-        message: 'user created but pending email verification; account is not created until verification completes',
-      },
-      202,
-    );
+    return c.json({
+      pending_verification: true as const,
+      message: 'user created but pending email verification; account is not created until verification completes',
+    }, 202);
   }
 
-  // The user has a session now. Call the RPC via THEIR client so auth.uid()
-  // inside the function returns the new user_id and the audit triggers
-  // attribute the inserts correctly. One Postgres transaction, no orphan
-  // account possible.
   const userClient = getUserClient(data.session.access_token);
   const { data: rpcData, error: rpcError } = await userClient.rpc(
     'create_account_for_new_user',
-    {
-      p_account_name: body.data.account_name,
-      p_display_name: body.data.email,
-    },
+    { p_account_name: body.account_name, p_display_name: body.email },
   );
-  if (rpcError) {
-    return c.json(
-      {
-        error: {
-          code: 'account_init_failed',
-          message: rpcError.message,
-        },
-      },
-      500,
-    );
-  }
-  // RPC returns a setof; supabase-js gives us an array.
-  const row = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+  if (rpcError) throw new ApiError(500, 'database_error', rpcError.message);
+  const row = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as { account_id: string; role: string } | null;
   if (!row?.account_id) {
-    return c.json(
-      {
-        error: {
-          code: 'account_init_failed',
-          message: 'RPC returned no account row',
-        },
-      },
-      500,
-    );
+    throw new ApiError(500, 'database_error', 'RPC returned no account row');
   }
-
   return c.json({
-    user: { id: data.user.id, email: data.user.email },
+    user: { id: data.user.id, email: data.user.email ?? null },
     account: { id: row.account_id, role: row.role },
-    session: data.session,
-  });
+    session: data.session as unknown as z.infer<typeof Session>,
+  }, 200);
 });
 
-auth.post('/auth/login', async (c) => {
-  const body = LoginSchema.safeParse(await readJson(c.req.raw));
-  if (!body.success) {
-    return badRequest('invalid login body', body.error.flatten());
-  }
+auth.openapi(loginRoute, async (c) => {
+  const body = c.req.valid('json');
   const anon = getAnonClient();
-  const { data, error } = await anon.auth.signInWithPassword(body.data);
-  if (error) {
-    return c.json(
-      { error: { code: 'invalid_credentials', message: error.message } },
-      401,
-    );
-  }
+  const { data, error } = await anon.auth.signInWithPassword(body);
+  if (error) throw new ApiError(401, 'unauthenticated', error.message);
   return c.json({
-    user: data.user ? { id: data.user.id, email: data.user.email } : null,
-    session: data.session,
-  });
+    user: data.user ? { id: data.user.id, email: data.user.email ?? null } : null,
+    session: data.session as unknown as z.infer<typeof Session>,
+  }, 200);
 });
 
-auth.post('/auth/refresh', async (c) => {
-  const body = RefreshSchema.safeParse(await readJson(c.req.raw));
-  if (!body.success) {
-    return badRequest('invalid refresh body', body.error.flatten());
-  }
+auth.openapi(refreshRoute, async (c) => {
+  const body = c.req.valid('json');
   const anon = getAnonClient();
-  const { data, error } = await anon.auth.refreshSession({
-    refresh_token: body.data.refresh_token,
-  });
-  if (error) {
-    return c.json(
-      { error: { code: 'refresh_failed', message: error.message } },
-      401,
-    );
-  }
-  return c.json({ session: data.session });
+  const { data, error } = await anon.auth.refreshSession({ refresh_token: body.refresh_token });
+  if (error) throw new ApiError(401, 'unauthenticated', error.message);
+  return c.json({ session: data.session as unknown as z.infer<typeof Session> }, 200);
 });
 
-auth.post('/auth/logout', async (c) => {
-  // Real revocation. supabase-js's signOut() requires a persisted session
-  // (it manages cookies), which is wrong for a stateless API. Call the
-  // GoTrue REST endpoint directly with the caller's Bearer token; that
-  // invalidates the refresh token according to the requested scope.
-  //
-  // Why this matters: an access token has a 1-hour expiry by default. A
-  // logout that only drops the access token leaves the long-lived refresh
-  // token active and usable from anywhere it was previously stored. For
-  // shared devices and removed-employee scenarios that's a real gap.
+auth.openapi(logoutRoute, async (c) => {
+  // Real revocation. We hit the GoTrue REST endpoint directly with the
+  // caller's Bearer token; that invalidates the refresh token at the
+  // requested scope. supabase-js's signOut() expects a persisted session
+  // (it manages cookies), which is the wrong abstraction for a stateless
+  // API.
   const env = loadEnv();
-  const body = LogoutSchema.safeParse(await readJson(c.req.raw));
-  if (!body.success) {
-    return badRequest('invalid logout body', body.error.flatten());
-  }
+  const body = (c.req.valid('json') ?? { scope: 'global' as const });
   const header = c.req.header('authorization') ?? '';
   if (!/^bearer\s+/i.test(header)) {
-    // No token -> nothing to revoke. Idempotent acknowledgement.
     return c.body(null, 204);
   }
   const token = header.replace(/^bearer\s+/i, '').trim();
-
-  const url = `${env.SUPABASE_URL.replace(/\/+$/, '')}/auth/v1/logout?scope=${body.data.scope}`;
+  const url = `${env.SUPABASE_URL.replace(/\/+$/, '')}/auth/v1/logout?scope=${body.scope}`;
   let res: Response;
   try {
     res = await fetch(url, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        apikey: env.SUPABASE_ANON_KEY,
-      },
+      headers: { Authorization: `Bearer ${token}`, apikey: env.SUPABASE_ANON_KEY },
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : 'unknown error';
-    return c.json(
-      { error: { code: 'logout_failed', message } },
-      502,
-    );
+    throw new ApiError(502, 'internal_error', message);
   }
   if (res.status === 204) return c.body(null, 204);
   if (res.status === 401) {
-    return c.json(
-      { error: { code: 'unauthenticated', message: 'token invalid or already revoked' } },
-      401,
-    );
+    throw new ApiError(401, 'unauthenticated', 'token invalid or already revoked');
   }
   const detail = await res.text().catch(() => '');
-  return c.json(
-    { error: { code: 'logout_failed', message: detail || `GoTrue returned ${res.status}` } },
-    502,
-  );
+  throw new ApiError(502, 'internal_error', detail || `GoTrue returned ${res.status}`);
 });
 
 export default auth;

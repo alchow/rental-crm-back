@@ -4,6 +4,308 @@
  */
 
 export interface paths {
+    "/v1/auth/signup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a user + account atomically */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SignupRequest"];
+                };
+            };
+            responses: {
+                /** @description created */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SignupResponse"];
+                    };
+                };
+                /** @description pending email verification */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SignupPendingVerification"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Exchange credentials for a session */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["LoginRequest"];
+                };
+            };
+            responses: {
+                /** @description authenticated */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LoginResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description invalid credentials */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Refresh an access token using a refresh token */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RefreshRequest"];
+                };
+            };
+            responses: {
+                /** @description refreshed */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RefreshResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description refresh failed */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke session(s) per scope */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["LogoutRequest"];
+                };
+            };
+            responses: {
+                /** @description revoked */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description token invalid */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/accounts/{accountId}/properties": {
         parameters: {
             query?: never;
@@ -3993,7 +4295,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Attachment"];
+                        "application/json": components["schemas"]["AttachmentUploadResponse"];
                     };
                 };
                 /** @description invalid request */
@@ -4874,6 +5176,188 @@ export interface paths {
         };
         trace?: never;
     };
+    "/v1/accounts/{accountId}/evidence-exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description list */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EvidenceExportList"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Generate a tamper-evident evidence bundle PDF */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["EvidenceExportRequest"];
+                };
+            };
+            responses: {
+                /** @description created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EvidenceExportResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/evidence-exports/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description export */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EvidenceExport"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/intake/{token}": {
         parameters: {
             query?: never;
@@ -4893,11 +5377,7 @@ export interface paths {
                 };
                 cookie?: never;
             };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["IntakeBody"];
-                };
-            };
+            requestBody?: never;
             responses: {
                 /** @description created */
                 201: {
@@ -4952,83 +5432,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/intake/{token}/attachments": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Attach a file to a maintenance request via tenant magic link */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    token: string;
-                };
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "multipart/form-data": {
-                        file?: unknown;
-                        /** Format: uuid */
-                        maintenance_request_id: string;
-                    };
-                };
-            };
-            responses: {
-                /** @description attached */
-                201: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["IntakeAttachmentResponse"];
-                    };
-                };
-                /** @description invalid request */
-                400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description not found / not a member */
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description server error */
-                500: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AuthSession: {
+            access_token: string;
+            refresh_token: string;
+            token_type: string;
+            expires_in: number;
+            expires_at?: number;
+            user?: unknown;
+        };
+        SignupResponse: {
+            user: {
+                /** Format: uuid */
+                id: string;
+                email: string | null;
+            };
+            account: {
+                /** Format: uuid */
+                id: string;
+                role: string;
+            };
+            session: components["schemas"]["AuthSession"];
+        };
+        SignupPendingVerification: {
+            /** @enum {boolean} */
+            pending_verification: true;
+            message: string;
+        };
+        ErrorEnvelope: {
+            error: {
+                /**
+                 * @description Stable, machine-readable code. Clients branch on this; never on message.
+                 * @example not_found
+                 */
+                code: string;
+                /** @example not found */
+                message: string;
+                details?: unknown;
+            };
+        };
+        SignupRequest: {
+            /** Format: email */
+            email: string;
+            password: string;
+            account_name: string;
+        };
+        LoginResponse: {
+            user: {
+                /** Format: uuid */
+                id: string;
+                email: string | null;
+            } | null;
+            session: components["schemas"]["AuthSession"];
+        };
+        LoginRequest: {
+            /** Format: email */
+            email: string;
+            password: string;
+        };
+        RefreshResponse: {
+            session: components["schemas"]["AuthSession"];
+        };
+        RefreshRequest: {
+            refresh_token: string;
+        };
+        LogoutRequest: {
+            /**
+             * @default global
+             * @enum {string}
+             */
+            scope: "global" | "local" | "others";
+        };
         Property: {
             /** Format: uuid */
             id: string;
@@ -5045,18 +5522,6 @@ export interface components {
         PropertyListResponse: {
             data: components["schemas"]["Property"][];
             next_cursor: string | null;
-        };
-        ErrorEnvelope: {
-            error: {
-                /**
-                 * @description Stable, machine-readable code. Clients branch on this; never on message.
-                 * @example not_found
-                 */
-                code: string;
-                /** @example not found */
-                message: string;
-                details?: unknown;
-            };
         };
         CreatePropertyBody: {
             name: string;
@@ -5664,10 +6129,16 @@ export interface components {
             size_bytes: number | null;
             /** Format: uuid */
             uploaded_by: string | null;
+            /** Format: uuid */
+            derived_from: string | null;
             received_at: string;
             created_at: string;
             updated_at: string;
             deleted_at: string | null;
+        };
+        AttachmentUploadResponse: {
+            attachment: components["schemas"]["Attachment"];
+            derivative: components["schemas"]["Attachment"] & (Record<string, never> | null);
         };
         AttachmentUploadBody: {
             entity_type: string;
@@ -5782,28 +6253,60 @@ export interface components {
             condition?: string | null;
             notes?: string | null;
         };
+        EvidenceExportResponse: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            attachment_id: string;
+            content_hash: string;
+            size_bytes: number;
+            generated_at: string;
+            chain_verified: boolean;
+            chain_message: string;
+        };
+        EvidenceExportRequest: {
+            /** Format: uuid */
+            tenancy_id?: string;
+            /** Format: uuid */
+            area_id?: string;
+            from_date?: string;
+            to_date?: string;
+        };
+        EvidenceExport: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            account_id: string;
+            /** Format: uuid */
+            tenancy_id: string | null;
+            /** Format: uuid */
+            area_id: string | null;
+            from_date: string | null;
+            to_date: string | null;
+            generated_at: string;
+            chain_verified: boolean;
+            chain_message: string;
+            /** Format: uuid */
+            attachment_id: string;
+            /** Format: uuid */
+            exporter: string | null;
+            created_at: string;
+            updated_at: string;
+            deleted_at: string | null;
+        };
+        EvidenceExportList: {
+            data: components["schemas"]["EvidenceExport"][];
+        };
         IntakeResponse: {
             /** Format: uuid */
             maintenance_request_id: string;
             /** Format: uuid */
             interaction_id: string;
+            /** Format: uuid */
+            attachment_id: string | null;
+            /** Format: uuid */
+            derivative_id: string | null;
             deduped_onto_existing: boolean;
-        };
-        IntakeBody: {
-            /** Format: uuid */
-            area_id: string;
-            title: string;
-            description?: string;
-            /** @enum {string} */
-            severity: "emergency" | "urgent" | "routine";
-            /** Format: date-time */
-            occurred_at?: string;
-        };
-        IntakeAttachmentResponse: {
-            /** Format: uuid */
-            attachment_id: string;
-            content_hash: string;
-            size_bytes: number;
         };
     };
     responses: never;

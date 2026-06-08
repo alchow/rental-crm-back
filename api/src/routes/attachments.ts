@@ -39,12 +39,25 @@ const Attachment = z
     mime_type: z.string().nullable(),
     size_bytes: z.number().int().nullable(),
     uploaded_by: z.string().uuid().nullable(),
+    // Phase 9: when this row is a server-derived rendering of another
+    // attachment (HEIC -> JPEG), derived_from points at the original.
+    // Provenance is explicit: the JPEG isn't tenant-supplied bytes.
+    derived_from: z.string().uuid().nullable(),
     received_at: z.string(),
     created_at: z.string(),
     updated_at: z.string(),
     deleted_at: z.string().nullable(),
   })
   .openapi('Attachment');
+
+const UploadResponse = z
+  .object({
+    attachment: Attachment,
+    // Set iff the upload was HEIC and the server produced a renderable
+    // JPEG derivative; null otherwise. Both rows are already persisted.
+    derivative: Attachment.nullable(),
+  })
+  .openapi('AttachmentUploadResponse');
 
 const ListResponse = z
   .object({ data: z.array(Attachment) })
@@ -84,7 +97,7 @@ const upload = createRoute({
     body: { content: { 'multipart/form-data': { schema: MultipartBody } }, required: true },
   },
   responses: {
-    201: { description: 'created', content: { 'application/json': { schema: Attachment } } },
+    201: { description: 'created', content: { 'application/json': { schema: UploadResponse } } },
     ...errorResponses,
   },
 });
@@ -180,7 +193,7 @@ attachmentsApp.openapi(upload, async (c) => {
   // above). For Phase 8 this is fine; very large uploads would want
   // streaming, but those aren't in scope.
   const bytes = new Uint8Array(await (file as File).arrayBuffer());
-  const row = await uploadAttachment({
+  const result = await uploadAttachment({
     accountId,
     entityType,
     entityId,
@@ -189,7 +202,13 @@ attachmentsApp.openapi(upload, async (c) => {
     filename: (file as File).name,
     uploadedBy: c.get('auth').userId,
   });
-  return c.json(row, 201);
+  return c.json(
+    {
+      attachment: result.primary as unknown as z.infer<typeof Attachment>,
+      derivative: result.derivative as unknown as z.infer<typeof Attachment> | null,
+    },
+    201,
+  );
 });
 
 // ---- list / metadata --------------------------------------------------------

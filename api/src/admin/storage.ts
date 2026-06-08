@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
+import sharp from 'sharp';
 import { getAdminClient } from './supabase-admin';
+import { heicSupported } from './heic-probe';
 import { ApiError } from '../routes/_lib/error';
 
 // ============================================================================
@@ -14,9 +16,29 @@ import { ApiError } from '../routes/_lib/error';
 //       store (a client-supplied hash is worthless for tamper evidence);
 //   (2) the path is server-constructed; submitters never get to choose
 //       which account / entity their file lands under;
-//   (3) the storage path is byte-identical to <hash>.<ext>, so even if a
-//       second upload of the SAME bytes happens, the path collides and we
-//       can dedupe (or just accept the upsert).
+//   (3) the storage path is content-addressed: <account>/<hash>.<ext> .
+//       The hash IS the path filename, so even if a second upload of the
+//       SAME bytes happens, the path collides and we dedupe (upsert).
+//       Putting the entity_id in the path was the Phase 8 scheme; we
+//       dropped it in Phase 9 so that the intake flow can compute the path
+//       BEFORE the maintenance_request_id exists -- the path is now a
+//       pure function of (accountId, hash, ext).
+//
+// HEIC handling (Phase 9):
+//
+// iPhones shoot HEIC by default. A HEIC stored as-is renders as a black
+// placeholder in pdfkit -- so the inspection report PDF (the single most
+// probative artifact in a habitability dispute) silently loses the
+// photo. We can't strip HEIC because that destroys evidence. So at upload
+// we keep BOTH:
+//
+//   * the original HEIC bytes (hashed, stored, attachments row #1)
+//   * a derived JPEG (hashed, stored, attachments row #2 with
+//     derived_from = #1)
+//
+// The derivation is server-side and recorded in the DB, so chain of
+// custody for the JPEG is explicit: "this JPEG was computed from that
+// HEIC at upload by the server, no human in the loop".
 //
 // Reads also route through the API (a tiny proxy below) so we can force
 // Content-Disposition: attachment + a safe Content-Type. Serving an
@@ -26,10 +48,6 @@ import { ApiError } from '../routes/_lib/error';
 const BUCKET = 'attachments';
 export const MAX_BYTES = 20 * 1024 * 1024; // 20 MiB
 
-// Allow-list of MIME types we accept. Tight on purpose -- a broader list
-// without scanning is a malware vector. Phase 8 ships with the records
-// people actually photograph (jpeg/png/webp/heic) plus PDF for the
-// generated inspection report.
 export const ALLOWED_MIME_TYPES = new Set<string>([
   'image/jpeg',
   'image/png',
@@ -39,9 +57,6 @@ export const ALLOWED_MIME_TYPES = new Set<string>([
   'application/pdf',
 ]);
 
-// entity_type values the API will accept on the attachments table.
-// Other entity_types would let an upload land "anywhere" semantically;
-// keeping it tight makes audit reads predictable.
 export const ALLOWED_ENTITY_TYPES = new Set<string>([
   'maintenance_requests',
   'inspections',
@@ -61,14 +76,132 @@ function mimeToExt(mime: string): string {
   }
 }
 
+function isHeicLike(mime: string): boolean {
+  return mime === 'image/heic' || mime === 'image/heif';
+}
+
 function safeFilename(original: string | undefined, mime: string): string {
-  // Strip anything that isn't [A-Za-z0-9._-], cap length, and ensure an
-  // extension matching the MIME type. The filename only ever appears in
-  // Content-Disposition on download; it never affects storage path or
-  // entity_type.
   const base = (original ?? 'attachment').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100);
   const ext = mimeToExt(mime);
   return base.toLowerCase().endsWith('.' + ext) ? base : `${base}.${ext}`;
+}
+
+export interface StoragePut {
+  /** sha256 hex of the bytes that landed in storage. */
+  hash: string;
+  /** account-scoped storage object name: `<account>/<hash>.<ext>`. */
+  storagePath: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
+export interface StoragePutResult {
+  primary: StoragePut;
+  /** Set iff the primary was HEIC and we successfully transcoded a JPEG. */
+  derivative: StoragePut | null;
+}
+
+/**
+ * Validates inputs, hashes server-side, uploads the bytes to private
+ * storage, and -- if the input is HEIC -- transcodes a JPEG derivative and
+ * uploads that too. Does NOT touch the attachments DB table; callers are
+ * responsible for the row INSERT (either directly or via a SECURITY
+ * DEFINER RPC like submit_intake_with_attachment).
+ *
+ * Two-step separation makes the intake path atomic: the caller computes
+ * paths via this helper, calls the RPC (one txn for request + interaction
+ * + attachment + derivative rows), and only THEN uploads the bytes. An
+ * RPC failure leaves zero rows AND zero storage objects in a final state
+ * that needs cleanup; a bytes-upload-success-rpc-failure path leaves
+ * orphan objects, which a future cron can prune by storage_path ∉
+ * attachments.
+ */
+export async function processAndStoreBytes(
+  accountId: string,
+  bytes: Uint8Array,
+  mimeType: string,
+): Promise<StoragePutResult> {
+  if (bytes.byteLength === 0) {
+    throw new ApiError(400, 'invalid_request', 'empty upload');
+  }
+  if (bytes.byteLength > MAX_BYTES) {
+    throw new ApiError(
+      400,
+      'invalid_request',
+      `attachment exceeds max size (${bytes.byteLength} > ${MAX_BYTES} bytes)`,
+    );
+  }
+  if (!ALLOWED_MIME_TYPES.has(mimeType)) {
+    throw new ApiError(400, 'invalid_request', `unsupported mime_type ${mimeType}`);
+  }
+
+  const admin = getAdminClient();
+  const primary = await uploadBytes(admin, accountId, bytes, mimeType);
+
+  let derivative: StoragePut | null = null;
+  if (isHeicLike(mimeType)) {
+    // The boot-time probe in heic-probe.ts already loud-warned ops if
+    // libheif was missing. Per-occurrence warnings here surface in the
+    // request log so each affected upload is visible too -- silent
+    // degradation of evidence rendering is exactly the failure mode
+    // we're defending against. If the probe said unsupported, we skip
+    // the transcode entirely (no point spending CPU on a guaranteed
+    // failure) but log the upload so ops can quantify the gap.
+    if (heicSupported() === false) {
+      console.warn(
+        `[WARN][heic] HEIC upload landed (sha=${createHash('sha256').update(bytes).digest('hex').slice(0, 12)}…) ` +
+        `but libheif is unavailable on this host; NO JPEG derivative was created. ` +
+        `The inspection-report PDF will placeholder this photo.`,
+      );
+    } else {
+      try {
+        const jpegBuf = await sharp(Buffer.from(bytes))
+          .rotate() // apply EXIF orientation so portrait/landscape renders right
+          .withMetadata() // KEEP EXIF on the derivative -- date/GPS preserved
+          .jpeg({ quality: 85 })
+          .toBuffer();
+        derivative = await uploadBytes(
+          admin,
+          accountId,
+          new Uint8Array(jpegBuf.buffer, jpegBuf.byteOffset, jpegBuf.byteLength),
+          'image/jpeg',
+        );
+      } catch (e) {
+        // The probe said supported but THIS specific decode still failed
+        // (e.g. corrupt HEIC, unusual codec variant). Loud-warn -- this
+        // is the case the user told us to track.
+        const sha12 = createHash('sha256').update(bytes).digest('hex').slice(0, 12);
+        console.warn(
+          `[WARN][heic] HEIC decode FAILED for upload (sha=${sha12}…). ` +
+          `Original is stored; derivative skipped; PDF will placeholder. ` +
+          `sharp error: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+  }
+
+  return { primary, derivative };
+}
+
+async function uploadBytes(
+  admin: ReturnType<typeof getAdminClient>,
+  accountId: string,
+  bytes: Uint8Array,
+  mimeType: string,
+): Promise<StoragePut> {
+  const hash = createHash('sha256').update(bytes).digest('hex');
+  const ext = mimeToExt(mimeType);
+  const storagePath = `${accountId}/${hash}.${ext}`;
+
+  const { error: upErr } = await admin.storage.from(BUCKET).upload(
+    storagePath,
+    bytes,
+    { contentType: mimeType, upsert: true },
+  );
+  if (upErr) {
+    throw new ApiError(500, 'database_error', `storage upload failed: ${upErr.message}`);
+  }
+  return { hash, storagePath, mimeType, sizeBytes: bytes.byteLength };
 }
 
 export interface UploadInput {
@@ -79,8 +212,6 @@ export interface UploadInput {
   mimeType: string;
   filename?: string;
   uploadedBy?: string | null;
-  /** For the intake path: actor='tenant:<token_id>'. Goes into audit. */
-  auditActor?: string;
 }
 
 export interface AttachmentRow {
@@ -93,113 +224,89 @@ export interface AttachmentRow {
   mime_type: string | null;
   size_bytes: number | null;
   uploaded_by: string | null;
+  derived_from: string | null;
   received_at: string;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
 }
 
+export interface UploadResult {
+  primary: AttachmentRow;
+  /** Set iff the primary was HEIC and a JPEG derivative was created. */
+  derivative: AttachmentRow | null;
+}
+
 /**
- * Uploads the given bytes to private storage at an account-scoped path and
- * inserts the attachments row. Always hashes the bytes we're about to write
- * -- a client-supplied hash is never trusted.
+ * Landlord-facing upload: stores bytes (+ HEIC derivative when applicable)
+ * and inserts the corresponding attachment row(s). For HEIC uploads two
+ * rows land: the original and a JPEG with derived_from pointing at the
+ * original.
  *
  * Throws ApiError(400) for size/type validation; ApiError(404) if the
  * referenced entity doesn't exist in the account; otherwise 500.
  */
-export async function uploadAttachment(input: UploadInput): Promise<AttachmentRow> {
+export async function uploadAttachment(input: UploadInput): Promise<UploadResult> {
   if (!ALLOWED_ENTITY_TYPES.has(input.entityType)) {
     throw new ApiError(400, 'invalid_request', `entity_type ${input.entityType} is not allowed`);
   }
-  if (input.bytes.byteLength === 0) {
-    throw new ApiError(400, 'invalid_request', 'empty upload');
-  }
-  if (input.bytes.byteLength > MAX_BYTES) {
-    throw new ApiError(
-      400,
-      'invalid_request',
-      `attachment exceeds max size (${input.bytes.byteLength} > ${MAX_BYTES} bytes)`,
-    );
-  }
-  if (!ALLOWED_MIME_TYPES.has(input.mimeType)) {
-    throw new ApiError(400, 'invalid_request', `unsupported mime_type ${input.mimeType}`);
-  }
+
+  const stored = await processAndStoreBytes(input.accountId, input.bytes, input.mimeType);
 
   const admin = getAdminClient();
-
-  // Content hash is over the ACTUAL bytes we'll persist. The client never
-  // gets to provide this.
-  const hash = createHash('sha256').update(input.bytes).digest('hex');
-  const ext = mimeToExt(input.mimeType);
-
-  // Server-constructed path. The first segment is the account_id (the
-  // storage RLS policy keys off this). The hash forms the filename so two
-  // uploads of identical bytes deduplicate.
-  const storagePath =
-    `${input.accountId}/${input.entityType}/${input.entityId}/${hash}.${ext}`;
-
-  // Audit attribution note: when the intake path uploads, audit.actor
-  // needs to be 'tenant:<token_id>' so the attachment INSERT trigger
-  // records the right actor. Intake's submit_intake RPC sets the GUC
-  // for the maintenance_request + interaction inserts, but the attachment
-  // INSERT happens through supabase-js (separate connection), so its
-  // audit row gets actor='system' instead. For Phase 8 we accept this
-  // gap on the intake-attachment path; the parent maintenance_request's
-  // audit event already carries tenant:<id>, and the attachment row's
-  // entity_id links it to that request. Phase 9 will move the attachment
-  // INSERT into the submit_intake RPC so both rows land under the same
-  // audit actor.
-  void input.auditActor;
-
-  // Upload. upsert: true so identical bytes (same hash) reuse the same path
-  // without erroring.
-  const { error: upErr } = await admin.storage.from(BUCKET).upload(
-    storagePath,
-    input.bytes,
-    {
-      contentType: input.mimeType,
-      upsert: true,
-    },
-  );
-  if (upErr) {
-    throw new ApiError(500, 'database_error', `storage upload failed: ${upErr.message}`);
-  }
-
-  // Insert the row. We don't need to pre-create with audit.actor here
-  // because the audit trigger is per-table; setting audit.actor on the
-  // session before the insert is the right hook. Use a fresh transaction
-  // via supabase-js (limited control) -- the intake path's submit_intake
-  // RPC already sets actor via the right txn-scoped GUC.
-  // For NON-intake uploads (landlord-driven), auth.uid() is non-null and
-  // Phase 4 actor-integrity makes audit.actor irrelevant on that path.
-  // For intake uploads, the caller (admin/intake.ts) wraps the upload in
-  // an RPC that sets audit.actor; the attachment INSERT inside that RPC
-  // picks it up.
-
-  const { data, error: insErr } = await admin
+  const { data: primaryRow, error: insErr } = await admin
     .from('attachments')
     .insert({
       account_id: input.accountId,
       entity_type: input.entityType,
       entity_id: input.entityId,
-      storage_path: storagePath,
-      content_hash: hash,
-      mime_type: input.mimeType,
-      size_bytes: input.bytes.byteLength,
+      storage_path: stored.primary.storagePath,
+      content_hash: stored.primary.hash,
+      mime_type: stored.primary.mimeType,
+      size_bytes: stored.primary.sizeBytes,
       uploaded_by: input.uploadedBy ?? null,
     })
     .select('*')
     .single();
-  if (insErr || !data) {
-    // Best-effort rollback of the storage object so we don't leak bytes.
-    await admin.storage.from(BUCKET).remove([storagePath]).catch(() => {});
+  if (insErr || !primaryRow) {
+    await admin.storage.from(BUCKET).remove([stored.primary.storagePath]).catch(() => {});
+    if (stored.derivative) {
+      await admin.storage.from(BUCKET).remove([stored.derivative.storagePath]).catch(() => {});
+    }
     if (insErr?.code === '23503') {
       throw new ApiError(404, 'not_found', 'referenced entity not found in this account');
     }
     throw new ApiError(500, 'database_error', insErr?.message ?? 'no row returned');
   }
-  void safeFilename(input.filename, input.mimeType); // (filename surfaces on download)
-  return data as AttachmentRow;
+
+  let derivativeRow: AttachmentRow | null = null;
+  if (stored.derivative) {
+    const { data, error } = await admin
+      .from('attachments')
+      .insert({
+        account_id: input.accountId,
+        entity_type: input.entityType,
+        entity_id: input.entityId,
+        storage_path: stored.derivative.storagePath,
+        content_hash: stored.derivative.hash,
+        mime_type: stored.derivative.mimeType,
+        size_bytes: stored.derivative.sizeBytes,
+        uploaded_by: input.uploadedBy ?? null,
+        derived_from: (primaryRow as AttachmentRow).id,
+      })
+      .select('*')
+      .single();
+    if (error || !data) {
+      // Best effort: the original lives on. The PDF renderer will
+      // placeholder this slot. Don't fail the whole upload over this.
+      void error;
+    } else {
+      derivativeRow = data as AttachmentRow;
+    }
+  }
+
+  void safeFilename(input.filename, input.mimeType);
+  return { primary: primaryRow as AttachmentRow, derivative: derivativeRow };
 }
 
 export interface DownloadResult {
@@ -241,18 +348,23 @@ export async function downloadAttachment(
   return {
     bytes: buf,
     mimeType: mime,
-    // The on-disk filename is the hash; on download we surface a
-    // sanitized human-readable name based on the entity_type.
     filename: safeFilename(`${row.entity_type}-${row.id}`, mime),
     contentHash: row.content_hash as string,
   };
 }
 
 /**
- * Soft-deletes an attachment. Storage bytes stay (the audit trail's
- * tombstone-without-tomb pattern -- the row stays referenced, you can
- * always re-derive what existed). A cron in Phase 9 can purge orphaned
- * bytes if disk pressure ever matters.
+ * Soft-deletes an attachment. INVARIANT: storage bytes stay; only the row
+ * flips `deleted_at`. This invariant is REQUIRED for safety under the
+ * Phase 9 content-addressed path scheme (`<account>/<hash>.<ext>`): two
+ * logically-distinct attachment rows can reference the same storage
+ * object if their bytes happen to match. Removing bytes on soft-delete
+ * would orphan another attachment's storage. If a future garbage-collection
+ * cron prunes storage objects, it MUST reference-count by
+ * (account_id, content_hash) over live attachments rows -- not just by
+ * storage_path -- and never delete an object that is still referenced
+ * (even by a soft-deleted row, if cross-generation evidence-preservation
+ * matters).
  */
 export async function softDeleteAttachment(
   accountId: string,
