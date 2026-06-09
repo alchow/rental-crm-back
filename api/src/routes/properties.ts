@@ -7,12 +7,23 @@ import { decodeCursor, encodeCursor } from './_lib/cursor';
 // schemas
 // =====================================================================
 
+const Address = z
+  .object({
+    line1:   z.string().max(200).optional(),
+    line2:   z.string().max(200).optional(),
+    city:    z.string().max(100).optional(),
+    state:   z.string().max(100).optional(),
+    zip:     z.string().max(20).optional(),
+    country: z.string().max(100).optional(),
+  })
+  .openapi('Address');
+
 const Property = z
   .object({
     id: z.string().uuid(),
     account_id: z.string().uuid(),
     name: z.string(),
-    address: z.record(z.unknown()).nullable(),
+    address: Address.nullable(),
     created_at: z.string(),
     updated_at: z.string(),
     deleted_at: z.string().nullable(),
@@ -22,14 +33,14 @@ const Property = z
 const CreatePropertyBody = z
   .object({
     name: z.string().min(1).max(200),
-    address: z.record(z.unknown()).optional(),
+    address: Address.optional(),
   })
   .openapi('CreatePropertyBody');
 
 const PatchPropertyBody = z
   .object({
     name: z.string().min(1).max(200).optional(),
-    address: z.record(z.unknown()).optional(),
+    address: Address.optional(),
   })
   .refine((b) => Object.keys(b).length > 0, {
     message: 'at least one field is required',

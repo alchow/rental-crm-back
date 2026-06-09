@@ -138,7 +138,7 @@ await authedFetch(`/v1/accounts/${accountId}/properties`, {
     "Content-Type": "application/json",
     "Idempotency-Key": key,
   },
-  body: JSON.stringify({ name: "12 Maple St", address: "12 Maple St, Springfield" }),
+  body: JSON.stringify({ name: "12 Maple St", address: { line1: "12 Maple St", city: "Springfield", state: "IL", zip: "62701" } }),
 });
 // A retry with the SAME key + body replays the original response — no duplicate row.
 // A retry with the SAME key + DIFFERENT body → 409 idempotency_key_reuse.
