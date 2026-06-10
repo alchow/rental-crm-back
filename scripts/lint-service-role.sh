@@ -32,6 +32,11 @@ PATTERNS=(
 #     These are TEST code, never shipped; the quarantine defends production
 #     runtime, and verification of that runtime sits on the other side of the
 #     boundary by design.
+#   - api/test/imports.test.ts / imports-live.test.ts: same shape as
+#     api-isolation.test.ts -- assigns process.env from supabase status so the
+#     app under test (and its raw-pg executor pool) sees the same env it gets
+#     in CI. The variable name is ASSIGNED, never read into a client
+#     constructor in these files.
 #   - openapi/emit.ts: same shape -- assigns a placeholder to process.env so
 #     the env schema parse succeeds at spec-emit time. No client is built.
 EXCLUDES=(
@@ -50,6 +55,8 @@ EXCLUDES=(
   ':!api/test/phase10.test.ts'
   ':!api/test/phase11.test.ts'
   ':!api/test/phase12.test.ts'
+  ':!api/test/imports.test.ts'
+  ':!api/test/imports-live.test.ts'
   ':!openapi/emit.ts'
 )
 
