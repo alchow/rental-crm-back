@@ -23,6 +23,7 @@
 13. [Using the generated TypeScript SDK](#13-using-the-generated-typescript-sdk)
 14. [End-to-end: the golden path](#14-end-to-end-the-golden-path)
 15. [Guarantees you can rely on](#15-guarantees-you-can-rely-on)
+16. [Onboarding import — bring your existing rent roll](#16-onboarding-import--bring-your-existing-rent-roll)
 
 ---
 
@@ -995,6 +996,62 @@ Every uploaded file is stored with a server-computed SHA256 `content_hash`. The 
 
 **Tamper-evident evidence**
 Evidence exports embed a chain-of-custody for every file (upload time, hash, actor) and a full audit chain verification. Use the PDF directly in housing court or insurance claims without any additional attestation.
+
+---
+
+## 16. Onboarding import — bring your existing rent roll
+
+Upload an arbitrary Excel/CSV of historical data, let the API recognize what's in it, map its columns to our schema through an interactive (LLM-assisted) flow, **preview** the result, and **commit** it. The same invariants as every other write apply: audit trail, idempotency, RLS, provenance.
+
+**How it works, and what it won't do**
+
+- **The model proposes; a deterministic engine writes.** The LLM only ever suggests a recognition and a column→field mapping. Every actual row is written by a fixed engine running your confirmed mapping. The model is never in the write path.
+- **Preview and commit are one code path.** Preview runs the entire import inside a transaction and **rolls it back**; confirm runs the identical path and **commits**. What you preview is exactly what you commit.
+- **Nothing is invented.** A missing or ambiguous required parent (which property a unit belongs to, a missing tenancy start date, an unmapped required column) becomes a **blocker**, never a fabricated record. `POST .../confirm` refuses to write while any blocker remains (returns `409`).
+- **Provenance is mandatory.** Every record the import creates is tagged to its import session, so a committed import is traceable end-to-end.
+
+**v1 scope (structural only).** The import builds the structural spine and nothing else:
+`property → unit (area, kind=unit) → unit details → tenant → tenancy → tenancy member → lease (optional) → rent schedule`.
+Money history — individual **charges and payments** — is **out of scope** in v1 and cannot be imported (it's deferred to a later phase). `rent_schedule` captures the *recurring rent amount*, which is structural, not a charge.
+
+**Privacy.** Only **column names plus up to five sample values per column** are ever sent to the model — never your full row data. The raw rows live only in your account's database (under RLS); the original file is archived to private, server-only storage as an audit artifact.
+
+**Decline is a valid outcome.** If a file holds nothing importable (a totals sheet, a legend, an empty workbook), the session lands in `no_importable_data` rather than guessing.
+
+### Upload (multipart)
+
+`POST /v1/accounts/{accountId}/imports` takes a single `file` part (`.xlsx`, `.xls`, or `.csv`, ≤ 20 MiB) and returns the created session. The session is created even when parsing or recognition fails, so you always get a resource to inspect (`status: "failed"` with an `error`) or delete.
+
+```ts
+const form = new FormData();
+form.append("file", spreadsheetBlob, "rent-roll.xlsx");
+const session = await authedFetch(
+  `/v1/accounts/${accountId}/imports`,
+  { method: "POST", body: form }, // sets Authorization + a fresh Idempotency-Key
+).then((r) => r.json());
+
+// session.status is one of: parsing, recognizing, awaiting_mapping,
+// no_importable_data, preview_ready, importing, done, failed.
+// session.recognition + session.mapping carry the model's proposal;
+// override session.mapping via PATCH .../mapping, then preview, then confirm.
+```
+
+### Driving the flow (JSON)
+
+| Method | Path | Body / Notes |
+|---|---|---|
+| `GET` | `/imports` | Paginated list of sessions. |
+| `GET` | `/imports/{sessionId}` | One session (regions, recognition, mapping, preview/commit results). |
+| `PATCH` | `/imports/{sessionId}/mapping` | `mapping` — array of `{ region_index, entity_type, fields: [{ target_field, source_column?, constant?, confidence? }] }`. Replaces the active mapping. |
+| `PATCH` | `/imports/{sessionId}/parents` | `parent_resolutions` — `{ default_property_id?, property_overrides?: { "<name>": { mode: "existing"\|"create", id? } } }`. Resolves which property a unit attaches to. |
+| `POST` | `/imports/{sessionId}/chat` | `message` — ask the assistant to explain or revise the mapping. Returns `{ reply, proposed_mapping, session }`; apply a proposal via `PATCH .../mapping`. |
+| `GET` | `/imports/{sessionId}/rows` | Parsed rows (raw cell values), paginated; carries per-row `blockers` after a preview. |
+| `PATCH` | `/imports/{sessionId}/rows` | `updates` — `[{ id, excluded }]`. Include/exclude individual rows. |
+| `POST` | `/imports/{sessionId}/preview` | Dry-run (rolled back). Returns `{ result, session }`; `result` has per-entity `counts` (created/reused), `blockers`, and row tallies. |
+| `POST` | `/imports/{sessionId}/confirm` | Commit. Returns `{ result, session }` on success, or `409` with the blocker details if anything is unresolved. |
+| `DELETE` | `/imports/{sessionId}` | Soft-delete the session. Records already committed are kept. |
+
+A typical run: upload → review `recognition`/`mapping` → adjust with `PATCH .../mapping` (and `.../parents` for ambiguous properties) → `POST .../preview` → fix blockers / exclude rows → `POST .../confirm`. Re-importing the same file is safe: the engine reuses existing properties, units, and tenants by natural key rather than duplicating them.
 
 ---
 

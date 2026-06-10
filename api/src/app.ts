@@ -20,6 +20,7 @@ import { interactionsApp } from './routes/interactions';
 import { intakeApp } from './admin/intake';
 import { attachmentsApp } from './routes/attachments';
 import { evidenceExportsApp } from './routes/evidence-exports';
+import { importsApp } from './routes/imports';
 import {
   inspectionTemplatesApp,
   inspectionsApp,
@@ -156,6 +157,7 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', inspectionsApp);
   app.route('/v1', inspectionItemsApp);
   app.route('/v1', evidenceExportsApp);
+  app.route('/v1', importsApp);
 
   // PUBLIC, UNAUTHENTICATED. Lives in src/admin/ because it uses the
   // service-role client (RLS is bypassed; the handler is the sole guard).

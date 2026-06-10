@@ -20,19 +20,22 @@
   },
   "dependencies": {
     "tsx": "^4.19.2",
+    "@anthropic-ai/sdk": "^0.104.1",
     "@hono/node-server": "^1.13.7",
     "@hono/zod-openapi": "^0.18.0",
     "@supabase/supabase-js": "^2.46.1",
+    "csv-parse": "^6.2.1",
     "hono": "^4.6.10",
     "jose": "^5.10.0",
     "pdfkit": "^0.15.2",
+    "pg": "^8.13.1",
     "sharp": "^0.33.5",
+    "xlsx": "^0.18.5",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@rentalcrm/sdk": "workspace:*",
     "@types/pdfkit": "^0.17.6",
-    "@types/pg": "^8.11.10",
-    "pg": "^8.13.1"
+    "@types/pg": "^8.11.10"
   }
 }

@@ -1,0 +1,466 @@
+import Anthropic from '@anthropic-ai/sdk';
+import { z } from 'zod';
+import { loadEnv } from '../env';
+import { ApiError } from '../routes/_lib/error';
+import {
+  ENTITY_CATALOG,
+  ENTITY_ORDER,
+  MIN_CONFIDENCE,
+  type EntityType,
+  type RecognitionResult,
+  type RegionEntityMapping,
+  type FieldMapping,
+} from './import-catalog';
+import { regionDigest, type ParsedRegion } from './import-parser';
+
+// ----------------------------------------------------------------------------
+// The LLM half of the import pipeline. STRICTLY advisory: it only proposes a
+// recognition + a column->field mapping. The deterministic executor
+// (import-executor.ts) is the sole write path; the model is NEVER in it.
+//
+// Privacy: every request sends ONLY column names + <=5 sample values per
+// column (via regionDigest) and aggregate row counts. Full row data never
+// leaves our process.
+//
+// Model + knobs follow the Anthropic guidance for Opus 4.8: structured
+// extraction goes through forced tool-use; the conversational `chat` turn uses
+// adaptive thinking. No temperature/top_p (removed on 4.8).
+// ----------------------------------------------------------------------------
+
+const MODEL = 'claude-opus-4-8';
+
+let client: Anthropic | null = null;
+function getClient(): Anthropic {
+  if (client) return client;
+  const key = loadEnv().ANTHROPIC_API_KEY;
+  if (!key) {
+    throw new ApiError(
+      502,
+      'internal_error',
+      'onboarding import is not configured: ANTHROPIC_API_KEY is unset',
+    );
+  }
+  client = new Anthropic({ apiKey: key });
+  return client;
+}
+
+// Casting helper: the request surface (thinking, output_config) is wider than
+// the pinned SDK's static param type in places; build the object freely and
+// hand it to the SDK as its param type. Keeps us off `any`.
+type CreateParams = Record<string, unknown>;
+async function createMessage(params: CreateParams): Promise<Anthropic.Messages.Message> {
+  return getClient().messages.create(
+    params as unknown as Anthropic.Messages.MessageCreateParamsNonStreaming,
+  );
+}
+
+function textOf(msg: Anthropic.Messages.Message): string {
+  return msg.content
+    .filter((b): b is Anthropic.Messages.TextBlock => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n')
+    .trim();
+}
+
+function toolInput(msg: Anthropic.Messages.Message, name: string): unknown | null {
+  for (const b of msg.content) {
+    if (b.type === 'tool_use' && b.name === name) return b.input;
+  }
+  return null;
+}
+
+const clamp01 = (n: number): number => (Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0);
+
+// ----- entity catalog rendered for the prompt -------------------------------
+
+function catalogForPrompt(): string {
+  return ENTITY_ORDER.map((et) => {
+    const spec = ENTITY_CATALOG[et];
+    const fields = spec.fields
+      .map((f) => `      - ${f.field}${f.required ? ' (required)' : ''}: ${f.description}`)
+      .join('\n');
+    return `  • ${et} — ${spec.description}\n    fields:\n${fields}`;
+  }).join('\n');
+}
+
+const SCOPE_NOTE =
+  'Scope is STRUCTURAL ONLY: property, area (a rentable unit; kind is always "unit"), ' +
+  'unit_details, tenant, tenancy, tenancy_member, lease (optional), rent_schedule. ' +
+  'Money history (individual charges and payments) is OUT OF SCOPE and must never be ' +
+  'proposed. rent_schedule captures the recurring rent amount, which is structural, not a charge.';
+
+// ============================================================================
+// 1. Recognition — what entities does each region contain?
+// ============================================================================
+
+const zEntity = z.enum(ENTITY_ORDER as [EntityType, ...EntityType[]]);
+
+const RecognitionInput = z.object({
+  regions: z
+    .array(
+      z.object({
+        region_index: z.number().int().nonnegative(),
+        importable: z.boolean(),
+        summary: z.string().default(''),
+        entity_types: z
+          .array(
+            z.object({
+              entity_type: zEntity,
+              confidence: z.number(),
+            }),
+          )
+          .default([]),
+      }),
+    )
+    .default([]),
+});
+
+const recognitionTool = {
+  name: 'report_recognition',
+  description:
+    'Report, for every region, whether it holds importable structural data and which entity types its columns map to.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      regions: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            region_index: { type: 'integer' },
+            importable: {
+              type: 'boolean',
+              description: 'True if at least one in-scope entity can be built from this region.',
+            },
+            summary: { type: 'string', description: 'One sentence on what this region appears to be.' },
+            entity_types: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  entity_type: { type: 'string', enum: ENTITY_ORDER },
+                  confidence: { type: 'number', description: '0..1' },
+                },
+                required: ['entity_type', 'confidence'],
+              },
+            },
+          },
+          required: ['region_index', 'importable', 'summary', 'entity_types'],
+        },
+      },
+    },
+    required: ['regions'],
+  },
+};
+
+export async function recognizeRegions(regions: ParsedRegion[]): Promise<RecognitionResult[]> {
+  if (regions.length === 0) return [];
+  const digests = regions.map((r, i) => regionDigest(r, i));
+
+  const msg = await createMessage({
+    model: MODEL,
+    max_tokens: 4096,
+    output_config: { effort: 'high' },
+    system:
+      'You classify columns of a landlord/property spreadsheet against a fixed schema. ' +
+      SCOPE_NOTE +
+      ' You are advisory only — a deterministic engine does the importing. ' +
+      'A region is importable only if its columns can populate the required fields of at least one entity. ' +
+      'If a region is a summary, a legend, totals, or otherwise not a row-per-record table, mark importable=false.',
+    tools: [recognitionTool],
+    tool_choice: { type: 'tool', name: 'report_recognition' },
+    messages: [
+      {
+        role: 'user',
+        content:
+          `Target schema:\n${catalogForPrompt()}\n\n` +
+          `Regions (column names + up to 5 sample values each; row data withheld):\n` +
+          JSON.stringify(digests, null, 2) +
+          `\n\nCall report_recognition for ALL ${regions.length} region(s).`,
+      },
+    ],
+  });
+
+  const parsed = RecognitionInput.safeParse(toolInput(msg, 'report_recognition'));
+  if (!parsed.success) {
+    throw new ApiError(502, 'internal_error', 'recognition: malformed LLM response');
+  }
+
+  // Index by region so we always return one result per input region.
+  const byRegion = new Map<number, RecognitionResult>();
+  for (const r of parsed.data.regions) {
+    if (r.region_index < 0 || r.region_index >= regions.length) continue;
+    const entity_types = r.entity_types
+      .map((e) => ({ entity_type: e.entity_type, confidence: clamp01(e.confidence) }))
+      .filter((e) => e.confidence >= MIN_CONFIDENCE)
+      .sort((a, b) => b.confidence - a.confidence);
+    byRegion.set(r.region_index, {
+      region_index: r.region_index,
+      importable: r.importable && entity_types.length > 0,
+      entity_types,
+      summary: r.summary,
+    });
+  }
+  return regions.map(
+    (_r, i) =>
+      byRegion.get(i) ?? {
+        region_index: i,
+        importable: false,
+        entity_types: [],
+        summary: 'Not recognized as importable structural data.',
+      },
+  );
+}
+
+// ============================================================================
+// 2. Mapping — for one (region, entity), map each target field to a column.
+// ============================================================================
+
+function mappingTool(entityType: EntityType) {
+  const fieldNames = ENTITY_CATALOG[entityType].fields.map((f) => f.field);
+  return {
+    name: 'report_mapping',
+    description: `Map each ${entityType} target field to a source column (or a constant, or leave unmapped).`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        fields: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              target_field: { type: 'string', enum: fieldNames },
+              source_column: {
+                type: ['string', 'null'],
+                description: 'Exact source column name to read this field from, or null.',
+              },
+              constant: {
+                type: ['string', 'null'],
+                description: 'A literal value to use for every row instead of a column, or null.',
+              },
+              confidence: { type: 'number', description: '0..1' },
+            },
+            required: ['target_field', 'source_column', 'constant', 'confidence'],
+          },
+        },
+      },
+      required: ['fields'],
+    },
+  };
+}
+
+const MappingInput = z.object({
+  fields: z
+    .array(
+      z.object({
+        target_field: z.string(),
+        source_column: z.string().nullable().optional(),
+        constant: z.string().nullable().optional(),
+        confidence: z.number().optional(),
+      }),
+    )
+    .default([]),
+});
+
+export async function suggestMapping(
+  region: ParsedRegion,
+  entityType: EntityType,
+  regionIndex: number,
+): Promise<RegionEntityMapping> {
+  const spec = ENTITY_CATALOG[entityType];
+  const digest = regionDigest(region, regionIndex);
+  const validFields = new Set(spec.fields.map((f) => f.field));
+
+  const msg = await createMessage({
+    model: MODEL,
+    max_tokens: 4096,
+    output_config: { effort: 'high' },
+    system:
+      'You align spreadsheet columns to a fixed target schema for a landlord CRM import. ' +
+      SCOPE_NOTE +
+      ' Map a field only when a column clearly supplies it; otherwise leave source_column null. ' +
+      'Never invent data. Prefer an exact column over a constant. Use a constant only for an ' +
+      'obvious fixed value (e.g. a single currency for the whole sheet).',
+    tools: [mappingTool(entityType)],
+    tool_choice: { type: 'tool', name: 'report_mapping' },
+    messages: [
+      {
+        role: 'user',
+        content:
+          `Entity: ${entityType} — ${spec.description}\n` +
+          `Target fields:\n` +
+          spec.fields
+            .map((f) => `  - ${f.field}${f.required ? ' (required)' : ''}: ${f.description}`)
+            .join('\n') +
+          `\n\nSource region (columns + up to 5 samples each):\n` +
+          JSON.stringify(digest, null, 2) +
+          `\n\nCall report_mapping with one entry per target field you can confidently map.`,
+      },
+    ],
+  });
+
+  const parsed = MappingInput.safeParse(toolInput(msg, 'report_mapping'));
+  const columnNames = new Set(region.columns.map((c) => c.name));
+  const fields: FieldMapping[] = [];
+  if (parsed.success) {
+    for (const f of parsed.data.fields) {
+      if (!validFields.has(f.target_field)) continue;
+      // Drop hallucinated columns: a mapping must reference a real column.
+      const source_column = f.source_column && columnNames.has(f.source_column) ? f.source_column : null;
+      const constant = f.constant ?? null;
+      if (!source_column && (constant === null || constant === '')) continue;
+      fields.push({
+        target_field: f.target_field,
+        source_column,
+        constant: source_column ? null : constant,
+        confidence: clamp01(f.confidence ?? 0),
+      });
+    }
+  }
+  return { region_index: regionIndex, entity_type: entityType, fields };
+}
+
+/**
+ * Convenience used by the upload route: recognize, then for every region's
+ * recognized entity types (>= MIN_CONFIDENCE) produce a suggested mapping.
+ */
+export async function recognizeAndSuggest(
+  regions: ParsedRegion[],
+): Promise<{ recognition: RecognitionResult[]; mapping: RegionEntityMapping[] }> {
+  const recognition = await recognizeRegions(regions);
+  const mapping: RegionEntityMapping[] = [];
+  for (const rec of recognition) {
+    if (!rec.importable) continue;
+    const region = regions[rec.region_index];
+    if (!region) continue;
+    // Order entities topologically so the stored mapping reads naturally.
+    const wanted = ENTITY_ORDER.filter((et) => rec.entity_types.some((e) => e.entity_type === et));
+    for (const et of wanted) {
+      mapping.push(await suggestMapping(region, et, rec.region_index));
+    }
+  }
+  return { recognition, mapping };
+}
+
+// ============================================================================
+// 3. Chat — conversational refinement. May talk, and may propose a mapping
+//    revision the user can accept via PATCH /mapping.
+// ============================================================================
+
+export interface ChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+const proposeMappingTool = {
+  name: 'propose_mapping',
+  description:
+    'Propose a revised mapping for one or more (region, entity) pairs. The user reviews and accepts it separately.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      mapping: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            region_index: { type: 'integer' },
+            entity_type: { type: 'string', enum: ENTITY_ORDER },
+            fields: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  target_field: { type: 'string' },
+                  source_column: { type: ['string', 'null'] },
+                  constant: { type: ['string', 'null'] },
+                  confidence: { type: 'number' },
+                },
+                required: ['target_field', 'source_column', 'constant', 'confidence'],
+              },
+            },
+          },
+          required: ['region_index', 'entity_type', 'fields'],
+        },
+      },
+    },
+    required: ['mapping'],
+  },
+};
+
+const ProposeInput = z.object({
+  mapping: z
+    .array(
+      z.object({
+        region_index: z.number().int().nonnegative(),
+        entity_type: zEntity,
+        fields: z
+          .array(
+            z.object({
+              target_field: z.string(),
+              source_column: z.string().nullable().optional(),
+              constant: z.string().nullable().optional(),
+              confidence: z.number().optional(),
+            }),
+          )
+          .default([]),
+      }),
+    )
+    .default([]),
+});
+
+export interface ChatResult {
+  reply: string;
+  proposed_mapping: RegionEntityMapping[] | null;
+}
+
+export async function chat(
+  regions: ParsedRegion[],
+  currentMapping: RegionEntityMapping[],
+  history: ChatTurn[],
+  userMessage: string,
+): Promise<ChatResult> {
+  const digests = regions.map((r, i) => regionDigest(r, i));
+  const priorTurns: Anthropic.Messages.MessageParam[] = history
+    .slice(-12)
+    .map((t) => ({ role: t.role, content: t.content }));
+
+  const msg = await createMessage({
+    model: MODEL,
+    max_tokens: 4096,
+    thinking: { type: 'adaptive' },
+    output_config: { effort: 'high' },
+    system:
+      'You help a landlord map an uploaded spreadsheet to a fixed import schema. ' +
+      SCOPE_NOTE +
+      ' You may answer questions and, when the user asks for a change, call propose_mapping with ' +
+      'a revised mapping. Only reference columns that exist. Never fabricate data. ' +
+      `Target schema:\n${catalogForPrompt()}\n\n` +
+      `Regions (columns + <=5 samples; rows withheld):\n${JSON.stringify(digests)}\n\n` +
+      `Current mapping:\n${JSON.stringify(currentMapping)}`,
+    tools: [proposeMappingTool],
+    tool_choice: { type: 'auto' },
+    messages: [...priorTurns, { role: 'user', content: userMessage }],
+  });
+
+  let proposed: RegionEntityMapping[] | null = null;
+  const raw = toolInput(msg, 'propose_mapping');
+  if (raw !== null) {
+    const parsed = ProposeInput.safeParse(raw);
+    if (parsed.success) {
+      proposed = parsed.data.mapping.map((m) => ({
+        region_index: m.region_index,
+        entity_type: m.entity_type,
+        fields: m.fields.map((f) => ({
+          target_field: f.target_field,
+          source_column: f.source_column ?? null,
+          constant: f.constant ?? null,
+          confidence: clamp01(f.confidence ?? 1),
+        })),
+      }));
+    }
+  }
+
+  const reply = textOf(msg) || (proposed ? 'I proposed a revised mapping for your review.' : '');
+  return { reply, proposed_mapping: proposed };
+}
