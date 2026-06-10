@@ -294,6 +294,130 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
+  // (2b) malformed recognition entries are salvaged, not fatal
+  // =========================================================================
+  await check('malformed recognition entries are dropped; valid ones survive', async () => {
+    // One junk region entry and one hallucinated entity_type (outside the
+    // enum): both must be dropped without failing the import -- this exact
+    // shape previously produced "recognition failed: malformed LLM response".
+    __setAnthropicForTests({
+      messages: {
+        create: async (params: Record<string, unknown>) => {
+          const p = params as ToolUseParams;
+          if (p.tool_choice?.name === 'report_recognition') {
+            return {
+              content: [{
+                type: 'tool_use',
+                name: 'report_recognition',
+                input: {
+                  regions: [
+                    'junk-not-an-object',
+                    {
+                      region_index: 0,
+                      importable: true,
+                      summary: 'a property roster',
+                      entity_types: [
+                        { entity_type: 'charge', confidence: 0.9 }, // out-of-scope hallucination
+                        { entity_type: 'property', confidence: 0.9 },
+                      ],
+                    },
+                  ],
+                },
+              }],
+            };
+          }
+          if (p.tool_choice?.name === 'report_mapping') {
+            return {
+              content: [{
+                type: 'tool_use',
+                name: 'report_mapping',
+                input: { fields: [{ target_field: 'name', source_column: 'Building', constant: null, confidence: 0.95 }] },
+              }],
+            };
+          }
+          return { content: [{ type: 'text', text: '' }] };
+        },
+      },
+    });
+    const session = await uploadCsv(A, [
+      ['Building', 'Notes'],
+      ['Maple Court', 'corner lot'],
+    ]);
+    if (session.status !== 'awaiting_mapping') {
+      throw new Error(`expected awaiting_mapping (salvaged), got ${session.status}`);
+    }
+    const r = await api('GET', `/v1/accounts/${A.accountId}/imports/${session.id}`, { token: A.accessToken });
+    const body = assertStatus(r, 200, 'get salvaged session') as {
+      recognition: { entity_types: { entity_type: string }[] }[];
+    };
+    const entityTypes = body.recognition.flatMap((reg) => reg.entity_types.map((e) => e.entity_type));
+    if (entityTypes.includes('charge')) {
+      throw new Error(`hallucinated entity_type "charge" should be dropped, got ${JSON.stringify(entityTypes)}`);
+    }
+    if (!entityTypes.includes('property')) {
+      throw new Error(`valid entity_type "property" should survive salvage, got ${JSON.stringify(entityTypes)}`);
+    }
+  });
+
+  // =========================================================================
+  // (2c) unusable recognition response -> one retry; then failed session
+  // =========================================================================
+  await check('recognition retries once on unusable response, then succeeds', async () => {
+    let calls = 0;
+    __setAnthropicForTests({
+      messages: {
+        create: async (params: Record<string, unknown>) => {
+          const p = params as ToolUseParams;
+          if (p.tool_choice?.name === 'report_recognition') {
+            calls++;
+            // First attempt: no usable tool input. Second: valid.
+            if (calls === 1) return { content: [{ type: 'text', text: 'oops' }] };
+            return {
+              content: [{
+                type: 'tool_use',
+                name: 'report_recognition',
+                input: { regions: [{ region_index: 0, importable: false, summary: 'nothing structural', entity_types: [] }] },
+              }],
+            };
+          }
+          return { content: [{ type: 'text', text: '' }] };
+        },
+      },
+    });
+    const session = await uploadCsv(A, [
+      ['Item', 'Price'],
+      ['Bananas', '1.50'],
+    ]);
+    if (calls !== 2) throw new Error(`expected exactly 2 recognition attempts, got ${calls}`);
+    if (session.status !== 'no_importable_data') {
+      throw new Error(`expected no_importable_data after retry, got ${session.status}`);
+    }
+  });
+
+  await check('recognition unusable on both attempts -> failed session, no 500', async () => {
+    let calls = 0;
+    __setAnthropicForTests({
+      messages: {
+        create: async () => {
+          calls++;
+          return { content: [{ type: 'text', text: 'still oops' }] };
+        },
+      },
+    });
+    const session = await uploadCsv(A, [
+      ['Item', 'Price'],
+      ['Bananas', '1.50'],
+    ]);
+    if (calls !== 2) throw new Error(`expected exactly 2 recognition attempts, got ${calls}`);
+    if (session.status !== 'failed') throw new Error(`expected failed, got ${session.status}`);
+    const r = await api('GET', `/v1/accounts/${A.accountId}/imports/${session.id}`, { token: A.accessToken });
+    const body = assertStatus(r, 200, 'get failed session') as { error: string | null };
+    if (!body.error?.includes('recognition failed')) {
+      throw new Error(`expected "recognition failed" in error, got ${JSON.stringify(body.error)}`);
+    }
+  });
+
+  // =========================================================================
   // (3) unit with no property -> blocker -> confirm 409 -> resolutions
   // =========================================================================
   let blockedSessionId = '';
