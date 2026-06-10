@@ -70,6 +70,7 @@ const NO_SEED_REQUIRED = new Set([
   // Phase 1 (onboarding import): created on-demand by an explicit import
   // upload/confirm call; nothing to seed in a static two-account fixture.
   'import_sessions',
+  'import_rows',
   'import_provenance',
 ]);
 
