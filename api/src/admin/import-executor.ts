@@ -1,5 +1,4 @@
 import type { PoolClient } from 'pg';
-import { z } from 'zod';
 import { getPool } from './db-pool';
 import { ApiError } from '../routes/_lib/error';
 import {
@@ -9,6 +8,27 @@ import {
   type FieldMapping,
   type RegionEntityMapping,
 } from './import-catalog';
+// The import path validates against the EXACT same Zod schemas the HTTP POST
+// handlers use -- not a parallel copy -- so it can never persist anything an
+// HTTP POST would reject (item 1 of the review). DB constraints/triggers/FKs
+// (name lengths, currency length, amount>=0, due_day, dates, status/kind enums,
+// area.kind, account-scoped composite FKs, immutability) fire on the raw pg
+// connection identically; these schemas add the route-only checks the DB does
+// NOT enforce: tenant email format, phone length, address sub-field lengths.
+import { CreatePropertyBody } from '../routes/properties';
+import { CreateAreaBody } from '../routes/areas';
+import { PutUnitDetailsBody } from '../routes/unit-details';
+import { CreateTenantBody } from '../routes/tenants';
+import { CreateTenancyBody } from '../routes/tenancies';
+import { AddMemberBody } from '../routes/tenancy-members';
+import { CreateLeaseBody } from '../routes/leases';
+import { CreateRentScheduleBody } from '../routes/rent-schedules';
+
+/** Concise first-issue message from a Zod safeParse error (no z import). */
+function firstIssue(err: { issues?: { path: (string | number)[]; message: string }[] }): string {
+  const i = err.issues?.[0];
+  return i ? `${i.path.length ? i.path.join('.') + ': ' : ''}${i.message}` : 'validation failed';
+}
 
 // ----------------------------------------------------------------------------
 // The deterministic execution engine. This — never the LLM — is the sole write
@@ -59,6 +79,10 @@ export interface ExecutionResult {
   counts: Record<string, EntityCounts>;
   created_ids: Record<string, string[]>;
   blockers: ExecutionBlocker[];
+  /** raw->ISO date interpretations (deduped) so a locale misread is visible in
+   *  the preview. `ambiguous` flags values like "01/02/2024" that are valid
+   *  under both M/D/Y and D/M/Y; the importer reads them as M/D/Y. */
+  date_interpretations: { field: string; raw: string; iso: string; interpreted_as: string; ambiguous: boolean }[];
 }
 
 interface ParentResolutions {
@@ -73,38 +97,6 @@ interface RawImportRow {
   raw: Record<string, string>;
   excluded: boolean;
 }
-
-// ----- validation schemas mirroring the DB constraints ----------------------
-
-const zName = z.string().min(1).max(200);
-const zDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-const zProperty = z.object({ name: zName });
-const zArea = z.object({ name: zName, kind: z.literal('unit') });
-const zUnitDetails = z.object({
-  bedrooms: z.number().int().min(0).nullable(),
-  bathrooms: z.number().min(0).nullable(),
-  sqft: z.number().int().min(0).nullable(),
-});
-const zTenant = z.object({ full_name: zName });
-const zTenancy = z.object({
-  start_date: zDate,
-  end_date: zDate.nullable(),
-  status: z.enum(['upcoming', 'active', 'ended', 'holdover']),
-});
-const zLease = z.object({
-  term_start: zDate,
-  term_end: zDate.nullable(),
-  rent_amount_cents: z.number().int().min(0),
-  rent_currency: z.string().length(3),
-  deposit_amount_cents: z.number().int().min(0),
-});
-const zRentSchedule = z.object({
-  amount_cents: z.number().int().min(0),
-  currency: z.string().length(3),
-  due_day: z.number().int().min(1).max(28),
-  start_date: zDate,
-  kind: z.string().min(1).max(50),
-});
 
 // ----- coercion helpers ------------------------------------------------------
 
@@ -189,12 +181,18 @@ class ExecCtx {
   private tenancyCache = new Map<string, string>();
   private leaseCache = new Set<string>();
   private rentScheduleCache = new Set<string>();
+  // Memoizes whether a user-supplied parent id actually belongs to THIS
+  // account. The service_role connection bypasses RLS, so this manual scoping
+  // is the isolation guard (defense-in-depth ahead of the composite FK).
+  private verifiedProperties = new Map<string, boolean>();
+  private defaultPropertyCounted = false;
 
   private counts: Record<string, EntityCounts> = {};
   private createdIds: Record<string, string[]> = {};
   readonly blockers: ExecutionBlocker[] = [];
   private rowBlockers = new Map<string, { field: string | null; message: string }[]>();
   private blockedRowIds = new Set<string>();
+  private dateSamples = new Map<string, ExecutionResult['date_interpretations'][number]>();
 
   constructor(
     private readonly client: PoolClient,
@@ -271,6 +269,15 @@ class ExecCtx {
     );
   }
 
+  private recordDate(field: string, raw: string | null, iso: string | null): void {
+    if (!raw || !iso) return;
+    const key = `${field}|${raw}`;
+    if (this.dateSamples.has(key) || this.dateSamples.size >= 50) return;
+    const m = /^(\d{1,2})[/\-.](\d{1,2})[/\-.]\d{2,4}$/.exec(raw.trim());
+    const ambiguous = !!m && Number(m[1]) <= 12 && Number(m[2]) <= 12 && m[1] !== m[2];
+    this.dateSamples.set(key, { field, raw, iso, interpreted_as: 'US M/D/Y', ambiguous });
+  }
+
   private blockRow(row: RawImportRow, entity: EntityType, field: string | null, message: string): void {
     this.blockers.push({
       scope: 'row',
@@ -299,9 +306,39 @@ class ExecCtx {
     ];
     for (const [target, key] of pairs) {
       const v = this.getValue(fields, target, raw);
-      if (v) map[key] = v.slice(0, 200);
+      // Do NOT truncate -- CreatePropertyBody enforces the per-field max lengths
+      // and an over-long value becomes a row blocker (parity with an HTTP POST,
+      // which would 400 rather than silently truncate).
+      if (v) map[key] = v;
     }
     return map;
+  }
+
+  /** True iff `id` is a live property in THIS account. Memoized. The only
+   *  isolation guard on bound parent ids, since service_role bypasses RLS. */
+  private async verifyPropertyInAccount(id: string): Promise<boolean> {
+    const cached = this.verifiedProperties.get(id);
+    if (cached !== undefined) return cached;
+    const r = await this.client.query(
+      `select 1 from properties where account_id = $1 and id = $2 and deleted_at is null limit 1`,
+      [this.accountId, id],
+    );
+    const ok = (r.rowCount ?? 0) === 1;
+    this.verifiedProperties.set(id, ok);
+    return ok;
+  }
+
+  /** Resolve the session-wide default property, verifying account ownership. */
+  private async resolveDefaultProperty(row: RawImportRow, id: string): Promise<string | null> {
+    if (!(await this.verifyPropertyInAccount(id))) {
+      this.blockRow(row, 'property', 'name', `default property not found in this account: ${id}`);
+      return null;
+    }
+    if (!this.defaultPropertyCounted) {
+      this.recordReused('property');
+      this.defaultPropertyCounted = true;
+    }
+    return id;
   }
 
   private async resolveProperty(row: RawImportRow, name: string, fields: FieldMapping[]): Promise<string | null> {
@@ -311,6 +348,11 @@ class ExecCtx {
 
     const override = this.parents.property_overrides?.[name];
     if (override?.mode === 'existing' && override.id) {
+      // bind_existing: the id MUST belong to this account (RLS is bypassed here).
+      if (!(await this.verifyPropertyInAccount(override.id))) {
+        this.blockRow(row, 'property', 'name', `bound property not found in this account: ${override.id}`);
+        return null;
+      }
       this.propertyCache.set(key, override.id);
       this.recordReused('property');
       return override.id;
@@ -331,15 +373,14 @@ class ExecCtx {
         return id;
       }
     }
-    const v = zProperty.safeParse({ name });
+    const v = CreatePropertyBody.safeParse({ name, address: this.buildAddress(fields, row.raw) });
     if (!v.success) {
-      this.blockRow(row, 'property', 'name', v.error.issues[0]?.message ?? 'invalid property');
+      this.blockRow(row, 'property', 'name', firstIssue(v.error));
       return null;
     }
-    const address = this.buildAddress(fields, row.raw);
     const ins = await this.client.query(
       `insert into properties (account_id, name, address) values ($1, $2, $3::jsonb) returning id`,
-      [this.accountId, name, JSON.stringify(address)],
+      [this.accountId, v.data.name, JSON.stringify(v.data.address ?? {})],
     );
     const id = ins.rows[0].id as string;
     this.propertyCache.set(key, id);
@@ -368,14 +409,14 @@ class ExecCtx {
       this.recordReused('area');
       return id;
     }
-    const v = zArea.safeParse({ name, kind: 'unit' });
+    const v = CreateAreaBody.safeParse({ property_id: propertyId, kind: 'unit', name });
     if (!v.success) {
-      this.blockRow(row, 'area', 'name', v.error.issues[0]?.message ?? 'invalid unit');
+      this.blockRow(row, 'area', 'name', firstIssue(v.error));
       return null;
     }
     const ins = await this.client.query(
-      `insert into areas (account_id, property_id, kind, name) values ($1, $2, 'unit', $3) returning id`,
-      [this.accountId, propertyId, name],
+      `insert into areas (account_id, property_id, kind, name) values ($1, $2, $3, $4) returning id`,
+      [this.accountId, v.data.property_id, v.data.kind, v.data.name],
     );
     const id = ins.rows[0].id as string;
     this.areaCache.set(key, id);
@@ -389,15 +430,15 @@ class ExecCtx {
     const bathrooms = coerceDecimal(this.getValue(fields, 'bathrooms', row.raw));
     const sqft = coerceInt(this.getValue(fields, 'sqft', row.raw));
     if (bedrooms === null && bathrooms === null && sqft === null) return;
-    const v = zUnitDetails.safeParse({ bedrooms, bathrooms, sqft });
+    const v = PutUnitDetailsBody.safeParse({ bedrooms, bathrooms, sqft });
     if (!v.success) {
-      this.blockRow(row, 'unit_details', null, v.error.issues[0]?.message ?? 'invalid unit details');
+      this.blockRow(row, 'unit_details', null, firstIssue(v.error));
       return;
     }
     const ins = await this.client.query(
       `insert into unit_details (area_id, account_id, bedrooms, bathrooms, sqft)
        values ($1, $2, $3, $4, $5) on conflict (area_id) do nothing returning area_id`,
-      [areaId, this.accountId, bedrooms, bathrooms, sqft],
+      [areaId, this.accountId, v.data.bedrooms ?? null, v.data.bathrooms ?? null, v.data.sqft ?? null],
     );
     if (ins.rowCount === 1) {
       this.recordCreated('unit_details', areaId);
@@ -423,16 +464,21 @@ class ExecCtx {
       this.recordReused('tenant');
       return id;
     }
-    const v = zTenant.safeParse({ full_name: name });
-    if (!v.success) {
-      this.blockRow(row, 'tenant', 'full_name', v.error.issues[0]?.message ?? 'invalid tenant');
-      return null;
-    }
     const email = this.getValue(fields, 'email', row.raw);
     const phone = this.getValue(fields, 'phone', row.raw);
+    const v = CreateTenantBody.safeParse({
+      full_name: name,
+      emails: email ? [email] : undefined,
+      phones: phone ? [phone] : undefined,
+    });
+    if (!v.success) {
+      // Closes the route-only gaps the DB doesn't enforce: email format + phone length.
+      this.blockRow(row, 'tenant', 'full_name', firstIssue(v.error));
+      return null;
+    }
     const ins = await this.client.query(
       `insert into tenants (account_id, full_name, emails, phones) values ($1, $2, $3, $4) returning id`,
-      [this.accountId, name, email ? [email] : [], phone ? [phone] : []],
+      [this.accountId, v.data.full_name, v.data.emails ?? [], v.data.phones ?? []],
     );
     const id = ins.rows[0].id as string;
     this.tenantCache.set(key, id);
@@ -463,14 +509,14 @@ class ExecCtx {
     }
     const today = todayIso();
     const status = end && end < today ? 'ended' : start > today ? 'upcoming' : 'active';
-    const v = zTenancy.safeParse({ start_date: start, end_date: end, status });
+    const v = CreateTenancyBody.safeParse({ area_id: areaId, start_date: start, end_date: end ?? null, status });
     if (!v.success) {
-      this.blockRow(row, 'tenancy', 'start_date', v.error.issues[0]?.message ?? 'invalid tenancy');
+      this.blockRow(row, 'tenancy', 'start_date', firstIssue(v.error));
       return null;
     }
     const ins = await this.client.query(
       `insert into tenancies (account_id, area_id, start_date, end_date, status) values ($1, $2, $3, $4, $5) returning id`,
-      [this.accountId, areaId, start, end, status],
+      [this.accountId, v.data.area_id, v.data.start_date, v.data.end_date ?? null, v.data.status],
     );
     const id = ins.rows[0].id as string;
     this.tenancyCache.set(key, id);
@@ -487,10 +533,15 @@ class ExecCtx {
   ): Promise<void> {
     const rawRole = (this.getValue(fields, 'role', row.raw) ?? 'primary').toLowerCase();
     const role = ['primary', 'occupant', 'guarantor'].includes(rawRole) ? rawRole : 'primary';
+    const v = AddMemberBody.safeParse({ tenant_id: tenantId, role });
+    if (!v.success) {
+      this.blockRow(row, 'tenancy_member', 'role', firstIssue(v.error));
+      return;
+    }
     const ins = await this.client.query(
       `insert into tenancy_tenants (account_id, tenancy_id, tenant_id, role) values ($1, $2, $3, $4)
        on conflict (tenancy_id, tenant_id, role) do nothing returning id`,
-      [this.accountId, tenancyId, tenantId, role],
+      [this.accountId, tenancyId, v.data.tenant_id, v.data.role],
     );
     if (ins.rowCount === 1) {
       this.recordCreated('tenancy_member', ins.rows[0].id as string);
@@ -515,15 +566,20 @@ class ExecCtx {
     const currency = coerceCurrency(this.getValue(fields, 'rent_currency', row.raw)) ?? 'USD';
     const depositCents = coerceMoney(this.getValue(fields, 'deposit_amount', row.raw)) ?? 0;
 
-    const v = zLease.safeParse({
+    const today = todayIso();
+    const status = termEnd && termEnd < today ? 'expired' : 'active';
+    const v = CreateLeaseBody.safeParse({
+      tenancy_id: tenancyId,
       term_start: termStart,
-      term_end: termEnd,
+      term_end: termEnd ?? null,
       rent_amount_cents: rentCents,
       rent_currency: currency,
       deposit_amount_cents: depositCents,
+      deposit_currency: depositCents > 0 ? currency : undefined,
+      status,
     });
     if (!v.success) {
-      this.blockRow(row, 'lease', null, v.error.issues[0]?.message ?? 'invalid lease');
+      this.blockRow(row, 'lease', null, firstIssue(v.error));
       return;
     }
     const cacheKey = `${tenancyId}::${termStart}::${rentCents}`;
@@ -541,8 +597,6 @@ class ExecCtx {
       this.recordReused('lease');
       return;
     }
-    const today = todayIso();
-    const status = termEnd && termEnd < today ? 'expired' : 'active';
     const ins = await this.client.query(
       `insert into leases
          (account_id, tenancy_id, term_start, term_end, rent_amount_cents, rent_currency,
@@ -550,14 +604,14 @@ class ExecCtx {
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
       [
         this.accountId,
-        tenancyId,
-        termStart,
-        termEnd,
-        rentCents,
-        currency,
-        depositCents,
-        depositCents > 0 ? currency : null,
-        status,
+        v.data.tenancy_id,
+        v.data.term_start,
+        v.data.term_end ?? null,
+        v.data.rent_amount_cents,
+        v.data.rent_currency,
+        v.data.deposit_amount_cents ?? 0,
+        v.data.deposit_currency ?? null,
+        v.data.status,
       ],
     );
     const id = ins.rows[0].id as string;
@@ -584,15 +638,16 @@ class ExecCtx {
     const startDate = coerceDate(this.getValue(fields, 'start_date', row.raw)) ?? tenancyStart;
     const kind = 'rent';
 
-    const v = zRentSchedule.safeParse({
+    const v = CreateRentScheduleBody.safeParse({
+      tenancy_id: tenancyId,
+      kind,
       amount_cents: amountCents,
       currency,
       due_day: dueDay,
       start_date: startDate,
-      kind,
     });
     if (!v.success) {
-      this.blockRow(row, 'rent_schedule', 'amount', v.error.issues[0]?.message ?? 'invalid rent schedule');
+      this.blockRow(row, 'rent_schedule', 'amount', firstIssue(v.error));
       return;
     }
     const cacheKey = `${tenancyId}::${kind}::${startDate}`;
@@ -613,7 +668,7 @@ class ExecCtx {
     const ins = await this.client.query(
       `insert into rent_schedules (account_id, tenancy_id, kind, amount_cents, currency, due_day, start_date)
        values ($1, $2, $3, $4, $5, $6, $7) returning id`,
-      [this.accountId, tenancyId, kind, amountCents, currency, dueDay, startDate],
+      [this.accountId, v.data.tenancy_id, v.data.kind, v.data.amount_cents, v.data.currency, v.data.due_day, v.data.start_date],
     );
     const id = ins.rows[0].id as string;
     this.rentScheduleCache.add(cacheKey);
@@ -635,7 +690,7 @@ class ExecCtx {
 
     // property
     if (this.parents.default_property_id) {
-      propertyId = this.parents.default_property_id;
+      propertyId = await this.resolveDefaultProperty(row, this.parents.default_property_id);
     } else if (scope.has('property')) {
       const name = this.getValue(regionMap.get('property'), 'name', row.raw);
       if (!name) this.blockRow(row, 'property', 'name', 'missing property name');
@@ -675,11 +730,13 @@ class ExecCtx {
       } else {
         const startRaw = this.getValue(regionMap.get('tenancy'), 'start_date', row.raw);
         const start = coerceDate(startRaw);
+        this.recordDate('tenancy.start_date', startRaw, start);
         if (!start) {
           this.blockRow(row, 'tenancy', 'start_date', startRaw ? `unparseable start date "${startRaw}"` : 'missing tenancy start date');
         } else {
           const endRaw = this.getValue(regionMap.get('tenancy'), 'end_date', row.raw);
           const end = endRaw ? coerceDate(endRaw) : null;
+          this.recordDate('tenancy.end_date', endRaw, end);
           if (endRaw && !end) {
             this.blockRow(row, 'tenancy', 'end_date', `unparseable end date "${endRaw}"`);
           } else if (end && end < start) {
@@ -715,6 +772,7 @@ class ExecCtx {
       counts: this.counts,
       created_ids: this.createdIds,
       blockers: this.blockers,
+      date_interpretations: [...this.dateSamples.values()],
     };
   }
 

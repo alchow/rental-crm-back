@@ -103,6 +103,15 @@ const ExecutionResultSchema = z
     counts: z.record(z.object({ created: z.number().int(), reused: z.number().int() })),
     created_ids: z.record(z.array(z.string())),
     blockers: z.array(z.any()),
+    date_interpretations: z.array(
+      z.object({
+        field: z.string(),
+        raw: z.string(),
+        iso: z.string(),
+        interpreted_as: z.string(),
+        ambiguous: z.boolean(),
+      }),
+    ),
   })
   .openapi('ImportExecutionResult');
 

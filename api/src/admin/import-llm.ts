@@ -44,11 +44,30 @@ function getClient(): Anthropic {
   return client;
 }
 
+// --- test seam ---------------------------------------------------------------
+// Lets integration tests inject canned tool-use responses so the full pipeline
+// (recognize -> map -> resolve -> preview -> confirm) and every decline/blocker
+// branch are deterministically CI-tested with NO Anthropic key. import-llm's
+// own validation/filtering still runs over the canned input. Never used in any
+// production path.
+export interface FakeAnthropic {
+  messages: { create: (params: Record<string, unknown>) => Promise<{ content: unknown[] }> };
+}
+let testClient: FakeAnthropic | null = null;
+export function __setAnthropicForTests(c: FakeAnthropic | null): void {
+  testClient = c;
+  client = null;
+}
+
 // Casting helper: the request surface (thinking, output_config) is wider than
 // the pinned SDK's static param type in places; build the object freely and
 // hand it to the SDK as its param type. Keeps us off `any`.
 type CreateParams = Record<string, unknown>;
 async function createMessage(params: CreateParams): Promise<Anthropic.Messages.Message> {
+  if (testClient) {
+    const r = await testClient.messages.create(params as Record<string, unknown>);
+    return r as unknown as Anthropic.Messages.Message;
+  }
   return getClient().messages.create(
     params as unknown as Anthropic.Messages.MessageCreateParamsNonStreaming,
   );
@@ -309,11 +328,16 @@ export async function suggestMapping(
       const source_column = f.source_column && columnNames.has(f.source_column) ? f.source_column : null;
       const constant = f.constant ?? null;
       if (!source_column && (constant === null || constant === '')) continue;
+      const confidence = clamp01(f.confidence ?? 0);
+      // Leave a low-confidence COLUMN guess unmapped rather than guessing -- the
+      // user maps it explicitly (a required field left unmapped surfaces as a
+      // blocker in preview). Constants are deliberate, so they're kept.
+      if (source_column && confidence < MIN_CONFIDENCE) continue;
       fields.push({
         target_field: f.target_field,
         source_column,
         constant: source_column ? null : constant,
-        confidence: clamp01(f.confidence ?? 0),
+        confidence,
       });
     }
   }

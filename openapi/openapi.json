@@ -3979,6 +3979,36 @@
           "blockers": {
             "type": "array",
             "items": {}
+          },
+          "date_interpretations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "raw": {
+                  "type": "string"
+                },
+                "iso": {
+                  "type": "string"
+                },
+                "interpreted_as": {
+                  "type": "string"
+                },
+                "ambiguous": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "field",
+                "raw",
+                "iso",
+                "interpreted_as",
+                "ambiguous"
+              ]
+            }
           }
         },
         "required": [
@@ -3991,7 +4021,8 @@
           "rows_imported",
           "counts",
           "created_ids",
-          "blockers"
+          "blockers",
+          "date_interpretations"
         ]
       },
       "ImportRunResponse": {

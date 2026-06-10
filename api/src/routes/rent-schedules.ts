@@ -30,7 +30,8 @@ const RentSchedule = z
   })
   .openapi('RentSchedule');
 
-const CreateRentScheduleBody = z
+// Exported for reuse by the onboarding-import executor (same-schema validation).
+export const CreateRentScheduleBody = z
   .object({
     tenancy_id: z.string().uuid(),
     kind: ScheduleKind,

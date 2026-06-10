@@ -34,7 +34,9 @@ const Property = z
   })
   .openapi('Property');
 
-const CreatePropertyBody = z
+// Exported so the onboarding-import executor validates against the EXACT same
+// schema an HTTP POST would, rather than a hand-rolled parallel copy.
+export const CreatePropertyBody = z
   .object({
     name: z.string().min(1).max(200),
     address: Address.optional(),

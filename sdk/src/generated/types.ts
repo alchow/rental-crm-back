@@ -7305,6 +7305,13 @@ export interface components {
                 [key: string]: string[];
             };
             blockers: unknown[];
+            date_interpretations: {
+                field: string;
+                raw: string;
+                iso: string;
+                interpreted_as: string;
+                ambiguous: boolean;
+            }[];
         };
         ImportRunResponse: {
             result: components["schemas"]["ImportExecutionResult"];

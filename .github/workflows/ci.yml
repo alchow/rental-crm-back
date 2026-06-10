@@ -224,6 +224,16 @@ jobs:
         # immutability; HTML upload rejected.
         run: pnpm --filter ./api test:attachments
 
+      - name: Run onboarding-import DoD checks (Phase 1)
+        # Full recognize -> map -> resolve -> preview -> confirm pipeline and
+        # every decline/blocker branch, with the Anthropic client replaced by
+        # a canned FakeAnthropic (__setAnthropicForTests) -- no API key
+        # needed. Also covers cross-account isolation under the raw-pg
+        # service_role executor and the HTTP-level idempotency/409/404/error-
+        # envelope contract. The opt-in live-LLM smoke test
+        # (test:imports-live) is intentionally NOT run here.
+        run: pnpm --filter ./api test:imports
+
       - name: Stop Supabase stack
         if: always()
         working-directory: db

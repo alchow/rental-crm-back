@@ -23,7 +23,8 @@ const UnitDetails = z
   })
   .openapi('UnitDetails');
 
-const PutUnitDetailsBody = z
+// Exported for reuse by the onboarding-import executor (same-schema validation).
+export const PutUnitDetailsBody = z
   .object({
     bedrooms: z.number().int().nonnegative().nullable().optional(),
     bathrooms: z.number().nonnegative().nullable().optional(),
