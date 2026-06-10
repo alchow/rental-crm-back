@@ -114,30 +114,31 @@ const SCOPE_NOTE =
 
 const zEntity = z.enum(ENTITY_ORDER as [EntityType, ...EntityType[]]);
 
-const RecognitionInput = z.object({
-  regions: z
-    .array(
-      z.object({
-        region_index: z.number().int().nonnegative(),
-        importable: z.boolean(),
-        summary: z.string().default(''),
-        entity_types: z
-          .array(
-            z.object({
-              entity_type: zEntity,
-              confidence: z.number(),
-            }),
-          )
-          .default([]),
-      }),
-    )
-    .default([]),
+// Validation is SALVAGE, not all-or-nothing: the outer shape must hold, but a
+// single bad region (or a single bad entity_types entry) is dropped with a log
+// line instead of failing the whole recognition. A hallucinated enum value in
+// one entry must not kill the import -- that exact failure shipped to prod as
+// "recognition: malformed LLM response" on an otherwise-fine response.
+const RecognitionOuter = z.object({ regions: z.array(z.unknown()).default([]) });
+const RecognitionRegion = z.object({
+  region_index: z.number().int().nonnegative(),
+  importable: z.boolean(),
+  summary: z.string().default(''),
+  entity_types: z.array(z.unknown()).default([]),
+});
+const RecognitionEntity = z.object({
+  entity_type: zEntity,
+  confidence: z.number(),
 });
 
+// strict: true makes the API enforce the schema (incl. the entity enum) at
+// generation time instead of merely guiding the model with it. Strict mode
+// requires additionalProperties: false on every object.
 const recognitionTool = {
   name: 'report_recognition',
   description:
     'Report, for every region, whether it holds importable structural data and which entity types its columns map to.',
+  strict: true,
   input_schema: {
     type: 'object',
     properties: {
@@ -161,14 +162,17 @@ const recognitionTool = {
                   confidence: { type: 'number', description: '0..1' },
                 },
                 required: ['entity_type', 'confidence'],
+                additionalProperties: false,
               },
             },
           },
           required: ['region_index', 'importable', 'summary', 'entity_types'],
+          additionalProperties: false,
         },
       },
     },
     required: ['regions'],
+    additionalProperties: false,
   },
 };
 
@@ -176,59 +180,98 @@ export async function recognizeRegions(regions: ParsedRegion[]): Promise<Recogni
   if (regions.length === 0) return [];
   const digests = regions.map((r, i) => regionDigest(r, i));
 
-  const msg = await createMessage({
-    model: MODEL,
-    max_tokens: 4096,
-    output_config: { effort: 'high' },
-    system:
-      'You classify columns of a landlord/property spreadsheet against a fixed schema. ' +
-      SCOPE_NOTE +
-      ' You are advisory only — a deterministic engine does the importing. ' +
-      'A region is importable only if its columns can populate the required fields of at least one entity. ' +
-      'If a region is a summary, a legend, totals, or otherwise not a row-per-record table, mark importable=false.',
-    tools: [recognitionTool],
-    tool_choice: { type: 'tool', name: 'report_recognition' },
-    messages: [
-      {
-        role: 'user',
-        content:
-          `Target schema:\n${catalogForPrompt()}\n\n` +
-          `Regions (column names + up to 5 sample values each; row data withheld):\n` +
-          JSON.stringify(digests, null, 2) +
-          `\n\nCall report_recognition for ALL ${regions.length} region(s).`,
-      },
-    ],
-  });
-
-  const parsed = RecognitionInput.safeParse(toolInput(msg, 'report_recognition'));
-  if (!parsed.success) {
-    throw new ApiError(502, 'internal_error', 'recognition: malformed LLM response');
-  }
-
-  // Index by region so we always return one result per input region.
-  const byRegion = new Map<number, RecognitionResult>();
-  for (const r of parsed.data.regions) {
-    if (r.region_index < 0 || r.region_index >= regions.length) continue;
-    const entity_types = r.entity_types
-      .map((e) => ({ entity_type: e.entity_type, confidence: clamp01(e.confidence) }))
-      .filter((e) => e.confidence >= MIN_CONFIDENCE)
-      .sort((a, b) => b.confidence - a.confidence);
-    byRegion.set(r.region_index, {
-      region_index: r.region_index,
-      importable: r.importable && entity_types.length > 0,
-      entity_types,
-      summary: r.summary,
+  // Two attempts: strict mode makes a malformed response rare, but a response
+  // truncated at max_tokens (or any other transient deviation) can still lose
+  // the tool block. The model is stochastic, so one retry is cheap insurance.
+  let lastFailure = 'no attempt made';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const msg = await createMessage({
+      model: MODEL,
+      max_tokens: 4096,
+      output_config: { effort: 'high' },
+      system:
+        'You classify columns of a landlord/property spreadsheet against a fixed schema. ' +
+        SCOPE_NOTE +
+        ' You are advisory only — a deterministic engine does the importing. ' +
+        'A region is importable only if its columns can populate the required fields of at least one entity. ' +
+        'If a region is a summary, a legend, totals, or otherwise not a row-per-record table, mark importable=false.',
+      tools: [recognitionTool],
+      tool_choice: { type: 'tool', name: 'report_recognition' },
+      messages: [
+        {
+          role: 'user',
+          content:
+            `Target schema:\n${catalogForPrompt()}\n\n` +
+            `Regions (column names + up to 5 sample values each; row data withheld):\n` +
+            JSON.stringify(digests, null, 2) +
+            `\n\nCall report_recognition for ALL ${regions.length} region(s).`,
+        },
+      ],
     });
+
+    const raw = toolInput(msg, 'report_recognition');
+    const outer = RecognitionOuter.safeParse(raw);
+    if (!outer.success) {
+      // Log enough to root-cause from prod: stop_reason distinguishes a
+      // max_tokens truncation from a schema deviation. The raw input is
+      // model-generated (entity types + one-line summaries) -- no row data.
+      const stopReason = (msg as { stop_reason?: string }).stop_reason ?? 'unknown';
+      lastFailure =
+        `attempt ${attempt}: stop_reason=${stopReason} ` +
+        `issues=${JSON.stringify(outer.error.issues)} ` +
+        `raw=${JSON.stringify(raw)?.slice(0, 2000) ?? 'null'}`;
+      console.error(`[import-llm] recognition: malformed response (${lastFailure})`);
+      continue;
+    }
+
+    // Index by region so we always return one result per input region.
+    // Salvage granularity: drop a bad region entry, drop a bad entity entry --
+    // never the whole response.
+    const byRegion = new Map<number, RecognitionResult>();
+    for (const rawRegion of outer.data.regions) {
+      const parsedRegion = RecognitionRegion.safeParse(rawRegion);
+      if (!parsedRegion.success) {
+        console.error(
+          `[import-llm] recognition: dropping malformed region entry ` +
+            `issues=${JSON.stringify(parsedRegion.error.issues)} raw=${JSON.stringify(rawRegion)?.slice(0, 500)}`,
+        );
+        continue;
+      }
+      const r = parsedRegion.data;
+      if (r.region_index < 0 || r.region_index >= regions.length) continue;
+      const entity_types = r.entity_types
+        .flatMap((rawEntity) => {
+          const e = RecognitionEntity.safeParse(rawEntity);
+          if (!e.success) {
+            console.error(
+              `[import-llm] recognition: dropping malformed entity entry ` +
+                `raw=${JSON.stringify(rawEntity)?.slice(0, 200)}`,
+            );
+            return [];
+          }
+          return [{ entity_type: e.data.entity_type, confidence: clamp01(e.data.confidence) }];
+        })
+        .filter((e) => e.confidence >= MIN_CONFIDENCE)
+        .sort((a, b) => b.confidence - a.confidence);
+      byRegion.set(r.region_index, {
+        region_index: r.region_index,
+        importable: r.importable && entity_types.length > 0,
+        entity_types,
+        summary: r.summary,
+      });
+    }
+    return regions.map(
+      (_r, i) =>
+        byRegion.get(i) ?? {
+          region_index: i,
+          importable: false,
+          entity_types: [],
+          summary: 'Not recognized as importable structural data.',
+        },
+    );
   }
-  return regions.map(
-    (_r, i) =>
-      byRegion.get(i) ?? {
-        region_index: i,
-        importable: false,
-        entity_types: [],
-        summary: 'Not recognized as importable structural data.',
-      },
-  );
+
+  throw new ApiError(502, 'internal_error', `recognition: malformed LLM response (${lastFailure})`);
 }
 
 // ============================================================================
@@ -240,6 +283,7 @@ function mappingTool(entityType: EntityType) {
   return {
     name: 'report_mapping',
     description: `Map each ${entityType} target field to a source column (or a constant, or leave unmapped).`,
+    strict: true,
     input_schema: {
       type: 'object',
       properties: {
@@ -260,10 +304,12 @@ function mappingTool(entityType: EntityType) {
               confidence: { type: 'number', description: '0..1' },
             },
             required: ['target_field', 'source_column', 'constant', 'confidence'],
+            additionalProperties: false,
           },
         },
       },
       required: ['fields'],
+      additionalProperties: false,
     },
   };
 }
@@ -318,9 +364,17 @@ export async function suggestMapping(
     ],
   });
 
-  const parsed = MappingInput.safeParse(toolInput(msg, 'report_mapping'));
+  const rawMapping = toolInput(msg, 'report_mapping');
+  const parsed = MappingInput.safeParse(rawMapping);
   const columnNames = new Set(region.columns.map((c) => c.name));
   const fields: FieldMapping[] = [];
+  if (!parsed.success) {
+    // Degrades to an empty mapping (user maps manually) -- but leave a trace.
+    console.error(
+      `[import-llm] mapping(${entityType}): malformed response ` +
+        `issues=${JSON.stringify(parsed.error.issues)} raw=${JSON.stringify(rawMapping)?.slice(0, 1000) ?? 'null'}`,
+    );
+  }
   if (parsed.success) {
     for (const f of parsed.data.fields) {
       if (!validFields.has(f.target_field)) continue;
@@ -380,6 +434,7 @@ const proposeMappingTool = {
   name: 'propose_mapping',
   description:
     'Propose a revised mapping for one or more (region, entity) pairs. The user reviews and accepts it separately.',
+  strict: true,
   input_schema: {
     type: 'object',
     properties: {
@@ -401,14 +456,17 @@ const proposeMappingTool = {
                   confidence: { type: 'number' },
                 },
                 required: ['target_field', 'source_column', 'constant', 'confidence'],
+                additionalProperties: false,
               },
             },
           },
           required: ['region_index', 'entity_type', 'fields'],
+          additionalProperties: false,
         },
       },
     },
     required: ['mapping'],
+    additionalProperties: false,
   },
 };
 
