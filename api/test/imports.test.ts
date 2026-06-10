@@ -418,6 +418,81 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
+  // (2d) area kinds: units and common areas import; junk kind blocks
+  // =========================================================================
+  await check('area kind column imports units + common areas; unknown kind blocks the row', async () => {
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a list of units and shared spaces',
+        entity_types: [{ entity_type: 'area', confidence: 0.9 }],
+      }],
+      mappings: {
+        area: [
+          { target_field: 'name', source_column: 'Area', constant: null, confidence: 0.95 },
+          { target_field: 'kind', source_column: 'Type', constant: null, confidence: 0.9 },
+        ],
+      },
+    }));
+    const session = await uploadCsv(A, [
+      ['Area', 'Type'],
+      ['Apt 9', ''],                       // empty kind -> defaults to unit
+      ['Front lawn', 'Exterior Grounds'],  // normalizes to exterior_grounds
+      ['Closet', 'broom_cupboard'],        // not an AreaKind -> row blocker
+    ]);
+    if (session.status !== 'awaiting_mapping') throw new Error(`expected awaiting_mapping, got ${session.status}`);
+
+    const patchR = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${session.id}/parents`, {
+      token: A.accessToken,
+      body: { parent_resolutions: { default_property_id: A.propertyId } },
+    });
+    assertStatus(patchR, 200, 'patch parents for kind test');
+
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/preview`, { token: A.accessToken });
+    const preview = assertStatus(previewR, 200, 'preview kinds') as {
+      result: { blockers: { field: string | null; message: string }[]; counts: Record<string, { created: number }> };
+    };
+    if (preview.result.counts.area?.created !== 2) {
+      throw new Error(`expected area created=2 (unit + exterior_grounds), got ${JSON.stringify(preview.result.counts.area)}`);
+    }
+    const kindBlocker = preview.result.blockers.find((b) => b.message.includes('unknown area kind'));
+    if (!kindBlocker) {
+      throw new Error(`expected an "unknown area kind" blocker for broom_cupboard, got ${JSON.stringify(preview.result.blockers)}`);
+    }
+    if ((kindBlocker as { code?: string }).code !== 'invalid_value') {
+      throw new Error(`expected blocker code invalid_value, got ${JSON.stringify(kindBlocker)}`);
+    }
+
+    // Confirm refuses while the blocker stands; exclude the bad row, then confirm.
+    const blockedConfirmR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/confirm`, { token: A.accessToken });
+    assertStatus(blockedConfirmR, 409, 'confirm with kind blocker');
+
+    const rowsR = await api('GET', `/v1/accounts/${A.accountId}/imports/${session.id}/rows`, { token: A.accessToken });
+    const rows = assertStatus(rowsR, 200, 'list rows for kind test') as { data: { id: string; row_index: number }[] };
+    const closetRow = rows.data.find((r) => r.row_index === 2);
+    if (!closetRow) throw new Error('expected row_index 2 in rows list');
+    const exclR = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${session.id}/rows`, {
+      token: A.accessToken,
+      body: { updates: [{ id: closetRow.id, excluded: true }] },
+    });
+    assertStatus(exclR, 200, 'exclude blocked row');
+
+    const confirmR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/confirm`, { token: A.accessToken });
+    const confirm = assertStatus(confirmR, 200, 'confirm kinds') as { result: { committed: boolean } };
+    if (!confirm.result.committed) throw new Error('expected committed=true');
+
+    const areasR = await api('GET', `/v1/accounts/${A.accountId}/areas?property_id=${A.propertyId}`, { token: A.accessToken });
+    const areas = assertStatus(areasR, 200, 'list areas after kind import') as { data: { name: string; kind: string }[] };
+    const byName = new Map(areas.data.map((a) => [a.name, a.kind]));
+    if (byName.get('Apt 9') !== 'unit') throw new Error(`expected Apt 9 kind=unit, got ${byName.get('Apt 9')}`);
+    if (byName.get('Front lawn') !== 'exterior_grounds') {
+      throw new Error(`expected Front lawn kind=exterior_grounds, got ${byName.get('Front lawn')}`);
+    }
+    if (byName.has('Closet')) throw new Error('blocked row "Closet" must not be imported');
+  });
+
+  // =========================================================================
   // (3) unit with no property -> blocker -> confirm 409 -> resolutions
   // =========================================================================
   let blockedSessionId = '';
@@ -444,10 +519,20 @@ async function main(): Promise<void> {
     if (session.status !== 'awaiting_mapping') throw new Error(`expected awaiting_mapping, got ${session.status}`);
     blockedSessionId = session.id;
 
+    // The FE-facing machine-readable signal: property needed, nothing supplies
+    // it yet -- available straight off the upload response, before any preview.
+    const req = (session as unknown as { requirements: { property: { needed: boolean; satisfied: boolean; sources: string[] } } }).requirements;
+    if (!req || req.property.needed !== true || req.property.satisfied !== false || req.property.sources.length !== 0) {
+      throw new Error(`expected requirements.property {needed:true, satisfied:false, sources:[]}, got ${JSON.stringify(req)}`);
+    }
+
     const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/preview`, { token: A.accessToken });
-    const previewBody = assertStatus(previewR, 200, 'preview') as { result: { blockers: unknown[]; counts: Record<string, { created: number; reused: number }> } };
+    const previewBody = assertStatus(previewR, 200, 'preview') as { result: { blockers: { code?: string }[]; counts: Record<string, { created: number; reused: number }> } };
     if (previewBody.result.blockers.length === 0) {
       throw new Error('expected a blocker for the unmapped property parent');
+    }
+    if (!previewBody.result.blockers.some((b) => b.code === 'missing_parent_property')) {
+      throw new Error(`expected a missing_parent_property code, got ${JSON.stringify(previewBody.result.blockers)}`);
     }
     const propCounts = previewBody.result.counts.property;
     if (!propCounts || propCounts.created !== 0 || propCounts.reused !== 0) {
@@ -464,7 +549,14 @@ async function main(): Promise<void> {
       token: A.accessToken,
       body: { parent_resolutions: { default_property_id: A.propertyId } },
     });
-    assertStatus(r, 200, 'patch parents (default_property_id)');
+    const patched = assertStatus(r, 200, 'patch parents (default_property_id)') as {
+      requirements: { property: { needed: boolean; satisfied: boolean; sources: string[] } };
+    };
+    // requirements flips to satisfied the moment the parent is supplied.
+    const pr = patched.requirements?.property;
+    if (!pr || pr.needed !== true || pr.satisfied !== true || !pr.sources.includes('default_property_id')) {
+      throw new Error(`expected requirements.property satisfied via default_property_id, got ${JSON.stringify(patched.requirements)}`);
+    }
 
     const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${blockedSessionId}/preview`, { token: A.accessToken });
     const previewBody = assertStatus(previewR, 200, 'preview after default_property_id') as {

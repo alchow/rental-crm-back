@@ -7181,6 +7181,13 @@ export interface components {
         EvidenceExportList: {
             data: components["schemas"]["EvidenceExport"][];
         };
+        ImportRequirements: {
+            property: {
+                needed: boolean;
+                satisfied: boolean;
+                sources: ("mapped_column" | "default_property_id" | "property_overrides")[];
+            };
+        };
         ImportSession: {
             /** Format: uuid */
             id: string;
@@ -7201,6 +7208,7 @@ export interface components {
             preview_summary?: unknown;
             result?: unknown;
             error: string | null;
+            requirements: components["schemas"]["ImportRequirements"];
             created_at: string;
             updated_at: string;
             deleted_at: string | null;
@@ -7256,6 +7264,8 @@ export interface components {
         ImportChatBody: {
             message: string;
         };
+        /** @enum {string} */
+        ImportBlockerCode: "missing_parent_property" | "missing_parent_area" | "parent_not_found" | "ambiguous_match" | "unmapped_required_field" | "missing_required_field" | "unparseable_value" | "date_order" | "invalid_value" | "details_on_non_unit";
         ImportRow: {
             /** Format: uuid */
             id: string;
@@ -7269,7 +7279,11 @@ export interface components {
                 [key: string]: unknown;
             };
             excluded: boolean;
-            blockers: unknown[];
+            blockers: {
+                field: string | null;
+                code: components["schemas"]["ImportBlockerCode"];
+                message: string;
+            }[];
             created_at: string;
             updated_at: string;
         };
@@ -7286,6 +7300,16 @@ export interface components {
                 id: string;
                 excluded: boolean;
             }[];
+        };
+        ImportBlocker: {
+            /** @enum {string} */
+            scope: "region" | "row";
+            region_index: number;
+            row_index: number | null;
+            entity_type: string | null;
+            field: string | null;
+            code: components["schemas"]["ImportBlockerCode"];
+            message: string;
         };
         ImportExecutionResult: {
             committed: boolean;
@@ -7304,7 +7328,7 @@ export interface components {
             created_ids: {
                 [key: string]: string[];
             };
-            blockers: unknown[];
+            blockers: components["schemas"]["ImportBlocker"][];
             date_interpretations: {
                 field: string;
                 raw: string;

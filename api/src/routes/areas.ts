@@ -12,7 +12,7 @@ import { decodeCursor, encodeCursor } from './_lib/cursor';
 // The composite FK on (account_id, property_id) makes a cross-account
 // property_id rejected by the DB, not just by RLS. The route relies on that.
 
-const AreaKind = z.enum([
+export const AreaKind = z.enum([
   'unit',
   'entrance',
   'hallway',
