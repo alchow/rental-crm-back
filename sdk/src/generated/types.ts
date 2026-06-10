@@ -36,15 +36,6 @@ export interface paths {
                         "application/json": components["schemas"]["SignupResponse"];
                     };
                 };
-                /** @description pending email verification */
-                202: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["SignupPendingVerification"];
-                    };
-                };
                 /** @description invalid request */
                 400: {
                     headers: {
@@ -5626,11 +5617,6 @@ export interface components {
             };
             session: components["schemas"]["AuthSession"];
         };
-        SignupPendingVerification: {
-            /** @enum {boolean} */
-            pending_verification: true;
-            message: string;
-        };
         ErrorEnvelope: {
             error: {
                 /**
@@ -5696,7 +5682,12 @@ export interface components {
             account_id: string;
             name: string;
             address: {
-                [key: string]: unknown;
+                line1?: string;
+                line2?: string;
+                city?: string;
+                state?: string;
+                zip?: string;
+                country?: string;
             } | null;
             created_at: string;
             updated_at: string;
@@ -5709,13 +5700,23 @@ export interface components {
         CreatePropertyBody: {
             name: string;
             address?: {
-                [key: string]: unknown;
+                line1?: string;
+                line2?: string;
+                city?: string;
+                state?: string;
+                zip?: string;
+                country?: string;
             };
         };
         PatchPropertyBody: {
             name?: string;
             address?: {
-                [key: string]: unknown;
+                line1?: string;
+                line2?: string;
+                city?: string;
+                state?: string;
+                zip?: string;
+                country?: string;
             };
         };
         Vendor: {
