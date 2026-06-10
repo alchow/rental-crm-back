@@ -74,10 +74,20 @@ export const ENTITY_CATALOG: Record<EntityType, EntitySpec> = {
   },
   area: {
     entity_type: 'area',
-    label: 'Unit',
-    description: 'A rentable unit within a property (kind is fixed to "unit").',
+    label: 'Unit / common area',
+    description: 'A rentable unit or a shared/common space within a property.',
     fields: [
-      { field: 'name', label: 'Unit label', type: 'string', required: true, description: 'Unit number/label, e.g. "1A", "Apt 203", "Rear".' },
+      { field: 'name', label: 'Area label', type: 'string', required: true, description: 'Unit number/label or area name, e.g. "1A", "Apt 203", "Front lawn", "Laundry room".' },
+      {
+        field: 'kind',
+        label: 'Area kind',
+        type: 'string',
+        required: false,
+        description:
+          'What the area is. One of: "unit", "entrance", "hallway", "stairwell", "basement_mechanical", ' +
+          '"laundry", "parking", "roof", "exterior_grounds", "common_other". Defaults to "unit" when unmapped. ' +
+          'Use a constant when every row in the region is the same kind.',
+      },
     ],
   },
   unit_details: {
@@ -184,3 +194,81 @@ export interface RecognitionResult {
 // Floor below which a recognition/mapping suggestion is treated as noise and
 // not surfaced as a default. Shared by the LLM module and the routes.
 export const MIN_CONFIDENCE = 0.5;
+
+// ----------------------------------------------------------------------------
+// Machine-readable blocker codes. The FE switches on `code` (a closed enum in
+// the OpenAPI spec / generated SDK); `message` is for humans only. Adding a
+// blocker call site with a new failure class means adding a code here -- the
+// contract-drift CI gate keeps spec/SDK in lockstep.
+// ----------------------------------------------------------------------------
+
+export const BLOCKER_CODES = [
+  'missing_parent_property', // physical row has no property source (map a column or set a default)
+  'missing_parent_area', // tenancy row has no unit/area
+  'parent_not_found', // a bound parent id does not resolve in this account
+  'ambiguous_match', // name matches more than one existing entity
+  'unmapped_required_field', // region-level: a required field has no column/constant mapped
+  'missing_required_field', // row-level: the mapped cell is empty
+  'unparseable_value', // cell present but not coercible (date, money, ...)
+  'date_order', // end date precedes start date
+  'invalid_value', // failed the same Zod validation an HTTP POST would
+  'details_on_non_unit', // unit_details mapped onto a non-unit area kind
+] as const;
+export type BlockerCode = (typeof BLOCKER_CODES)[number];
+
+// ----------------------------------------------------------------------------
+// Parent requirements -- the deterministic "property needed / satisfied"
+// signal the FE drives its resolution UI from (no message parsing, no LLM).
+// Computed from the same catalog the executor enforces, so the two cannot
+// disagree: every entity below `area` transitively requires a property.
+// ----------------------------------------------------------------------------
+
+const PROPERTY_DEPENDENT: ReadonlySet<EntityType> = new Set([
+  'area',
+  'unit_details',
+  'tenancy',
+  'tenancy_member',
+  'lease',
+  'rent_schedule',
+]);
+
+export type PropertySource = 'mapped_column' | 'default_property_id' | 'property_overrides';
+
+export interface ImportRequirements {
+  property: {
+    /** True when the current mapping contains an entity that needs a property. */
+    needed: boolean;
+    /** True when the requirement is met (or vacuously, when not needed). */
+    satisfied: boolean;
+    /** Which mechanisms currently supply the property. */
+    sources: PropertySource[];
+  };
+}
+
+export function computeRequirements(
+  mapping: RegionEntityMapping[],
+  parents: {
+    default_property_id?: string | null;
+    property_overrides?: Record<string, unknown> | null;
+  } | null,
+): ImportRequirements {
+  const needed = mapping.some(
+    (m) =>
+      PROPERTY_DEPENDENT.has(m.entity_type) &&
+      m.fields.some((f) => f.source_column || (f.constant != null && f.constant !== '')),
+  );
+  const sources: PropertySource[] = [];
+  const propertyMapped = mapping.some(
+    (m) =>
+      m.entity_type === 'property' &&
+      m.fields.some(
+        (f) => f.target_field === 'name' && (f.source_column || (f.constant != null && f.constant !== '')),
+      ),
+  );
+  if (propertyMapped) sources.push('mapped_column');
+  if (parents?.default_property_id) sources.push('default_property_id');
+  if (parents?.property_overrides && Object.keys(parents.property_overrides).length > 0) {
+    sources.push('property_overrides');
+  }
+  return { property: { needed, satisfied: !needed || sources.length > 0, sources } };
+}

@@ -13,6 +13,7 @@ import {
 import { recognizeAndSuggest, chat, type ChatTurn } from '../admin/import-llm';
 import { uploadImportSource } from '../admin/import-storage';
 import { runImport } from '../admin/import-executor';
+import { BLOCKER_CODES, computeRequirements, type RegionEntityMapping } from '../admin/import-catalog';
 
 // ============================================================================
 // Onboarding import — upload an arbitrary Excel/CSV, recognize it, map it to
@@ -41,6 +42,35 @@ import { runImport } from '../admin/import-executor';
 
 // ----- schemas ---------------------------------------------------------------
 
+// Stable machine-readable blocker cause. The FE switches on `code` (+ the
+// structured fields around it); `message` is display-only and may change.
+const BlockerCodeSchema = z.enum(BLOCKER_CODES).openapi('ImportBlockerCode');
+
+const ImportBlocker = z
+  .object({
+    scope: z.enum(['region', 'row']),
+    region_index: z.number().int(),
+    row_index: z.number().int().nullable(),
+    entity_type: z.string().nullable(),
+    field: z.string().nullable(),
+    code: BlockerCodeSchema,
+    message: z.string(),
+  })
+  .openapi('ImportBlocker');
+
+// Deterministic parent-requirement signal, computed from the same catalog the
+// executor enforces -- present on every session response so the FE can stage
+// its property-resolution step without parsing messages or running a preview.
+const ImportRequirementsSchema = z
+  .object({
+    property: z.object({
+      needed: z.boolean(),
+      satisfied: z.boolean(),
+      sources: z.array(z.enum(['mapped_column', 'default_property_id', 'property_overrides'])),
+    }),
+  })
+  .openapi('ImportRequirements');
+
 const ImportSession = z
   .object({
     id: z.string().uuid(),
@@ -58,6 +88,7 @@ const ImportSession = z
     preview_summary: z.any().nullable(),
     result: z.any().nullable(),
     error: z.string().nullable(),
+    requirements: ImportRequirementsSchema,
     created_at: z.string(),
     updated_at: z.string(),
     deleted_at: z.string().nullable(),
@@ -73,7 +104,7 @@ const ImportRow = z
     row_index: z.number().int(),
     raw: z.record(z.any()),
     excluded: z.boolean(),
-    blockers: z.array(z.any()),
+    blockers: z.array(z.object({ field: z.string().nullable(), code: BlockerCodeSchema, message: z.string() })),
     created_at: z.string(),
     updated_at: z.string(),
   })
@@ -102,7 +133,7 @@ const ExecutionResultSchema = z
     rows_imported: z.number().int(),
     counts: z.record(z.object({ created: z.number().int(), reused: z.number().int() })),
     created_ids: z.record(z.array(z.string())),
-    blockers: z.array(z.any()),
+    blockers: z.array(ImportBlocker),
     date_interpretations: z.array(
       z.object({
         field: z.string(),
@@ -344,6 +375,21 @@ async function loadSession(sb: Sb, accountId: string, sessionId: string): Promis
   return data as Record<string, unknown>;
 }
 
+/**
+ * Attach the computed `requirements` block to a session row on its way out.
+ * Derived (never stored) from mapping + parent_resolutions on every response,
+ * so it can't go stale when either is PATCHed.
+ */
+function sessionOut(row: Record<string, unknown>): z.infer<typeof ImportSession> {
+  return {
+    ...row,
+    requirements: computeRequirements(
+      (row.mapping ?? []) as RegionEntityMapping[],
+      (row.parent_resolutions ?? null) as Parameters<typeof computeRequirements>[1],
+    ),
+  } as z.infer<typeof ImportSession>;
+}
+
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
@@ -405,7 +451,7 @@ importsApp.openapi(upload, async (c) => {
         .eq('id', sessionId)
         .select('*')
         .single();
-      return c.json(data as z.infer<typeof ImportSession>, 201);
+      return c.json(sessionOut(data as Record<string, unknown>), 201);
     }
 
     // 4. Persist full rows to our DB (chunked). Raw values stay here.
@@ -443,7 +489,7 @@ importsApp.openapi(upload, async (c) => {
         .eq('id', sessionId)
         .select('*')
         .single();
-      return c.json(data as z.infer<typeof ImportSession>, 201);
+      return c.json(sessionOut(data as Record<string, unknown>), 201);
     }
 
     const importable = (recognition as { importable?: boolean }[]).some((r) => r.importable);
@@ -462,7 +508,7 @@ importsApp.openapi(upload, async (c) => {
       .select('*')
       .single();
     if (updErr || !data) throw new ApiError(500, 'database_error', updErr?.message ?? 'could not finalize session');
-    return c.json(data as z.infer<typeof ImportSession>, 201);
+    return c.json(sessionOut(data as Record<string, unknown>), 201);
   } catch (e) {
     const msg = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
     await fail(msg);
@@ -500,14 +546,14 @@ importsApp.openapi(list, async (c) => {
   const last = items[items.length - 1] as { created_at?: string; id?: string } | undefined;
   const nextCursor =
     hasMore && last ? encodeCursor({ created_at: String(last.created_at), id: String(last.id) }) : null;
-  return c.json({ data: items as z.infer<typeof ImportSession>[], next_cursor: nextCursor }, 200);
+  return c.json({ data: (items as Record<string, unknown>[]).map(sessionOut), next_cursor: nextCursor }, 200);
 });
 
 importsApp.openapi(get, async (c) => {
   const { accountId, sessionId } = c.req.valid('param');
   const sb = getUserClient(c.get('auth').accessToken);
   const data = await loadSession(sb, accountId, sessionId);
-  return c.json(data as z.infer<typeof ImportSession>, 200);
+  return c.json(sessionOut(data as Record<string, unknown>), 200);
 });
 
 // ---- mapping / parents ------------------------------------------------------
@@ -525,7 +571,7 @@ importsApp.openapi(patchMapping, async (c) => {
     .select('*')
     .single();
   if (error || !data) throw new ApiError(500, 'database_error', error?.message ?? 'update failed');
-  return c.json(data as z.infer<typeof ImportSession>, 200);
+  return c.json(sessionOut(data as Record<string, unknown>), 200);
 });
 
 importsApp.openapi(patchParents, async (c) => {
@@ -542,7 +588,7 @@ importsApp.openapi(patchParents, async (c) => {
     .select('*')
     .single();
   if (error || !data) throw new ApiError(500, 'database_error', error?.message ?? 'update failed');
-  return c.json(data as z.infer<typeof ImportSession>, 200);
+  return c.json(sessionOut(data as Record<string, unknown>), 200);
 });
 
 // ---- chat -------------------------------------------------------------------
@@ -581,7 +627,7 @@ importsApp.openapi(postChat, async (c) => {
     {
       reply: result.reply,
       proposed_mapping: result.proposed_mapping as z.infer<typeof RegionEntityMappingSchema>[] | null,
-      session: data as z.infer<typeof ImportSession>,
+      session: sessionOut(data as Record<string, unknown>),
     },
     200,
   );
@@ -665,7 +711,7 @@ importsApp.openapi(preview, async (c) => {
   }
   const result = await runImport(sessionId, accountId, true);
   const refreshed = await loadSession(sb, accountId, sessionId);
-  return c.json({ result, session: refreshed as z.infer<typeof ImportSession> }, 200);
+  return c.json({ result, session: sessionOut(refreshed as Record<string, unknown>) }, 200);
 });
 
 importsApp.openapi(confirm, async (c) => {
@@ -709,10 +755,10 @@ importsApp.openapi(confirm, async (c) => {
       409,
       'conflict',
       'import has unresolved blockers; resolve them and retry',
-      { result, session: refreshed },
+      { result, session: sessionOut(refreshed as Record<string, unknown>) },
     );
   }
-  return c.json({ result, session: refreshed as z.infer<typeof ImportSession> }, 200);
+  return c.json({ result, session: sessionOut(refreshed as Record<string, unknown>) }, 200);
 });
 
 // ---- delete -----------------------------------------------------------------

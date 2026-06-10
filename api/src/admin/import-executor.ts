@@ -4,6 +4,7 @@ import { ApiError } from '../routes/_lib/error';
 import {
   ENTITY_ORDER,
   requiredFields,
+  type BlockerCode,
   type EntityType,
   type FieldMapping,
   type RegionEntityMapping,
@@ -15,8 +16,9 @@ import {
 // area.kind, account-scoped composite FKs, immutability) fire on the raw pg
 // connection identically; these schemas add the route-only checks the DB does
 // NOT enforce: tenant email format, phone length, address sub-field lengths.
+import type { z } from 'zod';
 import { CreatePropertyBody } from '../routes/properties';
-import { CreateAreaBody } from '../routes/areas';
+import { AreaKind, CreateAreaBody } from '../routes/areas';
 import { PutUnitDetailsBody } from '../routes/unit-details';
 import { CreateTenantBody } from '../routes/tenants';
 import { CreateTenancyBody } from '../routes/tenancies';
@@ -59,6 +61,8 @@ export interface ExecutionBlocker {
   row_index: number | null;
   entity_type: EntityType | null;
   field: string | null;
+  /** Stable machine-readable cause; the FE switches on this, never on message. */
+  code: BlockerCode;
   message: string;
 }
 
@@ -142,6 +146,18 @@ function coerceDecimal(v: string | null): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Normalize a mapped area-kind cell to the AreaKind enum. Empty/unmapped
+ * defaults to 'unit'; anything else must normalize ("Exterior Grounds" ->
+ * exterior_grounds) to an enum value or the row is blocked.
+ */
+function coerceAreaKind(v: string | null): z.infer<typeof AreaKind> | null {
+  if (v == null || v.trim() === '') return 'unit';
+  const normalized = v.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const parsed = AreaKind.safeParse(normalized);
+  return parsed.success ? parsed.data : null;
+}
+
 /** Parse a currency-ish amount to non-negative integer minor units (cents). */
 function coerceMoney(v: string | null): number | null {
   if (v == null) return null;
@@ -190,7 +206,7 @@ class ExecCtx {
   private counts: Record<string, EntityCounts> = {};
   private createdIds: Record<string, string[]> = {};
   readonly blockers: ExecutionBlocker[] = [];
-  private rowBlockers = new Map<string, { field: string | null; message: string }[]>();
+  private rowBlockers = new Map<string, { field: string | null; code: BlockerCode; message: string }[]>();
   private blockedRowIds = new Set<string>();
   private dateSamples = new Map<string, ExecutionResult['date_interpretations'][number]>();
 
@@ -231,6 +247,7 @@ class ExecCtx {
             row_index: null,
             entity_type: et,
             field: missing.join(', '),
+            code: 'unmapped_required_field',
             message: `cannot import ${et}: required field(s) not mapped: ${missing.join(', ')}`,
           });
           continue;
@@ -278,17 +295,18 @@ class ExecCtx {
     this.dateSamples.set(key, { field, raw, iso, interpreted_as: 'US M/D/Y', ambiguous });
   }
 
-  private blockRow(row: RawImportRow, entity: EntityType, field: string | null, message: string): void {
+  private blockRow(row: RawImportRow, entity: EntityType, field: string | null, code: BlockerCode, message: string): void {
     this.blockers.push({
       scope: 'row',
       region_index: row.region_index,
       row_index: row.row_index,
       entity_type: entity,
       field,
+      code,
       message,
     });
     const list = this.rowBlockers.get(row.id) ?? [];
-    list.push({ field, message });
+    list.push({ field, code, message });
     this.rowBlockers.set(row.id, list);
     this.blockedRowIds.add(row.id);
   }
@@ -331,7 +349,7 @@ class ExecCtx {
   /** Resolve the session-wide default property, verifying account ownership. */
   private async resolveDefaultProperty(row: RawImportRow, id: string): Promise<string | null> {
     if (!(await this.verifyPropertyInAccount(id))) {
-      this.blockRow(row, 'property', 'name', `default property not found in this account: ${id}`);
+      this.blockRow(row, 'property', 'name', 'parent_not_found', `default property not found in this account: ${id}`);
       return null;
     }
     if (!this.defaultPropertyCounted) {
@@ -350,7 +368,7 @@ class ExecCtx {
     if (override?.mode === 'existing' && override.id) {
       // bind_existing: the id MUST belong to this account (RLS is bypassed here).
       if (!(await this.verifyPropertyInAccount(override.id))) {
-        this.blockRow(row, 'property', 'name', `bound property not found in this account: ${override.id}`);
+        this.blockRow(row, 'property', 'name', 'parent_not_found', `bound property not found in this account: ${override.id}`);
         return null;
       }
       this.propertyCache.set(key, override.id);
@@ -363,7 +381,7 @@ class ExecCtx {
         [this.accountId, name],
       );
       if ((ex.rowCount ?? 0) > 1) {
-        this.blockRow(row, 'property', 'name', `ambiguous property "${name}" (multiple matches); resolve via parents`);
+        this.blockRow(row, 'property', 'name', 'ambiguous_match', `ambiguous property "${name}" (multiple matches); resolve via parents`);
         return null;
       }
       if (ex.rowCount === 1) {
@@ -375,7 +393,7 @@ class ExecCtx {
     }
     const v = CreatePropertyBody.safeParse({ name, address: this.buildAddress(fields, row.raw) });
     if (!v.success) {
-      this.blockRow(row, 'property', 'name', firstIssue(v.error));
+      this.blockRow(row, 'property', 'name', 'invalid_value', firstIssue(v.error));
       return null;
     }
     const ins = await this.client.query(
@@ -389,18 +407,23 @@ class ExecCtx {
     return id;
   }
 
-  private async resolveArea(row: RawImportRow, propertyId: string, name: string): Promise<string | null> {
-    const key = `${propertyId}::${name.toLowerCase()}`;
+  private async resolveArea(
+    row: RawImportRow,
+    propertyId: string,
+    name: string,
+    kind: z.infer<typeof AreaKind>,
+  ): Promise<string | null> {
+    const key = `${propertyId}::${kind}::${name.toLowerCase()}`;
     const cached = this.areaCache.get(key);
     if (cached) return cached;
 
     const ex = await this.client.query(
       `select id from areas where account_id = $1 and property_id = $2 and lower(name) = lower($3)
-         and kind = 'unit' and deleted_at is null limit 2`,
-      [this.accountId, propertyId, name],
+         and kind = $4 and deleted_at is null limit 2`,
+      [this.accountId, propertyId, name, kind],
     );
     if ((ex.rowCount ?? 0) > 1) {
-      this.blockRow(row, 'area', 'name', `ambiguous unit "${name}" within its property`);
+      this.blockRow(row, 'area', 'name', 'ambiguous_match', `ambiguous ${kind} "${name}" within its property`);
       return null;
     }
     if (ex.rowCount === 1) {
@@ -409,9 +432,9 @@ class ExecCtx {
       this.recordReused('area');
       return id;
     }
-    const v = CreateAreaBody.safeParse({ property_id: propertyId, kind: 'unit', name });
+    const v = CreateAreaBody.safeParse({ property_id: propertyId, kind, name });
     if (!v.success) {
-      this.blockRow(row, 'area', 'name', firstIssue(v.error));
+      this.blockRow(row, 'area', 'name', 'invalid_value', firstIssue(v.error));
       return null;
     }
     const ins = await this.client.query(
@@ -432,7 +455,7 @@ class ExecCtx {
     if (bedrooms === null && bathrooms === null && sqft === null) return;
     const v = PutUnitDetailsBody.safeParse({ bedrooms, bathrooms, sqft });
     if (!v.success) {
-      this.blockRow(row, 'unit_details', null, firstIssue(v.error));
+      this.blockRow(row, 'unit_details', null, 'invalid_value', firstIssue(v.error));
       return;
     }
     const ins = await this.client.query(
@@ -473,7 +496,7 @@ class ExecCtx {
     });
     if (!v.success) {
       // Closes the route-only gaps the DB doesn't enforce: email format + phone length.
-      this.blockRow(row, 'tenant', 'full_name', firstIssue(v.error));
+      this.blockRow(row, 'tenant', 'full_name', 'invalid_value', firstIssue(v.error));
       return null;
     }
     const ins = await this.client.query(
@@ -511,7 +534,7 @@ class ExecCtx {
     const status = end && end < today ? 'ended' : start > today ? 'upcoming' : 'active';
     const v = CreateTenancyBody.safeParse({ area_id: areaId, start_date: start, end_date: end ?? null, status });
     if (!v.success) {
-      this.blockRow(row, 'tenancy', 'start_date', firstIssue(v.error));
+      this.blockRow(row, 'tenancy', 'start_date', 'invalid_value', firstIssue(v.error));
       return null;
     }
     const ins = await this.client.query(
@@ -535,7 +558,7 @@ class ExecCtx {
     const role = ['primary', 'occupant', 'guarantor'].includes(rawRole) ? rawRole : 'primary';
     const v = AddMemberBody.safeParse({ tenant_id: tenantId, role });
     if (!v.success) {
-      this.blockRow(row, 'tenancy_member', 'role', firstIssue(v.error));
+      this.blockRow(row, 'tenancy_member', 'role', 'invalid_value', firstIssue(v.error));
       return;
     }
     const ins = await this.client.query(
@@ -579,7 +602,7 @@ class ExecCtx {
       status,
     });
     if (!v.success) {
-      this.blockRow(row, 'lease', null, firstIssue(v.error));
+      this.blockRow(row, 'lease', null, 'invalid_value', firstIssue(v.error));
       return;
     }
     const cacheKey = `${tenancyId}::${termStart}::${rentCents}`;
@@ -629,7 +652,7 @@ class ExecCtx {
     const amountRaw = this.getValue(fields, 'amount', row.raw);
     const amountCents = coerceMoney(amountRaw);
     if (amountCents === null) {
-      this.blockRow(row, 'rent_schedule', 'amount', amountRaw ? `unparseable rent amount "${amountRaw}"` : 'missing rent amount');
+      this.blockRow(row, 'rent_schedule', 'amount', amountRaw ? 'unparseable_value' : 'missing_required_field', amountRaw ? `unparseable rent amount "${amountRaw}"` : 'missing rent amount');
       return;
     }
     const currency = coerceCurrency(this.getValue(fields, 'currency', row.raw)) ?? 'USD';
@@ -647,7 +670,7 @@ class ExecCtx {
       start_date: startDate,
     });
     if (!v.success) {
-      this.blockRow(row, 'rent_schedule', 'amount', firstIssue(v.error));
+      this.blockRow(row, 'rent_schedule', 'amount', 'invalid_value', firstIssue(v.error));
       return;
     }
     const cacheKey = `${tenancyId}::${kind}::${startDate}`;
@@ -693,21 +716,37 @@ class ExecCtx {
       propertyId = await this.resolveDefaultProperty(row, this.parents.default_property_id);
     } else if (scope.has('property')) {
       const name = this.getValue(regionMap.get('property'), 'name', row.raw);
-      if (!name) this.blockRow(row, 'property', 'name', 'missing property name');
+      if (!name) this.blockRow(row, 'property', 'name', 'missing_required_field', 'missing property name');
       else propertyId = await this.resolveProperty(row, name, regionMap.get('property')!);
     }
 
-    // area (unit) + unit_details
+    // area (unit or common space) + unit_details
     if (scope.has('area')) {
       if (!propertyId) {
-        this.blockRow(row, 'area', 'name', 'unit needs a property: map a property column or set a default property');
+        this.blockRow(row, 'area', 'name', 'missing_parent_property', 'area needs a property: map a property column or set a default property');
       } else {
-        const unitName = this.getValue(regionMap.get('area'), 'name', row.raw);
-        if (!unitName) this.blockRow(row, 'area', 'name', 'missing unit label');
+        const areaName = this.getValue(regionMap.get('area'), 'name', row.raw);
+        if (!areaName) this.blockRow(row, 'area', 'name', 'missing_required_field', 'missing area label');
         else {
-          areaId = await this.resolveArea(row, propertyId, unitName);
-          if (areaId && scope.has('unit_details')) {
-            await this.maybeCreateUnitDetails(row, areaId, regionMap.get('unit_details')!);
+          const kindRaw = this.getValue(regionMap.get('area'), 'kind', row.raw);
+          const kind = coerceAreaKind(kindRaw);
+          if (!kind) {
+            this.blockRow(row, 'area', 'kind', 'invalid_value', `unknown area kind "${kindRaw}"`);
+          } else {
+            areaId = await this.resolveArea(row, propertyId, areaName, kind);
+            // unit_details is unit-only (DB trigger enforces area.kind='unit');
+            // surface a blocker instead of letting the trigger abort the txn.
+            if (areaId && scope.has('unit_details')) {
+              if (kind !== 'unit') {
+                const hasDetails =
+                  this.getValue(regionMap.get('unit_details'), 'bedrooms', row.raw) ||
+                  this.getValue(regionMap.get('unit_details'), 'bathrooms', row.raw) ||
+                  this.getValue(regionMap.get('unit_details'), 'sqft', row.raw);
+                if (hasDetails) this.blockRow(row, 'unit_details', null, 'details_on_non_unit', `unit details on a ${kind} area (units only)`);
+              } else {
+                await this.maybeCreateUnitDetails(row, areaId, regionMap.get('unit_details')!);
+              }
+            }
           }
         }
       }
@@ -717,7 +756,7 @@ class ExecCtx {
     if (scope.has('tenant')) {
       const fullName = this.getValue(regionMap.get('tenant'), 'full_name', row.raw);
       if (!fullName) {
-        if (scope.has('tenancy_member')) this.blockRow(row, 'tenant', 'full_name', 'missing tenant name');
+        if (scope.has('tenancy_member')) this.blockRow(row, 'tenant', 'full_name', 'missing_required_field', 'missing tenant name');
       } else {
         tenantId = await this.resolveTenant(row, fullName, regionMap.get('tenant')!);
       }
@@ -726,21 +765,21 @@ class ExecCtx {
     // tenancy + members + lease + rent_schedule
     if (scope.has('tenancy')) {
       if (!areaId) {
-        this.blockRow(row, 'tenancy', 'area', 'tenancy needs a unit');
+        this.blockRow(row, 'tenancy', 'area', 'missing_parent_area', 'tenancy needs a unit');
       } else {
         const startRaw = this.getValue(regionMap.get('tenancy'), 'start_date', row.raw);
         const start = coerceDate(startRaw);
         this.recordDate('tenancy.start_date', startRaw, start);
         if (!start) {
-          this.blockRow(row, 'tenancy', 'start_date', startRaw ? `unparseable start date "${startRaw}"` : 'missing tenancy start date');
+          this.blockRow(row, 'tenancy', 'start_date', startRaw ? 'unparseable_value' : 'missing_required_field', startRaw ? `unparseable start date "${startRaw}"` : 'missing tenancy start date');
         } else {
           const endRaw = this.getValue(regionMap.get('tenancy'), 'end_date', row.raw);
           const end = endRaw ? coerceDate(endRaw) : null;
           this.recordDate('tenancy.end_date', endRaw, end);
           if (endRaw && !end) {
-            this.blockRow(row, 'tenancy', 'end_date', `unparseable end date "${endRaw}"`);
+            this.blockRow(row, 'tenancy', 'end_date', 'unparseable_value', `unparseable end date "${endRaw}"`);
           } else if (end && end < start) {
-            this.blockRow(row, 'tenancy', 'end_date', 'end date precedes start date');
+            this.blockRow(row, 'tenancy', 'end_date', 'date_order', 'end date precedes start date');
           } else {
             tenancyId = await this.resolveTenancy(row, areaId, start, end);
             if (tenancyId) {

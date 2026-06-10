@@ -103,10 +103,10 @@ function catalogForPrompt(): string {
 }
 
 const SCOPE_NOTE =
-  'Scope is STRUCTURAL ONLY: property, area (a rentable unit; kind is always "unit"), ' +
-  'unit_details, tenant, tenancy, tenancy_member, lease (optional), rent_schedule. ' +
-  'Money history (individual charges and payments) is OUT OF SCOPE and must never be ' +
-  'proposed. rent_schedule captures the recurring rent amount, which is structural, not a charge.';
+  'Scope is STRUCTURAL ONLY: property, area (a rentable unit or a shared/common space; ' +
+  'kind defaults to "unit"), unit_details, tenant, tenancy, tenancy_member, lease (optional), ' +
+  'rent_schedule. Money history (individual charges and payments) is OUT OF SCOPE and must ' +
+  'never be proposed. rent_schedule captures the recurring rent amount, which is structural, not a charge.';
 
 // ============================================================================
 // 1. Recognition — what entities does each region contain?
@@ -193,8 +193,11 @@ export async function recognizeRegions(regions: ParsedRegion[]): Promise<Recogni
         'You classify columns of a landlord/property spreadsheet against a fixed schema. ' +
         SCOPE_NOTE +
         ' You are advisory only — a deterministic engine does the importing. ' +
-        'A region is importable only if its columns can populate the required fields of at least one entity. ' +
-        'If a region is a summary, a legend, totals, or otherwise not a row-per-record table, mark importable=false.',
+        'SALVAGE structural data from ANY row-per-record sheet, even an operational or status ' +
+        'tracker: a region is importable if at least one column can populate the required fields ' +
+        'of at least one entity. A column of unit/area labels alone is importable as area. ' +
+        'Mark importable=false only when NO column can populate any in-scope entity — e.g. pure ' +
+        'totals, legends, or prose.',
       tools: [recognitionTool],
       tool_choice: { type: 'tool', name: 'report_recognition' },
       messages: [

@@ -3506,6 +3506,41 @@
           "data"
         ]
       },
+      "ImportRequirements": {
+        "type": "object",
+        "properties": {
+          "property": {
+            "type": "object",
+            "properties": {
+              "needed": {
+                "type": "boolean"
+              },
+              "satisfied": {
+                "type": "boolean"
+              },
+              "sources": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "mapped_column",
+                    "default_property_id",
+                    "property_overrides"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "needed",
+              "satisfied",
+              "sources"
+            ]
+          }
+        },
+        "required": [
+          "property"
+        ]
+      },
       "ImportSession": {
         "type": "object",
         "properties": {
@@ -3569,6 +3604,9 @@
               "null"
             ]
           },
+          "requirements": {
+            "$ref": "#/components/schemas/ImportRequirements"
+          },
           "created_at": {
             "type": "string"
           },
@@ -3596,6 +3634,7 @@
           "parent_resolutions",
           "chat",
           "error",
+          "requirements",
           "created_at",
           "updated_at",
           "deleted_at"
@@ -3813,6 +3852,21 @@
           "message"
         ]
       },
+      "ImportBlockerCode": {
+        "type": "string",
+        "enum": [
+          "missing_parent_property",
+          "missing_parent_area",
+          "parent_not_found",
+          "ambiguous_match",
+          "unmapped_required_field",
+          "missing_required_field",
+          "unparseable_value",
+          "date_order",
+          "invalid_value",
+          "details_on_non_unit"
+        ]
+      },
       "ImportRow": {
         "type": "object",
         "properties": {
@@ -3843,7 +3897,28 @@
           },
           "blockers": {
             "type": "array",
-            "items": {}
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "code": {
+                  "$ref": "#/components/schemas/ImportBlockerCode"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "field",
+                "code",
+                "message"
+              ]
+            }
           },
           "created_at": {
             "type": "string"
@@ -3925,6 +4000,54 @@
           "updates"
         ]
       },
+      "ImportBlocker": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "region",
+              "row"
+            ]
+          },
+          "region_index": {
+            "type": "integer"
+          },
+          "row_index": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "entity_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "field": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "$ref": "#/components/schemas/ImportBlockerCode"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "region_index",
+          "row_index",
+          "entity_type",
+          "field",
+          "code",
+          "message"
+        ]
+      },
       "ImportExecutionResult": {
         "type": "object",
         "properties": {
@@ -3978,7 +4101,9 @@
           },
           "blockers": {
             "type": "array",
-            "items": {}
+            "items": {
+              "$ref": "#/components/schemas/ImportBlocker"
+            }
           },
           "date_interpretations": {
             "type": "array",
