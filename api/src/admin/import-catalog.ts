@@ -13,20 +13,12 @@
 // catalog so it cannot be imported by accident.
 // ----------------------------------------------------------------------------
 
-export type EntityType =
-  | 'property'
-  | 'area'
-  | 'unit_details'
-  | 'tenant'
-  | 'tenancy'
-  | 'tenancy_member'
-  | 'lease'
-  | 'rent_schedule'
-  | 'interaction';
-
 // Topological order: a parent always precedes anything that references it.
 // The executor resolves/creates entities per row in exactly this order.
-export const ENTITY_ORDER: EntityType[] = [
+// A const tuple (not EntityType[]) so the PATCH /mapping route can derive a
+// closed z.enum from it -- an entity type outside this list must be a 400 at
+// the boundary, never something the executor silently ignores.
+export const ENTITY_ORDER = [
   'property',
   'area',
   'unit_details',
@@ -36,7 +28,9 @@ export const ENTITY_ORDER: EntityType[] = [
   'lease',
   'rent_schedule',
   'interaction',
-];
+] as const;
+
+export type EntityType = (typeof ENTITY_ORDER)[number];
 
 export type FieldType =
   | 'string'
@@ -306,8 +300,15 @@ export function computeRequirements(
   );
   if (propertyMapped) sources.push('mapped_column');
   if (parents?.default_property_id) sources.push('default_property_id');
-  if (parents?.property_overrides && Object.keys(parents.property_overrides).length > 0) {
-    sources.push('property_overrides');
-  }
+  // Overrides are keyed by names read FROM the mapped property column, so the
+  // executor only ever consults them when such a column exists -- on their own
+  // they cannot supply a property. And an entry must be usable: mode 'create',
+  // or mode 'existing' with an id actually bound. Anything else (e.g. an
+  // 'existing' entry whose id was never picked) must not flip `satisfied`.
+  const usableOverride = Object.values(parents?.property_overrides ?? {}).some((o) => {
+    const ov = o as { mode?: unknown; id?: unknown } | null;
+    return ov?.mode === 'create' || (ov?.mode === 'existing' && typeof ov.id === 'string' && ov.id !== '');
+  });
+  if (propertyMapped && usableOverride) sources.push('property_overrides');
   return { property: { needed, satisfied: !needed || sources.length > 0, sources } };
 }

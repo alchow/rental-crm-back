@@ -38,6 +38,13 @@ export function getPool(): Pool {
     connectionTimeoutMillis: 10_000,
     idleTimeoutMillis: 30_000,
   });
+  // An idle client whose connection drops (network blip, pooler reaping the
+  // session) emits 'error' on the pool. With no listener that is an unhandled
+  // 'error' event -- it kills the whole process, not one request. pg has
+  // already discarded the client when this fires; logging is the only action.
+  pool.on('error', (err) => {
+    console.error('[import-db] idle client error:', err.message);
+  });
   return pool;
 }
 

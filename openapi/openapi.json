@@ -3673,6 +3673,20 @@
           "next_cursor"
         ]
       },
+      "ImportEntityType": {
+        "type": "string",
+        "enum": [
+          "property",
+          "area",
+          "unit_details",
+          "tenant",
+          "tenancy",
+          "tenancy_member",
+          "lease",
+          "rent_schedule",
+          "interaction"
+        ]
+      },
       "ImportMappingBody": {
         "type": "object",
         "properties": {
@@ -3686,7 +3700,7 @@
                   "minimum": 0
                 },
                 "entity_type": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/ImportEntityType"
                 },
                 "fields": {
                   "type": "array",
@@ -3794,7 +3808,7 @@
                   "minimum": 0
                 },
                 "entity_type": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/ImportEntityType"
                 },
                 "fields": {
                   "type": "array",

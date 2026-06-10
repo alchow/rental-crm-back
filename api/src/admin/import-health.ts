@@ -1,21 +1,64 @@
 import { loadEnv } from '../env';
 import { loadAdminEnv } from './env';
+import { getPool } from './db-pool';
 
-// Reports whether the onboarding-import feature is configured, for /healthz --
-// the same pattern as the HEIC probe. Surfacing this lets a deploy monitor
-// alert on a misconfigured environment instead of the user discovering it as a
-// 502 on their first upload. Never throws: a missing service-role key (which
-// loadAdminEnv requires) is reported as not-ready rather than crashing the
-// health check.
+// Reports whether the onboarding-import feature is configured AND usable, for
+// /healthz -- the same pattern as the HEIC probe. Surfacing this lets a deploy
+// monitor alert on a misconfigured environment instead of the user discovering
+// it as a 502 on their first upload. Never throws: a missing service-role key
+// (which loadAdminEnv requires) is reported as not-ready rather than crashing
+// the health check.
+//
+// `db_reachable` is a live `select 1` through the executor's pool, because
+// env-var PRESENCE proved insufficient: an unreachable DB host (June 2026:
+// IPv6-only direct host on an IPv4-only platform) reported ready:true here
+// while every preview 500'd. The probe is cached so health-check polling
+// doesn't hammer the pool, and time-capped so /healthz stays fast even when
+// the connect attempt has to time out.
 
 export interface ImportCapability {
-  /** True when both the LLM key and the DB URL are present. */
+  /** True when the LLM key + DB URL are present AND the DB answered a probe. */
   ready: boolean;
   anthropic_key: boolean;
   db_url: boolean;
+  /** Cached live-connectivity result; null when no DB URL is configured. */
+  db_reachable: boolean | null;
 }
 
-export function importCapability(): ImportCapability {
+const PROBE_TTL_MS = 60_000;
+const PROBE_TIMEOUT_MS = 2_500;
+
+let probeCache: { at: number; ok: boolean } | null = null;
+let probeInFlight: Promise<boolean> | null = null;
+
+async function probeDb(): Promise<boolean> {
+  if (probeCache && Date.now() - probeCache.at < PROBE_TTL_MS) return probeCache.ok;
+  if (!probeInFlight) {
+    probeInFlight = (async () => {
+      try {
+        const attempt = getPool().query('select 1');
+        // A failure after the race below has resolved must not become an
+        // unhandled rejection.
+        attempt.catch(() => {});
+        return await Promise.race([
+          attempt.then(() => true),
+          new Promise<boolean>((resolve) => {
+            setTimeout(() => resolve(false), PROBE_TIMEOUT_MS).unref();
+          }),
+        ]);
+      } catch {
+        return false;
+      }
+    })().then((ok) => {
+      probeCache = { at: Date.now(), ok };
+      probeInFlight = null;
+      return ok;
+    });
+  }
+  return probeInFlight;
+}
+
+export async function importCapability(): Promise<ImportCapability> {
   let anthropic = false;
   let db = false;
   try {
@@ -28,5 +71,11 @@ export function importCapability(): ImportCapability {
   } catch {
     db = false;
   }
-  return { ready: anthropic && db, anthropic_key: anthropic, db_url: db };
+  const reachable = db ? await probeDb() : null;
+  return {
+    ready: anthropic && db && reachable === true,
+    anthropic_key: anthropic,
+    db_url: db,
+    db_reachable: reachable,
+  };
 }

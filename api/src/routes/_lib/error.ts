@@ -1,4 +1,25 @@
 import { z } from '@hono/zod-openapi';
+import type { Context } from 'hono';
+
+/**
+ * Format a zod validation failure as the standard envelope. Every OpenAPIHono
+ * `defaultHook` (the root app's and any sub-app's) should delegate here --
+ * hooks do NOT inherit across `.route()` mounts, so a sub-app constructed
+ * without one answers validation failures in zod-openapi's default shape
+ * instead of ours.
+ */
+export function validationFailure(c: Context, error: { flatten(): unknown }): Response {
+  return c.json(
+    {
+      error: {
+        code: 'invalid_request',
+        message: 'request validation failed',
+        details: error.flatten(),
+      },
+    },
+    400,
+  );
+}
 
 // Project-wide error envelope. Every non-2xx response uses this shape so
 // clients branch on `error.code`, not on the message text (which is for

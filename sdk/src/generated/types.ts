@@ -7221,10 +7221,12 @@ export interface components {
             data: components["schemas"]["ImportSession"][];
             next_cursor: string | null;
         };
+        /** @enum {string} */
+        ImportEntityType: "property" | "area" | "unit_details" | "tenant" | "tenancy" | "tenancy_member" | "lease" | "rent_schedule" | "interaction";
         ImportMappingBody: {
             mapping: {
                 region_index: number;
-                entity_type: string;
+                entity_type: components["schemas"]["ImportEntityType"];
                 fields: {
                     target_field: string;
                     source_column?: string | null;
@@ -7251,7 +7253,7 @@ export interface components {
             reply: string;
             proposed_mapping: {
                 region_index: number;
-                entity_type: string;
+                entity_type: components["schemas"]["ImportEntityType"];
                 fields: {
                     target_field: string;
                     source_column?: string | null;

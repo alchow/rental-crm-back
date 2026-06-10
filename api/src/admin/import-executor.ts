@@ -918,7 +918,23 @@ class ExecCtx {
  * One transaction, one code path, branching only at the end.
  */
 export async function runImport(sessionId: string, accountId: string, dryRun: boolean): Promise<ExecutionResult> {
-  const client = await getPool().connect();
+  let client: PoolClient;
+  try {
+    client = await getPool().connect();
+  } catch (err) {
+    // getPool() already throws a clean 502 when SUPABASE_DB_URL is unset.
+    if (err instanceof ApiError) throw err;
+    // Everything else here is connectivity (DNS/route/TLS/auth/timeouts) --
+    // e.g. an IPv6-only DB host on an IPv4-only platform. Without this
+    // mapping it surfaced as a detail-free 500; keep the cause in the log
+    // and give the client an actionable envelope.
+    console.error('[import] db connect failed:', err);
+    throw new ApiError(
+      502,
+      'internal_error',
+      'import database is unreachable; check SUPABASE_DB_URL and network/TLS configuration',
+    );
+  }
   try {
     await client.query('BEGIN');
     // Bypass RLS (service_role has BYPASSRLS) while keeping auth.uid() NULL so
