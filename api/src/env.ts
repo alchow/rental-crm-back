@@ -24,6 +24,16 @@ const RawEnvSchema = z.object({
   SUPABASE_JWT_ISSUER: z.string().url().optional(),
   SUPABASE_JWT_AUDIENCE: z.string().min(1).default('authenticated'),
 
+  // Anthropic API key for the onboarding-import recognition/mapping LLM
+  // (api/src/admin/import-llm.ts). The LLM only ever proposes; the
+  // deterministic executor writes. Privacy: only column names + <=5 sample
+  // values per column are ever sent -- never full row data.
+  //
+  // Optional in the schema so the app still boots (and the spec still emits,
+  // and every non-import test still runs) without it; import-llm.ts asserts
+  // its presence at call time and 502s cleanly if it's unset.
+  ANTHROPIC_API_KEY: z.string().min(20).optional(),
+
   // Extra browser origins allowed to call the API via CORS, beyond the
   // built-in Lovable defaults (see middleware/cors.ts). Comma-separated;
   // each entry is either an exact origin (https://app.example.com) or a
@@ -41,6 +51,7 @@ export interface Env {
   SUPABASE_JWT_ISSUER: string;
   SUPABASE_JWT_AUDIENCE: string;
   CORS_ALLOWED_ORIGINS: string[];
+  ANTHROPIC_API_KEY: string | null;
 }
 
 let cached: Env | null = null;
@@ -68,6 +79,7 @@ export function loadEnv(): Env {
     CORS_ALLOWED_ORIGINS: raw.CORS_ALLOWED_ORIGINS
       ? raw.CORS_ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
       : [],
+    ANTHROPIC_API_KEY: raw.ANTHROPIC_API_KEY ?? null,
   };
   return cached;
 }

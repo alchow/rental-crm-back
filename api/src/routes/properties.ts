@@ -7,16 +7,20 @@ import { decodeCursor, encodeCursor } from './_lib/cursor';
 // schemas
 // =====================================================================
 
-const Address = z
-  .object({
-    line1:   z.string().max(200).optional(),
-    line2:   z.string().max(200).optional(),
-    city:    z.string().max(100).optional(),
-    state:   z.string().max(100).optional(),
-    zip:     z.string().max(20).optional(),
-    country: z.string().max(100).optional(),
-  })
-  .openapi('Address');
+// NOT registered as a named component on purpose. Referencing a registered
+// `.openapi('Address')` schema through `.optional()` / `.nullable()` makes
+// zod-openapi emit `allOf: [{$ref: Address}, {type: object}]`, which
+// openapi-typescript then renders as `Address & Record<string, never>` -- an
+// unsatisfiable type (every key becomes `never`). Inlining keeps the same
+// validation while emitting a plain object schema the SDK can actually use.
+const Address = z.object({
+  line1:   z.string().max(200).optional(),
+  line2:   z.string().max(200).optional(),
+  city:    z.string().max(100).optional(),
+  state:   z.string().max(100).optional(),
+  zip:     z.string().max(20).optional(),
+  country: z.string().max(100).optional(),
+});
 
 const Property = z
   .object({
@@ -30,7 +34,9 @@ const Property = z
   })
   .openapi('Property');
 
-const CreatePropertyBody = z
+// Exported so the onboarding-import executor validates against the EXACT same
+// schema an HTTP POST would, rather than a hand-rolled parallel copy.
+export const CreatePropertyBody = z
   .object({
     name: z.string().min(1).max(200),
     address: Address.optional(),

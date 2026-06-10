@@ -20,6 +20,7 @@ import { interactionsApp } from './routes/interactions';
 import { intakeApp } from './admin/intake';
 import { attachmentsApp } from './routes/attachments';
 import { evidenceExportsApp } from './routes/evidence-exports';
+import { importsApp } from './routes/imports';
 import {
   inspectionTemplatesApp,
   inspectionsApp,
@@ -32,6 +33,7 @@ import { requireAccountMembership } from './middleware/account-context';
 import { requireIdempotency } from './middleware/idempotency';
 import { requireImmediateParent } from './middleware/immediate-parent';
 import { assertImageStackAtBoot, heicSupported } from './admin/heic-probe';
+import { importCapability } from './admin/import-health';
 
 // The Hono app, configured but NOT listening. index.ts mounts it on a
 // node-server port; tests call app.fetch(request) directly without binding
@@ -90,7 +92,13 @@ export function buildApp(): OpenAPIHono {
       // null = probe still pending (first ~50ms after boot); true/false
       // once it's run. Surface in /healthz so deploy-target monitors can
       // alert when an environment regresses on libheif.
-      capabilities: { heic_decode: heic },
+      capabilities: {
+        heic_decode: heic,
+        // Onboarding import needs ANTHROPIC_API_KEY (LLM) + SUPABASE_DB_URL
+        // (executor). Reported here so a monitor catches a misconfigured env
+        // instead of the user hitting a 502 on first upload.
+        import: importCapability(),
+      },
     });
   });
 
@@ -156,6 +164,7 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', inspectionsApp);
   app.route('/v1', inspectionItemsApp);
   app.route('/v1', evidenceExportsApp);
+  app.route('/v1', importsApp);
 
   // PUBLIC, UNAUTHENTICATED. Lives in src/admin/ because it uses the
   // service-role client (RLS is bypassed; the handler is the sole guard).

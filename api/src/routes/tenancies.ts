@@ -26,7 +26,8 @@ const Tenancy = z
   })
   .openapi('Tenancy');
 
-const CreateTenancyBody = z
+// Exported for reuse by the onboarding-import executor (same-schema validation).
+export const CreateTenancyBody = z
   .object({
     area_id: z.string().uuid(),
     start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),

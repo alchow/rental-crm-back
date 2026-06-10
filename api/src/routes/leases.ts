@@ -32,7 +32,8 @@ const Lease = z
   })
   .openapi('Lease');
 
-const CreateLeaseBody = z
+// Exported for reuse by the onboarding-import executor (same-schema validation).
+export const CreateLeaseBody = z
   .object({
     tenancy_id: z.string().uuid(),
     term_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),

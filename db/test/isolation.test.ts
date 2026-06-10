@@ -67,6 +67,11 @@ const NO_SEED_REQUIRED = new Set([
   // Phase 11: only written by the chain-sweep cron on tamper detection;
   // an untampered fixture has nothing to seed here.
   'chain_verification_alerts',
+  // Phase 1 (onboarding import): created on-demand by an explicit import
+  // upload/confirm call; nothing to seed in a static two-account fixture.
+  'import_sessions',
+  'import_rows',
+  'import_provenance',
 ]);
 
 interface ColumnInfo {

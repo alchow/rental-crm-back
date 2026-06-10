@@ -17,7 +17,9 @@ const Tenant = z
   })
   .openapi('Tenant');
 
-const CreateTenantBody = z
+// Exported for reuse by the onboarding-import executor (same-schema validation):
+// this is where email-format and phone-length checks live that the DB does not.
+export const CreateTenantBody = z
   .object({
     full_name: z.string().min(1).max(200),
     emails: z.array(z.string().email()).optional(),

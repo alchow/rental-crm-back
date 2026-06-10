@@ -27,7 +27,8 @@ const TenancyMember = z
   })
   .openapi('TenancyMember');
 
-const AddMemberBody = z
+// Exported for reuse by the onboarding-import executor (same-schema validation).
+export const AddMemberBody = z
   .object({
     tenant_id: z.string().uuid(),
     role: MemberRole,

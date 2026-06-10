@@ -38,7 +38,8 @@ const Area = z
   })
   .openapi('Area');
 
-const CreateAreaBody = z
+// Exported for reuse by the onboarding-import executor (same-schema validation).
+export const CreateAreaBody = z
   .object({
     property_id: z.string().uuid(),
     kind: AreaKind,
