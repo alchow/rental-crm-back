@@ -981,6 +981,78 @@ async function main(): Promise<void> {
     if (env.code !== 'conflict') throw new Error(`expected code=conflict, got ${env.code}`);
   });
 
+  // =========================================================================
+  // Hardening: boundary validation, requirements truthfulness, health probe
+  // =========================================================================
+  await check('PATCH mapping with an unknown entity_type -> 400, standard envelope', async () => {
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a unit list',
+        entity_types: [{ entity_type: 'area', confidence: 0.9 }],
+      }],
+      mappings: { area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }] },
+    }));
+    const session = await uploadCsv(A, [['Unit'], ['101']]);
+    const r = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${session.id}/mapping`, {
+      token: A.accessToken,
+      body: {
+        mapping: [{ region_index: 0, entity_type: 'charge', fields: [{ target_field: 'amount', source_column: 'Unit' }] }],
+      },
+    });
+    // The executor's catalog is the closed vocabulary; anything outside it is
+    // rejected at the boundary instead of being silently ignored at run time.
+    const body = assertStatus(r, 400, 'unknown entity_type');
+    const env = assertEnvelope(body, 'unknown entity_type');
+    if (env.code !== 'invalid_request') throw new Error(`expected code=invalid_request, got ${env.code}`);
+  });
+
+  await check('property_overrides alone never satisfy the property requirement', async () => {
+    // Overrides are keyed by names read FROM a mapped property column; with
+    // no such column they cannot supply the parent, bound id or not.
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a unit list, no property column',
+        entity_types: [{ entity_type: 'area', confidence: 0.9 }],
+      }],
+      mappings: { area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }] },
+    }));
+    const session = await uploadCsv(A, [['Unit'], ['201']]);
+
+    type ReqResp = { requirements: { property: { needed: boolean; satisfied: boolean; sources: string[] } } };
+    const r1 = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${session.id}/parents`, {
+      token: A.accessToken,
+      body: { parent_resolutions: { property_overrides: { Maple: { mode: 'existing', id: null } } } },
+    });
+    const p1 = (assertStatus(r1, 200, 'patch parents (unusable override)') as ReqResp).requirements.property;
+    if (p1.needed !== true || p1.satisfied !== false || p1.sources.length !== 0) {
+      throw new Error(`expected {needed:true, satisfied:false, sources:[]} for unusable override, got ${JSON.stringify(p1)}`);
+    }
+
+    const r2 = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${session.id}/parents`, {
+      token: A.accessToken,
+      body: { parent_resolutions: { property_overrides: { Maple: { mode: 'existing', id: A.propertyId } } } },
+    });
+    const p2 = (assertStatus(r2, 200, 'patch parents (override without property column)') as ReqResp).requirements.property;
+    if (p2.satisfied !== false || p2.sources.length !== 0) {
+      throw new Error(`expected overrides-only to leave satisfied:false, got ${JSON.stringify(p2)}`);
+    }
+  });
+
+  await check('healthz probes live import-DB reachability, not just env presence', async () => {
+    const r = await api('GET', '/healthz');
+    const body = assertStatus(r, 200, 'healthz') as {
+      capabilities?: { import?: { db_url?: boolean; db_reachable?: boolean | null } };
+    };
+    const imp = body.capabilities?.import;
+    if (!imp || imp.db_url !== true || imp.db_reachable !== true) {
+      throw new Error(`expected import.db_url=true and db_reachable=true, got ${JSON.stringify(imp)}`);
+    }
+  });
+
   // --- summary -----------------------------------------------------------------
   console.info('');
   if (failures.length > 0) {

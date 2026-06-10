@@ -114,7 +114,7 @@ const SCOPE_NOTE =
 // 1. Recognition — what entities does each region contain?
 // ============================================================================
 
-const zEntity = z.enum(ENTITY_ORDER as [EntityType, ...EntityType[]]);
+const zEntity = z.enum(ENTITY_ORDER);
 
 // Validation is SALVAGE, not all-or-nothing: the outer shape must hold, but a
 // single bad region (or a single bad entity_types entry) is dropped with a log

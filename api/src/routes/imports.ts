@@ -1,6 +1,6 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { getUserClient } from '../supabase/user-client';
-import { ApiError, errorResponses } from './_lib/error';
+import { ApiError, errorResponses, validationFailure } from './_lib/error';
 import { decodeCursor, encodeCursor } from './_lib/cursor';
 import {
   parseImportFile,
@@ -13,7 +13,7 @@ import {
 import { recognizeAndSuggest, chat, type ChatTurn } from '../admin/import-llm';
 import { uploadImportSource } from '../admin/import-storage';
 import { runImport } from '../admin/import-executor';
-import { BLOCKER_CODES, computeRequirements, type RegionEntityMapping } from '../admin/import-catalog';
+import { BLOCKER_CODES, ENTITY_ORDER, computeRequirements, type RegionEntityMapping } from '../admin/import-catalog';
 
 // ============================================================================
 // Onboarding import — upload an arbitrary Excel/CSV, recognize it, map it to
@@ -118,7 +118,9 @@ const FieldMappingSchema = z.object({
 });
 const RegionEntityMappingSchema = z.object({
   region_index: z.number().int().nonnegative(),
-  entity_type: z.string(),
+  // Closed enum, derived from the executor's catalog: an entity type the
+  // executor does not know is a 400 here, not a mapping it silently ignores.
+  entity_type: z.enum(ENTITY_ORDER).openapi('ImportEntityType'),
   fields: z.array(FieldMappingSchema),
 });
 
@@ -358,7 +360,14 @@ const remove = createRoute({
 
 // ----- handlers --------------------------------------------------------------
 
-export const importsApp = new OpenAPIHono();
+// defaultHook does not inherit from the root app across `.route()` mounts;
+// without this, a validation failure here would answer in zod-openapi's
+// default shape instead of the standard envelope.
+export const importsApp = new OpenAPIHono({
+  defaultHook: (result, c) => {
+    if (!result.success) return validationFailure(c, result.error);
+  },
+});
 
 type Sb = ReturnType<typeof getUserClient>;
 

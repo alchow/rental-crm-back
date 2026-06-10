@@ -26,7 +26,7 @@ import {
   inspectionsApp,
   inspectionItemsApp,
 } from './routes/inspections';
-import { ApiError } from './routes/_lib/error';
+import { ApiError, validationFailure } from './routes/_lib/error';
 import { corsMiddleware } from './middleware/cors';
 import { requireAuth } from './middleware/auth';
 import { requireAccountMembership } from './middleware/account-context';
@@ -58,18 +58,7 @@ export function buildApp(): OpenAPIHono {
     // our 400 envelope shape, not zod-openapi's default response. Clients
     // get a stable code regardless of which schema failed.
     defaultHook: (result, c) => {
-      if (!result.success) {
-        return c.json(
-          {
-            error: {
-              code: 'invalid_request',
-              message: 'request validation failed',
-              details: result.error.flatten(),
-            },
-          },
-          400,
-        );
-      }
+      if (!result.success) return validationFailure(c, result.error);
     },
   });
 
@@ -85,7 +74,7 @@ export function buildApp(): OpenAPIHono {
   // set on actual responses -- for every endpoint, authenticated or not.
   app.use('*', corsMiddleware());
 
-  app.get('/healthz', (c) => {
+  app.get('/healthz', async (c) => {
     const heic = heicSupported();
     return c.json({
       status: 'ok',
@@ -95,9 +84,10 @@ export function buildApp(): OpenAPIHono {
       capabilities: {
         heic_decode: heic,
         // Onboarding import needs ANTHROPIC_API_KEY (LLM) + SUPABASE_DB_URL
-        // (executor). Reported here so a monitor catches a misconfigured env
-        // instead of the user hitting a 502 on first upload.
-        import: importCapability(),
+        // (executor), and the DB must actually answer (db_reachable -- cached
+        // live probe). Reported here so a monitor catches a misconfigured env
+        // instead of the user hitting a 502 on first preview.
+        import: await importCapability(),
       },
     });
   });
