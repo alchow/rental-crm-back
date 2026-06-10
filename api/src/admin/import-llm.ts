@@ -11,7 +11,7 @@ import {
   type RegionEntityMapping,
   type FieldMapping,
 } from './import-catalog';
-import { regionDigest, type ParsedRegion } from './import-parser';
+import { regionDigest, resliceRegion, type ParsedRegion } from './import-parser';
 
 // ----------------------------------------------------------------------------
 // The LLM half of the import pipeline. STRICTLY advisory: it only proposes a
@@ -19,8 +19,9 @@ import { regionDigest, type ParsedRegion } from './import-parser';
 // (import-executor.ts) is the sole write path; the model is NEVER in it.
 //
 // Privacy: every request sends ONLY column names + <=5 sample values per
-// column (via regionDigest) and aggregate row counts. Full row data never
-// leaves our process.
+// column, the first <=5 raw rows per region (bounded; for header detection),
+// and aggregate row counts (via regionDigest). The full row set never leaves
+// our process.
 //
 // Model + knobs follow the Anthropic guidance for Opus 4.8: structured
 // extraction goes through forced tool-use; the conversational `chat` turn uses
@@ -103,10 +104,11 @@ function catalogForPrompt(): string {
 }
 
 const SCOPE_NOTE =
-  'Scope is STRUCTURAL ONLY: property, area (a rentable unit or a shared/common space; ' +
-  'kind defaults to "unit"), unit_details, tenant, tenancy, tenancy_member, lease (optional), ' +
-  'rent_schedule. Money history (individual charges and payments) is OUT OF SCOPE and must ' +
-  'never be proposed. rent_schedule captures the recurring rent amount, which is structural, not a charge.';
+  'Scope: property, area (a rentable unit or a shared/common space; kind defaults to "unit"), ' +
+  'unit_details, tenant, tenancy, tenancy_member, lease (optional), rent_schedule, and ' +
+  'interaction (a free-text note/comment/log column; one entry per non-empty cell). ' +
+  'Money history (individual charges and payments) is OUT OF SCOPE and must never be ' +
+  'proposed. rent_schedule captures the recurring rent amount, which is structural, not a charge.';
 
 // ============================================================================
 // 1. Recognition — what entities does each region contain?
@@ -120,11 +122,17 @@ const zEntity = z.enum(ENTITY_ORDER as [EntityType, ...EntityType[]]);
 // one entry must not kill the import -- that exact failure shipped to prod as
 // "recognition: malformed LLM response" on an otherwise-fine response.
 const RecognitionOuter = z.object({ regions: z.array(z.unknown()).default([]) });
+const IDENTITY_HEADER = { present: true, row_index: 0 } as const;
 const RecognitionRegion = z.object({
   region_index: z.number().int().nonnegative(),
   importable: z.boolean(),
   summary: z.string().default(''),
   entity_types: z.array(z.unknown()).default([]),
+  // Header advice; malformed or missing degrades to the identity (keep the
+  // parser's first-non-empty-row assumption) rather than dropping the region.
+  header: z
+    .object({ present: z.boolean(), row_index: z.number().int().nonnegative() })
+    .catch({ ...IDENTITY_HEADER }),
 });
 const RecognitionEntity = z.object({
   entity_type: zEntity,
@@ -153,6 +161,24 @@ const recognitionTool = {
               description: 'True if at least one in-scope entity can be built from this region.',
             },
             summary: { type: 'string', description: 'One sentence on what this region appears to be.' },
+            header: {
+              type: 'object',
+              description:
+                'Header verdict for first_rows. Row 0 of first_rows is the row currently ASSUMED to be the header.',
+              properties: {
+                present: {
+                  type: 'boolean',
+                  description: 'False when the sheet has no header row at all (row 0 of first_rows is already data).',
+                },
+                row_index: {
+                  type: 'integer',
+                  description:
+                    '0-based index into first_rows of the REAL header row. 0 when the assumption is correct; >0 when title/banner rows sit above the real header. Ignored when present=false.',
+                },
+              },
+              required: ['present', 'row_index'],
+              additionalProperties: false,
+            },
             entity_types: {
               type: 'array',
               items: {
@@ -166,7 +192,7 @@ const recognitionTool = {
               },
             },
           },
-          required: ['region_index', 'importable', 'summary', 'entity_types'],
+          required: ['region_index', 'importable', 'summary', 'header', 'entity_types'],
           additionalProperties: false,
         },
       },
@@ -197,7 +223,15 @@ export async function recognizeRegions(regions: ParsedRegion[]): Promise<Recogni
         'tracker: a region is importable if at least one column can populate the required fields ' +
         'of at least one entity. A column of unit/area labels alone is importable as area. ' +
         'Mark importable=false only when NO column can populate any in-scope entity — e.g. pure ' +
-        'totals, legends, or prose.',
+        'totals, legends, or prose. ' +
+        'HEADER CHECK: each digest includes first_rows, the first raw rows as parsed; row 0 is ' +
+        'the row currently ASSUMED to be the header (it produced the column names). Verify that ' +
+        'assumption. If the column names look like data values (person names, unit labels, dates, ' +
+        'amounts) and resemble the rows below, the sheet is headerless: report ' +
+        'header={present:false,row_index:0}. If a title/banner row sits above the real header, ' +
+        'report header={present:true,row_index:N} pointing at the real header row within ' +
+        'first_rows. Otherwise report header={present:true,row_index:0}. Classify entity types ' +
+        'per the CORRECTED reading.',
       tools: [recognitionTool],
       tool_choice: { type: 'tool', name: 'report_recognition' },
       messages: [
@@ -205,7 +239,7 @@ export async function recognizeRegions(regions: ParsedRegion[]): Promise<Recogni
           role: 'user',
           content:
             `Target schema:\n${catalogForPrompt()}\n\n` +
-            `Regions (column names + up to 5 sample values each; row data withheld):\n` +
+            `Regions (column names + up to 5 samples per column + first_rows for the header check):\n` +
             JSON.stringify(digests, null, 2) +
             `\n\nCall report_recognition for ALL ${regions.length} region(s).`,
         },
@@ -261,6 +295,7 @@ export async function recognizeRegions(regions: ParsedRegion[]): Promise<Recogni
         importable: r.importable && entity_types.length > 0,
         entity_types,
         summary: r.summary,
+        header: { present: r.header.present, row_index: Math.max(0, r.header.row_index) },
       });
     }
     return regions.map(
@@ -270,6 +305,7 @@ export async function recognizeRegions(regions: ParsedRegion[]): Promise<Recogni
           importable: false,
           entity_types: [],
           summary: 'Not recognized as importable structural data.',
+          header: { ...IDENTITY_HEADER },
         },
     );
   }
@@ -407,12 +443,34 @@ export async function suggestMapping(
  */
 export async function recognizeAndSuggest(
   regions: ParsedRegion[],
-): Promise<{ recognition: RecognitionResult[]; mapping: RegionEntityMapping[] }> {
-  const recognition = await recognizeRegions(regions);
+): Promise<{ regions: ParsedRegion[]; recognition: RecognitionResult[]; mapping: RegionEntityMapping[] }> {
+  let working = regions;
+  let recognition = await recognizeRegions(working);
+
+  // Header advice: re-slice the affected regions deterministically and run
+  // recognition ONCE more on the corrected digests. Bounded to a single pass
+  // (second-pass advice is forced to identity) so a flip-flopping model can't
+  // loop us; a region that re-slices to nothing keeps its original slice.
+  const wantsReslice = recognition.some((r) => !(r.header.present && r.header.row_index === 0));
+  if (wantsReslice) {
+    let changed = false;
+    working = working.map((region, i) => {
+      const resliced = resliceRegion(region, recognition[i]!.header);
+      if (resliced) changed = true;
+      return resliced ?? region;
+    });
+    if (changed) {
+      recognition = (await recognizeRegions(working)).map((r) => ({
+        ...r,
+        header: { present: true, row_index: 0 },
+      }));
+    }
+  }
+
   const mapping: RegionEntityMapping[] = [];
   for (const rec of recognition) {
     if (!rec.importable) continue;
-    const region = regions[rec.region_index];
+    const region = working[rec.region_index];
     if (!region) continue;
     // Order entities topologically so the stored mapping reads naturally.
     const wanted = ENTITY_ORDER.filter((et) => rec.entity_types.some((e) => e.entity_type === et));
@@ -420,7 +478,7 @@ export async function recognizeAndSuggest(
       mapping.push(await suggestMapping(region, et, rec.region_index));
     }
   }
-  return { recognition, mapping };
+  return { regions: working, recognition, mapping };
 }
 
 // ============================================================================

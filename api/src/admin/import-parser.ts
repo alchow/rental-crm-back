@@ -38,6 +38,14 @@ export interface ParsedRegion {
   total_rows: number;
   /** True if rows were truncated at MAX_ROWS_PER_REGION. */
   truncated: boolean;
+  /**
+   * In-memory only (stripped by regionMeta, never persisted): the raw cell
+   * matrix and which row was used as the header, kept so the region can be
+   * RE-SLICED if recognition advises a different header (banner row above the
+   * real header, or no header at all). See resliceRegion.
+   */
+  matrix?: string[][];
+  header_row_index?: number;
 }
 
 export interface ParseResult {
@@ -150,28 +158,51 @@ function cellToString(v: unknown): string {
 }
 
 /**
- * Build a region from a matrix of stringified cells: find the first non-empty
- * row as the header, treat the rest as data. Returns null if there's no header
- * or no data rows.
+ * Build a region from a matrix of stringified cells. By default the first
+ * non-empty row is the header and the rest is data; `header` overrides that
+ * default when recognition advises otherwise:
+ *   - { present: true, row_offset: N }  header is N rows BELOW the first
+ *     non-empty row (banner/title rows above the real header)
+ *   - { present: false }                no header at all: every row from the
+ *     first non-empty one is data; column names are synthesized "Column N"
+ * Returns null if there's no usable header/data.
  */
-function regionFromMatrix(sheet: string, matrix: string[][], ref?: string): ParsedRegion | null {
-  // Find the header: the first row with at least one non-empty cell.
-  let headerIdx = -1;
+function regionFromMatrix(
+  sheet: string,
+  matrix: string[][],
+  ref?: string,
+  header: { present: boolean; row_offset: number } = { present: true, row_offset: 0 },
+): ParsedRegion | null {
+  // Find the first row with at least one non-empty cell.
+  let firstIdx = -1;
   for (let i = 0; i < matrix.length; i++) {
     if ((matrix[i] ?? []).some((c) => c !== '')) {
-      headerIdx = i;
+      firstIdx = i;
       break;
     }
   }
-  if (headerIdx === -1) return null;
+  if (firstIdx === -1) return null;
 
-  const headerCells = matrix[headerIdx] ?? [];
-  const columns = normalizeHeaders(headerCells).slice(0, MAX_COLUMNS);
+  let headerIdx: number;
+  let columns: string[];
+  let dataStart: number;
+  if (header.present) {
+    headerIdx = firstIdx + Math.max(0, header.row_offset);
+    const headerCells = matrix[headerIdx] ?? [];
+    columns = normalizeHeaders(headerCells).slice(0, MAX_COLUMNS);
+    dataStart = headerIdx + 1;
+  } else {
+    // Headerless: synthesize names wide enough for the widest data row.
+    headerIdx = firstIdx;
+    const width = Math.min(MAX_COLUMNS, Math.max(...matrix.slice(firstIdx).map((r) => (r ?? []).length), 0));
+    columns = normalizeHeaders(new Array<string>(width).fill(''));
+    dataStart = firstIdx; // the first row is DATA, not a header
+  }
   if (columns.length === 0) return null;
 
   const dataRows: Record<string, string>[] = [];
   let truncated = false;
-  for (let i = headerIdx + 1; i < matrix.length; i++) {
+  for (let i = dataStart; i < matrix.length; i++) {
     const cells = matrix[i] ?? [];
     if (!cells.some((c) => c !== '')) continue; // skip fully-blank rows
     if (dataRows.length >= MAX_ROWS_PER_REGION) {
@@ -198,7 +229,28 @@ function regionFromMatrix(sheet: string, matrix: string[][], ref?: string): Pars
     rows: dataRows,
     total_rows: dataRows.length,
     truncated,
+    matrix,
+    header_row_index: headerIdx,
   };
+}
+
+/**
+ * Re-slice a region per recognition's header advice. `row_index` is the index
+ * within the digest's `first_rows` (offset from the originally-assumed header
+ * row). Returns null when the region has no retained matrix, the advice is the
+ * identity (nothing to change), or re-slicing yields no usable data -- callers
+ * keep the original region in all three cases.
+ */
+export function resliceRegion(
+  region: ParsedRegion,
+  advice: { present: boolean; row_index: number },
+): ParsedRegion | null {
+  if (!region.matrix) return null;
+  if (advice.present && advice.row_index === 0) return null; // identity
+  return regionFromMatrix(region.sheet, region.matrix, region.range, {
+    present: advice.present,
+    row_offset: advice.row_index,
+  });
 }
 
 /** Turn raw header cells into unique, non-empty column names. */
@@ -247,27 +299,44 @@ function colLetter(n: number): string {
   return s || 'A';
 }
 
+/** Rows/cell caps for the digest's first_rows (header-detection context). */
+const FIRST_ROWS_LIMIT = 5;
+const FIRST_ROWS_CELL_CHARS = 120;
+
 /**
- * The slim, privacy-safe view of a region sent to the LLM: column names + a
- * handful of samples + the row count. NEVER the rows themselves.
+ * The slim, privacy-bounded view of a region sent to the LLM: column names, a
+ * handful of samples per column, the row count, and the first few raw rows
+ * starting at the assumed header (so recognition can advise when the header
+ * assumption is wrong -- banner row above the real header, or headerless
+ * data). Bounded to FIRST_ROWS_LIMIT rows x MAX_COLUMNS cells x
+ * FIRST_ROWS_CELL_CHARS chars; the full row set never leaves our DB.
  */
 export function regionDigest(region: ParsedRegion, index: number): {
   region_index: number;
   sheet: string;
   total_rows: number;
   columns: { name: string; samples: string[] }[];
+  first_rows: string[][];
 } {
+  const start = region.header_row_index ?? 0;
+  const first_rows = (region.matrix ?? [])
+    .slice(start, start + FIRST_ROWS_LIMIT)
+    .map((r) => r.slice(0, MAX_COLUMNS).map((c) => c.slice(0, FIRST_ROWS_CELL_CHARS)));
   return {
     region_index: index,
     sheet: region.sheet,
     total_rows: region.total_rows,
     columns: region.columns.map((c) => ({ name: c.name, samples: c.samples })),
+    first_rows,
   };
 }
 
-/** Region metadata persisted to import_sessions.regions (no full rows). */
-export function regionMeta(region: ParsedRegion): Omit<ParsedRegion, 'rows'> {
-  const { rows: _rows, ...meta } = region;
-  void _rows;
+/** Region metadata persisted to import_sessions.regions (no full rows, and no
+ *  in-memory matrix/header bookkeeping). */
+export function regionMeta(
+  region: ParsedRegion,
+): Omit<ParsedRegion, 'rows' | 'matrix' | 'header_row_index'> {
+  const { rows: _rows, matrix: _matrix, header_row_index: _hdr, ...meta } = region;
+  void _rows; void _matrix; void _hdr;
   return meta;
 }

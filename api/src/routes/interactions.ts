@@ -14,8 +14,12 @@ import { decodeCursor, encodeCursor } from './_lib/cursor';
 // route never trusts a client-supplied logged_at and never sets one.
 
 const PartyType = z.enum(['tenant', 'vendor', 'inspector', 'other']);
-const Channel   = z.enum(['in_person', 'phone', 'voicemail', 'sms', 'email', 'letter', 'in_app']);
-const Direction = z.enum(['inbound', 'outbound']);
+// 'import' + 'none' exist for the onboarding import: an imported journal
+// note is not a communication, so it carries no real channel/direction.
+// 'none' is valid ONLY on the import channel (DB check mirrors the refine
+// on CreateInteractionBody below).
+const Channel   = z.enum(['in_person', 'phone', 'voicemail', 'sms', 'email', 'letter', 'in_app', 'import']);
+const Direction = z.enum(['inbound', 'outbound', 'none']);
 
 const Interaction = z
   .object({
@@ -41,7 +45,9 @@ const Interaction = z
   })
   .openapi('Interaction');
 
-const CreateBody = z
+// Exported: the import executor validates through THIS schema (house rule:
+// the import path can never persist anything an HTTP POST would reject).
+export const CreateInteractionBody = z
   .object({
     party_type: PartyType,
     party_id: z.string().uuid().optional(),
@@ -56,6 +62,9 @@ const CreateBody = z
     area_id: z.string().uuid().optional(),
     work_order_id: z.string().uuid().optional(),
     vendor_id: z.string().uuid().optional(),
+  })
+  .refine((b) => b.direction !== 'none' || b.channel === 'import', {
+    message: "direction 'none' is only valid for channel 'import'",
   })
   .openapi('CreateInteractionBody');
 
@@ -103,7 +112,7 @@ const create = createRoute({
   summary: 'Log a contact (offline call, doorstep conversation, etc.). logged_at is server-set.',
   request: {
     params: AccountParam,
-    body: { content: { 'application/json': { schema: CreateBody } }, required: true },
+    body: { content: { 'application/json': { schema: CreateInteractionBody } }, required: true },
   },
   responses: {
     201: { description: 'created', content: { 'application/json': { schema: Interaction } } },
