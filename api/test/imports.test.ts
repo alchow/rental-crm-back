@@ -198,18 +198,33 @@ interface ToolUseParams {
 
 type MappingField = { target_field: string; source_column: string | null; constant: string | null; confidence: number };
 
-/** A FakeAnthropic that returns a fixed recognition + per-entity mappings. */
+type FakeRecognition = {
+  region_index: number;
+  importable: boolean;
+  summary: string;
+  entity_types: { entity_type: string; confidence: number }[];
+  // Optional header advice; omitted -> import-llm salvages to the identity.
+  header?: { present: boolean; row_index: number };
+};
+
+/** A FakeAnthropic that returns a fixed recognition + per-entity mappings.
+ *  `recognition2`, when set, is returned for the second and later recognition
+ *  calls (the re-recognition pass after a header re-slice). */
 function fakeAnthropic(opts: {
-  recognition: { region_index: number; importable: boolean; summary: string; entity_types: { entity_type: string; confidence: number }[] }[];
+  recognition: FakeRecognition[];
+  recognition2?: FakeRecognition[];
   mappings?: Record<string, MappingField[]>;
 }): FakeAnthropic {
+  let recognitionCalls = 0;
   return {
     messages: {
       create: async (params: Record<string, unknown>) => {
         const p = params as ToolUseParams;
         const name = p.tool_choice?.name;
         if (name === 'report_recognition') {
-          return { content: [{ type: 'tool_use', name, input: { regions: opts.recognition } }] };
+          recognitionCalls++;
+          const regions = recognitionCalls > 1 && opts.recognition2 ? opts.recognition2 : opts.recognition;
+          return { content: [{ type: 'tool_use', name, input: { regions } }] };
         }
         if (name === 'report_mapping') {
           const msgText = JSON.stringify(p.messages ?? []);
@@ -490,6 +505,174 @@ async function main(): Promise<void> {
       throw new Error(`expected Front lawn kind=exterior_grounds, got ${byName.get('Front lawn')}`);
     }
     if (byName.has('Closet')) throw new Error('blocked row "Closet" must not be imported');
+  });
+
+  // =========================================================================
+  // (2e) header advice: headerless sheet -> re-sliced, first row NOT lost
+  // =========================================================================
+  await check('headerless sheet: advice present=false re-slices; first row kept as data', async () => {
+    __setAnthropicForTests(fakeAnthropic({
+      // Pass 1 sees columns named after the first DATA row -> advises headerless.
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'unit labels and tenant names, no header row',
+        header: { present: false, row_index: 0 },
+        entity_types: [{ entity_type: 'area', confidence: 0.9 }],
+      }],
+      // Pass 2 (re-recognition on the corrected slice) sees Column 1/Column 2.
+      recognition2: [{
+        region_index: 0,
+        importable: true,
+        summary: 'unit labels with tenant names (synthesized columns)',
+        entity_types: [
+          { entity_type: 'area', confidence: 0.9 },
+          { entity_type: 'tenant', confidence: 0.8 },
+        ],
+      }],
+      mappings: {
+        area: [{ target_field: 'name', source_column: 'Column 1', constant: null, confidence: 0.9 }],
+        tenant: [{ target_field: 'full_name', source_column: 'Column 2', constant: null, confidence: 0.85 }],
+      },
+    }));
+    // No header row: the first line is already a record.
+    const session = await uploadCsv(A, [
+      ['Apt 1', 'John Smith'],
+      ['Apt 2', 'Maria Garcia'],
+      ['Apt 3', 'Wei Chen'],
+    ]);
+    if (session.status !== 'awaiting_mapping') throw new Error(`expected awaiting_mapping, got ${session.status}`);
+    const region = (session as unknown as { regions: { columns: { name: string }[]; total_rows: number }[] }).regions[0];
+    if (!region) throw new Error('expected one region');
+    const colNames = region.columns.map((c) => c.name);
+    if (colNames[0] !== 'Column 1' || colNames[1] !== 'Column 2') {
+      throw new Error(`expected synthesized Column 1/Column 2 headers, got ${JSON.stringify(colNames)}`);
+    }
+    // The crucial bit: all 3 lines are data — "Apt 1"/"John Smith" was NOT
+    // consumed as a header row.
+    if (region.total_rows !== 3) {
+      throw new Error(`expected 3 data rows (no first-row loss), got ${region.total_rows}`);
+    }
+    const rowsR = await api('GET', `/v1/accounts/${A.accountId}/imports/${session.id}/rows`, { token: A.accessToken });
+    const rows = assertStatus(rowsR, 200, 'rows after headerless re-slice') as { data: { raw: Record<string, string> }[] };
+    if (rows.data.length !== 3 || rows.data[0]!.raw['Column 1'] !== 'Apt 1') {
+      throw new Error(`expected 3 persisted rows keyed by Column N starting at "Apt 1", got ${JSON.stringify(rows.data.map((r) => r.raw))}`);
+    }
+  });
+
+  // =========================================================================
+  // (2f) header advice: banner row above the real header -> re-sliced
+  // =========================================================================
+  await check('banner row above real header: advice row_index=1 re-slices correctly', async () => {
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a rent roll with a title row above the header',
+        header: { present: true, row_index: 1 },
+        entity_types: [{ entity_type: 'area', confidence: 0.9 }],
+      }],
+      recognition2: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a unit/tenant roster',
+        entity_types: [
+          { entity_type: 'area', confidence: 0.9 },
+          { entity_type: 'tenant', confidence: 0.85 },
+        ],
+      }],
+      mappings: {
+        area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }],
+        tenant: [{ target_field: 'full_name', source_column: 'Tenant', constant: null, confidence: 0.9 }],
+      },
+    }));
+    const session = await uploadCsv(A, [
+      ['June 2026 Rent Roll', ''],
+      ['Unit', 'Tenant'],
+      ['101', 'John Smith'],
+      ['102', 'Maria Garcia'],
+    ]);
+    if (session.status !== 'awaiting_mapping') throw new Error(`expected awaiting_mapping, got ${session.status}`);
+    const region = (session as unknown as { regions: { columns: { name: string }[]; total_rows: number }[] }).regions[0];
+    if (!region) throw new Error('expected one region');
+    const colNames = region.columns.map((c) => c.name);
+    if (colNames[0] !== 'Unit' || colNames[1] !== 'Tenant') {
+      throw new Error(`expected the REAL header (Unit/Tenant), got ${JSON.stringify(colNames)}`);
+    }
+    if (region.total_rows !== 2) {
+      throw new Error(`expected 2 data rows (banner + header excluded), got ${region.total_rows}`);
+    }
+  });
+
+  // =========================================================================
+  // (2g) notes column -> interactions (channel=import, direction=none)
+  // =========================================================================
+  await check('notes column imports as interactions; dates inferred; empty cells skipped', async () => {
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'units with a free-text notes column',
+        entity_types: [
+          { entity_type: 'area', confidence: 0.9 },
+          { entity_type: 'interaction', confidence: 0.85 },
+        ],
+      }],
+      mappings: {
+        area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }],
+        interaction: [{ target_field: 'body', source_column: 'Notes', constant: null, confidence: 0.85 }],
+      },
+    }));
+    const session = await uploadCsv(A, [
+      ['Unit', 'Notes'],
+      ['201', '6/2: Disagreement about front lawn usage.'],
+      ['202', ''],
+      ['203', 'Gardeners coming.'],
+    ]);
+    if (session.status !== 'awaiting_mapping') throw new Error(`expected awaiting_mapping, got ${session.status}`);
+
+    const patchR = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${session.id}/parents`, {
+      token: A.accessToken,
+      body: { parent_resolutions: { default_property_id: A.propertyId } },
+    });
+    assertStatus(patchR, 200, 'patch parents for notes test');
+
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/preview`, { token: A.accessToken });
+    const preview = assertStatus(previewR, 200, 'preview notes') as {
+      result: { blockers: unknown[]; counts: Record<string, { created: number }> };
+    };
+    if (preview.result.blockers.length !== 0) {
+      throw new Error(`expected no blockers (empty note = skip, not block), got ${JSON.stringify(preview.result.blockers)}`);
+    }
+    if (preview.result.counts.interaction?.created !== 2) {
+      throw new Error(`expected 2 interactions (empty cell skipped), got ${JSON.stringify(preview.result.counts.interaction)}`);
+    }
+
+    const confirmR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/confirm`, { token: A.accessToken });
+    const confirm = assertStatus(confirmR, 200, 'confirm notes') as { result: { committed: boolean } };
+    if (!confirm.result.committed) throw new Error('expected committed=true');
+
+    const listR = await api('GET', `/v1/accounts/${A.accountId}/interactions`, { token: A.accessToken });
+    const list = assertStatus(listR, 200, 'list interactions') as {
+      data: { channel: string; direction: string; body: string | null; occurred_at: string; area_id: string | null; actor: string }[];
+    };
+    const imported = list.data.filter((i) => i.channel === 'import');
+    if (imported.length !== 2) throw new Error(`expected 2 imported interactions, got ${imported.length}`);
+    for (const i of imported) {
+      if (i.direction !== 'none') throw new Error(`expected direction none, got ${i.direction}`);
+      if (!i.area_id) throw new Error('expected the interaction to be attached to its row area');
+      if (!i.actor.startsWith('system:import:')) throw new Error(`expected import actor, got ${i.actor}`);
+    }
+    const year = new Date().getUTCFullYear();
+    const dated = imported.find((i) => i.body?.startsWith('6/2:'));
+    if (!dated || !dated.occurred_at.startsWith(`${year}-06-02`)) {
+      throw new Error(`expected "6/2:" note dated ${year}-06-02 (year inferred), got ${dated?.occurred_at}`);
+    }
+    const undated = imported.find((i) => i.body === 'Gardeners coming.');
+    const today = new Date().toISOString().slice(0, 10);
+    if (!undated || !undated.occurred_at.startsWith(today)) {
+      throw new Error(`expected undated note to fall back to the import date ${today}, got ${undated?.occurred_at}`);
+    }
   });
 
   // =========================================================================

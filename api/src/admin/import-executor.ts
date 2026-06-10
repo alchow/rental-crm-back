@@ -25,6 +25,7 @@ import { CreateTenancyBody } from '../routes/tenancies';
 import { AddMemberBody } from '../routes/tenancy-members';
 import { CreateLeaseBody } from '../routes/leases';
 import { CreateRentScheduleBody } from '../routes/rent-schedules';
+import { CreateInteractionBody } from '../routes/interactions';
 
 /** Concise first-issue message from a Zod safeParse error (no z import). */
 function firstIssue(err: { issues?: { path: (string | number)[]; message: string }[] }): string {
@@ -183,6 +184,28 @@ function coerceCurrency(v: string | null): string | null {
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Extract a leading date prefix from a note: "6/2: Gardeners coming" or
+ * "6/9/26 - canopy" -> ISO date. When the prefix has no year, the CURRENT
+ * year is inferred (decision: imported journals are near-past; the full
+ * original text is always kept as the body, so nothing is lost if the
+ * inference is off). Returns null when there is no parseable prefix.
+ */
+function extractLeadingDate(text: string): string | null {
+  const m = /^\s*(\d{1,2})[/\-.](\d{1,2})(?:[/\-.](\d{2,4}))?\s*[:\u2013\u2014-]/.exec(text);
+  if (!m) return null;
+  const mm = m[1]!.padStart(2, '0');
+  const dd = m[2]!.padStart(2, '0');
+  let year: number;
+  if (m[3]) {
+    year = parseInt(m[3], 10);
+    if (year < 100) year += year >= 70 ? 1900 : 2000;
+  } else {
+    year = new Date().getUTCFullYear();
+  }
+  return isoIfValid(`${year}-${mm}-${dd}`);
 }
 
 // ----- the per-run execution context ----------------------------------------
@@ -701,6 +724,55 @@ class ExecCtx {
 
   // -------- the per-row driver, in topological order ------------------------
 
+  /** One imported note per non-empty cell: channel='import', direction='none'. */
+  private async createInteraction(
+    row: RawImportRow,
+    body: string,
+    fields: FieldMapping[],
+    areaId: string | null,
+    tenancyId: string | null,
+  ): Promise<void> {
+    // Date precedence: mapped occurred_at column > leading "M/D[/Y]:" prefix
+    // in the text (year inferred when absent) > the import date itself.
+    const mappedRaw = this.getValue(fields, 'occurred_at', row.raw);
+    const mapped = coerceDate(mappedRaw);
+    this.recordDate('interaction.occurred_at', mappedRaw, mapped);
+    const occurred = mapped ?? extractLeadingDate(body) ?? todayIso();
+
+    const v = CreateInteractionBody.safeParse({
+      party_type: 'other',
+      channel: 'import',
+      direction: 'none',
+      body,
+      occurred_at: `${occurred}T00:00:00.000Z`,
+      area_id: areaId ?? undefined,
+      tenancy_id: tenancyId ?? undefined,
+    });
+    if (!v.success) {
+      this.blockRow(row, 'interaction', 'body', 'invalid_value', firstIssue(v.error));
+      return;
+    }
+    const ins = await this.client.query(
+      `insert into interactions
+         (account_id, actor, party_type, channel, direction, body, occurred_at, area_id, tenancy_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
+      [
+        this.accountId,
+        `system:import:${this.sessionId}`,
+        v.data.party_type,
+        v.data.channel,
+        v.data.direction,
+        v.data.body,
+        v.data.occurred_at,
+        v.data.area_id ?? null,
+        v.data.tenancy_id ?? null,
+      ],
+    );
+    const id = ins.rows[0].id as string;
+    this.recordCreated('interaction', id);
+    await this.provenance('interaction', id, row);
+  }
+
   async processRow(row: RawImportRow): Promise<void> {
     const regionMap = this.byRegion.get(row.region_index);
     const scope = this.regionScope.get(row.region_index);
@@ -796,6 +868,15 @@ class ExecCtx {
           }
         }
       }
+    }
+
+    // interaction (imported note) — attaches to whatever parents this row
+    // resolved (area and/or tenancy may be null; both are optional on the
+    // table). An EMPTY note cell is simply no note: skip, never a blocker.
+    if (scope.has('interaction')) {
+      const fields = regionMap.get('interaction')!;
+      const body = this.getValue(fields, 'body', row.raw);
+      if (body) await this.createInteraction(row, body, fields, areaId, tenancyId);
     }
   }
 

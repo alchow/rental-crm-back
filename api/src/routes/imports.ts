@@ -454,24 +454,17 @@ importsApp.openapi(upload, async (c) => {
       return c.json(sessionOut(data as Record<string, unknown>), 201);
     }
 
-    // 4. Persist full rows to our DB (chunked). Raw values stay here.
-    const rowsPayload: { account_id: string; session_id: string; region_index: number; row_index: number; raw: Record<string, string> }[] = [];
-    regions.forEach((r, ri) =>
-      r.rows.forEach((raw, idx) =>
-        rowsPayload.push({ account_id: accountId, session_id: sessionId, region_index: ri, row_index: idx, raw }),
-      ),
-    );
-    for (const part of chunk(rowsPayload, 1000)) {
-      const { error } = await sb.from('import_rows').insert(part);
-      if (error) throw new ApiError(500, 'database_error', `could not store rows: ${error.message}`);
-    }
-
-    // 5. Recognize + suggest mapping (LLM, advisory). Column names + <=5
-    //    samples only — never the rows we just stored.
+    // 4. Recognize + suggest mapping (LLM, advisory). Sends column names +
+    //    <=5 samples per column + the first <=5 raw rows (header check) —
+    //    never the full row set. Recognition may advise a different header,
+    //    in which case the regions come back RE-SLICED — so this runs BEFORE
+    //    rows are persisted.
+    let finalRegions: ParsedRegion[] = regions;
     let recognition: unknown[] = [];
     let mapping: unknown[] = [];
     try {
       const out = await recognizeAndSuggest(regions);
+      finalRegions = out.regions;
       recognition = out.recognition;
       mapping = out.mapping;
     } catch (e) {
@@ -492,12 +485,25 @@ importsApp.openapi(upload, async (c) => {
       return c.json(sessionOut(data as Record<string, unknown>), 201);
     }
 
+    // 5. Persist full rows to our DB (chunked), from the FINAL (possibly
+    //    re-sliced) regions. Raw values stay here.
+    const rowsPayload: { account_id: string; session_id: string; region_index: number; row_index: number; raw: Record<string, string> }[] = [];
+    finalRegions.forEach((r, ri) =>
+      r.rows.forEach((raw, idx) =>
+        rowsPayload.push({ account_id: accountId, session_id: sessionId, region_index: ri, row_index: idx, raw }),
+      ),
+    );
+    for (const part of chunk(rowsPayload, 1000)) {
+      const { error } = await sb.from('import_rows').insert(part);
+      if (error) throw new ApiError(500, 'database_error', `could not store rows: ${error.message}`);
+    }
+
     const importable = (recognition as { importable?: boolean }[]).some((r) => r.importable);
     const { data, error: updErr } = await sb
       .from('import_sessions')
       .update({
         source_path: sourcePath,
-        regions: regions.map(regionMeta),
+        regions: finalRegions.map(regionMeta),
         recognition,
         mapping,
         status: importable ? 'awaiting_mapping' : 'no_importable_data',

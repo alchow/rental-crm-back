@@ -6951,9 +6951,9 @@ export interface components {
             party_id: string | null;
             party_label: string | null;
             /** @enum {string} */
-            channel: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app";
+            channel: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app" | "import";
             /** @enum {string} */
-            direction: "inbound" | "outbound";
+            direction: "inbound" | "outbound" | "none";
             body: string | null;
             occurred_at: string;
             logged_at: string;
@@ -6982,9 +6982,9 @@ export interface components {
             party_id?: string;
             party_label?: string;
             /** @enum {string} */
-            channel: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app";
+            channel: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app" | "import";
             /** @enum {string} */
-            direction: "inbound" | "outbound";
+            direction: "inbound" | "outbound" | "none";
             body?: string;
             /** Format: date-time */
             occurred_at: string;

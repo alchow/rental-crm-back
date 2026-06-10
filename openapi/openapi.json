@@ -2636,14 +2636,16 @@
               "sms",
               "email",
               "letter",
-              "in_app"
+              "in_app",
+              "import"
             ]
           },
           "direction": {
             "type": "string",
             "enum": [
               "inbound",
-              "outbound"
+              "outbound",
+              "none"
             ]
           },
           "body": {
@@ -2778,14 +2780,16 @@
               "sms",
               "email",
               "letter",
-              "in_app"
+              "in_app",
+              "import"
             ]
           },
           "direction": {
             "type": "string",
             "enum": [
               "inbound",
-              "outbound"
+              "outbound",
+              "none"
             ]
           },
           "body": {

@@ -5,9 +5,10 @@
 // suggest a target that the executor knows how to coerce + insert, and the
 // executor never has to guess what a mapped field means.
 //
-// Phase 1 scope is structural only:
-//   property -> area(kind=unit) -> unit_details -> tenant -> tenancy ->
-//   tenancy_member -> lease (optional) -> rent_schedule
+// Phase 1 scope is structural + notes:
+//   property -> area (unit or common space) -> unit_details -> tenant ->
+//   tenancy -> tenancy_member -> lease (optional) -> rent_schedule;
+//   plus interaction (imported notes/log entries, channel='import').
 // Money (charges/payments) is Phase 2 and deliberately ABSENT from this
 // catalog so it cannot be imported by accident.
 // ----------------------------------------------------------------------------
@@ -20,7 +21,8 @@ export type EntityType =
   | 'tenancy'
   | 'tenancy_member'
   | 'lease'
-  | 'rent_schedule';
+  | 'rent_schedule'
+  | 'interaction';
 
 // Topological order: a parent always precedes anything that references it.
 // The executor resolves/creates entities per row in exactly this order.
@@ -33,6 +35,7 @@ export const ENTITY_ORDER: EntityType[] = [
   'tenancy_member',
   'lease',
   'rent_schedule',
+  'interaction',
 ];
 
 export type FieldType =
@@ -150,6 +153,34 @@ export const ENTITY_CATALOG: Record<EntityType, EntitySpec> = {
       { field: 'start_date', label: 'Effective from', type: 'date', required: false, description: 'When this rent amount took effect; defaults to the tenancy start date.' },
     ],
   },
+  interaction: {
+    entity_type: 'interaction',
+    label: 'Note / log entry',
+    description:
+      'A free-text note, comment, or log entry about a unit or tenancy (a "Notes" or "Comments" ' +
+      'column, a maintenance log, a journal). Imported into the contact log with channel "import". ' +
+      'Rows with an empty note cell simply produce no entry.',
+    fields: [
+      {
+        field: 'body',
+        label: 'Note text',
+        type: 'string',
+        required: true,
+        description:
+          'The note/log text. May start with a date prefix like "6/2:" or "6/9/26 -" which the ' +
+          'importer extracts as the date.',
+      },
+      {
+        field: 'occurred_at',
+        label: 'Note date',
+        type: 'date',
+        required: false,
+        description:
+          'When the note happened, if a separate date column exists. When unmapped, the importer ' +
+          'extracts a leading date prefix from the text, else falls back to the import date.',
+      },
+    ],
+  },
 };
 
 export function requiredFields(entity: EntityType): string[] {
@@ -189,6 +220,14 @@ export interface RecognitionResult {
   importable: boolean;
   entity_types: RecognizedEntity[];
   summary: string;
+  /**
+   * Header advice for the region as digested: present=true/row_index=0 means
+   * the assumed header (first non-empty row) is right; row_index>0 points at
+   * the real header within the digest's first_rows; present=false means the
+   * sheet is headerless and that first row is DATA. The parser re-slices
+   * deterministically from this advice (import-parser.resliceRegion).
+   */
+  header: { present: boolean; row_index: number };
 }
 
 // Floor below which a recognition/mapping suggestion is treated as noise and
