@@ -2,6 +2,7 @@ import type { MiddlewareHandler } from 'hono';
 import { createHash } from 'node:crypto';
 import { getSb } from '../supabase/request-client';
 import { ApiError } from '../routes/_lib/error';
+import { getLogger } from '../log';
 
 // Generic Idempotency-Key middleware. Mounted on every mutating endpoint
 // under /v1/accounts/:accountId/* so the contract is uniform: a client
@@ -78,51 +79,42 @@ export function requireIdempotency(): MiddlewareHandler {
       .update(bodyText)
       .digest('hex');
 
-    // Claim the key by INSERTing a placeholder row.
-    const { error: insertErr } = await sb
-      .from('idempotency_keys')
-      .insert({
-        account_id: accountId,
-        key,
-        request_fingerprint: fingerprint,
-        // status_code / body / completed_at left null = "in flight"
-      });
+    // Claim+inspect in ONE round trip (Phase 2.4): the SECURITY INVOKER RPC
+    // does the placeholder INSERT and, on conflict, returns the winner's
+    // state; RLS applies unchanged. The behavior matrix is frozen and lives
+    // verbatim in the RPC migration (20260614000002).
+    const { data: claimData, error: claimErr } = await sb.rpc('claim_idempotency_key', {
+      p_account_id: accountId,
+      p_key: key,
+      p_fingerprint: fingerprint,
+    });
+    if (claimErr) throw new ApiError(500, 'database_error', claimErr.message);
+    const claim = (Array.isArray(claimData) ? claimData[0] : claimData) as {
+      claimed: boolean;
+      fingerprint_matches: boolean;
+      in_flight: boolean;
+      status_code: number | null;
+      body: unknown;
+    } | null;
+    if (!claim) throw new ApiError(500, 'database_error', 'claim_idempotency_key returned no row');
 
-    if (insertErr) {
-      if (insertErr.code === '23505') {
-        // Race: an earlier request already claimed this key. Fetch it.
-        const { data: existing, error: fetchErr } = await sb
-          .from('idempotency_keys')
-          .select('request_fingerprint, status_code, body, completed_at')
-          .eq('account_id', accountId)
-          .eq('key', key)
-          .maybeSingle();
-        if (fetchErr) {
-          throw new ApiError(500, 'database_error', fetchErr.message);
-        }
-        if (!existing) {
-          // Vanished between the insert and the lookup -- transient; ask to retry.
-          throw new ApiError(409, 'conflict', 'idempotency-key state changed; retry');
-        }
-        if (existing.request_fingerprint !== fingerprint) {
-          throw new ApiError(
-            409,
-            'conflict',
-            'Idempotency-Key was used for a different request',
-          );
-        }
-        if (existing.completed_at === null) {
-          // Still in flight on the original request. Tell the client to retry.
-          throw new ApiError(409, 'conflict', 'Idempotency-Key request in flight; retry shortly');
-        }
-        const cached = existing.body as unknown;
-        const cachedStatus = existing.status_code ?? 200;
-        return new Response(JSON.stringify(cached), {
-          status: cachedStatus,
-          headers: { 'content-type': 'application/json' },
-        });
+    if (!claim.claimed) {
+      if (!claim.fingerprint_matches) {
+        throw new ApiError(
+          409,
+          'conflict',
+          'Idempotency-Key was used for a different request',
+        );
       }
-      throw new ApiError(500, 'database_error', insertErr.message);
+      if (claim.in_flight) {
+        // Still in flight on the original request (or the row vanished mid-
+        // race -- also retryable). Tell the client to retry.
+        throw new ApiError(409, 'conflict', 'Idempotency-Key request in flight; retry shortly');
+      }
+      return new Response(JSON.stringify(claim.body), {
+        status: claim.status_code ?? 200,
+        headers: { 'content-type': 'application/json' },
+      });
     }
 
     // We claimed the key. Run the handler.
@@ -176,14 +168,17 @@ export function requireIdempotency(): MiddlewareHandler {
       }
     }
 
-    await sb
-      .from('idempotency_keys')
-      .update({
-        status_code: status,
-        body: cachedBody,
-        completed_at: new Date().toISOString(),
-      })
-      .eq('account_id', accountId)
-      .eq('key', key);
+    const { error: completeErr } = await sb.rpc('complete_idempotency_key', {
+      p_account_id: accountId,
+      p_key: key,
+      p_status: status,
+      p_body: cachedBody,
+    });
+    if (completeErr) {
+      // The response is already committed to the client; a failed completion
+      // just means the placeholder stays in-flight until the janitor frees
+      // it. Log, don't fail the request.
+      getLogger().error({ err: completeErr, key }, 'idempotency completion failed');
+    }
   };
 }

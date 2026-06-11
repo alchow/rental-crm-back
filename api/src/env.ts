@@ -11,6 +11,12 @@ const RawEnvSchema = z.object({
   PORT: z.coerce.number().int().positive().default(8787),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 
+  // Positive-hit TTL for the account-membership middleware cache (ms).
+  // 0 disables. Safe because RLS is the actual guard: a stale entry cannot
+  // read or write anything the DB refuses -- staleness only delays the
+  // 404-on-revocation convenience by at most this long.
+  MEMBERSHIP_CACHE_TTL_MS: z.coerce.number().int().min(0).default(45_000),
+
   SUPABASE_URL: z.string().url(),
   SUPABASE_ANON_KEY: z.string().min(20),
   // The privileged service-role env var is intentionally NOT declared here.
@@ -46,6 +52,7 @@ export interface Env {
   NODE_ENV: 'development' | 'test' | 'production';
   PORT: number;
   LOG_LEVEL: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
+  MEMBERSHIP_CACHE_TTL_MS: number;
   SUPABASE_URL: string;
   SUPABASE_ANON_KEY: string;
   SUPABASE_JWKS_URL: string;
@@ -73,6 +80,7 @@ export function loadEnv(): Env {
     NODE_ENV: raw.NODE_ENV,
     PORT: raw.PORT,
     LOG_LEVEL: raw.LOG_LEVEL,
+    MEMBERSHIP_CACHE_TTL_MS: raw.MEMBERSHIP_CACHE_TTL_MS,
     SUPABASE_URL: raw.SUPABASE_URL,
     SUPABASE_ANON_KEY: raw.SUPABASE_ANON_KEY,
     SUPABASE_JWKS_URL: raw.SUPABASE_JWKS_URL ?? `${supabaseOrigin}/auth/v1/.well-known/jwks.json`,
