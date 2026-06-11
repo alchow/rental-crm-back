@@ -60,6 +60,11 @@ EXCLUDES=(
   ':!api/test/interactions-journal.test.ts'
   ':!api/test/imports.test.ts'
   ':!api/test/imports-live.test.ts'
+  # api/test/ledger.test.ts: same shape as api-isolation.test.ts -- assigns
+  # process.env from supabase status so the app under test sees the same env
+  # it gets in CI (signup walks the admin path). ASSIGNED, never read into a
+  # client constructor in this file.
+  ':!api/test/ledger.test.ts'
   ':!openapi/emit.ts'
 )
 
