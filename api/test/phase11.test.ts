@@ -216,6 +216,13 @@ async function main(): Promise<void> {
 
   await check('chain sweep: tampered chain inserts an alert with right break details', async () => {
     await tamperEventHash(A.accountId);
+    // Phase 3 (ADR-0002): the sweep is incremental against a watermark; the
+    // tampered event sits BEHIND the watermark the clean-sweep check just
+    // advanced, so force the 24h full-verification path deterministically.
+    await admin
+      .from('chain_watermarks')
+      .update({ last_full_at: new Date(Date.now() - 25 * 3600 * 1000).toISOString() })
+      .eq('account_id', A.accountId);
     const r = await admin.rpc('verify_chain_sweep', { p_account_id: A.accountId });
     if (r.error) throw new Error(r.error.message);
     const row = (Array.isArray(r.data) ? r.data[0] : r.data) as {

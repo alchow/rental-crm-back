@@ -673,6 +673,152 @@ async function main(): Promise<void> {
   );
 
   // -----------------------------------------------------------------------
+  // Phase 3 (ADR-0002): chain watermark + incremental verification.
+  // The sweep is O(new events); tamper AFTER the watermark is caught
+  // immediately; tamper BEHIND it is caught by the bounded 24h full pass.
+  // -----------------------------------------------------------------------
+
+  await check(
+    'watermark: genesis walk verifies all events, resumed walk checks zero',
+    async () => {
+      await asSuper(async (c) => {
+        await c.query(`delete from public.chain_watermarks where account_id = $1`, [ACCOUNT_A]);
+        const t0 = Date.now();
+        const r1 = await c.query(`select * from public.verify_chain_incremental($1)`, [ACCOUNT_A]);
+        const fullMs = Date.now() - t0;
+        if (r1.rows[0]!.ok !== true) throw new Error(`genesis walk broken: ${r1.rows[0]!.reason}`);
+        const total = Number(r1.rows[0]!.events_checked);
+        if (total < 1) throw new Error('genesis walk checked zero events on seeded data');
+        const t1 = Date.now();
+        const r2 = await c.query(`select * from public.verify_chain_incremental($1)`, [ACCOUNT_A]);
+        const incMs = Date.now() - t1;
+        if (r2.rows[0]!.ok !== true) throw new Error(`resumed walk broken: ${r2.rows[0]!.reason}`);
+        if (Number(r2.rows[0]!.events_checked) !== 0) {
+          throw new Error(`resumed walk re-checked ${r2.rows[0]!.events_checked} events; expected 0`);
+        }
+        console.info(`        (full walk ${total} events: ${fullMs}ms; resumed: ${incMs}ms)`);
+        const wm = await c.query(
+          `select last_verified_seq::text as seq from public.chain_watermarks where account_id = $1`,
+          [ACCOUNT_A],
+        );
+        if (Number(wm.rows[0]?.seq) !== total) {
+          throw new Error(`watermark seq ${wm.rows[0]?.seq} != events checked ${total}`);
+        }
+      });
+    },
+    failures,
+  );
+
+  await check(
+    'watermark: tamper AFTER the watermark is caught immediately by the incremental walk',
+    async () => {
+      await asSuper(async (c) => {
+        // Append a fresh event: a direct UPDATE on a domain row fires the
+        // audit trigger (the DoD #3 property), landing one event past the
+        // watermark the previous check just advanced.
+        await c.query(
+          `update public.properties set name = name || '' where account_id = $1
+             and id = (select id from public.properties where account_id = $1 limit 1)`,
+          [ACCOUNT_A],
+        );
+        const newest = await c.query<{ id: string; payload: string }>(
+          `select id, payload::text as payload from public.events
+            where account_id = $1 order by account_seq desc limit 1`,
+          [ACCOUNT_A],
+        );
+        const target = newest.rows[0]!;
+        try {
+          await c.query(
+            `update public.events set payload = payload || '{"_wm_tamper": true}'::jsonb where id = $1`,
+            [target.id],
+          );
+          const v = await c.query(`select * from public.verify_chain_incremental($1)`, [ACCOUNT_A]);
+          if (v.rows[0]!.ok !== false) {
+            throw new Error('incremental walk returned ok=true over a tampered post-watermark event');
+          }
+          if (v.rows[0]!.broken_at !== target.id) {
+            throw new Error(`broken_at ${v.rows[0]!.broken_at} != tampered ${target.id}`);
+          }
+        } finally {
+          // Restore byte-identical payload even on assertion failure -- a
+          // leaked tamper poisons every later chain check.
+          await c.query(`update public.events set payload = $2::jsonb where id = $1`, [
+            target.id,
+            target.payload,
+          ]);
+        }
+        const v2 = await c.query(`select * from public.verify_chain_incremental($1)`, [ACCOUNT_A]);
+        if (v2.rows[0]!.ok !== true) {
+          throw new Error(`chain still broken after restore: ${v2.rows[0]!.reason}`);
+        }
+      });
+    },
+    failures,
+  );
+
+  await check(
+    'watermark: tamper BEHIND the watermark passes incrementally (bounded window) and is caught by the 24h full pass',
+    async () => {
+      await asSuper(async (c) => {
+        // Watermark is fresh and at the chain head (previous check).
+        const early = await c.query<{ id: string; payload: string }>(
+          `select id, payload::text as payload from public.events
+            where account_id = $1 and account_seq = 2`,
+          [ACCOUNT_A],
+        );
+        const target = early.rows[0]!;
+        try {
+          await c.query(
+            `update public.events set payload = payload || '{"_wm_tamper": true}'::jsonb where id = $1`,
+            [target.id],
+          );
+          // The documented detection window: incremental does NOT see it.
+          const vi = await c.query(`select * from public.verify_chain_incremental($1)`, [ACCOUNT_A]);
+          if (vi.rows[0]!.ok !== true) {
+            throw new Error('expected the incremental walk to pass (behind-watermark window)');
+          }
+          // Healing cadence: a stale last_full_at forces the sweep onto the
+          // full path, which catches the tamper and raises the alert.
+          await c.query(
+            `update public.chain_watermarks set last_full_at = now() - interval '25 hours'
+              where account_id = $1`,
+            [ACCOUNT_A],
+          );
+          const s = await c.query(`select * from public.verify_chain_sweep($1)`, [ACCOUNT_A]);
+          if (s.rows[0]!.ok !== false) {
+            throw new Error('stale-full sweep returned ok=true over a behind-watermark tamper');
+          }
+          // Rerun-safe assertion: on a persistent dev DB the alert row may
+          // already exist from a prior run (then re-detection REOPENS it
+          // rather than inserting). Either way an OPEN alert must now exist.
+          const open = await c.query(
+            `select 1 from public.chain_verification_alerts
+              where account_id = $1 and resolved_at is null`,
+            [ACCOUNT_A],
+          );
+          if (open.rowCount === 0) {
+            throw new Error('sweep did not leave an OPEN chain_verification_alert');
+          }
+        } finally {
+          // Restore even on assertion failure -- a leaked tamper poisons
+          // every later chain check (and reruns on a persistent dev DB).
+          await c.query(`update public.events set payload = $2::jsonb where id = $1`, [
+            target.id,
+            target.payload,
+          ]);
+        }
+        // The (still stale) sweep runs full again, passes, and resolves.
+        const s2 = await c.query(`select * from public.verify_chain_sweep($1)`, [ACCOUNT_A]);
+        if (s2.rows[0]!.ok !== true) throw new Error('sweep still broken after restore');
+        if (Number(s2.rows[0]!.alerts_resolved) < 1) {
+          throw new Error('sweep did not resolve the alert after the restore');
+        }
+      });
+    },
+    failures,
+  );
+
+  // -----------------------------------------------------------------------
   // Summary
   // -----------------------------------------------------------------------
   if (failures.length > 0) {
