@@ -237,6 +237,9 @@ scale-ready. Observability first — Phase 2 is measured against it.
 
 # Phase 2 — Get heavy work out of request handlers
 
+> Detailed, file-level implementation plan: `docs/phase-2-implementation.md`
+> (written 2026-06-11, supersedes the summary below where they differ).
+
 **Goal:** no handler builds a 200 MB artifact or waits on multi-minute LLM calls;
 imports stop being O(rows) round trips; mutating-request latency drops.
 **Effort:** 3–4 weeks. **Dependencies:** Phase 1 (metrics, typed import contract).

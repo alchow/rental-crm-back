@@ -231,15 +231,29 @@ async function main(): Promise<void> {
   // -------------------------------------------------------------------------
   // 14. evidence export (the killer artifact)
   // -------------------------------------------------------------------------
+  // Async contract (Phase 2.1): POST queues the export (202) and the client
+  // polls until the background job lands the bundle.
   const expRes = await client.POST('/v1/accounts/{accountId}/evidence-exports', {
     params: { path: { accountId } },
     headers: mutating(),
     body: { tenancy_id: tenancyId },
   });
   if (expRes.error || !expRes.data) dieOnError(14, 'create evidence_export', expRes.error);
+  let exp = expRes.data;
+  for (let i = 0; i < 120 && (exp.status === 'queued' || exp.status === 'running'); i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    const poll = await client.GET('/v1/accounts/{accountId}/evidence-exports/{id}', {
+      params: { path: { accountId, id: expRes.data.id } },
+    });
+    if (poll.error || !poll.data) dieOnError(14, 'poll evidence_export', poll.error);
+    exp = poll.data;
+  }
+  if (exp.status !== 'done' || !exp.attachment_id) {
+    throw new Error(`step 14 evidence_export did not complete: status=${exp.status} error=${exp.error ?? ''}`);
+  }
   log(14, 'evidence_export',
-    `${(expRes.data.size_bytes / 1024).toFixed(1)} KiB, sha256=${expRes.data.content_hash.slice(0, 12)}…, ` +
-    `chain=${expRes.data.chain_verified ? 'verified' : 'BROKEN'}`,
+    `status=done, attachment=${exp.attachment_id.slice(0, 8)}…, ` +
+    `chain=${exp.chain_verified ? 'verified' : 'BROKEN'}`,
   );
 
   // -------------------------------------------------------------------------

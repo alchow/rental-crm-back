@@ -3,6 +3,7 @@ import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 import { buildEvidenceExport } from '../admin/export-pdf';
+import { enqueue } from '../admin/job-runner';
 import { downloadAttachment } from '../admin/storage';
 
 // ============================================================================
@@ -38,30 +39,28 @@ const ExportBody = z
   )
   .openapi('EvidenceExportRequest');
 
-const ExportResponse = z
-  .object({
-    id: z.string().uuid(),
-    attachment_id: z.string().uuid(),
-    content_hash: z.string(),
-    size_bytes: z.number().int(),
-    generated_at: z.string(),
-    chain_verified: z.boolean(),
-    chain_message: z.string(),
-  })
-  .openapi('EvidenceExportResponse');
+// Async status machine (Phase 2.1): the row is created queued, a background
+// job renders the bundle, and the artifact fields (attachment_id,
+// chain_verified, chain_message, the real generated_at) are null/provisional
+// until status='done'. Clients poll GET until status is done or failed.
+const ExportStatus = z.enum(['queued', 'running', 'done', 'failed']).openapi('EvidenceExportStatus');
 
 const ExportRow = z
   .object({
     id: z.string().uuid(),
     account_id: z.string().uuid(),
+    status: ExportStatus,
+    /** Set when status='failed'; human-readable cause. Retry by POSTing a new export. */
+    error: z.string().nullable(),
     tenancy_id: z.string().uuid().nullable(),
     area_id: z.string().uuid().nullable(),
     from_date: z.string().nullable(),
     to_date: z.string().nullable(),
+    /** Provisional (row-creation time) until status='done'; then the render timestamp. */
     generated_at: z.string(),
-    chain_verified: z.boolean(),
-    chain_message: z.string(),
-    attachment_id: z.string().uuid(),
+    chain_verified: z.boolean().nullable(),
+    chain_message: z.string().nullable(),
+    attachment_id: z.string().uuid().nullable(),
     exporter: z.string().uuid().nullable(),
     created_at: z.string(),
     updated_at: z.string(),
@@ -83,13 +82,14 @@ const create = createRoute({
   method: 'post',
   path: '/accounts/{accountId}/evidence-exports',
   tags: ['evidence-exports'],
-  summary: 'Generate a tamper-evident evidence bundle PDF',
+  summary:
+    'Queue generation of a tamper-evident evidence bundle PDF (async; poll the returned export until status is done)',
   request: {
     params: AccountParam,
     body: { content: { 'application/json': { schema: ExportBody } }, required: true },
   },
   responses: {
-    201: { description: 'created', content: { 'application/json': { schema: ExportResponse } } },
+    202: { description: 'queued', content: { 'application/json': { schema: ExportRow } } },
     ...errorResponses,
   },
 });
@@ -149,27 +149,32 @@ evidenceExportsApp.openapi(create, async (c) => {
     if (!a.data) throw new ApiError(404, 'not_found', 'area not found in this account');
   }
 
-  const result = await buildEvidenceExport({
-    accountId,
-    tenancyId: body.tenancy_id ?? null,
-    areaId: body.area_id ?? null,
-    fromDate: body.from_date ?? null,
-    toDate: body.to_date ?? null,
-    exporter: c.get('auth').userId ?? null,
-  });
+  // Insert the QUEUED row through the member's own client: RLS applies and
+  // the audit event natively records actor='user:<uuid>' (no GUC needed for
+  // the request itself; the completion RPC pins the actor for the artifact
+  // writes). The row IS the job -- the in-process runner renders the bundle
+  // and flips it to done/failed; clients poll GET.
+  const { data: row, error: insErr } = await sb
+    .from('evidence_exports')
+    .insert({
+      account_id: accountId,
+      tenancy_id: body.tenancy_id ?? null,
+      area_id: body.area_id ?? null,
+      from_date: body.from_date ?? null,
+      to_date: body.to_date ?? null,
+      exporter: c.get('auth').userId ?? null,
+      status: 'queued',
+    })
+    .select('*')
+    .single();
+  if (insErr || !row) {
+    throw new ApiError(500, 'database_error', insErr?.message ?? 'could not queue export');
+  }
 
-  return c.json(
-    {
-      id: result.evidence_export_id,
-      attachment_id: result.attachment_id,
-      content_hash: result.content_hash,
-      size_bytes: result.size_bytes,
-      generated_at: result.generated_at,
-      chain_verified: result.chain_verified,
-      chain_message: result.chain_message,
-    },
-    201,
-  );
+  const exportId = (row as { id: string }).id;
+  enqueue(`evidence-export:${exportId}`, () => buildEvidenceExport(exportId));
+
+  return c.json(row as z.infer<typeof ExportRow>, 202);
 });
 
 evidenceExportsApp.openapi(list, async (c) => {
@@ -211,13 +216,20 @@ evidenceExportsApp.get('/accounts/:accountId/evidence-exports/:id/download', asy
   // even though the middleware should have already short-circuited.
   const { data, error } = await sb
     .from('evidence_exports')
-    .select('attachment_id')
+    .select('attachment_id, status')
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)
     .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
   if (!data) throw new ApiError(404, 'not_found', 'evidence_export not found');
+  if (data.status !== 'done' || !data.attachment_id) {
+    throw new ApiError(
+      409,
+      'conflict',
+      `export is not ready (status=${data.status}); poll the export until status is done`,
+    );
+  }
   const dl = await downloadAttachment(accountId, data.attachment_id as string);
   return new Response(dl.bytes, {
     status: 200,

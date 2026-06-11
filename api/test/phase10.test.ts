@@ -180,6 +180,54 @@ function assertStatus(r: ApiResp, expected: number, ctx: string): unknown {
   return r.body;
 }
 
+// Async export contract (Phase 2.1): POST returns 202 queued; poll GET until
+// terminal. Throws on status='failed' (NOT on chain_verified=false -- a
+// broken chain is a successful export that REPORTS the break). content_hash /
+// size_bytes moved off the export row; read them from the attachment row.
+interface CompletedExport {
+  id: string;
+  attachment_id: string;
+  content_hash: string;
+  size_bytes: number;
+  chain_verified: boolean;
+  chain_message: string;
+}
+async function createExportAndWait(
+  token: string,
+  accountId: string,
+  body: Record<string, unknown>,
+): Promise<CompletedExport> {
+  const r = await api('POST', `/v1/accounts/${accountId}/evidence-exports`, { token, body });
+  const queued = assertStatus(r, 202, 'queue export') as { id: string; status: string };
+  if (queued.status !== 'queued') throw new Error(`expected status=queued, got ${queued.status}`);
+
+  let row = queued as unknown as {
+    id: string; status: string; error: string | null;
+    attachment_id: string | null; chain_verified: boolean | null; chain_message: string | null;
+  };
+  const t0 = Date.now();
+  while ((row.status === 'queued' || row.status === 'running') && Date.now() - t0 < 60_000) {
+    await new Promise((res) => setTimeout(res, 200));
+    const poll = await api('GET', `/v1/accounts/${accountId}/evidence-exports/${queued.id}`, { token });
+    row = assertStatus(poll, 200, 'poll export') as typeof row;
+  }
+  if (row.status !== 'done' || !row.attachment_id) {
+    throw new Error(`export did not complete: status=${row.status} error=${row.error ?? ''}`);
+  }
+  const att = await api('GET', `/v1/accounts/${accountId}/attachments/${row.attachment_id}`, { token });
+  const attRow = assertStatus(att, 200, 'export attachment metadata') as {
+    content_hash: string; size_bytes: number;
+  };
+  return {
+    id: row.id,
+    attachment_id: row.attachment_id,
+    content_hash: attRow.content_hash,
+    size_bytes: attRow.size_bytes,
+    chain_verified: row.chain_verified as boolean,
+    chain_message: row.chain_message as string,
+  };
+}
+
 const PNG_1X1 = Buffer.from(
   '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63600100000005000156a04fe50000000049454e44ae426082',
   'hex',
@@ -243,20 +291,8 @@ async function main(): Promise<void> {
   let exportAttachmentId = '';
   let exportContentHash = '';
   let exportSizeBytes = 0;
-  await check('export: build a bundle for an active tenancy', async () => {
-    const r = await api('POST', `/v1/accounts/${A.accountId}/evidence-exports`, {
-      token: A.accessToken,
-      body: { tenancy_id: A.tenancyId },
-    });
-    const body = assertStatus(r, 201, 'create export') as {
-      id: string;
-      attachment_id: string;
-      content_hash: string;
-      size_bytes: number;
-      generated_at: string;
-      chain_verified: boolean;
-      chain_message: string;
-    };
+  await check('export: build a bundle for an active tenancy (202 + poll)', async () => {
+    const body = await createExportAndWait(A.accessToken, A.accountId, { tenancy_id: A.tenancyId });
     exportId = body.id;
     exportAttachmentId = body.attachment_id;
     exportContentHash = body.content_hash;
@@ -267,6 +303,43 @@ async function main(): Promise<void> {
     if (body.size_bytes <= 0) throw new Error(`size_bytes <= 0: ${body.size_bytes}`);
     if (!body.chain_verified) {
       throw new Error(`expected chain_verified=true on a fresh account; got message: ${body.chain_message}`);
+    }
+  });
+
+  await check('export: download before completion -> 409 conflict', async () => {
+    // Insert a queued row directly (no job enqueued) so the pending state is
+    // deterministic, then assert the download proxy refuses it.
+    const { data: pending, error } = await admin
+      .from('evidence_exports')
+      .insert({ account_id: A.accountId, tenancy_id: A.tenancyId, status: 'queued', exporter: A.userId })
+      .select('id')
+      .single();
+    if (error || !pending) throw new Error(`seed queued row: ${error?.message}`);
+    const r = await api('GET', `/v1/accounts/${A.accountId}/evidence-exports/${pending.id}/download`, {
+      token: A.accessToken,
+    });
+    if (r.status !== 409) throw new Error(`expected 409 for pending export, got ${r.status}`);
+    const code = (r.body as { error?: { code?: string } }).error?.code;
+    if (code !== 'conflict') throw new Error(`expected error.code=conflict, got ${code}`);
+  });
+
+  await check('export: boot recovery marks orphaned queued/running rows failed', async () => {
+    const { data: orphan, error } = await admin
+      .from('evidence_exports')
+      .insert({ account_id: A.accountId, tenancy_id: A.tenancyId, status: 'running', exporter: A.userId })
+      .select('id')
+      .single();
+    if (error || !orphan) throw new Error(`seed running row: ${error?.message}`);
+    const { recoverOrphanedEvidenceExports } = await import('../src/admin/export-pdf');
+    await recoverOrphanedEvidenceExports();
+    const { data: after } = await admin
+      .from('evidence_exports')
+      .select('status, error')
+      .eq('id', orphan.id)
+      .single();
+    if (after?.status !== 'failed') throw new Error(`expected failed, got ${after?.status}`);
+    if (!/restarted/.test(after?.error ?? '')) {
+      throw new Error(`error should mention restart: ${after?.error}`);
     }
   });
 
@@ -400,12 +473,7 @@ async function main(): Promise<void> {
   });
 
   await check('export: ended + soft-deleted tenancy is exportable (dispute case)', async () => {
-    const r = await api('POST', `/v1/accounts/${A.accountId}/evidence-exports`, {
-      token: A.accessToken, body: { tenancy_id: endedTenancyId },
-    });
-    const body = assertStatus(r, 201, 'export ended tenancy') as {
-      id: string; size_bytes: number; chain_verified: boolean;
-    };
+    const body = await createExportAndWait(A.accessToken, A.accountId, { tenancy_id: endedTenancyId });
     if (body.size_bytes <= 0) throw new Error('size_bytes <= 0');
     if (!body.chain_verified) throw new Error('chain should still verify on an ended tenancy');
   });
@@ -451,12 +519,7 @@ async function main(): Promise<void> {
     // Build a fresh export. It must succeed and the PDF must be at least
     // as large as the prior (no-HEIC) export -- meaning the renderer
     // walked the photos section without erroring on the HEIC original.
-    const exp = await api('POST', `/v1/accounts/${A.accountId}/evidence-exports`, {
-      token: A.accessToken, body: { tenancy_id: A.tenancyId },
-    });
-    const expBody = assertStatus(exp, 201, 'export with heic') as {
-      id: string; size_bytes: number;
-    };
+    const expBody = await createExportAndWait(A.accessToken, A.accountId, { tenancy_id: A.tenancyId });
     if (expBody.size_bytes < exportSizeBytes) {
       throw new Error(`export with HEIC should not be smaller than without (got ${expBody.size_bytes} < ${exportSizeBytes})`);
     }
@@ -541,10 +604,7 @@ async function main(): Promise<void> {
     }
 
     // And the real artifact still builds end-to-end with chains in scope.
-    const exp = await api('POST', `/v1/accounts/${A.accountId}/evidence-exports`, {
-      token: A.accessToken, body: { tenancy_id: A.tenancyId },
-    });
-    assertStatus(exp, 201, 'export with correction chains');
+    await createExportAndWait(A.accessToken, A.accountId, { tenancy_id: A.tenancyId });
   });
 
   // =========================================================================
@@ -579,12 +639,7 @@ async function main(): Promise<void> {
       await c.end().catch(() => {});
     }
 
-    const r = await api('POST', `/v1/accounts/${A.accountId}/evidence-exports`, {
-      token: A.accessToken, body: { tenancy_id: A.tenancyId },
-    });
-    const body = assertStatus(r, 201, 'export after tamper') as {
-      chain_verified: boolean; chain_message: string;
-    };
+    const body = await createExportAndWait(A.accessToken, A.accountId, { tenancy_id: A.tenancyId });
     if (body.chain_verified) {
       throw new Error('chain should NOT verify after tampering an event_hash');
     }
@@ -595,7 +650,7 @@ async function main(): Promise<void> {
     // anyone reading the audit trail later sees the captured-at-export-
     // time verdict, not a re-derivation that could be replayed against a
     // patched-clean chain.
-    const idAfter = (body as unknown as { id: string }).id;
+    const idAfter = body.id;
     const { data: row } = await admin
       .from('evidence_exports')
       .select('chain_verified, chain_message')

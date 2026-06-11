@@ -270,8 +270,9 @@ async function main(): Promise<void> {
   // =========================================================================
 
   await check('flag A: export over a broken chain logs structured audit_chain_broken', async () => {
-    // The alert goes through the process logger (pino, JSON lines). Swap in
-    // a sink-backed logger via the test seam, capture, then restore.
+    // The alert goes through the process logger (pino, JSON lines), emitted
+    // by the BACKGROUND export job (Phase 2.1) -- so the sink-backed logger
+    // must stay installed until the export reaches a terminal status.
     const { _setLoggerForTests, _resetLoggerForTests } = await import('../src/log');
     const { pino } = await import('pino');
     const logged: string[] = [];
@@ -280,7 +281,18 @@ async function main(): Promise<void> {
       const r = await api('POST', `/v1/accounts/${A.accountId}/evidence-exports`, {
         token: A.accessToken, body: { tenancy_id: A.tenancyId },
       });
-      if (r.status !== 201) throw new Error(`export status: ${r.status}`);
+      if (r.status !== 202) throw new Error(`export status: ${r.status}`);
+      const id = (r.body as { id: string }).id;
+      const t0 = Date.now();
+      let st = 'queued';
+      while ((st === 'queued' || st === 'running') && Date.now() - t0 < 60_000) {
+        await new Promise((res) => setTimeout(res, 200));
+        const poll = await api('GET', `/v1/accounts/${A.accountId}/evidence-exports/${id}`, {
+          token: A.accessToken,
+        });
+        st = (poll.body as { status: string }).status;
+      }
+      if (st !== 'done') throw new Error(`export did not complete: status=${st}`);
     } finally {
       _resetLoggerForTests();
     }
@@ -416,13 +428,25 @@ async function main(): Promise<void> {
     });
     if (chargeMar.status !== 201) throw new Error(`charge mar: ${chargeMar.status}`);
 
-    // Build an export narrowed to Feb 1 - Mar 31. January charge must NOT
-    // be dropped; it must roll into opening_balance.
+    // Build an export narrowed to Feb 1 - Mar 31 (202 + poll to completion;
+    // the build must SUCCEED for the property to hold). January charge must
+    // NOT be dropped; it must roll into opening_balance.
     const exp = await api('POST', `/v1/accounts/${B.accountId}/evidence-exports`, {
       token: B.accessToken,
       body: { tenancy_id: B.tenancyId, from_date: '2026-02-01', to_date: '2026-03-31' },
     });
-    if (exp.status !== 201) throw new Error(`export: ${exp.status} ${JSON.stringify(exp.body)}`);
+    if (exp.status !== 202) throw new Error(`export: ${exp.status} ${JSON.stringify(exp.body)}`);
+    const expId = (exp.body as { id: string }).id;
+    let expStatus = 'queued';
+    const tExp = Date.now();
+    while ((expStatus === 'queued' || expStatus === 'running') && Date.now() - tExp < 60_000) {
+      await new Promise((res) => setTimeout(res, 200));
+      const poll = await api('GET', `/v1/accounts/${B.accountId}/evidence-exports/${expId}`, {
+        token: B.accessToken,
+      });
+      expStatus = (poll.body as { status: string }).status;
+    }
+    if (expStatus !== 'done') throw new Error(`export did not complete: status=${expStatus}`);
 
     // Re-derive the ledger via the same computation by reading rows. We
     // verify the property structurally: total charges for the tenancy
