@@ -6,10 +6,11 @@
   "main": "src/index.ts",
   "scripts": {
     "dev": "tsx watch --env-file=../.env.local src/index.ts",
-    "start": "tsx src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:auth": "tsx test/auth.test.ts",
+    "test:envelope": "tsx test/envelope.test.ts",
     "test:api-isolation": "tsx test/api-isolation.test.ts",
     "test:intake": "tsx test/intake.test.ts",
     "test:attachments": "tsx test/attachments.test.ts",
@@ -18,11 +19,19 @@
     "test:phase11": "tsx test/phase11.test.ts",
     "test:phase12": "tsx test/phase12.test.ts",
     "test:imports": "tsx test/imports.test.ts",
+    "test:ledger": "tsx test/ledger.test.ts",
     "test:interactions-journal": "tsx test/interactions-journal.test.ts",
     "test:imports-live": "tsx test/imports-live.test.ts"
   },
+  "tsup": {
+    "entry": ["src/index.ts"],
+    "format": ["esm"],
+    "platform": "node",
+    "target": "node22",
+    "sourcemap": true,
+    "clean": true
+  },
   "dependencies": {
-    "tsx": "^4.19.2",
     "@anthropic-ai/sdk": "^0.104.1",
     "@hono/node-server": "^1.13.7",
     "@hono/zod-openapi": "^0.18.0",
@@ -32,13 +41,17 @@
     "jose": "^5.10.0",
     "pdfkit": "^0.15.2",
     "pg": "^8.13.1",
+    "pino": "^9.5.0",
     "sharp": "^0.33.5",
-    "xlsx": "^0.18.5",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@rentalcrm/sdk": "workspace:*",
     "@types/pdfkit": "^0.17.6",
-    "@types/pg": "^8.11.10"
+    "@types/pg": "^8.11.10",
+    "pino-pretty": "^11.3.0",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2"
   }
 }

@@ -1,5 +1,6 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { getUserClient } from '../supabase/user-client';
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from './_lib/app';
+import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 
 // 1:1 sub-resource on areas: unit-only attributes (bedrooms, bathrooms, sqft).
@@ -64,11 +65,11 @@ const put = createRoute({
   },
 });
 
-export const unitDetailsApp = new OpenAPIHono();
+export const unitDetailsApp = newApiApp();
 
 unitDetailsApp.openapi(get, async (c) => {
   const { accountId, areaId } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('unit_details')
     .select('*')
@@ -83,7 +84,7 @@ unitDetailsApp.openapi(get, async (c) => {
 unitDetailsApp.openapi(put, async (c) => {
   const { accountId, areaId } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
 
   // Upsert: on (area_id) conflict, replace the row.
   const row: Record<string, unknown> = {

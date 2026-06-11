@@ -7197,128 +7197,51 @@ export interface components {
         EvidenceExportList: {
             data: components["schemas"]["EvidenceExport"][];
         };
-        ImportRequirements: {
-            property: {
-                needed: boolean;
-                satisfied: boolean;
-                sources: ("mapped_column" | "default_property_id" | "property_overrides")[];
+        ImportRegionMeta: {
+            sheet: string;
+            range: string;
+            columns: {
+                name: string;
+                samples: string[];
+            }[];
+            total_rows: number;
+            truncated: boolean;
+        };
+        ImportRecognition: {
+            region_index: number;
+            importable: boolean;
+            entity_types: {
+                /** @enum {string} */
+                entity_type: "property" | "area" | "unit_details" | "tenant" | "tenancy" | "tenancy_member" | "lease" | "rent_schedule" | "interaction";
+                confidence: number;
+            }[];
+            summary: string;
+            header: {
+                present: boolean;
+                row_index: number;
             };
-        };
-        ImportSession: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            account_id: string;
-            status: string;
-            source_filename: string;
-            source_mime: string | null;
-            source_bytes: number | null;
-            source_path: string | null;
-            regions: unknown[];
-            recognition: unknown[];
-            mapping: unknown[];
-            parent_resolutions: {
-                [key: string]: unknown;
-            };
-            chat: unknown[];
-            preview_summary?: unknown;
-            result?: unknown;
-            error: string | null;
-            requirements: components["schemas"]["ImportRequirements"];
-            created_at: string;
-            updated_at: string;
-            deleted_at: string | null;
-        };
-        ImportUploadBody: {
-            /** @description binary spreadsheet/CSV file (multipart) */
-            file?: unknown;
-        };
-        ImportSessionListResponse: {
-            data: components["schemas"]["ImportSession"][];
-            next_cursor: string | null;
         };
         /** @enum {string} */
         ImportEntityType: "property" | "area" | "unit_details" | "tenant" | "tenancy" | "tenancy_member" | "lease" | "rent_schedule" | "interaction";
-        ImportMappingBody: {
-            mapping: {
-                region_index: number;
-                entity_type: components["schemas"]["ImportEntityType"];
-                fields: {
-                    target_field: string;
-                    source_column?: string | null;
-                    constant?: string | null;
-                    confidence?: number;
-                }[];
-            }[];
-        };
-        ImportParentsBody: {
-            parent_resolutions: {
-                /** Format: uuid */
-                default_property_id?: string | null;
-                property_overrides?: {
-                    [key: string]: {
-                        /** @enum {string} */
-                        mode: "existing" | "create";
-                        /** Format: uuid */
-                        id?: string | null;
-                    };
+        ImportParentResolutions: {
+            /** Format: uuid */
+            default_property_id?: string | null;
+            property_overrides?: {
+                [key: string]: {
+                    /** @enum {string} */
+                    mode: "existing" | "create";
+                    /** Format: uuid */
+                    id?: string | null;
                 };
             };
         };
-        ImportChatResponse: {
-            reply: string;
-            proposed_mapping: {
-                region_index: number;
-                entity_type: components["schemas"]["ImportEntityType"];
-                fields: {
-                    target_field: string;
-                    source_column?: string | null;
-                    constant?: string | null;
-                    confidence?: number;
-                }[];
-            }[] | null;
-            session: components["schemas"]["ImportSession"];
-        };
-        ImportChatBody: {
-            message: string;
+        ImportChatTurn: {
+            /** @enum {string} */
+            role: "user" | "assistant";
+            content: string;
         };
         /** @enum {string} */
         ImportBlockerCode: "missing_parent_property" | "missing_parent_area" | "parent_not_found" | "ambiguous_match" | "unmapped_required_field" | "missing_required_field" | "unparseable_value" | "date_order" | "invalid_value" | "details_on_non_unit";
-        ImportRow: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            account_id: string;
-            /** Format: uuid */
-            session_id: string;
-            region_index: number;
-            row_index: number;
-            raw: {
-                [key: string]: unknown;
-            };
-            excluded: boolean;
-            blockers: {
-                field: string | null;
-                code: components["schemas"]["ImportBlockerCode"];
-                message: string;
-            }[];
-            created_at: string;
-            updated_at: string;
-        };
-        ImportRowListResponse: {
-            data: components["schemas"]["ImportRow"][];
-            next_cursor: string | null;
-        };
-        ImportRowsPatchResponse: {
-            updated: number;
-        };
-        ImportRowsPatchBody: {
-            updates: {
-                /** Format: uuid */
-                id: string;
-                excluded: boolean;
-            }[];
-        };
         ImportBlocker: {
             /** @enum {string} */
             scope: "region" | "row";
@@ -7354,9 +7277,123 @@ export interface components {
                 interpreted_as: string;
                 ambiguous: boolean;
             }[];
+        } | null;
+        ImportRequirements: {
+            property: {
+                needed: boolean;
+                satisfied: boolean;
+                sources: ("mapped_column" | "default_property_id" | "property_overrides")[];
+            };
+        };
+        ImportSession: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            account_id: string;
+            status: string;
+            source_filename: string;
+            source_mime: string | null;
+            source_bytes: number | null;
+            source_path: string | null;
+            regions: components["schemas"]["ImportRegionMeta"][];
+            recognition: components["schemas"]["ImportRecognition"][];
+            mapping: {
+                region_index: number;
+                entity_type: components["schemas"]["ImportEntityType"];
+                fields: {
+                    target_field: string;
+                    source_column?: string | null;
+                    constant?: string | null;
+                    confidence?: number;
+                }[];
+            }[];
+            parent_resolutions: components["schemas"]["ImportParentResolutions"];
+            chat: components["schemas"]["ImportChatTurn"][];
+            preview_summary: components["schemas"]["ImportExecutionResult"];
+            result: components["schemas"]["ImportExecutionResult"];
+            error: string | null;
+            requirements: components["schemas"]["ImportRequirements"];
+            created_at: string;
+            updated_at: string;
+            deleted_at: string | null;
+        };
+        ImportUploadBody: {
+            /** @description binary spreadsheet/CSV file (multipart) */
+            file?: unknown;
+        };
+        ImportSessionListResponse: {
+            data: components["schemas"]["ImportSession"][];
+            next_cursor: string | null;
+        };
+        ImportMappingBody: {
+            mapping: {
+                region_index: number;
+                entity_type: components["schemas"]["ImportEntityType"];
+                fields: {
+                    target_field: string;
+                    source_column?: string | null;
+                    constant?: string | null;
+                    confidence?: number;
+                }[];
+            }[];
+        };
+        ImportParentsBody: {
+            parent_resolutions: components["schemas"]["ImportParentResolutions"];
+        };
+        ImportChatResponse: {
+            reply: string;
+            proposed_mapping: {
+                region_index: number;
+                entity_type: components["schemas"]["ImportEntityType"];
+                fields: {
+                    target_field: string;
+                    source_column?: string | null;
+                    constant?: string | null;
+                    confidence?: number;
+                }[];
+            }[] | null;
+            session: components["schemas"]["ImportSession"];
+        };
+        ImportChatBody: {
+            message: string;
+        };
+        ImportRow: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            account_id: string;
+            /** Format: uuid */
+            session_id: string;
+            region_index: number;
+            row_index: number;
+            raw: {
+                [key: string]: string;
+            };
+            excluded: boolean;
+            blockers: {
+                field: string | null;
+                code: components["schemas"]["ImportBlockerCode"];
+                message: string;
+            }[];
+            created_at: string;
+            updated_at: string;
+        };
+        ImportRowListResponse: {
+            data: components["schemas"]["ImportRow"][];
+            next_cursor: string | null;
+        };
+        ImportRowsPatchResponse: {
+            updated: number;
+        };
+        ImportRowsPatchBody: {
+            updates: {
+                /** Format: uuid */
+                id: string;
+                excluded: boolean;
+            }[];
         };
         ImportRunResponse: {
-            result: components["schemas"]["ImportExecutionResult"];
+            result: components["schemas"]["ImportExecutionResult"] & Record<string, never>;
             session: components["schemas"]["ImportSession"];
         };
         IntakeResponse: {

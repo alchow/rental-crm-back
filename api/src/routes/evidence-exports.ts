@@ -1,5 +1,6 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { getUserClient } from '../supabase/user-client';
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from './_lib/app';
+import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 import { buildEvidenceExport } from '../admin/export-pdf';
 import { downloadAttachment } from '../admin/storage';
@@ -115,7 +116,7 @@ const getOne = createRoute({
   },
 });
 
-export const evidenceExportsApp = new OpenAPIHono();
+export const evidenceExportsApp = newApiApp();
 
 evidenceExportsApp.openapi(create, async (c) => {
   const { accountId } = c.req.valid('param');
@@ -126,7 +127,7 @@ evidenceExportsApp.openapi(create, async (c) => {
   // account before we waste cycles on PDF rendering. We DO NOT filter
   // deleted_at -- the export specifically must work for ended/soft-deleted
   // tenancies (that's when disputes happen).
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   if (body.tenancy_id) {
     const t = await sb
       .from('tenancies')
@@ -173,7 +174,7 @@ evidenceExportsApp.openapi(create, async (c) => {
 
 evidenceExportsApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('evidence_exports')
     .select('*')
@@ -186,7 +187,7 @@ evidenceExportsApp.openapi(list, async (c) => {
 
 evidenceExportsApp.openapi(getOne, async (c) => {
   const { accountId, id } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('evidence_exports')
     .select('*')
@@ -205,7 +206,7 @@ evidenceExportsApp.openapi(getOne, async (c) => {
 evidenceExportsApp.get('/accounts/:accountId/evidence-exports/:id/download', async (c) => {
   const accountId = c.req.param('accountId') ?? '';
   const id = c.req.param('id') ?? '';
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   // Look up the attachment_id under RLS so a non-member is filtered out
   // even though the middleware should have already short-circuited.
   const { data, error } = await sb

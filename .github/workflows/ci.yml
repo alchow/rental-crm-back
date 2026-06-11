@@ -54,6 +54,17 @@ jobs:
       - name: JWT middleware unit test
         run: pnpm --filter ./api test:auth
 
+      - name: Validation-envelope unit test
+        # Every sub-app must answer zod validation failures with the project
+        # envelope; defaultHook does not inherit across .route() mounts, so
+        # this guards the newApiApp() factory invariant.
+        run: pnpm --filter ./api test:envelope
+
+      - name: API production build (tsup bundle)
+        # `start` runs node dist/index.js in prod; make sure the bundle
+        # actually builds from a clean tree.
+        run: pnpm --filter ./api build
+
       - name: Contract drift (OpenAPI + SDK regenerated cleanly)
         # The committed openapi/openapi.json and sdk/src/generated/types.ts
         # are the source-of-truth client contract. Regenerate them from the
@@ -223,6 +234,12 @@ jobs:
         # determinism (same input -> same hash); completed-inspection
         # immutability; HTML upload rejected.
         run: pnpm --filter ./api test:attachments
+
+      - name: Run ledger + pagination regression checks
+        # Phase 0/1 architecture-plan guards: tenancy-scoped allocation
+        # fetch (was account-wide), voided-charge unapplied credit, 400 on
+        # garbage cursors, and a no-dup/no-gap pagination walk.
+        run: pnpm --filter ./api test:ledger
 
       - name: Run onboarding-import DoD checks (Phase 1)
         # Full recognize -> map -> resolve -> preview -> confirm pipeline and

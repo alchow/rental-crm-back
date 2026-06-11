@@ -1,5 +1,5 @@
 import type { MiddlewareHandler } from 'hono';
-import { getUserClient } from '../supabase/user-client';
+import { getSb } from '../supabase/request-client';
 
 // The active-account context. Resource routes mount under
 // /v1/accounts/:accountId/... and this middleware verifies the caller is a
@@ -53,8 +53,7 @@ export function requireAccountMembership(): MiddlewareHandler {
       // whether ids in the right shape exist.
       return notFound();
     }
-    const auth = c.get('auth');
-    const sb = getUserClient(auth.accessToken);
+    const sb = getSb(c);
 
     const { data, error } = await sb
       .from('account_members')

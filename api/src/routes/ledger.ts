@@ -1,5 +1,6 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { getUserClient } from '../supabase/user-client';
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from './_lib/app';
+import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 
 // GET /v1/accounts/{accountId}/tenancies/{tenancyId}/ledger
@@ -104,7 +105,7 @@ const get = createRoute({
   },
 });
 
-export const ledgerApp = new OpenAPIHono();
+export const ledgerApp = newApiApp();
 
 interface ChargeRow {
   id: string;
@@ -141,28 +142,38 @@ interface AllocationRow {
 
 ledgerApp.openapi(get, async (c) => {
   const { accountId, tenancyId } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
 
-  const [charges, payments, allocations] = await Promise.all([
+  const [charges, payments] = await Promise.all([
     sb.from('charges').select('*').eq('account_id', accountId).eq('tenancy_id', tenancyId).is('deleted_at', null),
     sb.from('payments').select('*').eq('account_id', accountId).eq('tenancy_id', tenancyId).is('deleted_at', null),
-    sb.from('payment_allocations').select('*').eq('account_id', accountId).is('deleted_at', null),
   ]);
 
   if (charges.error) throw new ApiError(500, 'database_error', charges.error.message);
   if (payments.error) throw new ApiError(500, 'database_error', payments.error.message);
-  if (allocations.error) throw new ApiError(500, 'database_error', allocations.error.message);
 
   const chargeRows = (charges.data ?? []) as ChargeRow[];
   const paymentRows = (payments.data ?? []) as PaymentRow[];
-  const allRows = (allocations.data ?? []) as AllocationRow[];
-  // Allocations are fetched account-wide above; narrow to ones tied to a
-  // payment / charge in THIS tenancy.
-  const chargeIds = new Set(chargeRows.map((c) => c.id));
+  const chargeById = new Map(chargeRows.map((cr) => [cr.id, cr]));
+
+  // Allocations are fetched for THIS tenancy's charges only (chunked .in()
+  // keeps the request URL bounded) -- never account-wide. The paymentIds
+  // filter preserves the original semantics: an allocation counts only when
+  // BOTH its payment and its charge live in this tenancy.
+  const chargeIds = [...chargeById.keys()];
+  const allRows: AllocationRow[] = [];
+  for (let i = 0; i < chargeIds.length; i += 200) {
+    const { data, error } = await sb
+      .from('payment_allocations')
+      .select('*')
+      .eq('account_id', accountId)
+      .in('charge_id', chargeIds.slice(i, i + 200))
+      .is('deleted_at', null);
+    if (error) throw new ApiError(500, 'database_error', error.message);
+    allRows.push(...((data ?? []) as AllocationRow[]));
+  }
   const paymentIds = new Set(paymentRows.map((p) => p.id));
-  const tenancyAllocations = allRows.filter(
-    (a) => chargeIds.has(a.charge_id) && paymentIds.has(a.payment_id),
-  );
+  const tenancyAllocations = allRows.filter((a) => paymentIds.has(a.payment_id));
 
   // Index voided rows so we can exclude their allocations from the balance.
   const voidedPayments = new Set(
@@ -207,7 +218,7 @@ ledgerApp.openapi(get, async (c) => {
     if (voidedPayments.has(a.payment_id)) continue;
     if (voidedCharges.has(a.charge_id)) continue;
     totalAllocatedC += a.amount_cents;
-    const isDeposit = chargeRows.find((cr) => cr.id === a.charge_id)?.type === 'deposit';
+    const isDeposit = chargeById.get(a.charge_id)?.type === 'deposit';
     if (isDeposit) depositPaymentsC += a.amount_cents;
     else rentPaymentsC += a.amount_cents;
   }

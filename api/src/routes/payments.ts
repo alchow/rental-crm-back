@@ -1,7 +1,8 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { getUserClient } from '../supabase/user-client';
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from './_lib/app';
+import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
-import { decodeCursor, encodeCursor } from './_lib/cursor';
+import { keysetPage } from './_lib/cursor';
 
 // Payments are MONEY RECEIVED. As with charges, there is no PATCH / DELETE:
 // a bounced check or mis-entered cash is VOIDED via POST .../void. A
@@ -175,42 +176,25 @@ const addAllocation = createRoute({
   },
 });
 
-export const paymentsApp = new OpenAPIHono();
+export const paymentsApp = newApiApp();
 
 paymentsApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit, tenancy_id } = c.req.valid('query');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   let q = sb.from('payments').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (tenancy_id) q = q.eq('tenancy_id', tenancy_id);
-  q = q
-    .order('received_at', { ascending: true })
-    .order('id', { ascending: true })
-    .limit(limit + 1);
-  if (cursor) {
-    const cur = decodeCursor(cursor);
-    if (cur) {
-      q = q.or(
-        `received_at.gt.${cur.created_at},and(received_at.eq.${cur.created_at},id.gt.${cur.id})`,
-      );
-    }
-  }
-  const { data, error } = await q;
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  const rows = data ?? [];
-  const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
-  const last = items[items.length - 1];
-  const nextCursor =
-    hasMore && last
-      ? encodeCursor({ created_at: String(last.received_at), id: String(last.id) })
-      : null;
+  const { items, next_cursor: nextCursor } = await keysetPage(q, {
+    cursor,
+    limit,
+    column: 'received_at',
+  });
   return c.json({ data: items, next_cursor: nextCursor } as z.infer<typeof ListResponse>, 200);
 });
 
 paymentsApp.openapi(get, async (c) => {
   const { accountId, id } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('payments')
     .select('*')
@@ -226,7 +210,7 @@ paymentsApp.openapi(get, async (c) => {
 paymentsApp.openapi(create, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
 
   // Atomicity: a payment with allocations[] is ONE Postgres transaction.
   // Without this, an allocation that trips the integrity trigger would
@@ -287,7 +271,7 @@ paymentsApp.openapi(create, async (c) => {
 paymentsApp.openapi(voidRoute, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const { void_reason } = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('payments')
     .update({ voided_at: new Date().toISOString(), void_reason, updated_at: new Date().toISOString() })
@@ -305,7 +289,7 @@ paymentsApp.openapi(voidRoute, async (c) => {
 paymentsApp.openapi(addAllocation, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('payment_allocations')
     .insert({

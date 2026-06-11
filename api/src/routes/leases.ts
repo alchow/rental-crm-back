@@ -1,7 +1,8 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { getUserClient } from '../supabase/user-client';
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from './_lib/app';
+import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
-import { decodeCursor, encodeCursor } from './_lib/cursor';
+import { keysetPage } from './_lib/cursor';
 
 // Leases attach to a tenancy. A tenancy can have zero, one, or many leases
 // (handshake / month-to-month / holdover are first-class -- they're tenancies
@@ -145,12 +146,12 @@ const remove = createRoute({
   },
 });
 
-export const leasesApp = new OpenAPIHono();
+export const leasesApp = newApiApp();
 
 leasesApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit, tenancy_id, status } = c.req.valid('query');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   let q = sb
     .from('leases')
     .select('*')
@@ -158,34 +159,13 @@ leasesApp.openapi(list, async (c) => {
     .is('deleted_at', null);
   if (tenancy_id) q = q.eq('tenancy_id', tenancy_id);
   if (status) q = q.eq('status', status);
-  q = q
-    .order('created_at', { ascending: true })
-    .order('id', { ascending: true })
-    .limit(limit + 1);
-  if (cursor) {
-    const cur = decodeCursor(cursor);
-    if (cur) {
-      q = q.or(
-        `created_at.gt.${cur.created_at},and(created_at.eq.${cur.created_at},id.gt.${cur.id})`,
-      );
-    }
-  }
-  const { data, error } = await q;
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  const rows = data ?? [];
-  const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
-  const last = items[items.length - 1];
-  const nextCursor =
-    hasMore && last
-      ? encodeCursor({ created_at: String(last.created_at), id: String(last.id) })
-      : null;
+  const { items, next_cursor: nextCursor } = await keysetPage(q, { cursor, limit });
   return c.json({ data: items, next_cursor: nextCursor } as z.infer<typeof ListResponse>, 200);
 });
 
 leasesApp.openapi(get, async (c) => {
   const { accountId, id } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('leases')
     .select('*')
@@ -201,7 +181,7 @@ leasesApp.openapi(get, async (c) => {
 leasesApp.openapi(create, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('leases')
     .insert({
@@ -233,7 +213,7 @@ leasesApp.openapi(create, async (c) => {
 leasesApp.openapi(patch, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (body.term_end !== undefined) update.term_end = body.term_end;
   if (body.rent_amount_cents !== undefined) update.rent_amount_cents = body.rent_amount_cents;
@@ -262,7 +242,7 @@ leasesApp.openapi(patch, async (c) => {
 
 leasesApp.openapi(remove, async (c) => {
   const { accountId, id } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('leases')
     .update({ deleted_at: new Date().toISOString() })

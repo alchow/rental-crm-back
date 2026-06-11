@@ -1,7 +1,8 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { getUserClient } from '../supabase/user-client';
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from './_lib/app';
+import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
-import { decodeCursor, encodeCursor } from './_lib/cursor';
+import { keysetPage } from './_lib/cursor';
 
 // The channel-aware contact log. The high-stakes records are OFFLINE
 // contacts logged after the fact -- a doorstep conversation, a phone call,
@@ -227,12 +228,12 @@ const create = createRoute({
   },
 });
 
-export const interactionsApp = new OpenAPIHono();
+export const interactionsApp = newApiApp();
 
 interactionsApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit, tenancy_id, maintenance_request_id, latest_only } = c.req.valid('query');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   let q = sb
     .from('interactions_with_chain')
     .select('*')
@@ -241,34 +242,17 @@ interactionsApp.openapi(list, async (c) => {
   if (tenancy_id) q = q.eq('tenancy_id', tenancy_id);
   if (maintenance_request_id) q = q.eq('maintenance_request_id', maintenance_request_id);
   if (latest_only === 'true') q = q.eq('is_head', true);
-  q = q
-    .order('occurred_at', { ascending: true })
-    .order('id', { ascending: true })
-    .limit(limit + 1);
-  if (cursor) {
-    const cur = decodeCursor(cursor);
-    if (cur) {
-      q = q.or(
-        `occurred_at.gt.${cur.created_at},and(occurred_at.eq.${cur.created_at},id.gt.${cur.id})`,
-      );
-    }
-  }
-  const { data, error } = await q;
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  const rows = data ?? [];
-  const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
-  const last = items[items.length - 1];
-  const nextCursor =
-    hasMore && last
-      ? encodeCursor({ created_at: String(last.occurred_at), id: String(last.id) })
-      : null;
+  const { items, next_cursor: nextCursor } = await keysetPage(q, {
+    cursor,
+    limit,
+    column: 'occurred_at',
+  });
   return c.json({ data: items, next_cursor: nextCursor } as z.infer<typeof ListResponse>, 200);
 });
 
 interactionsApp.openapi(get, async (c) => {
   const { accountId, id } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('interactions_with_chain')
     .select('*')
@@ -316,7 +300,7 @@ function assertCoherentShape(row: {
 interactionsApp.openapi(create, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const auth = c.get('auth');
 
   // actor is derived from the authenticated user; the Phase 4 actor-integrity

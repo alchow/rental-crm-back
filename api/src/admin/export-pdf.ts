@@ -1,3 +1,4 @@
+import { getLogger } from '../log';
 import PDFDocument from 'pdfkit';
 import { createHash } from 'node:crypto';
 import { getAdminClient } from './supabase-admin';
@@ -97,17 +98,18 @@ export async function buildEvidenceExport(scope: ExportScope): Promise<BuildExpo
   // happens. The proactive cron (verify_chain_sweep) is what catches it
   // when no one is exporting; this log is the export-time companion.
   if (!chain.ok) {
-    console.error(JSON.stringify({
-      level: 'error',
-      event: 'audit_chain_broken',
-      account_id: scope.accountId,
-      broken_at: chain.broken_at,
-      broken_event_no: chain.broken_event_no,
-      message: chain.message,
-      detected_via: 'evidence_export',
-      exporter: scope.exporter,
-      ts: new Date().toISOString(),
-    }));
+    getLogger().error(
+      {
+        event: 'audit_chain_broken',
+        account_id: scope.accountId,
+        broken_at: chain.broken_at,
+        broken_event_no: chain.broken_event_no,
+        message: chain.message,
+        detected_via: 'evidence_export',
+        exporter: scope.exporter,
+      },
+      'audit chain broken',
+    );
   }
 
   // 2. Load every entity in scope. These queries use the admin client; the

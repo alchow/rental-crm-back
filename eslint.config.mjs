@@ -28,6 +28,25 @@ export default tseslint.config(
       'no-console': ['warn', { allow: ['warn', 'error', 'info'] }],
     },
   },
+  // Envelope quarantine: every OpenAPIHono instance must come from the
+  // newApiApp() factory (api/src/routes/_lib/app.ts) so the validation
+  // defaultHook -- which does NOT inherit across .route() mounts -- is wired
+  // on every sub-app. A bare `new OpenAPIHono()` answers validation failures
+  // in zod-openapi's default shape instead of the project envelope.
+  {
+    files: ['api/src/**/*.ts'],
+    ignores: ['api/src/routes/_lib/app.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "NewExpression[callee.name='OpenAPIHono']",
+          message:
+            'Construct apps via newApiApp() from routes/_lib/app.ts so the validation-envelope defaultHook is always wired.',
+        },
+      ],
+    },
+  },
   // Admin quarantine: the privileged Supabase client (constructed only in
   // api/src/admin/supabase-admin.ts) must not be imported outside src/admin/.
   // The grep-based lint catches the env var; this catches the wrapper module.

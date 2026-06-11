@@ -1,3 +1,4 @@
+import { getLogger } from '../log';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { loadEnv } from '../env';
@@ -257,7 +258,7 @@ export async function recognizeRegions(regions: ParsedRegion[]): Promise<Recogni
         `attempt ${attempt}: stop_reason=${stopReason} ` +
         `issues=${JSON.stringify(outer.error.issues)} ` +
         `raw=${JSON.stringify(raw)?.slice(0, 2000) ?? 'null'}`;
-      console.error(`[import-llm] recognition: malformed response (${lastFailure})`);
+      getLogger().error(`[import-llm] recognition: malformed response (${lastFailure})`);
       continue;
     }
 
@@ -268,7 +269,7 @@ export async function recognizeRegions(regions: ParsedRegion[]): Promise<Recogni
     for (const rawRegion of outer.data.regions) {
       const parsedRegion = RecognitionRegion.safeParse(rawRegion);
       if (!parsedRegion.success) {
-        console.error(
+        getLogger().error(
           `[import-llm] recognition: dropping malformed region entry ` +
             `issues=${JSON.stringify(parsedRegion.error.issues)} raw=${JSON.stringify(rawRegion)?.slice(0, 500)}`,
         );
@@ -280,7 +281,7 @@ export async function recognizeRegions(regions: ParsedRegion[]): Promise<Recogni
         .flatMap((rawEntity) => {
           const e = RecognitionEntity.safeParse(rawEntity);
           if (!e.success) {
-            console.error(
+            getLogger().error(
               `[import-llm] recognition: dropping malformed entity entry ` +
                 `raw=${JSON.stringify(rawEntity)?.slice(0, 200)}`,
             );
@@ -409,7 +410,7 @@ export async function suggestMapping(
   const fields: FieldMapping[] = [];
   if (!parsed.success) {
     // Degrades to an empty mapping (user maps manually) -- but leave a trace.
-    console.error(
+    getLogger().error(
       `[import-llm] mapping(${entityType}): malformed response ` +
         `issues=${JSON.stringify(parsed.error.issues)} raw=${JSON.stringify(rawMapping)?.slice(0, 1000) ?? 'null'}`,
     );

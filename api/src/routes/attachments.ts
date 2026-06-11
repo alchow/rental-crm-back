@@ -1,5 +1,6 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { getUserClient } from '../supabase/user-client';
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from './_lib/app';
+import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 import {
   uploadAttachment,
@@ -142,7 +143,7 @@ const remove = createRoute({
   },
 });
 
-export const attachmentsApp = new OpenAPIHono();
+export const attachmentsApp = newApiApp();
 
 // ---- upload ------------------------------------------------------------------
 attachmentsApp.openapi(upload, async (c) => {
@@ -178,7 +179,7 @@ attachmentsApp.openapi(upload, async (c) => {
   // The user-client + RLS guarantees we only see rows in the caller's
   // account, so .eq('account_id', accountId).eq('id', entityId) returns a
   // hit only when the user actually owns the target row.
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data: hit, error: hitErr } = await sb
     .from(entityType)
     .select('id')
@@ -215,7 +216,7 @@ attachmentsApp.openapi(upload, async (c) => {
 attachmentsApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
   const { entity_type, entity_id } = c.req.valid('query');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   let q = sb.from('attachments').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (entity_type) q = q.eq('entity_type', entity_type);
   if (entity_id)   q = q.eq('entity_id', entity_id);
@@ -226,7 +227,7 @@ attachmentsApp.openapi(list, async (c) => {
 
 attachmentsApp.openapi(getMeta, async (c) => {
   const { accountId, id } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('attachments')
     .select('*')

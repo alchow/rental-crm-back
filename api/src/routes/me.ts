@@ -1,6 +1,7 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from './_lib/app';
 import { requireAuth } from '../middleware/auth';
-import { getUserClient } from '../supabase/user-client';
+import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 
 // GET /v1/me -- "who am I?" and "which accounts am I in?"
@@ -50,11 +51,11 @@ const meRoute = createRoute({
   },
 });
 
-const me = new OpenAPIHono();
+const me = newApiApp();
 
 me.openapi(meRoute, async (c) => {
   const auth = c.get('auth');
-  const sb = getUserClient(auth.accessToken);
+  const sb = getSb(c);
 
   const { data, error } = await sb
     .from('account_members')

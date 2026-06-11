@@ -1,7 +1,8 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { getUserClient } from '../supabase/user-client';
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from './_lib/app';
+import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
-import { decodeCursor, encodeCursor } from './_lib/cursor';
+import { keysetPage } from './_lib/cursor';
 
 // Maintenance requests come from two sources:
 //   * landlord-initiated (POST below; opened_by = the JWT's user_id)
@@ -132,43 +133,22 @@ const patch = createRoute({
   },
 });
 
-export const maintenanceRequestsApp = new OpenAPIHono();
+export const maintenanceRequestsApp = newApiApp();
 
 maintenanceRequestsApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit, area_id, status } = c.req.valid('query');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   let q = sb.from('maintenance_requests').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (area_id) q = q.eq('area_id', area_id);
   if (status) q = q.eq('status', status);
-  q = q
-    .order('created_at', { ascending: true })
-    .order('id', { ascending: true })
-    .limit(limit + 1);
-  if (cursor) {
-    const cur = decodeCursor(cursor);
-    if (cur) {
-      q = q.or(
-        `created_at.gt.${cur.created_at},and(created_at.eq.${cur.created_at},id.gt.${cur.id})`,
-      );
-    }
-  }
-  const { data, error } = await q;
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  const rows = data ?? [];
-  const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
-  const last = items[items.length - 1];
-  const nextCursor =
-    hasMore && last
-      ? encodeCursor({ created_at: String(last.created_at), id: String(last.id) })
-      : null;
+  const { items, next_cursor: nextCursor } = await keysetPage(q, { cursor, limit });
   return c.json({ data: items, next_cursor: nextCursor } as z.infer<typeof ListResponse>, 200);
 });
 
 maintenanceRequestsApp.openapi(get, async (c) => {
   const { accountId, id } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('maintenance_requests')
     .select('*')
@@ -184,7 +164,7 @@ maintenanceRequestsApp.openapi(get, async (c) => {
 maintenanceRequestsApp.openapi(create, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const auth = c.get('auth');
   const { data, error } = await sb
     .from('maintenance_requests')
@@ -212,7 +192,7 @@ maintenanceRequestsApp.openapi(create, async (c) => {
 maintenanceRequestsApp.openapi(patch, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
 
   // Server-enforced status transitions: fetch the current status, validate
   // the requested next state is reachable. Doing this in the handler (rather

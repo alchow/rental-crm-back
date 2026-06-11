@@ -9,6 +9,7 @@ import { z } from 'zod';
 const RawEnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(8787),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 
   SUPABASE_URL: z.string().url(),
   SUPABASE_ANON_KEY: z.string().min(20),
@@ -44,6 +45,7 @@ const RawEnvSchema = z.object({
 export interface Env {
   NODE_ENV: 'development' | 'test' | 'production';
   PORT: number;
+  LOG_LEVEL: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
   SUPABASE_URL: string;
   SUPABASE_ANON_KEY: string;
   SUPABASE_JWKS_URL: string;
@@ -70,6 +72,7 @@ export function loadEnv(): Env {
   cached = {
     NODE_ENV: raw.NODE_ENV,
     PORT: raw.PORT,
+    LOG_LEVEL: raw.LOG_LEVEL,
     SUPABASE_URL: raw.SUPABASE_URL,
     SUPABASE_ANON_KEY: raw.SUPABASE_ANON_KEY,
     SUPABASE_JWKS_URL: raw.SUPABASE_JWKS_URL ?? `${supabaseOrigin}/auth/v1/.well-known/jwks.json`,
