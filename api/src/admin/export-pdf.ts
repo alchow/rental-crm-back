@@ -270,7 +270,79 @@ interface ExportData {
   intakeTokenById: Map<string, string>;
 }
 
-async function loadExportData(scope: ExportScope): Promise<ExportData> {
+// A correction chain is one event: the original entry plus the append-only
+// corrections/retractions that supersede it (interactions.corrects_id).
+// The export is the legal artifact -- it must always carry COMPLETE chains,
+// never the collapsed latest-only view, and never a chain split by a scope
+// filter. The date window applies to where a chain APPEARS on the timeline
+// (its root), not to which of its members are shown.
+//
+// completeInteractionChains: the windowed/tenancy-filtered fetch can miss
+// chain members (an amend re-dated outside the window, or re-linked to
+// another tenancy). Walk corrects_id links both ways until closure; chains
+// are short, so this is 0-2 extra queries in practice.
+async function completeInteractionChains(
+  admin: ReturnType<typeof getAdminClient>,
+  accountId: string,
+  rows: Record<string, unknown>[],
+): Promise<Record<string, unknown>[]> {
+  if (rows.length === 0) return rows;
+  const have = new Map(rows.map((r) => [String(r.id), r]));
+  for (;;) {
+    const ids = [...have.keys()];
+    const missingParents = [...have.values()]
+      .map((r) => (r.corrects_id ? String(r.corrects_id) : null))
+      .filter((x): x is string => x !== null && !have.has(x));
+    const [childRes, parentRes] = await Promise.all([
+      admin.from('interactions').select('*').eq('account_id', accountId).in('corrects_id', ids),
+      missingParents.length > 0
+        ? admin.from('interactions').select('*').eq('account_id', accountId).in('id', missingParents)
+        : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
+    ]);
+    const found = [
+      ...((childRes.data as Record<string, unknown>[]) ?? []),
+      ...((parentRes.data as Record<string, unknown>[]) ?? []),
+    ].filter((r) => !have.has(String(r.id)));
+    if (found.length === 0) return [...have.values()];
+    for (const r of found) have.set(String(r.id), r);
+  }
+}
+
+export interface InteractionChain {
+  root: Record<string, unknown>;
+  /** Chain order: oldest correction first; the last entry is the head. */
+  corrections: Record<string, unknown>[];
+}
+
+// Pure chain grouping for the renderer (and its tests -- PDFKit output is
+// not string-greppable, so THIS is the seam where "the export renders full
+// chains" is asserted). Roots are ordered by occurred_at like the flat list
+// was; a correction whose original fell outside the data set entirely is
+// kept as a root rather than dropped -- the export never hides an entry.
+export function groupInteractionChains(rows: Record<string, unknown>[]): InteractionChain[] {
+  const ids = new Set(rows.map((r) => String(r.id)));
+  const byCorrects = new Map(rows.filter((r) => r.corrects_id).map((r) => [String(r.corrects_id), r]));
+  const roots = rows.filter((r) => !r.corrects_id || !ids.has(String(r.corrects_id)));
+  roots.sort(
+    (a, b) =>
+      String(a.occurred_at).localeCompare(String(b.occurred_at)) ||
+      String(a.id).localeCompare(String(b.id)),
+  );
+  return roots.map((root) => {
+    const corrections: Record<string, unknown>[] = [];
+    let cur = byCorrects.get(String(root.id));
+    while (cur) {
+      corrections.push(cur);
+      cur = byCorrects.get(String(cur.id));
+    }
+    return { root, corrections };
+  });
+}
+
+// Exported for the export test suite: the PDF binary is not string-greppable
+// (PDFKit hex-encodes text), so "the export carries complete chains" is
+// asserted against THIS -- the exact data set the renderer consumes.
+export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   const admin = getAdminClient();
 
   const acct = await admin.from('accounts').select('name').eq('id', scope.accountId).single();
@@ -353,6 +425,8 @@ async function loadExportData(scope: ExportScope): Promise<ExportData> {
     if (toDate)    intQ = intQ.lte('occurred_at', `${toDate}T23:59:59Z`);
     const intRes = await intQ;
     interactions = (intRes.data as Record<string, unknown>[]) ?? [];
+    // Never render a partial correction chain (see completeInteractionChains).
+    interactions = await completeInteractionChains(admin, scope.accountId, interactions);
   }
   if (areaId) {
     const [mr, ins] = await Promise.all([
@@ -783,17 +857,42 @@ async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
   doc.fillColor('#000');
 
   // ----- Interactions -------------------------------------------------------
+  // Full chains, ALWAYS: for a corrected entry, the original renders first
+  // (its own occurred_at/logged_at/body), then each correction with its own
+  // logged_at, labeled Corrected/Retracted. Retracted entries stay visible,
+  // withdrawn with their reason. Showing only the latest would make a
+  // good-faith correction look like a concealed edit -- completeness is the
+  // point of this artifact.
   section(doc, 'Interactions');
   if (data.interactions.length === 0) {
     italicNote(doc, '(no interactions in scope)');
   } else {
     doc.fontSize(9).fillColor('#333');
-    for (const it of [...data.interactions].sort((a, b) => String(a.occurred_at).localeCompare(String(b.occurred_at)))) {
+    for (const chain of groupInteractionChains(data.interactions)) {
+      const root = chain.root;
+      const what =
+        root.kind === 'note'
+          ? 'note'.padEnd(19)
+          : `${(root.direction as string).padEnd(8)} ${(root.channel as string).padEnd(10)}`;
       doc.text(
-        `• ${it.occurred_at as string}  ${(it.direction as string).padEnd(8)} ${(it.channel as string).padEnd(10)} ` +
-        `actor=${it.actor as string}  (logged ${it.logged_at as string})`,
+        `• ${root.occurred_at as string}  ${what} ` +
+        `actor=${root.actor as string}  (logged ${root.logged_at as string})`,
       );
-      if (it.body) doc.text(`    ${String(it.body).slice(0, 400)}`);
+      if (root.body) doc.text(`    ${String(root.body).slice(0, 400)}`);
+      for (const corr of chain.corrections) {
+        const label =
+          corr.correction_kind === 'retract'
+            ? `Retracted: ${String(corr.body ?? '').slice(0, 400)}`
+            : `Corrected: ${String(corr.body ?? '').slice(0, 400)}`;
+        const redated =
+          corr.occurred_at !== root.occurred_at ? `  occurred ${corr.occurred_at as string}` : '';
+        doc.text(
+          `    ${label}`,
+        );
+        doc.fillColor('#666').text(
+          `      by ${corr.actor as string}  (logged ${corr.logged_at as string})${redated}`,
+        ).fillColor('#333');
+      }
     }
     doc.fillColor('#000');
   }

@@ -4103,6 +4103,7 @@ export interface paths {
                     limit?: number;
                     tenancy_id?: string;
                     maintenance_request_id?: string;
+                    latest_only?: "true" | "false";
                 };
                 header?: never;
                 path: {
@@ -4151,7 +4152,7 @@ export interface paths {
             };
         };
         put?: never;
-        /** Log a contact (offline call, doorstep conversation, etc.). logged_at is server-set. */
+        /** Log a contact, a note, or a correction/retraction of an earlier entry. logged_at is server-set. Corrections are new immutable rows (the log is append-only); correcting a non-head or retracted entry returns 409. */
         post: {
             parameters: {
                 query?: never;
@@ -6946,17 +6947,26 @@ export interface components {
             account_id: string;
             actor: string;
             /** @enum {string} */
-            party_type: "tenant" | "vendor" | "inspector" | "other";
+            party_type: "tenant" | "vendor" | "inspector" | "other" | "none";
             /** Format: uuid */
             party_id: string | null;
             party_label: string | null;
             /** @enum {string} */
-            channel: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app" | "import";
+            channel: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app" | "import" | "note";
             /** @enum {string} */
             direction: "inbound" | "outbound" | "none";
             body: string | null;
             occurred_at: string;
             logged_at: string;
+            /** @enum {string} */
+            kind: "communication" | "note";
+            /** Format: uuid */
+            corrects_id: string | null;
+            /** @enum {string|null} */
+            correction_kind: "amend" | "retract" | null;
+            /** Format: uuid */
+            superseded_by_id: string | null;
+            is_head: boolean;
             /** Format: uuid */
             tenancy_id: string | null;
             /** Format: uuid */
@@ -6977,17 +6987,23 @@ export interface components {
         };
         CreateInteractionBody: {
             /** @enum {string} */
-            party_type: "tenant" | "vendor" | "inspector" | "other";
+            kind?: "communication" | "note";
+            /** @enum {string} */
+            party_type?: "tenant" | "vendor" | "inspector" | "other" | "none";
             /** Format: uuid */
             party_id?: string;
             party_label?: string;
             /** @enum {string} */
-            channel: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app" | "import";
+            channel?: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app" | "import" | "note";
             /** @enum {string} */
-            direction: "inbound" | "outbound" | "none";
+            direction?: "inbound" | "outbound" | "none";
             body?: string;
             /** Format: date-time */
-            occurred_at: string;
+            occurred_at?: string;
+            /** Format: uuid */
+            corrects_id?: string;
+            /** @enum {string} */
+            correction_kind?: "amend" | "retract";
             /** Format: uuid */
             tenancy_id?: string;
             /** Format: uuid */

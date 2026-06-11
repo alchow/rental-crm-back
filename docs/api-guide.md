@@ -476,20 +476,22 @@ closed → (terminal)
 
 ### Interactions
 
-The contact log. Records any communication on any channel, including offline contacts the landlord logs after the fact.
+The contact log, kept as an evidentiary journal. Records any communication on any channel — including offline contacts the landlord logs after the fact — plus dated observations (`kind=note`). The log is **append-only**: there is no `PATCH` and no `DELETE`. A correction, a retraction, and a note are all new immutable entries; the original entry is never mutated, and the evidence export always renders the complete chain.
 
-`occurred_at` — when the interaction happened (client-set, editable).
+`occurred_at` — when the interaction happened (client-set at create).
 `logged_at` — when it was recorded in the system (server-set, immutable). The gap between them is part of the audit record.
 
 | Method | Path | Body |
 |---|---|---|
-| `GET` | `/interactions` | |
-| `POST` | `/interactions` | `channel`, `direction`, `party_type` (required), `occurred_at` (required), `body` (optional, max 20000), `tenancy_id`\|null, `maintenance_request_id`\|null, `area_id`\|null, `vendor_id`\|null, `party_id`\|null, `party_label`\|null. |
+| `GET` | `/interactions` | Query: `latest_only=true` returns only chain heads (the collapsed view); default returns the full set so chains can be reconstructed. |
+| `POST` | `/interactions` | `kind` (`communication` default \| `note`), `channel`, `direction`, `party_type` (required for communications; omitted for notes), `occurred_at` (required unless correcting), `body` (optional, max 20000), `corrects_id`\|null, `correction_kind` (`amend`\|`retract`, required iff `corrects_id`), `tenancy_id`\|null, `maintenance_request_id`\|null, `area_id`\|null, `vendor_id`\|null, `party_id`\|null, `party_label`\|null. |
 | `GET` | `/interactions/{id}` | |
 
-`channel` values: `in_person` / `phone` / `voicemail` / `sms` / `email` / `letter` / `in_app`.
-`direction` values: `inbound` / `outbound`.
-`party_type` values: `tenant` / `vendor` / `inspector` / `other`.
+`channel` values: `in_person` / `phone` / `voicemail` / `sms` / `email` / `letter` / `in_app` (plus the server-managed `import` and `note`).
+`direction` values: `inbound` / `outbound` (`none` only on `import`/`note` entries).
+`party_type` values: `tenant` / `vendor` / `inspector` / `other` (`none` only on `note` entries).
+
+**Corrections, retractions, notes.** A correction is just a `POST` with `corrects_id` pointing at the entry it supersedes and `correction_kind` set: `amend` (the `body` carries the corrected content; context fields are inherited from the original and an amend may override them) or `retract` (the `body` carries the reason; nothing else may be sent). The target must be the **head** of its chain — correcting an already-superseded entry, or amending/retracting a retracted entry, returns `409 invalid_correction_target`; a `corrects_id` in another account returns `404`. A correction's `occurred_at` defaults to the original's (same event, same timeline position). Reads return two derived fields: `superseded_by_id` (the entry that corrects this one, or null) and `is_head`. A `note` is a dated observation with no counterparty ("inspected roof, cracked tile"): send `kind: "note"` with `occurred_at` and `body`, and omit `channel`/`direction`/`party_*`.
 
 ```bash
 curl -sX POST https://rental-crm-api.onrender.com/v1/accounts/8a1b.../interactions \
