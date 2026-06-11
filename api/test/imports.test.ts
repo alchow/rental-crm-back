@@ -186,7 +186,21 @@ async function uploadCsv(user: UserFixture, rows: string[][]): Promise<{ id: str
   fd.set('file', csvFile(rows));
   const r = await api('POST', `/v1/accounts/${user.accountId}/imports`, { token: user.accessToken, multipart: fd });
   if (r.status !== 201) throw new Error(`upload failed: ${r.status} ${JSON.stringify(r.body)}`);
-  return r.body as { id: string; status: string; mapping: unknown[] };
+  const created = r.body as { id: string; status: string };
+  // Async recognition (Phase 2.2): upload returns the 'parsing' session and a
+  // background job does parse + LLM + row persistence. Drain the in-process
+  // queue (deterministic with FakeAnthropic) and return the terminal session,
+  // so every check keeps asserting on the post-recognition state.
+  if (created.status === 'parsing') {
+    const { _drainJobsForTests } = await import('../src/admin/job-runner');
+    await _drainJobsForTests();
+    const refreshed = await api('GET', `/v1/accounts/${user.accountId}/imports/${created.id}`, {
+      token: user.accessToken,
+    });
+    if (refreshed.status !== 200) throw new Error(`session refresh failed: ${refreshed.status}`);
+    return refreshed.body as { id: string; status: string; mapping: unknown[] };
+  }
+  return created as { id: string; status: string; mapping: unknown[] };
 }
 
 // --- canned LLM responses ----------------------------------------------------

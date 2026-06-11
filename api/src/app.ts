@@ -40,7 +40,7 @@ import { requireIdempotency } from './middleware/idempotency';
 import { requireImmediateParent } from './middleware/immediate-parent';
 import { assertImageStackAtBoot, heicSupported } from './admin/heic-probe';
 import { recoverOrphanedEvidenceExports } from './admin/export-pdf';
-import { importCapability } from './admin/import-health';
+import { importCapability, recoverOrphanedImportSessions } from './admin/import-health';
 
 // The Hono app, configured but NOT listening. index.ts mounts it on a
 // node-server port; tests call app.fetch(request) directly without binding
@@ -73,10 +73,11 @@ export function buildApp(): OpenAPIHono {
   void assertImageStackAtBoot();
 
   // Fire-and-forget at boot: the in-process job queue does not survive a
-  // restart, so evidence exports still queued/running are unfinishable --
-  // mark them failed with a retry message. Never throws (unit tests build
-  // the app with no DB configured).
+  // restart, so evidence exports still queued/running -- and import sessions
+  // still parsing -- are unfinishable. Mark them failed with a retry message.
+  // Never throws (unit tests build the app with no DB configured).
   void recoverOrphanedEvidenceExports();
+  void recoverOrphanedImportSessions();
 
   // Correlation id + one summary log line per request, before everything
   // else so even CORS-rejected and 413-rejected requests are visible.

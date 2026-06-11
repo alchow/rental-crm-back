@@ -1,4 +1,5 @@
 import { loadEnv } from '../env';
+import { getLogger } from '../log';
 import { loadAdminEnv } from './env';
 import { getPool } from './db-pool';
 
@@ -78,4 +79,41 @@ export async function importCapability(): Promise<ImportCapability> {
     db_url: db,
     db_reachable: reachable,
   };
+}
+
+// ----------------------------------------------------------------------------
+// Boot recovery (Phase 2.2): recognition runs as an in-process job that does
+// not survive a restart. A session still in 'parsing' at boot can never
+// finish -- mark it failed with an actionable message. (v2 option: re-run
+// recognition from the archived source_path instead of failing.) Must never
+// throw; unit tests build the app with no DB configured.
+// ----------------------------------------------------------------------------
+
+export async function recoverOrphanedImportSessions(): Promise<void> {
+  try {
+    const { getAdminClient } = await import('./supabase-admin');
+    const admin = getAdminClient();
+    const { data, error } = await admin
+      .from('import_sessions')
+      .update({
+        status: 'failed',
+        error: 'server restarted while recognizing this file; upload it again',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('status', 'parsing')
+      .is('deleted_at', null)
+      .select('id');
+    if (error) {
+      getLogger().warn({ err: error }, 'import-session boot recovery query failed');
+      return;
+    }
+    if (data && data.length > 0) {
+      getLogger().warn(
+        { count: data.length, ids: data.map((r) => r.id) },
+        'orphaned import sessions marked failed at boot',
+      );
+    }
+  } catch (err) {
+    getLogger().debug({ err }, 'import-session boot recovery skipped');
+  }
 }
