@@ -1,6 +1,12 @@
 # Phase 2 — detailed implementation plan
 
-- **Status:** planned (not started)
+- **Status:** EXECUTED 2026-06-11 (all five items; branch `arch/phase-2.1-async-exports`).
+  Deviations from plan: no `create_evidence_export` RPC needed (the member-ALL
+  RLS policy lets the queued row insert through the user client with native
+  audit attribution); batching benchmark landed at −59% queries / −70% wall
+  clock, not the 10× round-trip target — the remainder is per-entity INSERTs
+  for created rows, irreducible without multi-row entity inserts (out of
+  scope by design). 10k rows: 53,730 queries/23.9s → 22,096/7.2s.
 - **Parent:** `docs/architecture-plan.md` (Phases 0+1 shipped 2026-06-11, PR #7)
 - **Goal:** no request handler builds a 200 MB artifact or waits on multi-minute
   LLM calls; imports stop being O(rows) round trips; mutating-request latency
