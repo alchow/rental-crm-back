@@ -724,7 +724,10 @@ class ExecCtx {
 
   // -------- the per-row driver, in topological order ------------------------
 
-  /** One imported note per non-empty cell: channel='import', direction='none'. */
+  /** One imported note per non-empty cell: kind='note'. Import provenance
+   *  lives in actor='system:import:<sessionId>' + the provenance row, not in
+   *  the channel; channel='import' remains only on rows imported before
+   *  kind existed. */
   private async createInteraction(
     row: RawImportRow,
     body: string,
@@ -740,9 +743,7 @@ class ExecCtx {
     const occurred = mapped ?? extractLeadingDate(body) ?? todayIso();
 
     const v = CreateInteractionBody.safeParse({
-      party_type: 'other',
-      channel: 'import',
-      direction: 'none',
+      kind: 'note',
       body,
       occurred_at: `${occurred}T00:00:00.000Z`,
       area_id: areaId ?? undefined,
@@ -754,14 +755,18 @@ class ExecCtx {
     }
     const ins = await this.client.query(
       `insert into interactions
-         (account_id, actor, party_type, channel, direction, body, occurred_at, area_id, tenancy_id)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
+         (account_id, actor, kind, party_type, channel, direction, body, occurred_at, area_id, tenancy_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id`,
       [
         this.accountId,
         `system:import:${this.sessionId}`,
-        v.data.party_type,
-        v.data.channel,
-        v.data.direction,
+        v.data.kind,
+        // The note sentinels the HTTP route fills server-side for
+        // kind='note' (routes/interactions.ts) -- same stored shape either
+        // path takes.
+        'none',
+        'note',
+        'none',
         v.data.body,
         v.data.occurred_at,
         v.data.area_id ?? null,

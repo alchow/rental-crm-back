@@ -654,14 +654,17 @@ async function main(): Promise<void> {
 
     const listR = await api('GET', `/v1/accounts/${A.accountId}/interactions`, { token: A.accessToken });
     const list = assertStatus(listR, 200, 'list interactions') as {
-      data: { channel: string; direction: string; body: string | null; occurred_at: string; area_id: string | null; actor: string }[];
+      data: { kind: string; channel: string; direction: string; body: string | null; occurred_at: string; area_id: string | null; actor: string }[];
     };
-    const imported = list.data.filter((i) => i.channel === 'import');
+    // Provenance lives in the actor (and the provenance table), not the
+    // channel: imported journal entries are first-class kind='note' rows.
+    const imported = list.data.filter((i) => i.actor.startsWith('system:import:'));
     if (imported.length !== 2) throw new Error(`expected 2 imported interactions, got ${imported.length}`);
     for (const i of imported) {
+      if (i.kind !== 'note') throw new Error(`expected kind note, got ${i.kind}`);
+      if (i.channel !== 'note') throw new Error(`expected channel note, got ${i.channel}`);
       if (i.direction !== 'none') throw new Error(`expected direction none, got ${i.direction}`);
       if (!i.area_id) throw new Error('expected the interaction to be attached to its row area');
-      if (!i.actor.startsWith('system:import:')) throw new Error(`expected import actor, got ${i.actor}`);
     }
     const year = new Date().getUTCFullYear();
     const dated = imported.find((i) => i.body?.startsWith('6/2:'));
