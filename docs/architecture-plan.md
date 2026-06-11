@@ -295,6 +295,12 @@ are the OOM risk).
 
 # Phase 3 — Strategic design decisions (ADRs now, build when triggered)
 
+> EXECUTED 2026-06-11: five ADRs in `docs/adr/` (0001 lock: keep+triggers;
+> 0002 watermark: BUILT, sweep now O(new events) with a 24h full-pass
+> cadence; 0003 RLS form: BUILT, initplan policies, full scans −98% at 100k
+> rows; 0004 CRUD factory: rejected with trigger; 0005 scale-out checklist).
+> Benchmarks live in db/test/bench-rls.ts and the sweep DoD tests.
+
 **Goal:** the constraints that are fine today but expensive to discover under load.
 Each is an ADR (e.g. `docs/adr/`) with explicit trigger metrics, observable thanks
 to Phase 1. Don't build speculatively.

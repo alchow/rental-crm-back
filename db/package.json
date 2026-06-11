@@ -11,7 +11,8 @@
     "test:isolation": "tsx test/isolation.test.ts",
     "test:audit": "tsx test/audit.test.ts",
     "test:money": "tsx test/money.test.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "bench:rls": "tsx test/bench-rls.ts"
   },
   "dependencies": {
     "pg": "^8.13.1"

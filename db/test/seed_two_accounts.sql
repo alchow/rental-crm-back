@@ -228,3 +228,10 @@ begin
     (v_acc_a, v_pay_a, v_charge_a, 70000),
     (v_acc_b, v_pay_b, v_charge_b, 50000);
 end $$;
+
+-- Phase 3 (ADR-0002): establish a chain watermark per account so the
+-- isolation sweep sees chain_watermarks populated for BOTH accounts (its
+-- per-table "own rows > 0" requirement). Uses the real sweep, which also
+-- verifies the just-seeded chains end-to-end.
+select public.verify_chain_sweep('11111111-1111-1111-1111-111111111111');
+select public.verify_chain_sweep('22222222-2222-2222-2222-222222222222');

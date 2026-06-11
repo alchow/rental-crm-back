@@ -163,7 +163,8 @@ jobs:
           rc=$?
           set -e
           # Restore the real policy regardless of outcome.
-          psql -v ON_ERROR_STOP=1 -c "drop policy properties_leak on public.properties; create policy properties_member_all on public.properties for all using (public.is_account_member(account_id)) with check (public.is_account_member(account_id));"
+          # Restore the ADR-0003 initplan policy form (matches migration 20260615000002).
+          psql -v ON_ERROR_STOP=1 -c "drop policy properties_leak on public.properties; create policy properties_member_all on public.properties for all using (account_id in (select m.account_id from public.account_members m where m.user_id = (select auth.uid()) and m.deleted_at is null)) with check (account_id in (select m.account_id from public.account_members m where m.user_id = (select auth.uid()) and m.deleted_at is null));"
           if [ "$rc" -eq 0 ]; then
             echo "FAIL: isolation test passed under a leaky policy on properties"
             exit 1
