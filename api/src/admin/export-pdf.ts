@@ -49,16 +49,6 @@ export interface ExportScope {
   exporter: string | null;    // auth.users.id of the operator
 }
 
-export interface BuildExportResult {
-  evidence_export_id: string;
-  attachment_id: string;
-  content_hash: string;
-  size_bytes: number;
-  generated_at: string;
-  chain_verified: boolean;
-  chain_message: string;
-}
-
 interface ChainStatus {
   ok: boolean;
   message: string;
@@ -69,16 +59,100 @@ interface ChainStatus {
 // ---- top-level orchestrator -------------------------------------------------
 
 /**
- * Builds the export bundle: loads everything in scope, computes the ledger,
- * verifies the audit chain, renders the PDF, stores it as a content-hashed
- * attachment, and inserts the evidence_exports row. Returns the resulting
- * identifiers + chain status.
- *
- * Sets audit.actor = 'user:<exporter>' for the duration of the writes so
- * the audit events on attachments + evidence_exports both attribute the
- * action to the operator.
+ * Boot recovery (Phase 2.1): the in-process job queue does not survive a
+ * restart, so any export still queued/running at boot can never complete.
+ * Mark them failed with an actionable message -- a truthful failed-state
+ * beats a forever-pending row. Fire-and-forget from buildApp(); must never
+ * throw (envelope/unit tests build the app with no DB configured).
  */
-export async function buildEvidenceExport(scope: ExportScope): Promise<BuildExportResult> {
+export async function recoverOrphanedEvidenceExports(): Promise<void> {
+  try {
+    const admin = getAdminClient();
+    const { data, error } = await admin
+      .from('evidence_exports')
+      .update({
+        status: 'failed',
+        error: 'server restarted before this export was processed; retry the export',
+        updated_at: new Date().toISOString(),
+      })
+      .in('status', ['queued', 'running'])
+      .is('deleted_at', null)
+      .select('id');
+    if (error) {
+      getLogger().warn({ err: error }, 'evidence-export boot recovery query failed');
+      return;
+    }
+    if (data && data.length > 0) {
+      getLogger().warn(
+        { count: data.length, ids: data.map((r) => r.id) },
+        'orphaned evidence exports marked failed at boot',
+      );
+    }
+  } catch (err) {
+    // No admin env / no DB (unit tests, misconfigured boot): skip quietly.
+    getLogger().debug({ err }, 'evidence-export boot recovery skipped');
+  }
+}
+
+/**
+ * Runs ONE queued evidence export to completion (Phase 2.1 job body).
+ * Loads the queued row, flips it to running, builds the bundle, and lands
+ * the artifact atomically via the complete_evidence_export RPC (which pins
+ * audit.actor to the exporter). On any failure the row is marked failed
+ * with the error message, then the error is rethrown so the job runner
+ * logs it.
+ */
+export async function buildEvidenceExport(evidenceExportId: string): Promise<void> {
+  const admin = getAdminClient();
+  const { data: row, error: rowErr } = await admin
+    .from('evidence_exports')
+    .select('id, account_id, tenancy_id, area_id, from_date, to_date, exporter, status')
+    .eq('id', evidenceExportId)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (rowErr) throw new Error(`export ${evidenceExportId}: row load failed: ${rowErr.message}`);
+  if (!row) throw new Error(`export ${evidenceExportId}: row not found`);
+  if (row.status !== 'queued') {
+    // Already handled (boot recovery, duplicate enqueue, manual ops). Not an error.
+    getLogger().warn({ evidenceExportId, status: row.status }, 'export job skipped: not queued');
+    return;
+  }
+
+  await admin
+    .from('evidence_exports')
+    .update({ status: 'running', updated_at: new Date().toISOString() })
+    .eq('id', evidenceExportId);
+
+  try {
+    await renderAndComplete({
+      evidenceExportId,
+      scope: {
+        accountId: row.account_id as string,
+        tenancyId: (row.tenancy_id as string | null) ?? null,
+        areaId: (row.area_id as string | null) ?? null,
+        fromDate: (row.from_date as string | null) ?? null,
+        toDate: (row.to_date as string | null) ?? null,
+        exporter: (row.exporter as string | null) ?? null,
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await admin
+      .from('evidence_exports')
+      .update({ status: 'failed', error: message.slice(0, 2000), updated_at: new Date().toISOString() })
+      .eq('id', evidenceExportId)
+      .then(({ error }) => {
+        if (error) getLogger().error({ err: error, evidenceExportId }, 'could not mark export failed');
+      });
+    throw err;
+  }
+}
+
+async function renderAndComplete(args: {
+  evidenceExportId: string;
+  scope: ExportScope;
+}): Promise<void> {
+  const { evidenceExportId, scope } = args;
   const admin = getAdminClient();
   const generatedAt = new Date();
 
@@ -146,47 +220,28 @@ export async function buildEvidenceExport(scope: ExportScope): Promise<BuildExpo
     throw new Error(`evidence-export storage upload failed: ${upErr.message}`);
   }
 
-  // 5. Persist via the record_evidence_export RPC: ONE txn, audit.actor
-  //    pinned to 'user:<exporter>' inside the function so both the
-  //    attachment INSERT and the evidence_exports INSERT carry the right
-  //    operator attribution in their audit-trigger-emitted events. This is
-  //    the same atomicity discipline as submit_intake_with_attachment (the
-  //    Phase 9 elevated requirement applied to a parallel surface).
-  const evidenceExportId = crypto.randomUUID();
+  // 5. Land the artifact via complete_evidence_export: ONE txn that inserts
+  //    the attachment row and flips the export row to done, with audit.actor
+  //    pinned to 'user:<exporter>' inside the function so both audit events
+  //    carry the operator attribution. Same atomicity discipline as
+  //    submit_intake_with_attachment (Phase 9) applied here.
   const attachmentId = crypto.randomUUID();
-
-  const rpcRes = await admin.rpc('record_evidence_export', {
-    p_account_id:         scope.accountId,
+  const rpcRes = await admin.rpc('complete_evidence_export', {
     p_evidence_export_id: evidenceExportId,
     p_attachment_id:      attachmentId,
     p_storage_path:       storagePath,
     p_content_hash:       contentHash,
     p_size_bytes:         pdfBytes.byteLength,
-    p_tenancy_id:         scope.tenancyId ?? null,
-    p_area_id:            scope.areaId ?? null,
-    p_from_date:          scope.fromDate ?? null,
-    p_to_date:            scope.toDate ?? null,
     p_generated_at:       generatedAt.toISOString(),
     p_chain_verified:     chain.ok,
     p_chain_message:      chain.message,
-    p_exporter:           scope.exporter,
   });
   if (rpcRes.error) {
     // Storage bytes are orphan-safe; a future janitor prunes paths that
     // have no attachments row. Don't try to remove() here -- a transient
     // network blip would re-orphan a legitimate generation.
-    throw new Error(`record_evidence_export failed: ${rpcRes.error.message}`);
+    throw new Error(`complete_evidence_export failed: ${rpcRes.error.message}`);
   }
-
-  return {
-    evidence_export_id: evidenceExportId,
-    attachment_id: attachmentId,
-    content_hash: contentHash,
-    size_bytes: pdfBytes.byteLength,
-    generated_at: generatedAt.toISOString(),
-    chain_verified: chain.ok,
-    chain_message: chain.message,
-  };
 }
 
 void UPLOAD_MAX_BYTES; // kept-imported for callers that read both caps

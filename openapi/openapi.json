@@ -3406,63 +3406,14 @@
           }
         }
       },
-      "EvidenceExportResponse": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "attachment_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "content_hash": {
-            "type": "string"
-          },
-          "size_bytes": {
-            "type": "integer"
-          },
-          "generated_at": {
-            "type": "string"
-          },
-          "chain_verified": {
-            "type": "boolean"
-          },
-          "chain_message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "attachment_id",
-          "content_hash",
-          "size_bytes",
-          "generated_at",
-          "chain_verified",
-          "chain_message"
+      "EvidenceExportStatus": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "running",
+          "done",
+          "failed"
         ]
-      },
-      "EvidenceExportRequest": {
-        "type": "object",
-        "properties": {
-          "tenancy_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "area_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "from_date": {
-            "type": "string",
-            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
-          },
-          "to_date": {
-            "type": "string",
-            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
-          }
-        }
       },
       "EvidenceExport": {
         "type": "object",
@@ -3475,6 +3426,15 @@
             "type": "string",
             "format": "uuid"
           },
+          "status": {
+            "$ref": "#/components/schemas/EvidenceExportStatus"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "tenancy_id": {
             "type": [
               "string",
@@ -3505,13 +3465,22 @@
             "type": "string"
           },
           "chain_verified": {
-            "type": "boolean"
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "chain_message": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "attachment_id": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "uuid"
           },
           "exporter": {
@@ -3537,6 +3506,8 @@
         "required": [
           "id",
           "account_id",
+          "status",
+          "error",
           "tenancy_id",
           "area_id",
           "from_date",
@@ -3550,6 +3521,27 @@
           "updated_at",
           "deleted_at"
         ]
+      },
+      "EvidenceExportRequest": {
+        "type": "object",
+        "properties": {
+          "tenancy_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "area_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "from_date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "to_date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        }
       },
       "EvidenceExportList": {
         "type": "object",
@@ -11038,7 +11030,7 @@
         "tags": [
           "evidence-exports"
         ],
-        "summary": "Generate a tamper-evident evidence bundle PDF",
+        "summary": "Queue generation of a tamper-evident evidence bundle PDF (async; poll the returned export until status is done)",
         "parameters": [
           {
             "schema": {
@@ -11061,12 +11053,12 @@
           }
         },
         "responses": {
-          "201": {
-            "description": "created",
+          "202": {
+            "description": "queued",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EvidenceExportResponse"
+                  "$ref": "#/components/schemas/EvidenceExport"
                 }
               }
             }

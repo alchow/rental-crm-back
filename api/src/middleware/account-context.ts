@@ -1,5 +1,6 @@
 import type { MiddlewareHandler } from 'hono';
 import { getSb } from '../supabase/request-client';
+import { loadEnv } from '../env';
 
 // The active-account context. Resource routes mount under
 // /v1/accounts/:accountId/... and this middleware verifies the caller is a
@@ -44,6 +45,21 @@ function notFound(): Response {
   );
 }
 
+// Positive-hit TTL cache (Phase 2.4): saves one PostgREST round trip on
+// every account-scoped request. SAFE BY CONSTRUCTION: RLS is the actual
+// guard -- a stale entry cannot read or write anything the DB refuses, it
+// only delays the 404-on-revocation convenience by at most the TTL.
+// Negative results are NEVER cached (a just-added member must not be locked
+// out for the TTL). Size-capped with clear-all eviction: simplest correct
+// behavior, and 10k concurrent (user, account) pairs is far past this
+// deployment's scale.
+const membershipCache = new Map<string, { role: string; expiresAt: number }>();
+const MEMBERSHIP_CACHE_MAX = 10_000;
+
+export function _clearMembershipCacheForTests(): void {
+  membershipCache.clear();
+}
+
 export function requireAccountMembership(): MiddlewareHandler {
   return async (c, next) => {
     const accountId = c.req.param('accountId');
@@ -53,8 +69,18 @@ export function requireAccountMembership(): MiddlewareHandler {
       // whether ids in the right shape exist.
       return notFound();
     }
-    const sb = getSb(c);
 
+    const ttl = loadEnv().MEMBERSHIP_CACHE_TTL_MS;
+    const cacheKey = `${c.get('auth').userId}:${accountId}`;
+    if (ttl > 0) {
+      const hit = membershipCache.get(cacheKey);
+      if (hit && hit.expiresAt > Date.now()) {
+        c.set('account', { accountId, role: hit.role });
+        return next();
+      }
+    }
+
+    const sb = getSb(c);
     const { data, error } = await sb
       .from('account_members')
       .select('role')
@@ -74,6 +100,10 @@ export function requireAccountMembership(): MiddlewareHandler {
       return notFound();
     }
 
+    if (ttl > 0) {
+      if (membershipCache.size >= MEMBERSHIP_CACHE_MAX) membershipCache.clear();
+      membershipCache.set(cacheKey, { role: data.role, expiresAt: Date.now() + ttl });
+    }
     c.set('account', { accountId, role: data.role });
     return next();
   };

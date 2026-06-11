@@ -120,7 +120,18 @@ async function main(): Promise<void> {
   ]));
   const upload = await api('POST', `/v1/accounts/${account.id}/imports`, { token: session.access_token, multipart: fd });
   if (upload.status !== 201) throw new Error(`upload failed: ${upload.status} ${JSON.stringify(upload.body)}`);
-  const created = upload.body as { id: string; status: string; recognition: unknown[]; mapping: unknown[] };
+  let created = upload.body as { id: string; status: string; recognition: unknown[]; mapping: unknown[] };
+
+  // Async recognition (Phase 2.2): poll until the background LLM job lands.
+  const tRec = Date.now();
+  while (created.status === 'parsing' && Date.now() - tRec < 180_000) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const poll = await api('GET', `/v1/accounts/${account.id}/imports/${created.id}`, {
+      token: session.access_token,
+    });
+    if (poll.status !== 200) throw new Error(`poll failed: ${poll.status}`);
+    created = poll.body as typeof created;
+  }
 
   console.info(`session status: ${created.status}`);
   console.info(`recognition: ${JSON.stringify(created.recognition, null, 2)}`);

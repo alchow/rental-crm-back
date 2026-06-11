@@ -5394,7 +5394,7 @@ export interface paths {
             };
         };
         put?: never;
-        /** Generate a tamper-evident evidence bundle PDF */
+        /** Queue generation of a tamper-evident evidence bundle PDF (async; poll the returned export until status is done) */
         post: {
             parameters: {
                 query?: never;
@@ -5410,13 +5410,13 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description created */
-                201: {
+                /** @description queued */
+                202: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["EvidenceExportResponse"];
+                        "application/json": components["schemas"]["EvidenceExport"];
                     };
                 };
                 /** @description invalid request */
@@ -7153,16 +7153,31 @@ export interface components {
             condition?: string | null;
             notes?: string | null;
         };
-        EvidenceExportResponse: {
+        /** @enum {string} */
+        EvidenceExportStatus: "queued" | "running" | "done" | "failed";
+        EvidenceExport: {
             /** Format: uuid */
             id: string;
             /** Format: uuid */
-            attachment_id: string;
-            content_hash: string;
-            size_bytes: number;
+            account_id: string;
+            status: components["schemas"]["EvidenceExportStatus"];
+            error: string | null;
+            /** Format: uuid */
+            tenancy_id: string | null;
+            /** Format: uuid */
+            area_id: string | null;
+            from_date: string | null;
+            to_date: string | null;
             generated_at: string;
-            chain_verified: boolean;
-            chain_message: string;
+            chain_verified: boolean | null;
+            chain_message: string | null;
+            /** Format: uuid */
+            attachment_id: string | null;
+            /** Format: uuid */
+            exporter: string | null;
+            created_at: string;
+            updated_at: string;
+            deleted_at: string | null;
         };
         EvidenceExportRequest: {
             /** Format: uuid */
@@ -7171,28 +7186,6 @@ export interface components {
             area_id?: string;
             from_date?: string;
             to_date?: string;
-        };
-        EvidenceExport: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            account_id: string;
-            /** Format: uuid */
-            tenancy_id: string | null;
-            /** Format: uuid */
-            area_id: string | null;
-            from_date: string | null;
-            to_date: string | null;
-            generated_at: string;
-            chain_verified: boolean;
-            chain_message: string;
-            /** Format: uuid */
-            attachment_id: string;
-            /** Format: uuid */
-            exporter: string | null;
-            created_at: string;
-            updated_at: string;
-            deleted_at: string | null;
         };
         EvidenceExportList: {
             data: components["schemas"]["EvidenceExport"][];

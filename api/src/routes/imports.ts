@@ -1,6 +1,8 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import { getUserClient } from '../supabase/user-client';
+import { enqueue } from '../admin/job-runner';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage, keysetPageIndexed } from './_lib/cursor';
 import {
@@ -434,9 +436,20 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
+/** Mutating session operations are meaningless while the background
+ *  recognition job is still writing (Phase 2.2): mapping would be clobbered
+ *  by the job's own mapping write, previews would see half-persisted rows.
+ *  Reads stay open; mutations 409 until the job reaches a terminal status. */
+function assertNotParsing(session: Record<string, unknown>): void {
+  if (session.status === 'parsing') {
+    throw new ApiError(409, 'conflict', 'recognition in progress; poll the session until it leaves status=parsing');
+  }
+}
+
 // ---- upload -----------------------------------------------------------------
 importsApp.openapi(upload, async (c) => {
   const { accountId } = c.req.valid('param');
+  const auth = c.get('auth');
   const sb = getSb(c);
 
   type BodyVal = string | File | undefined;
@@ -465,99 +478,127 @@ importsApp.openapi(upload, async (c) => {
   if (insErr || !created) throw new ApiError(500, 'database_error', insErr?.message ?? 'could not create import session');
   const sessionId = (created as { id: string }).id;
 
-  const fail = async (message: string) => {
-    await sb
+  // 2. Archive the raw bytes (service-role; audit artifact). Kept IN-REQUEST:
+  //    a storage failure should be a synchronous error the uploader sees, and
+  //    the archived source is what makes the session inspectable even if
+  //    everything downstream fails.
+  let sourcePath: string;
+  try {
+    sourcePath = await uploadImportSource(accountId, sessionId, bytes, ext, mime);
+    const { error } = await sb
       .from('import_sessions')
-      .update({ status: 'failed', error: message, updated_at: new Date().toISOString() })
+      .update({ source_path: sourcePath, updated_at: new Date().toISOString() })
       .eq('account_id', accountId)
       .eq('id', sessionId);
-  };
-
-  try {
-    // 2. Archive the raw bytes (service-role; audit artifact).
-    const sourcePath = await uploadImportSource(accountId, sessionId, bytes, ext, mime);
-
-    // 3. Parse into regions (no assumptions; empty is valid).
-    const { regions } = parseImportFile(Buffer.from(bytes), filename);
-
-    if (regions.length === 0) {
-      const { data } = await sb
-        .from('import_sessions')
-        .update({ source_path: sourcePath, regions: [], status: 'no_importable_data', updated_at: new Date().toISOString() })
-        .eq('account_id', accountId)
-        .eq('id', sessionId)
-        .select('*')
-        .single();
-      return c.json(sessionOut(data as Record<string, unknown>), 201);
-    }
-
-    // 4. Recognize + suggest mapping (LLM, advisory). Sends column names +
-    //    <=5 samples per column + the first <=5 raw rows (header check) —
-    //    never the full row set. Recognition may advise a different header,
-    //    in which case the regions come back RE-SLICED — so this runs BEFORE
-    //    rows are persisted.
-    let finalRegions: ParsedRegion[] = regions;
-    let recognition: unknown[] = [];
-    let mapping: unknown[] = [];
-    try {
-      const out = await recognizeAndSuggest(regions);
-      finalRegions = out.regions;
-      recognition = out.recognition;
-      mapping = out.mapping;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      const { data } = await sb
-        .from('import_sessions')
-        .update({
-          source_path: sourcePath,
-          regions: regions.map(regionMeta),
-          status: 'failed',
-          error: `recognition failed: ${msg}`,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('account_id', accountId)
-        .eq('id', sessionId)
-        .select('*')
-        .single();
-      return c.json(sessionOut(data as Record<string, unknown>), 201);
-    }
-
-    // 5. Persist full rows to our DB (chunked), from the FINAL (possibly
-    //    re-sliced) regions. Raw values stay here.
-    const rowsPayload: { account_id: string; session_id: string; region_index: number; row_index: number; raw: Record<string, string> }[] = [];
-    finalRegions.forEach((r, ri) =>
-      r.rows.forEach((raw, idx) =>
-        rowsPayload.push({ account_id: accountId, session_id: sessionId, region_index: ri, row_index: idx, raw }),
-      ),
-    );
-    for (const part of chunk(rowsPayload, 1000)) {
-      const { error } = await sb.from('import_rows').insert(part);
-      if (error) throw new ApiError(500, 'database_error', `could not store rows: ${error.message}`);
-    }
-
-    const importable = (recognition as { importable?: boolean }[]).some((r) => r.importable);
-    const { data, error: updErr } = await sb
-      .from('import_sessions')
-      .update({
-        source_path: sourcePath,
-        regions: finalRegions.map(regionMeta),
-        recognition,
-        mapping,
-        status: importable ? 'awaiting_mapping' : 'no_importable_data',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('account_id', accountId)
-      .eq('id', sessionId)
-      .select('*')
-      .single();
-    if (updErr || !data) throw new ApiError(500, 'database_error', updErr?.message ?? 'could not finalize session');
-    return c.json(sessionOut(data as Record<string, unknown>), 201);
+    if (error) throw new ApiError(500, 'database_error', error.message);
   } catch (e) {
-    const msg = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
-    await fail(msg);
+    const msg = e instanceof Error ? e.message : String(e);
+    await sb
+      .from('import_sessions')
+      .update({ status: 'failed', error: msg, updated_at: new Date().toISOString() })
+      .eq('account_id', accountId)
+      .eq('id', sessionId);
     if (e instanceof ApiError) throw e;
     throw new ApiError(500, 'internal_error', msg);
   }
+
+  // 3-5 moved to a background job (Phase 2.2): parse + LLM recognition +
+  //    row persistence ran in-request before, which meant minutes-long
+  //    requests (Opus, effort high), proxy timeouts, and doubled LLM spend
+  //    on client retries. The handler returns the 'parsing' session NOW and
+  //    the client polls GET until the status machine reaches
+  //    awaiting_mapping / no_importable_data / failed.
+  //
+  //    The job runs with a client bound to the CALLER'S access token,
+  //    captured here: RLS still applies to every row/session write and the
+  //    audit events keep user attribution. The token outlives the request
+  //    by far more than the seconds-to-minutes the job needs; if it ever
+  //    expires mid-job the session lands in 'failed' with the auth error.
+  const jobToken = auth.accessToken;
+  enqueue(`import-recognition:${sessionId}`, async () => {
+    const jsb = getUserClient(jobToken);
+    const fail = async (message: string) => {
+      await jsb
+        .from('import_sessions')
+        .update({ status: 'failed', error: message, updated_at: new Date().toISOString() })
+        .eq('account_id', accountId)
+        .eq('id', sessionId);
+    };
+    try {
+      // 3. Parse into regions (no assumptions; empty is valid).
+      const { regions } = parseImportFile(Buffer.from(bytes), filename);
+
+      if (regions.length === 0) {
+        await jsb
+          .from('import_sessions')
+          .update({ regions: [], status: 'no_importable_data', updated_at: new Date().toISOString() })
+          .eq('account_id', accountId)
+          .eq('id', sessionId);
+        return;
+      }
+
+      // 4. Recognize + suggest mapping (LLM, advisory). Sends column names +
+      //    <=5 samples per column + the first <=5 raw rows (header check) —
+      //    never the full row set. Recognition may advise a different header,
+      //    in which case the regions come back RE-SLICED — so this runs
+      //    BEFORE rows are persisted.
+      let finalRegions: ParsedRegion[];
+      let recognition: unknown[];
+      let mapping: unknown[];
+      try {
+        const out = await recognizeAndSuggest(regions);
+        finalRegions = out.regions;
+        recognition = out.recognition;
+        mapping = out.mapping;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        await jsb
+          .from('import_sessions')
+          .update({
+            regions: regions.map(regionMeta),
+            status: 'failed',
+            error: `recognition failed: ${msg}`,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('account_id', accountId)
+          .eq('id', sessionId);
+        return;
+      }
+
+      // 5. Persist full rows to our DB (chunked), from the FINAL (possibly
+      //    re-sliced) regions. Raw values stay here.
+      const rowsPayload: { account_id: string; session_id: string; region_index: number; row_index: number; raw: Record<string, string> }[] = [];
+      finalRegions.forEach((r, ri) =>
+        r.rows.forEach((raw, idx) =>
+          rowsPayload.push({ account_id: accountId, session_id: sessionId, region_index: ri, row_index: idx, raw }),
+        ),
+      );
+      for (const part of chunk(rowsPayload, 1000)) {
+        const { error } = await jsb.from('import_rows').insert(part);
+        if (error) throw new Error(`could not store rows: ${error.message}`);
+      }
+
+      const importable = (recognition as { importable?: boolean }[]).some((r) => r.importable);
+      const { error: updErr } = await jsb
+        .from('import_sessions')
+        .update({
+          regions: finalRegions.map(regionMeta),
+          recognition,
+          mapping,
+          status: importable ? 'awaiting_mapping' : 'no_importable_data',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('account_id', accountId)
+        .eq('id', sessionId);
+      if (updErr) throw new Error(`could not finalize session: ${updErr.message}`);
+    } catch (e) {
+      await fail(e instanceof Error ? e.message : String(e));
+      throw e; // runner logs job_failed; session already marked
+    }
+  });
+
+  const refreshed = await loadSession(sb, accountId, sessionId);
+  return c.json(sessionOut(refreshed), 201);
 });
 
 // ---- list / get -------------------------------------------------------------
@@ -587,7 +628,8 @@ importsApp.openapi(patchMapping, async (c) => {
   const { accountId, sessionId } = c.req.valid('param');
   const { mapping } = c.req.valid('json');
   const sb = getSb(c);
-  await loadSession(sb, accountId, sessionId); // 404 if missing/not a member
+  const sessionForGuard = await loadSession(sb, accountId, sessionId); // 404 if missing/not a member
+  assertNotParsing(sessionForGuard);
   const { data, error } = await sb
     .from('import_sessions')
     .update({ mapping, status: 'awaiting_mapping', updated_at: new Date().toISOString() })
@@ -604,7 +646,7 @@ importsApp.openapi(patchParents, async (c) => {
   const { accountId, sessionId } = c.req.valid('param');
   const { parent_resolutions } = c.req.valid('json');
   const sb = getSb(c);
-  await loadSession(sb, accountId, sessionId);
+  assertNotParsing(await loadSession(sb, accountId, sessionId));
   const { data, error } = await sb
     .from('import_sessions')
     .update({ parent_resolutions, updated_at: new Date().toISOString() })
@@ -623,6 +665,7 @@ importsApp.openapi(postChat, async (c) => {
   const { message } = c.req.valid('json');
   const sb = getSb(c);
   const session = await loadSession(sb, accountId, sessionId);
+  assertNotParsing(session);
 
   // regionMeta carries columns+samples (no rows); the LLM digest never needs
   // the rows, so reconstruct ParsedRegion-shaped values with empty rows.
@@ -684,7 +727,7 @@ importsApp.openapi(patchRows, async (c) => {
   const { accountId, sessionId } = c.req.valid('param');
   const { updates } = c.req.valid('json');
   const sb = getSb(c);
-  await loadSession(sb, accountId, sessionId);
+  assertNotParsing(await loadSession(sb, accountId, sessionId));
 
   // Two batched UPDATEs (one per excluded-value) instead of one round trip
   // per row -- a "deselect 500 rows" click was 500 sequential PostgREST
@@ -715,6 +758,7 @@ importsApp.openapi(preview, async (c) => {
   const { accountId, sessionId } = c.req.valid('param');
   const sb = getSb(c);
   const session = await loadSession(sb, accountId, sessionId);
+  assertNotParsing(session);
   if (((session.mapping as unknown[]) ?? []).length === 0) {
     throw new ApiError(409, 'conflict', 'nothing is mapped to import yet');
   }
@@ -727,6 +771,7 @@ importsApp.openapi(confirm, async (c) => {
   const { accountId, sessionId } = c.req.valid('param');
   const sb = getSb(c);
   const session = await loadSession(sb, accountId, sessionId);
+  assertNotParsing(session);
   if (((session.mapping as unknown[]) ?? []).length === 0) {
     throw new ApiError(409, 'conflict', 'nothing is mapped to import yet');
   }

@@ -186,7 +186,21 @@ async function uploadCsv(user: UserFixture, rows: string[][]): Promise<{ id: str
   fd.set('file', csvFile(rows));
   const r = await api('POST', `/v1/accounts/${user.accountId}/imports`, { token: user.accessToken, multipart: fd });
   if (r.status !== 201) throw new Error(`upload failed: ${r.status} ${JSON.stringify(r.body)}`);
-  return r.body as { id: string; status: string; mapping: unknown[] };
+  const created = r.body as { id: string; status: string };
+  // Async recognition (Phase 2.2): upload returns the 'parsing' session and a
+  // background job does parse + LLM + row persistence. Drain the in-process
+  // queue (deterministic with FakeAnthropic) and return the terminal session,
+  // so every check keeps asserting on the post-recognition state.
+  if (created.status === 'parsing') {
+    const { _drainJobsForTests } = await import('../src/admin/job-runner');
+    await _drainJobsForTests();
+    const refreshed = await api('GET', `/v1/accounts/${user.accountId}/imports/${created.id}`, {
+      token: user.accessToken,
+    });
+    if (refreshed.status !== 200) throw new Error(`session refresh failed: ${refreshed.status}`);
+    return refreshed.body as { id: string; status: string; mapping: unknown[] };
+  }
+  return created as { id: string; status: string; mapping: unknown[] };
 }
 
 // --- canned LLM responses ----------------------------------------------------
@@ -804,6 +818,41 @@ async function main(): Promise<void> {
     }
     if (previewBody.result.counts.property?.reused !== 1 || previewBody.result.counts.property?.created !== 1) {
       throw new Error(`expected property reused=1 created=1, got ${JSON.stringify(previewBody.result.counts.property)}`);
+    }
+  });
+
+  await check('ambiguity: two same-named live properties still block with ambiguous_match', async () => {
+    // Guards the Phase 2.3 prefetch maps: the old per-row `limit 2` lookup
+    // blocked on duplicate names; the prefetched map must do the same via
+    // its AMBIGUOUS sentinel.
+    const dupName = `Dup Bldg ${Math.random().toString(36).slice(2, 8)}`;
+    for (let i = 0; i < 2; i++) {
+      const r = await api('POST', `/v1/accounts/${A.accountId}/properties`, {
+        token: A.accessToken, body: { name: dupName },
+      });
+      assertStatus(r, 201, `seed dup property ${i}`);
+    }
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a property roster',
+        entity_types: [{ entity_type: 'property', confidence: 0.9 }],
+      }],
+      mappings: {
+        property: [{ target_field: 'name', source_column: 'Property', constant: null, confidence: 0.9 }],
+      },
+    }));
+    const session = await uploadCsv(A, [['Property'], [dupName]]);
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/preview`, { token: A.accessToken });
+    const previewBody = assertStatus(previewR, 200, 'preview ambiguous property') as {
+      result: { blockers: { code: string; entity_type: string | null }[] };
+    };
+    const hit = previewBody.result.blockers.find(
+      (b) => b.code === 'ambiguous_match' && b.entity_type === 'property',
+    );
+    if (!hit) {
+      throw new Error(`expected an ambiguous_match property blocker, got ${JSON.stringify(previewBody.result.blockers)}`);
     }
   });
 
