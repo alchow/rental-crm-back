@@ -211,6 +211,11 @@ function extractLeadingDate(text: string): string | null {
 
 // ----- the per-run execution context ----------------------------------------
 
+// Sentinel for "this name matches MORE than one live row" in the prefetched
+// lookup maps (Phase 2.3). Not a valid uuid, so it can never collide with a
+// real id. Preserves the pre-batching `limit 2` ambiguity semantics exactly.
+const AMBIGUOUS = '__ambiguous__';
+
 class ExecCtx {
   private byRegion = new Map<number, Map<EntityType, FieldMapping[]>>();
   private regionScope = new Map<number, Set<EntityType>>();
@@ -221,6 +226,16 @@ class ExecCtx {
   private tenancyCache = new Map<string, string>();
   private leaseCache = new Set<string>();
   private rentScheduleCache = new Set<string>();
+  // Phase 2.3 prefetch: the account's LIVE rows snapshotted once per run
+  // (inside the txn) so per-row existence SELECTs disappear. A value is an
+  // id, or AMBIGUOUS when >1 live row shares the key. Rows the run itself
+  // creates land in the per-run caches above, which are consulted first.
+  private prefetchedProperties = new Map<string, string>(); // lower(name)
+  private prefetchedAreas = new Map<string, string>();      // propertyId::kind::lower(name)
+  private prefetchedTenants = new Map<string, string>();    // lower(full_name), first by created_at
+  // Phase 2.3 provenance buffering: one unnest INSERT per 500 entities
+  // instead of one INSERT per entity. runImport flushes after the row loop.
+  private provenanceBuf: { et: EntityType; entityId: string; region: number; row: number }[] = [];
   // Memoizes whether a user-supplied parent id actually belongs to THIS
   // account. The service_role connection bypasses RLS, so this manual scoping
   // is the isolation guard (defense-in-depth ahead of the composite FK).
@@ -302,11 +317,61 @@ class ExecCtx {
     this.counts[et]!.reused += 1;
   }
 
+  /** Snapshot the account's live properties/areas/tenants into lookup maps.
+   *  Runs inside the executor txn (service_role; manual account scoping is
+   *  the isolation guard, same as every other query here). */
+  async prefetch(): Promise<void> {
+    const props = await this.client.query(
+      `select id, lower(name) as k from properties where account_id = $1 and deleted_at is null`,
+      [this.accountId],
+    );
+    for (const r of props.rows as { id: string; k: string }[]) {
+      this.prefetchedProperties.set(r.k, this.prefetchedProperties.has(r.k) ? AMBIGUOUS : r.id);
+    }
+    const areas = await this.client.query(
+      `select id, property_id, kind, lower(name) as k from areas where account_id = $1 and deleted_at is null`,
+      [this.accountId],
+    );
+    for (const r of areas.rows as { id: string; property_id: string; kind: string; k: string }[]) {
+      const key = `${r.property_id}::${r.kind}::${r.k}`;
+      this.prefetchedAreas.set(key, this.prefetchedAreas.has(key) ? AMBIGUOUS : r.id);
+    }
+    // Tenants: the old per-row lookup took the FIRST match by created_at
+    // (no ambiguity blocker for tenants) -- first-wins here reproduces it.
+    const tenants = await this.client.query(
+      `select id, lower(full_name) as k from tenants where account_id = $1 and deleted_at is null
+        order by created_at asc`,
+      [this.accountId],
+    );
+    for (const r of tenants.rows as { id: string; k: string }[]) {
+      if (!this.prefetchedTenants.has(r.k)) this.prefetchedTenants.set(r.k, r.id);
+    }
+  }
+
   private async provenance(et: EntityType, entityId: string, row: RawImportRow): Promise<void> {
+    this.provenanceBuf.push({ et, entityId, region: row.region_index, row: row.row_index });
+    if (this.provenanceBuf.length >= 500) await this.flushProvenance();
+  }
+
+  /** Flush buffered provenance with one unnest INSERT. Must run after the
+   *  row loop and BEFORE any savepoint rollback decision -- provenance is
+   *  part of entity_writes and must roll back with them on preview. */
+  async flushProvenance(): Promise<void> {
+    if (this.provenanceBuf.length === 0) return;
+    const buf = this.provenanceBuf;
+    this.provenanceBuf = [];
     await this.client.query(
       `insert into import_provenance (account_id, session_id, entity_type, entity_id, region_index, row_index)
-       values ($1, $2, $3, $4, $5, $6)`,
-      [this.accountId, this.sessionId, et, entityId, row.region_index, row.row_index],
+       select $1, $2, t.et, t.eid, t.ri, t.rj
+         from unnest($3::text[], $4::uuid[], $5::int[], $6::int[]) as t(et, eid, ri, rj)`,
+      [
+        this.accountId,
+        this.sessionId,
+        buf.map((x) => x.et),
+        buf.map((x) => x.entityId),
+        buf.map((x) => x.region),
+        buf.map((x) => x.row),
+      ],
     );
   }
 
@@ -400,19 +465,15 @@ class ExecCtx {
       return override.id;
     }
     if (override?.mode !== 'create') {
-      const ex = await this.client.query(
-        `select id from properties where account_id = $1 and lower(name) = lower($2) and deleted_at is null limit 2`,
-        [this.accountId, name],
-      );
-      if ((ex.rowCount ?? 0) > 1) {
+      const pre = this.prefetchedProperties.get(key);
+      if (pre === AMBIGUOUS) {
         this.blockRow(row, 'property', 'name', 'ambiguous_match', `ambiguous property "${name}" (multiple matches); resolve via parents`);
         return null;
       }
-      if (ex.rowCount === 1) {
-        const id = ex.rows[0].id as string;
-        this.propertyCache.set(key, id);
+      if (pre) {
+        this.propertyCache.set(key, pre);
         this.recordReused('property');
-        return id;
+        return pre;
       }
     }
     const v = CreatePropertyBody.safeParse({ name, address: this.buildAddress(fields, row.raw) });
@@ -441,20 +502,15 @@ class ExecCtx {
     const cached = this.areaCache.get(key);
     if (cached) return cached;
 
-    const ex = await this.client.query(
-      `select id from areas where account_id = $1 and property_id = $2 and lower(name) = lower($3)
-         and kind = $4 and deleted_at is null limit 2`,
-      [this.accountId, propertyId, name, kind],
-    );
-    if ((ex.rowCount ?? 0) > 1) {
+    const pre = this.prefetchedAreas.get(`${propertyId}::${kind}::${name.toLowerCase()}`);
+    if (pre === AMBIGUOUS) {
       this.blockRow(row, 'area', 'name', 'ambiguous_match', `ambiguous ${kind} "${name}" within its property`);
       return null;
     }
-    if (ex.rowCount === 1) {
-      const id = ex.rows[0].id as string;
-      this.areaCache.set(key, id);
+    if (pre) {
+      this.areaCache.set(key, pre);
       this.recordReused('area');
-      return id;
+      return pre;
     }
     const v = CreateAreaBody.safeParse({ property_id: propertyId, kind, name });
     if (!v.success) {
@@ -500,16 +556,11 @@ class ExecCtx {
     const cached = this.tenantCache.get(key);
     if (cached) return cached;
 
-    const ex = await this.client.query(
-      `select id from tenants where account_id = $1 and lower(full_name) = lower($2) and deleted_at is null
-         order by created_at asc limit 1`,
-      [this.accountId, name],
-    );
-    if (ex.rowCount === 1) {
-      const id = ex.rows[0].id as string;
-      this.tenantCache.set(key, id);
+    const pre = this.prefetchedTenants.get(key);
+    if (pre) {
+      this.tenantCache.set(key, pre);
       this.recordReused('tenant');
-      return id;
+      return pre;
     }
     const email = this.getValue(fields, 'email', row.raw);
     const phone = this.getValue(fields, 'phone', row.raw);
@@ -903,19 +954,28 @@ class ExecCtx {
   }
 
   /** Persist per-row blockers for the UI (clears stale ones first). Runs after
-   *  the savepoint rollback so it survives into the COMMIT. */
+   *  the savepoint rollback so it survives into the COMMIT. One unnest UPDATE
+   *  for all blocked rows (Phase 2.3) instead of one UPDATE per row. */
   async persistRowBlockers(): Promise<void> {
     await this.client.query(
       `update import_rows set blockers = '[]'::jsonb, updated_at = now()
          where session_id = $1 and account_id = $2 and blockers <> '[]'::jsonb`,
       [this.sessionId, this.accountId],
     );
+    if (this.rowBlockers.size === 0) return;
+    const ids: string[] = [];
+    const lists: string[] = [];
     for (const [rowId, list] of this.rowBlockers) {
-      await this.client.query(
-        `update import_rows set blockers = $1::jsonb, updated_at = now() where id = $2 and session_id = $3`,
-        [JSON.stringify(list), rowId, this.sessionId],
-      );
+      ids.push(rowId);
+      lists.push(JSON.stringify(list));
     }
+    await this.client.query(
+      `update import_rows r
+          set blockers = v.b::jsonb, updated_at = now()
+         from unnest($1::uuid[], $2::text[]) as v(id, b)
+        where r.id = v.id and r.session_id = $3`,
+      [ids, lists, this.sessionId],
+    );
   }
 }
 
@@ -971,9 +1031,13 @@ export async function runImport(sessionId: string, accountId: string, dryRun: bo
     await client.query('SAVEPOINT entity_writes');
 
     const ctx = new ExecCtx(client, accountId, sessionId, mapping, parents);
+    await ctx.prefetch();
     for (const row of activeRows) {
       await ctx.processRow(row);
     }
+    // Provenance is part of entity_writes: flush BEFORE any savepoint
+    // rollback decision so preview rolls it back with the entities.
+    await ctx.flushProvenance();
     const result = ctx.buildResult({
       dryRun,
       rowsTotal: allRows.length,

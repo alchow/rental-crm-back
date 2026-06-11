@@ -21,11 +21,16 @@
     "test:imports": "tsx test/imports.test.ts",
     "test:ledger": "tsx test/ledger.test.ts",
     "test:interactions-journal": "tsx test/interactions-journal.test.ts",
-    "test:imports-live": "tsx test/imports-live.test.ts"
+    "test:imports-live": "tsx test/imports-live.test.ts",
+    "bench:import": "tsx test/bench-import.ts"
   },
   "tsup": {
-    "entry": ["src/index.ts"],
-    "format": ["esm"],
+    "entry": [
+      "src/index.ts"
+    ],
+    "format": [
+      "esm"
+    ],
     "platform": "node",
     "target": "node22",
     "sourcemap": true,

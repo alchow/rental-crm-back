@@ -821,6 +821,41 @@ async function main(): Promise<void> {
     }
   });
 
+  await check('ambiguity: two same-named live properties still block with ambiguous_match', async () => {
+    // Guards the Phase 2.3 prefetch maps: the old per-row `limit 2` lookup
+    // blocked on duplicate names; the prefetched map must do the same via
+    // its AMBIGUOUS sentinel.
+    const dupName = `Dup Bldg ${Math.random().toString(36).slice(2, 8)}`;
+    for (let i = 0; i < 2; i++) {
+      const r = await api('POST', `/v1/accounts/${A.accountId}/properties`, {
+        token: A.accessToken, body: { name: dupName },
+      });
+      assertStatus(r, 201, `seed dup property ${i}`);
+    }
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a property roster',
+        entity_types: [{ entity_type: 'property', confidence: 0.9 }],
+      }],
+      mappings: {
+        property: [{ target_field: 'name', source_column: 'Property', constant: null, confidence: 0.9 }],
+      },
+    }));
+    const session = await uploadCsv(A, [['Property'], [dupName]]);
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/preview`, { token: A.accessToken });
+    const previewBody = assertStatus(previewR, 200, 'preview ambiguous property') as {
+      result: { blockers: { code: string; entity_type: string | null }[] };
+    };
+    const hit = previewBody.result.blockers.find(
+      (b) => b.code === 'ambiguous_match' && b.entity_type === 'property',
+    );
+    if (!hit) {
+      throw new Error(`expected an ambiguous_match property blocker, got ${JSON.stringify(previewBody.result.blockers)}`);
+    }
+  });
+
   await check('create_new override (mode:create) forces a new property despite a name match', async () => {
     const r = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${fromColumnSessionId}/parents`, {
       token: A.accessToken,
