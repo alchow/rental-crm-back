@@ -8,7 +8,7 @@
 // Phase 1 scope is structural + notes:
 //   property -> area (unit or common space) -> unit_details -> tenant ->
 //   tenancy -> tenancy_member -> lease (optional) -> rent_schedule;
-//   plus interaction (imported notes/log entries, channel='import').
+//   plus interaction (imported notes/log entries, kind='note').
 // Money (charges/payments) is Phase 2 and deliberately ABSENT from this
 // catalog so it cannot be imported by accident.
 // ----------------------------------------------------------------------------
@@ -152,8 +152,8 @@ export const ENTITY_CATALOG: Record<EntityType, EntitySpec> = {
     label: 'Note / log entry',
     description:
       'A free-text note, comment, or log entry about a unit or tenancy (a "Notes" or "Comments" ' +
-      'column, a maintenance log, a journal). Imported into the contact log with channel "import". ' +
-      'Rows with an empty note cell simply produce no entry.',
+      'column, a maintenance log, a journal). Imported into the contact log as a dated note ' +
+      '(kind "note"). Rows with an empty note cell simply produce no entry.',
     fields: [
       {
         field: 'body',
