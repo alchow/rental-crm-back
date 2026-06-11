@@ -51,14 +51,13 @@ jobs:
       - name: Admin quarantine (ESLint rule regression)
         run: pnpm lint:admin-quarantine
 
-      - name: JWT middleware unit test
-        run: pnpm --filter ./api test:auth
-
-      - name: Validation-envelope unit test
-        # Every sub-app must answer zod validation failures with the project
-        # envelope; defaultHook does not inherit across .route() mounts, so
-        # this guards the newApiApp() factory invariant.
-        run: pnpm --filter ./api test:envelope
+      - name: Unit tests (vitest)
+        # JWT middleware (ES256/JWKS, algorithm confusion) + the validation-
+        # envelope guard (defaultHook does not inherit across .route()
+        # mounts; this protects the newApiApp() factory invariant). New unit
+        # tests land here as *.spec.ts; the tsx scripts below are the
+        # integration tier.
+        run: pnpm --filter ./api test:unit
 
       - name: API production build (tsup bundle)
         # `start` runs node dist/index.js in prod; make sure the bundle

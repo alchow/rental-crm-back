@@ -60,17 +60,22 @@ EXCLUDES=(
   ':!api/test/interactions-journal.test.ts'
   ':!api/test/imports.test.ts'
   ':!api/test/imports-live.test.ts'
-  # api/test/ledger.test.ts: same shape as api-isolation.test.ts -- assigns
-  # process.env from supabase status so the app under test sees the same env
-  # it gets in CI (signup walks the admin path). ASSIGNED, never read into a
-  # client constructor in this file.
+  # api/test/ledger.test.ts / bench-import.ts: same shape as
+  # api-isolation.test.ts -- assign process.env (ledger: from supabase
+  # status; bench: a placeholder so the admin env schema parses) so the code
+  # under test sees the env it gets in CI. ASSIGNED, never read into a
+  # client constructor in these files.
   ':!api/test/ledger.test.ts'
+  ':!api/test/bench-import.ts'
   ':!openapi/emit.ts'
 )
 
 violations=0
 for pattern in "${PATTERNS[@]}"; do
-  if matches=$(git grep -nE -- "$pattern" -- '*.ts' '*.tsx' '*.js' '*.mjs' '*.cjs' "${EXCLUDES[@]}" 2>/dev/null); then
+  # --untracked: catch NEW files before they're committed -- the gate ran
+  # clean locally twice while a fresh test file violated it, because plain
+  # git grep only scans tracked content.
+  if matches=$(git grep --untracked -nE -- "$pattern" -- '*.ts' '*.tsx' '*.js' '*.mjs' '*.cjs' "${EXCLUDES[@]}" 2>/dev/null); then
     echo "Service-role reference outside api/src/admin/:"
     echo "$matches"
     violations=$((violations + 1))

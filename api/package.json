@@ -9,8 +9,6 @@
     "start": "node dist/index.js",
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:auth": "tsx test/auth.test.ts",
-    "test:envelope": "tsx test/envelope.test.ts",
     "test:api-isolation": "tsx test/api-isolation.test.ts",
     "test:intake": "tsx test/intake.test.ts",
     "test:attachments": "tsx test/attachments.test.ts",
@@ -22,7 +20,8 @@
     "test:ledger": "tsx test/ledger.test.ts",
     "test:interactions-journal": "tsx test/interactions-journal.test.ts",
     "test:imports-live": "tsx test/imports-live.test.ts",
-    "bench:import": "tsx test/bench-import.ts"
+    "bench:import": "tsx test/bench-import.ts",
+    "test:unit": "vitest run"
   },
   "tsup": {
     "entry": [
