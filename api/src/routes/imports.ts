@@ -1,7 +1,8 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { getUserClient } from '../supabase/user-client';
-import { ApiError, errorResponses, validationFailure } from './_lib/error';
-import { decodeCursor, encodeCursor } from './_lib/cursor';
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from './_lib/app';
+import { getSb } from '../supabase/request-client';
+import { ApiError, errorResponses } from './_lib/error';
+import { keysetPage, keysetPageIndexed } from './_lib/cursor';
 import {
   parseImportFile,
   extFromFilename,
@@ -71,44 +72,37 @@ const ImportRequirementsSchema = z
   })
   .openapi('ImportRequirements');
 
-const ImportSession = z
+// Stored-JSONB shapes, typed so the generated SDK gives the FE real types
+// for the import UI instead of `any`. These mirror (and must track) the TS
+// types in import-parser.ts / import-catalog.ts / import-llm.ts. Responses
+// are not runtime-validated by zod-openapi, so a legacy row with a slightly
+// different stored shape still serializes -- these types are the contract,
+// not a gate.
+const RegionMetaSchema = z
   .object({
-    id: z.string().uuid(),
-    account_id: z.string().uuid(),
-    status: z.string(),
-    source_filename: z.string(),
-    source_mime: z.string().nullable(),
-    source_bytes: z.number().int().nullable(),
-    source_path: z.string().nullable(),
-    regions: z.array(z.any()),
-    recognition: z.array(z.any()),
-    mapping: z.array(z.any()),
-    parent_resolutions: z.record(z.any()),
-    chat: z.array(z.any()),
-    preview_summary: z.any().nullable(),
-    result: z.any().nullable(),
-    error: z.string().nullable(),
-    requirements: ImportRequirementsSchema,
-    created_at: z.string(),
-    updated_at: z.string(),
-    deleted_at: z.string().nullable(),
+    sheet: z.string(),
+    range: z.string(),
+    columns: z.array(z.object({ name: z.string(), samples: z.array(z.string()) })),
+    total_rows: z.number().int(),
+    truncated: z.boolean(),
   })
-  .openapi('ImportSession');
+  .openapi('ImportRegionMeta');
 
-const ImportRow = z
+const RecognitionSchema = z
   .object({
-    id: z.string().uuid(),
-    account_id: z.string().uuid(),
-    session_id: z.string().uuid(),
     region_index: z.number().int(),
-    row_index: z.number().int(),
-    raw: z.record(z.any()),
-    excluded: z.boolean(),
-    blockers: z.array(z.object({ field: z.string().nullable(), code: BlockerCodeSchema, message: z.string() })),
-    created_at: z.string(),
-    updated_at: z.string(),
+    importable: z.boolean(),
+    entity_types: z.array(
+      z.object({ entity_type: z.enum(ENTITY_ORDER), confidence: z.number() }),
+    ),
+    summary: z.string(),
+    header: z.object({ present: z.boolean(), row_index: z.number().int() }),
   })
-  .openapi('ImportRow');
+  .openapi('ImportRecognition');
+
+const ChatTurnSchema = z
+  .object({ role: z.enum(['user', 'assistant']), content: z.string() })
+  .openapi('ImportChatTurn');
 
 const FieldMappingSchema = z.object({
   target_field: z.string(),
@@ -123,6 +117,20 @@ const RegionEntityMappingSchema = z.object({
   entity_type: z.enum(ENTITY_ORDER).openapi('ImportEntityType'),
   fields: z.array(FieldMappingSchema),
 });
+
+const ParentResolutionsSchema = z
+  .object({
+    default_property_id: z.string().uuid().nullable().optional(),
+    property_overrides: z
+      .record(
+        z.object({
+          mode: z.enum(['existing', 'create']),
+          id: z.string().uuid().nullable().optional(),
+        }),
+      )
+      .optional(),
+  })
+  .openapi('ImportParentResolutions');
 
 const ExecutionResultSchema = z
   .object({
@@ -147,6 +155,46 @@ const ExecutionResultSchema = z
     ),
   })
   .openapi('ImportExecutionResult');
+
+const ImportSession = z
+  .object({
+    id: z.string().uuid(),
+    account_id: z.string().uuid(),
+    status: z.string(),
+    source_filename: z.string(),
+    source_mime: z.string().nullable(),
+    source_bytes: z.number().int().nullable(),
+    source_path: z.string().nullable(),
+    regions: z.array(RegionMetaSchema),
+    recognition: z.array(RecognitionSchema),
+    mapping: z.array(RegionEntityMappingSchema),
+    parent_resolutions: ParentResolutionsSchema,
+    chat: z.array(ChatTurnSchema),
+    preview_summary: ExecutionResultSchema.nullable(),
+    result: ExecutionResultSchema.nullable(),
+    error: z.string().nullable(),
+    requirements: ImportRequirementsSchema,
+    created_at: z.string(),
+    updated_at: z.string(),
+    deleted_at: z.string().nullable(),
+  })
+  .openapi('ImportSession');
+
+const ImportRow = z
+  .object({
+    id: z.string().uuid(),
+    account_id: z.string().uuid(),
+    session_id: z.string().uuid(),
+    region_index: z.number().int(),
+    row_index: z.number().int(),
+    // Raw cell values keyed by column name; the parser stores strings only.
+    raw: z.record(z.string()),
+    excluded: z.boolean(),
+    blockers: z.array(z.object({ field: z.string().nullable(), code: BlockerCodeSchema, message: z.string() })),
+    created_at: z.string(),
+    updated_at: z.string(),
+  })
+  .openapi('ImportRow');
 
 const AccountParam = z.object({
   accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
@@ -177,19 +225,7 @@ const UploadBody = z
   .openapi('ImportUploadBody');
 const MappingBody = z.object({ mapping: z.array(RegionEntityMappingSchema) }).openapi('ImportMappingBody');
 const ParentsBody = z
-  .object({
-    parent_resolutions: z.object({
-      default_property_id: z.string().uuid().nullable().optional(),
-      property_overrides: z
-        .record(
-          z.object({
-            mode: z.enum(['existing', 'create']),
-            id: z.string().uuid().nullable().optional(),
-          }),
-        )
-        .optional(),
-    }),
-  })
+  .object({ parent_resolutions: ParentResolutionsSchema })
   .openapi('ImportParentsBody');
 const ChatBody = z.object({ message: z.string().min(1).max(4000) }).openapi('ImportChatBody');
 const ChatResponse = z
@@ -360,16 +396,9 @@ const remove = createRoute({
 
 // ----- handlers --------------------------------------------------------------
 
-// defaultHook does not inherit from the root app across `.route()` mounts;
-// without this, a validation failure here would answer in zod-openapi's
-// default shape instead of the standard envelope.
-export const importsApp = new OpenAPIHono({
-  defaultHook: (result, c) => {
-    if (!result.success) return validationFailure(c, result.error);
-  },
-});
+export const importsApp = newApiApp();
 
-type Sb = ReturnType<typeof getUserClient>;
+type Sb = ReturnType<typeof getSb>;
 
 async function loadSession(sb: Sb, accountId: string, sessionId: string): Promise<Record<string, unknown>> {
   const { data, error } = await sb
@@ -408,8 +437,7 @@ function chunk<T>(arr: T[], size: number): T[][] {
 // ---- upload -----------------------------------------------------------------
 importsApp.openapi(upload, async (c) => {
   const { accountId } = c.req.valid('param');
-  const auth = c.get('auth');
-  const sb = getUserClient(auth.accessToken);
+  const sb = getSb(c);
 
   type BodyVal = string | File | undefined;
   const form = (await c.req.parseBody()) as Record<string, BodyVal>;
@@ -536,37 +564,20 @@ importsApp.openapi(upload, async (c) => {
 importsApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit } = c.req.valid('query');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
 
-  let query = sb
+  const query = sb
     .from('import_sessions')
     .select('*')
     .eq('account_id', accountId)
-    .is('deleted_at', null)
-    .order('created_at', { ascending: true })
-    .order('id', { ascending: true })
-    .limit(limit + 1);
-
-  if (cursor) {
-    const cur = decodeCursor(cursor);
-    if (cur) {
-      query = query.or(`created_at.gt.${cur.created_at},and(created_at.eq.${cur.created_at},id.gt.${cur.id})`);
-    }
-  }
-  const { data, error } = await query;
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  const rows = data ?? [];
-  const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
-  const last = items[items.length - 1] as { created_at?: string; id?: string } | undefined;
-  const nextCursor =
-    hasMore && last ? encodeCursor({ created_at: String(last.created_at), id: String(last.id) }) : null;
-  return c.json({ data: (items as Record<string, unknown>[]).map(sessionOut), next_cursor: nextCursor }, 200);
+    .is('deleted_at', null);
+  const { items, next_cursor } = await keysetPage(query, { cursor, limit });
+  return c.json({ data: items.map(sessionOut), next_cursor }, 200);
 });
 
 importsApp.openapi(get, async (c) => {
   const { accountId, sessionId } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const data = await loadSession(sb, accountId, sessionId);
   return c.json(sessionOut(data as Record<string, unknown>), 200);
 });
@@ -575,7 +586,7 @@ importsApp.openapi(get, async (c) => {
 importsApp.openapi(patchMapping, async (c) => {
   const { accountId, sessionId } = c.req.valid('param');
   const { mapping } = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   await loadSession(sb, accountId, sessionId); // 404 if missing/not a member
   const { data, error } = await sb
     .from('import_sessions')
@@ -592,7 +603,7 @@ importsApp.openapi(patchMapping, async (c) => {
 importsApp.openapi(patchParents, async (c) => {
   const { accountId, sessionId } = c.req.valid('param');
   const { parent_resolutions } = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   await loadSession(sb, accountId, sessionId);
   const { data, error } = await sb
     .from('import_sessions')
@@ -610,7 +621,7 @@ importsApp.openapi(patchParents, async (c) => {
 importsApp.openapi(postChat, async (c) => {
   const { accountId, sessionId } = c.req.valid('param');
   const { message } = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const session = await loadSession(sb, accountId, sessionId);
 
   // regionMeta carries columns+samples (no rows); the LLM digest never needs
@@ -652,66 +663,49 @@ importsApp.openapi(postChat, async (c) => {
 importsApp.openapi(listRows, async (c) => {
   const { accountId, sessionId } = c.req.valid('param');
   const { cursor, limit } = c.req.valid('query');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   await loadSession(sb, accountId, sessionId);
 
   // Keyset on (region_index, row_index) so the page order matches the file.
-  let pos: { region_index: number; row_index: number } | null = null;
-  if (cursor) {
-    try {
-      const obj = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as unknown;
-      if (obj && typeof obj === 'object' && 'region_index' in obj && 'row_index' in obj) {
-        pos = { region_index: Number((obj as Record<string, unknown>).region_index), row_index: Number((obj as Record<string, unknown>).row_index) };
-      }
-    } catch {
-      pos = null;
-    }
-  }
-
-  let query = sb
+  const query = sb
     .from('import_rows')
     .select('*')
     .eq('account_id', accountId)
-    .eq('session_id', sessionId)
-    .order('region_index', { ascending: true })
-    .order('row_index', { ascending: true })
-    .limit(limit + 1);
-  if (pos) {
-    query = query.or(
-      `region_index.gt.${pos.region_index},and(region_index.eq.${pos.region_index},row_index.gt.${pos.row_index})`,
-    );
-  }
-  const { data, error } = await query;
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  const rows = data ?? [];
-  const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
-  const last = items[items.length - 1] as { region_index?: number; row_index?: number } | undefined;
-  const nextCursor =
-    hasMore && last
-      ? Buffer.from(JSON.stringify({ region_index: last.region_index, row_index: last.row_index })).toString('base64url')
-      : null;
-  return c.json({ data: items as z.infer<typeof ImportRow>[], next_cursor: nextCursor }, 200);
+    .eq('session_id', sessionId);
+  const { items, next_cursor } = await keysetPageIndexed(query, {
+    cursor,
+    limit,
+    columns: ['region_index', 'row_index'],
+  });
+  return c.json({ data: items as unknown as z.infer<typeof ImportRow>[], next_cursor }, 200);
 });
 
 importsApp.openapi(patchRows, async (c) => {
   const { accountId, sessionId } = c.req.valid('param');
   const { updates } = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   await loadSession(sb, accountId, sessionId);
 
+  // Two batched UPDATEs (one per excluded-value) instead of one round trip
+  // per row -- a "deselect 500 rows" click was 500 sequential PostgREST
+  // calls. Chunked .in() keeps the request URL bounded. An id listed with
+  // BOTH values in one request ends up excluded=false (the second batch);
+  // the array-order semantics of the old sequential loop were never part
+  // of the contract.
   let updated = 0;
-  for (const u of updates) {
-    const { data, error } = await sb
-      .from('import_rows')
-      .update({ excluded: u.excluded, updated_at: new Date().toISOString() })
-      .eq('account_id', accountId)
-      .eq('session_id', sessionId)
-      .eq('id', u.id)
-      .select('id')
-      .maybeSingle();
-    if (error) throw new ApiError(500, 'database_error', error.message);
-    if (data) updated += 1;
+  for (const excluded of [true, false]) {
+    const ids = updates.filter((u) => u.excluded === excluded).map((u) => u.id);
+    for (let i = 0; i < ids.length; i += 200) {
+      const { data, error } = await sb
+        .from('import_rows')
+        .update({ excluded, updated_at: new Date().toISOString() })
+        .eq('account_id', accountId)
+        .eq('session_id', sessionId)
+        .in('id', ids.slice(i, i + 200))
+        .select('id');
+      if (error) throw new ApiError(500, 'database_error', error.message);
+      updated += data?.length ?? 0;
+    }
   }
   return c.json({ updated }, 200);
 });
@@ -719,7 +713,7 @@ importsApp.openapi(patchRows, async (c) => {
 // ---- preview / confirm ------------------------------------------------------
 importsApp.openapi(preview, async (c) => {
   const { accountId, sessionId } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const session = await loadSession(sb, accountId, sessionId);
   if (((session.mapping as unknown[]) ?? []).length === 0) {
     throw new ApiError(409, 'conflict', 'nothing is mapped to import yet');
@@ -731,7 +725,7 @@ importsApp.openapi(preview, async (c) => {
 
 importsApp.openapi(confirm, async (c) => {
   const { accountId, sessionId } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const session = await loadSession(sb, accountId, sessionId);
   if (((session.mapping as unknown[]) ?? []).length === 0) {
     throw new ApiError(409, 'conflict', 'nothing is mapped to import yet');
@@ -779,7 +773,7 @@ importsApp.openapi(confirm, async (c) => {
 // ---- delete -----------------------------------------------------------------
 importsApp.openapi(remove, async (c) => {
   const { accountId, sessionId } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('import_sessions')
     .update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() })

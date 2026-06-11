@@ -266,33 +266,33 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
-  // (E) Flag A: broken-chain export emits structured stderr log
+  // (E) Flag A: broken-chain export emits a structured error log
   // =========================================================================
 
-  await check('flag A: export over a broken chain logs structured audit_chain_broken to stderr', async () => {
-    const orig = console.error;
+  await check('flag A: export over a broken chain logs structured audit_chain_broken', async () => {
+    // The alert goes through the process logger (pino, JSON lines). Swap in
+    // a sink-backed logger via the test seam, capture, then restore.
+    const { _setLoggerForTests, _resetLoggerForTests } = await import('../src/log');
+    const { pino } = await import('pino');
     const logged: string[] = [];
-    // Capture stderr writes. console.error in node writes via util.format.
-    console.error = (...args: unknown[]) => {
-      logged.push(args.map((a) => typeof a === 'string' ? a : JSON.stringify(a)).join(' '));
-    };
+    _setLoggerForTests(pino({ level: 'info' }, { write: (line: string) => { logged.push(line); } }));
     try {
       const r = await api('POST', `/v1/accounts/${A.accountId}/evidence-exports`, {
         token: A.accessToken, body: { tenancy_id: A.tenancyId },
       });
       if (r.status !== 201) throw new Error(`export status: ${r.status}`);
     } finally {
-      console.error = orig;
+      _resetLoggerForTests();
     }
     const match = logged.find((l) => l.includes('audit_chain_broken'));
     if (!match) {
       throw new Error(`no audit_chain_broken log line emitted; got: ${logged.join('\n')}`);
     }
-    // The line should be a JSON object containing the account_id.
-    const obj = JSON.parse(match) as { event: string; account_id: string; level: string };
+    // The line is a pino JSON object carrying the structured alert fields.
+    const obj = JSON.parse(match) as { event: string; account_id: string; level: number };
     if (obj.event !== 'audit_chain_broken') throw new Error(`event != audit_chain_broken`);
     if (obj.account_id !== A.accountId) throw new Error(`account_id mismatch`);
-    if (obj.level !== 'error') throw new Error(`level should be 'error'`);
+    if (obj.level !== 50) throw new Error(`level should be 50 (pino error), got ${obj.level}`);
   });
 
   // =========================================================================
@@ -461,7 +461,8 @@ async function main(): Promise<void> {
     proc.stdout?.on('data', (d: Buffer) => {
       const s = d.toString();
       startLog.push(s);
-      if (s.includes('listening on')) started = true;
+      // pino JSON line: {"msg":"api listening","port":8792,...}
+      if (s.includes('api listening')) started = true;
     });
     proc.stderr?.on('data', (d: Buffer) => startLog.push(d.toString()));
     // Wait up to 10s for the server to bind.

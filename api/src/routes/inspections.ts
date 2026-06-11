@@ -1,7 +1,8 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { getUserClient } from '../supabase/user-client';
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from './_lib/app';
+import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
-import { decodeCursor, encodeCursor } from './_lib/cursor';
+import { keysetPage } from './_lib/cursor';
 import { generateAndStoreInspectionReport } from '../admin/pdf';
 
 // ============================================================================
@@ -223,35 +224,20 @@ const tplRemove = createRoute({
   },
 });
 
-export const inspectionTemplatesApp = new OpenAPIHono();
+export const inspectionTemplatesApp = newApiApp();
 
 inspectionTemplatesApp.openapi(tplList, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit } = c.req.valid('query');
-  const sb = getUserClient(c.get('auth').accessToken);
-  let q = sb.from('inspection_templates').select('*').eq('account_id', accountId).is('deleted_at', null);
-  q = q.order('created_at', { ascending: true }).order('id', { ascending: true }).limit(limit + 1);
-  if (cursor) {
-    const cur = decodeCursor(cursor);
-    if (cur) {
-      q = q.or(`created_at.gt.${cur.created_at},and(created_at.eq.${cur.created_at},id.gt.${cur.id})`);
-    }
-  }
-  const { data, error } = await q;
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  const rows = data ?? [];
-  const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
-  const last = items[items.length - 1];
-  const nextCursor = hasMore && last
-    ? encodeCursor({ created_at: String(last.created_at), id: String(last.id) })
-    : null;
+  const sb = getSb(c);
+  const q = sb.from('inspection_templates').select('*').eq('account_id', accountId).is('deleted_at', null);
+  const { items, next_cursor: nextCursor } = await keysetPage(q, { cursor, limit });
   return c.json({ data: items, next_cursor: nextCursor } as z.infer<typeof TemplateListResponse>, 200);
 });
 
 inspectionTemplatesApp.openapi(tplGet, async (c) => {
   const { accountId, id } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb.from('inspection_templates').select('*')
     .eq('account_id', accountId).eq('id', id).is('deleted_at', null).maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
@@ -262,7 +248,7 @@ inspectionTemplatesApp.openapi(tplGet, async (c) => {
 inspectionTemplatesApp.openapi(tplCreate, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb.from('inspection_templates').insert({
     account_id: accountId, name: body.name, schema: body.schema ?? {},
   }).select('*').single();
@@ -273,7 +259,7 @@ inspectionTemplatesApp.openapi(tplCreate, async (c) => {
 inspectionTemplatesApp.openapi(tplPatch, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (body.name !== undefined) update.name = body.name;
   if (body.schema !== undefined) update.schema = body.schema;
@@ -286,7 +272,7 @@ inspectionTemplatesApp.openapi(tplPatch, async (c) => {
 
 inspectionTemplatesApp.openapi(tplRemove, async (c) => {
   const { accountId, id } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb.from('inspection_templates')
     .update({ deleted_at: new Date().toISOString() })
     .eq('account_id', accountId)
@@ -362,36 +348,21 @@ const inspComplete = createRoute({
   },
 });
 
-export const inspectionsApp = new OpenAPIHono();
+export const inspectionsApp = newApiApp();
 
 inspectionsApp.openapi(inspList, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit, area_id } = c.req.valid('query');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   let q = sb.from('inspections').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (area_id) q = q.eq('area_id', area_id);
-  q = q.order('created_at', { ascending: true }).order('id', { ascending: true }).limit(limit + 1);
-  if (cursor) {
-    const cur = decodeCursor(cursor);
-    if (cur) {
-      q = q.or(`created_at.gt.${cur.created_at},and(created_at.eq.${cur.created_at},id.gt.${cur.id})`);
-    }
-  }
-  const { data, error } = await q;
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  const rows = data ?? [];
-  const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
-  const last = items[items.length - 1];
-  const nextCursor = hasMore && last
-    ? encodeCursor({ created_at: String(last.created_at), id: String(last.id) })
-    : null;
+  const { items, next_cursor: nextCursor } = await keysetPage(q, { cursor, limit });
   return c.json({ data: items, next_cursor: nextCursor } as z.infer<typeof InspectionListResponse>, 200);
 });
 
 inspectionsApp.openapi(inspGet, async (c) => {
   const { accountId, id } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb.from('inspections').select('*')
     .eq('account_id', accountId).eq('id', id).is('deleted_at', null).maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
@@ -402,7 +373,7 @@ inspectionsApp.openapi(inspGet, async (c) => {
 inspectionsApp.openapi(inspCreate, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const auth = c.get('auth');
   const { data, error } = await sb.from('inspections').insert({
     account_id: accountId,
@@ -422,7 +393,7 @@ inspectionsApp.openapi(inspCreate, async (c) => {
 inspectionsApp.openapi(inspPatch, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (body.template_id !== undefined) update.template_id = body.template_id;
   if (body.performed_at !== undefined) update.performed_at = body.performed_at;
@@ -442,7 +413,7 @@ inspectionsApp.openapi(inspPatch, async (c) => {
 
 inspectionsApp.openapi(inspComplete, async (c) => {
   const { accountId, id } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
 
   // Step 1: set completed_at via the user-client (RLS-scoped). This is the
   // last UPDATE that's allowed -- subsequent PATCHes trip the trigger.
@@ -525,11 +496,11 @@ const itemRemove = createRoute({
   },
 });
 
-export const inspectionItemsApp = new OpenAPIHono();
+export const inspectionItemsApp = newApiApp();
 
 inspectionItemsApp.openapi(itemList, async (c) => {
   const { accountId, inspectionId } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb.from('inspection_items')
     .select('*')
     .eq('account_id', accountId)
@@ -543,7 +514,7 @@ inspectionItemsApp.openapi(itemList, async (c) => {
 inspectionItemsApp.openapi(itemCreate, async (c) => {
   const { accountId, inspectionId } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb.from('inspection_items').insert({
     account_id: accountId,
     inspection_id: inspectionId,
@@ -564,7 +535,7 @@ inspectionItemsApp.openapi(itemCreate, async (c) => {
 inspectionItemsApp.openapi(itemPatch, async (c) => {
   const { accountId, inspectionId, id } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (body.label !== undefined) update.label = body.label;
   if (body.condition !== undefined) update.condition = body.condition;
@@ -587,7 +558,7 @@ inspectionItemsApp.openapi(itemPatch, async (c) => {
 
 inspectionItemsApp.openapi(itemRemove, async (c) => {
   const { accountId, inspectionId, id } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb.from('inspection_items')
     .update({ deleted_at: new Date().toISOString() })
     .eq('account_id', accountId)

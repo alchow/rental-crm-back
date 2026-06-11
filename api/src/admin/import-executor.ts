@@ -1,3 +1,4 @@
+import { getLogger } from '../log';
 import type { PoolClient } from 'pg';
 import { getPool } from './db-pool';
 import { ApiError } from '../routes/_lib/error';
@@ -933,7 +934,7 @@ export async function runImport(sessionId: string, accountId: string, dryRun: bo
     // e.g. an IPv6-only DB host on an IPv4-only platform. Without this
     // mapping it surfaced as a detail-free 500; keep the cause in the log
     // and give the client an actionable envelope.
-    console.error('[import] db connect failed:', err);
+    getLogger().error({ err }, 'import db connect failed');
     throw new ApiError(
       502,
       'internal_error',

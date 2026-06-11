@@ -1,6 +1,6 @@
 import type { MiddlewareHandler } from 'hono';
 import { createHash } from 'node:crypto';
-import { getUserClient } from '../supabase/user-client';
+import { getSb } from '../supabase/request-client';
 import { ApiError } from '../routes/_lib/error';
 
 // Generic Idempotency-Key middleware. Mounted on every mutating endpoint
@@ -63,7 +63,7 @@ export function requireIdempotency(): MiddlewareHandler {
     }
 
     const accountId = c.get('account').accountId;
-    const sb = getUserClient(c.get('auth').accessToken);
+    const sb = getSb(c);
 
     // Fingerprint the request without consuming the body downstream. The
     // request can only be read once; Request.clone() gives us a separate

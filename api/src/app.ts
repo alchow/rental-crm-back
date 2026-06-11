@@ -1,4 +1,5 @@
-import { OpenAPIHono } from '@hono/zod-openapi';
+import type { OpenAPIHono } from '@hono/zod-openapi';
+import { newApiApp } from './routes/_lib/app';
 import meRoutes from './routes/me';
 import authRoutes from './routes/auth';
 import { propertiesApp } from './routes/properties';
@@ -26,8 +27,13 @@ import {
   inspectionsApp,
   inspectionItemsApp,
 } from './routes/inspections';
-import { ApiError, validationFailure } from './routes/_lib/error';
+import { ApiError } from './routes/_lib/error';
+import { bodyLimit } from 'hono/body-limit';
+import { requestId } from 'hono/request-id';
+import type { Context } from 'hono';
 import { corsMiddleware } from './middleware/cors';
+import { requestLog } from './middleware/request-log';
+import { getLogger } from './log';
 import { requireAuth } from './middleware/auth';
 import { requireAccountMembership } from './middleware/account-context';
 import { requireIdempotency } from './middleware/idempotency';
@@ -53,14 +59,10 @@ import { importCapability } from './admin/import-health';
 // uses the admin client (the only place that could is api/src/admin/, and
 // even there only via a wrapping helper -- the ESLint rule enforces this).
 export function buildApp(): OpenAPIHono {
-  const app = new OpenAPIHono({
-    // Centralised validation-failure handler: zod-validation errors become
-    // our 400 envelope shape, not zod-openapi's default response. Clients
-    // get a stable code regardless of which schema failed.
-    defaultHook: (result, c) => {
-      if (!result.success) return validationFailure(c, result.error);
-    },
-  });
+  // newApiApp wires the centralised validation-failure hook (zod errors ->
+  // the 400 envelope). Every sub-app comes from the same factory because
+  // defaultHook does not inherit across `.route()` mounts.
+  const app = newApiApp();
 
   // Fire-and-forget at boot: probe the sharp/libvips stack for HEIC
   // support. If libheif is missing the probe logs a loud warning to
@@ -69,10 +71,33 @@ export function buildApp(): OpenAPIHono {
   // alert on degraded evidence-rendering capability.
   void assertImageStackAtBoot();
 
+  // Correlation id + one summary log line per request, before everything
+  // else so even CORS-rejected and 413-rejected requests are visible.
+  app.use('*', requestId());
+  app.use('*', requestLog());
+
   // Mounted before any routes (incl. /v1/auth) so browser preflight
   // (OPTIONS) requests are answered -- and Access-Control-Allow-Origin is
   // set on actual responses -- for every endpoint, authenticated or not.
   app.use('*', corsMiddleware());
+
+  // Body-size guard, mounted on EVERYTHING (including the unauthenticated
+  // auth + intake legs -- those are exactly where an unbounded body is a
+  // memory-DoS). parseBody()/json() buffer the whole body before any
+  // application-level size check can run, so the cap must sit here in the
+  // middleware stack. The two file-upload endpoints get headroom above
+  // their 20 MiB application cap; everything else is JSON and gets 1 MiB.
+  const payloadTooLarge = (c: Context) =>
+    c.json(
+      { error: { code: 'payload_too_large', message: 'request body exceeds the allowed size' } },
+      413,
+    );
+  const defaultBodyLimit = bodyLimit({ maxSize: 1 * 1024 * 1024, onError: payloadTooLarge });
+  const uploadBodyLimit = bodyLimit({ maxSize: 25 * 1024 * 1024, onError: payloadTooLarge });
+  const UPLOAD_PATH_RE = /^\/v1\/(?:intake\/[^/]+|accounts\/[^/]+\/imports)\/?$/;
+  app.use('*', (c, next) =>
+    (UPLOAD_PATH_RE.test(c.req.path) ? uploadBodyLimit : defaultBodyLimit)(c, next),
+  );
 
   app.get('/healthz', async (c) => {
     const heic = heicSupported();
@@ -193,7 +218,10 @@ export function buildApp(): OpenAPIHono {
         err.status,
       );
     }
-    console.error('[api] unhandled error', err);
+    getLogger().error(
+      { err, requestId: c.get('requestId'), method: c.req.method, path: c.req.path },
+      'unhandled error',
+    );
     return c.json(
       { error: { code: 'internal_error', message: 'Internal server error' } },
       500,

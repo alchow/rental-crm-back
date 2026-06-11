@@ -1,4 +1,5 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from './_lib/app';
 import { getAnonClient } from '../supabase/anon-client';
 import { getUserClient } from '../supabase/user-client';
 import { loadEnv } from '../env';
@@ -127,7 +128,7 @@ const logoutRoute = createRoute({
   },
 });
 
-const auth = new OpenAPIHono();
+const auth = newApiApp();
 
 // Auth handlers throw ApiError for the non-2xx paths (the global onError
 // formats those into the typed ErrorEnvelope). The 202 pending-verification

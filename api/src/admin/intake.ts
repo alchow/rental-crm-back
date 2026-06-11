@@ -1,4 +1,5 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from '../routes/_lib/app';
 import { randomBytes, createHash } from 'node:crypto';
 import { ApiError, errorResponses } from '../routes/_lib/error';
 import { getAdminClient } from './supabase-admin';
@@ -291,7 +292,7 @@ function clientIp(c: { req: { header: (n: string) => string | undefined } }): st
 
 // ----- intake app ------------------------------------------------------------
 
-export const intakeApp = new OpenAPIHono();
+export const intakeApp = newApiApp();
 
 intakeApp.openapi(intake, async (c) => {
   const ipCheck = await bumpIpRateBucket(clientIp(c));

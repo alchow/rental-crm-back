@@ -1,5 +1,6 @@
 import { Pool } from 'pg';
 import { loadAdminEnv } from './env';
+import { getLogger } from '../log';
 import { ApiError } from '../routes/_lib/error';
 
 // PRIVILEGED. A raw direct-Postgres connection pool, used ONLY by the
@@ -43,7 +44,7 @@ export function getPool(): Pool {
   // 'error' event -- it kills the whole process, not one request. pg has
   // already discarded the client when this fires; logging is the only action.
   pool.on('error', (err) => {
-    console.error('[import-db] idle client error:', err.message);
+    getLogger().error({ err }, 'import-db idle client error');
   });
   return pool;
 }

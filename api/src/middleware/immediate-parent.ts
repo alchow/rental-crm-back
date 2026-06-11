@@ -1,5 +1,5 @@
 import type { MiddlewareHandler } from 'hono';
-import { getUserClient } from '../supabase/user-client';
+import { getSb } from '../supabase/request-client';
 import { ApiError } from '../routes/_lib/error';
 
 // Resolves the IMMEDIATE path parent of a sub-resource against the active
@@ -40,7 +40,7 @@ export function requireImmediateParent(
     if (!parentId || !UUID_RE.test(parentId)) {
       throw new ApiError(404, 'not_found', 'not found');
     }
-    const sb = getUserClient(c.get('auth').accessToken);
+    const sb = getSb(c);
     let q = sb.from(opts.table).select('id').eq('account_id', accountId).eq('id', parentId);
     if (hasDeletedAt) {
       q = q.is('deleted_at', null);

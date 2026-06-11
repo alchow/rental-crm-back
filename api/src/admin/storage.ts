@@ -1,3 +1,4 @@
+import { getLogger } from '../log';
 import { createHash } from 'node:crypto';
 import sharp from 'sharp';
 import { getAdminClient } from './supabase-admin';
@@ -148,7 +149,7 @@ export async function processAndStoreBytes(
     // the transcode entirely (no point spending CPU on a guaranteed
     // failure) but log the upload so ops can quantify the gap.
     if (heicSupported() === false) {
-      console.warn(
+      getLogger().warn(
         `[WARN][heic] HEIC upload landed (sha=${createHash('sha256').update(bytes).digest('hex').slice(0, 12)}…) ` +
         `but libheif is unavailable on this host; NO JPEG derivative was created. ` +
         `The inspection-report PDF will placeholder this photo.`,
@@ -171,7 +172,7 @@ export async function processAndStoreBytes(
         // (e.g. corrupt HEIC, unusual codec variant). Loud-warn -- this
         // is the case the user told us to track.
         const sha12 = createHash('sha256').update(bytes).digest('hex').slice(0, 12);
-        console.warn(
+        getLogger().warn(
           `[WARN][heic] HEIC decode FAILED for upload (sha=${sha12}…). ` +
           `Original is stored; derivative skipped; PDF will placeholder. ` +
           `sharp error: ${e instanceof Error ? e.message : String(e)}`,

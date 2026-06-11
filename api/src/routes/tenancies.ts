@@ -1,7 +1,8 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { getUserClient } from '../supabase/user-client';
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from './_lib/app';
+import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
-import { decodeCursor, encodeCursor } from './_lib/cursor';
+import { keysetPage } from './_lib/cursor';
 
 // A tenancy is one occupancy period of one unit-kind area. The DB trigger
 // `tenancies_area_kind_check` enforces area.kind = 'unit' (a tenancy on a
@@ -127,12 +128,12 @@ const remove = createRoute({
   },
 });
 
-export const tenanciesApp = new OpenAPIHono();
+export const tenanciesApp = newApiApp();
 
 tenanciesApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit, area_id, status } = c.req.valid('query');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   let q = sb
     .from('tenancies')
     .select('*')
@@ -140,34 +141,13 @@ tenanciesApp.openapi(list, async (c) => {
     .is('deleted_at', null);
   if (area_id) q = q.eq('area_id', area_id);
   if (status) q = q.eq('status', status);
-  q = q
-    .order('created_at', { ascending: true })
-    .order('id', { ascending: true })
-    .limit(limit + 1);
-  if (cursor) {
-    const cur = decodeCursor(cursor);
-    if (cur) {
-      q = q.or(
-        `created_at.gt.${cur.created_at},and(created_at.eq.${cur.created_at},id.gt.${cur.id})`,
-      );
-    }
-  }
-  const { data, error } = await q;
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  const rows = data ?? [];
-  const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
-  const last = items[items.length - 1];
-  const nextCursor =
-    hasMore && last
-      ? encodeCursor({ created_at: String(last.created_at), id: String(last.id) })
-      : null;
+  const { items, next_cursor: nextCursor } = await keysetPage(q, { cursor, limit });
   return c.json({ data: items, next_cursor: nextCursor } as z.infer<typeof ListResponse>, 200);
 });
 
 tenanciesApp.openapi(get, async (c) => {
   const { accountId, id } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('tenancies')
     .select('*')
@@ -183,7 +163,7 @@ tenanciesApp.openapi(get, async (c) => {
 tenanciesApp.openapi(create, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('tenancies')
     .insert({
@@ -221,7 +201,7 @@ tenanciesApp.openapi(create, async (c) => {
 tenanciesApp.openapi(patch, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (body.end_date !== undefined) update.end_date = body.end_date;
   if (body.status !== undefined) update.status = body.status;
@@ -245,7 +225,7 @@ tenanciesApp.openapi(patch, async (c) => {
 
 tenanciesApp.openapi(remove, async (c) => {
   const { accountId, id } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('tenancies')
     .update({ deleted_at: new Date().toISOString() })

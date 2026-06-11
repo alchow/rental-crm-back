@@ -1,5 +1,6 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { getUserClient } from '../supabase/user-client';
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from './_lib/app';
+import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 import {
   mintIntakeToken,
@@ -87,11 +88,11 @@ const revoke = createRoute({
   },
 });
 
-export const intakeTokensApp = new OpenAPIHono();
+export const intakeTokensApp = newApiApp();
 
 intakeTokensApp.openapi(list, async (c) => {
   const { accountId, tenancyId } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('intake_tokens')
     .select('id, account_id, property_id, tenancy_id, created_at, revoked_at, last_used_at, use_count')

@@ -4,13 +4,17 @@ services:
     runtime: node
     region: oregon
     plan: starter
-    buildCommand: npm install -g pnpm@11.1.2 && pnpm install
+    # --prod=false: NODE_ENV=production would otherwise skip devDependencies,
+    # but the build needs tsup (devDep). Runtime then uses only dist/ + prod
+    # deps -- tsx is no longer needed at runtime.
+    buildCommand: npm install -g pnpm@11.1.2 && pnpm install --prod=false && pnpm --filter ./api build
     startCommand: pnpm --filter ./api start
     envVars:
       - key: NODE_ENV
         value: production
+      # Must track .nvmrc / engines (>=22) -- pnpm 11 itself needs node:sqlite.
       - key: NODE_VERSION
-        value: "20"
+        value: "22"
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY

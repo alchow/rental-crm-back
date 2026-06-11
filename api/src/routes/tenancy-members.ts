@@ -1,5 +1,6 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { getUserClient } from '../supabase/user-client';
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from './_lib/app';
+import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 
 // Sub-resource of tenancies: the people occupying a tenancy, with a role.
@@ -104,11 +105,11 @@ const remove = createRoute({
   },
 });
 
-export const tenancyMembersApp = new OpenAPIHono();
+export const tenancyMembersApp = newApiApp();
 
 tenancyMembersApp.openapi(list, async (c) => {
   const { accountId, tenancyId } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('tenancy_tenants')
     .select('*')
@@ -123,7 +124,7 @@ tenancyMembersApp.openapi(list, async (c) => {
 tenancyMembersApp.openapi(add, async (c) => {
   const { accountId, tenancyId } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('tenancy_tenants')
     .insert({
@@ -150,7 +151,7 @@ tenancyMembersApp.openapi(add, async (c) => {
 tenancyMembersApp.openapi(patch, async (c) => {
   const { accountId, tenancyId, id } = c.req.valid('param');
   const body = c.req.valid('json');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('tenancy_tenants')
     .update({ role: body.role, updated_at: new Date().toISOString() })
@@ -172,7 +173,7 @@ tenancyMembersApp.openapi(patch, async (c) => {
 
 tenancyMembersApp.openapi(remove, async (c) => {
   const { accountId, tenancyId, id } = c.req.valid('param');
-  const sb = getUserClient(c.get('auth').accessToken);
+  const sb = getSb(c);
   const { data, error } = await sb
     .from('tenancy_tenants')
     .update({ deleted_at: new Date().toISOString() })

@@ -1,3 +1,4 @@
+import { getLogger } from '../log';
 import sharp from 'sharp';
 
 // ============================================================================
@@ -50,7 +51,7 @@ export async function assertImageStackAtBoot(): Promise<ProbeResult> {
   if (probeResult !== null) return probeResult;
   probeResult = await probeHeicSupport();
   if (!probeResult.supported) {
-    console.warn(
+    getLogger().warn(
       '[WARN][heic] libheif is NOT available in this sharp/libvips build.\n' +
       '            HEIC uploads will land (original bytes preserved), but the\n' +
       '            server-derived JPEG that the inspection-report PDF embeds\n' +
