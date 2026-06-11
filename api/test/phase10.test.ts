@@ -74,6 +74,7 @@ _resetJwksCacheForTests();
 const { _resetAdminClientForTests, getAdminClient } = await import('../src/admin/supabase-admin');
 _resetAdminClientForTests();
 const { _resetIntakeIpBucketsForTests } = await import('../src/admin/intake');
+const { groupInteractionChains, loadExportData } = await import('../src/admin/export-pdf');
 const { buildApp } = await import('../src/app');
 
 const app = buildApp();
@@ -465,6 +466,85 @@ async function main(): Promise<void> {
       token: A.accessToken,
     });
     if (dl.status !== 200) throw new Error(`download after HEIC: ${dl.status}`);
+  });
+
+  // =========================================================================
+  // (J) Evidentiary journal: the export carries COMPLETE correction chains.
+  //
+  // The PDF binary is not string-greppable (see (E)), so the property is
+  // asserted at the two seams the renderer actually uses: loadExportData
+  // (which must never return a chain split by the date window) and
+  // groupInteractionChains (which must put the original first and every
+  // correction after it -- the opposite of the collapsed latest-only view).
+  // =========================================================================
+
+  await check('export: amended + retracted interactions carry their FULL chains', async () => {
+    const mk = async (body: Record<string, unknown>): Promise<{ id: string; occurred_at: string }> => {
+      const r = await api('POST', `/v1/accounts/${A.accountId}/interactions`, {
+        token: A.accessToken, body,
+      });
+      return assertStatus(r, 201, `interaction ${JSON.stringify(body)}`) as { id: string; occurred_at: string };
+    };
+    // One amended entry -- the amend is re-dated OUTSIDE the export window,
+    // then amended again, so chain completion has to walk two links.
+    const i1 = await mk({
+      tenancy_id: A.tenancyId, party_type: 'tenant', channel: 'phone', direction: 'inbound',
+      occurred_at: '2026-04-10T10:00:00.000Z', body: 'Tenant agreed to access on the 12th.',
+    });
+    const c1 = await mk({
+      corrects_id: i1.id, correction_kind: 'amend',
+      occurred_at: '2026-07-15T10:00:00.000Z', body: 'Access was agreed for July 15th, not April 12th.',
+    });
+    const c2 = await mk({
+      corrects_id: c1.id, correction_kind: 'amend',
+      body: 'Access agreed for July 15th, 9am-12pm.',
+    });
+    // One retracted entry.
+    const i2 = await mk({
+      tenancy_id: A.tenancyId, party_type: 'tenant', channel: 'in_person', direction: 'outbound',
+      occurred_at: '2026-04-11T09:00:00.000Z', body: 'Asked tenant to clear the hallway.',
+    });
+    const r2 = await mk({
+      corrects_id: i2.id, correction_kind: 'retract', body: 'Wrong tenant; this was unit 2B.',
+    });
+
+    // Seam 1: the windowed data set still carries every chain member, even
+    // the re-dated amend (July) and its follow-up outside the April window.
+    const data = await loadExportData({
+      accountId: A.accountId, tenancyId: A.tenancyId,
+      fromDate: '2026-04-01', toDate: '2026-04-30', exporter: null,
+    });
+    const gotIds = new Set(data.interactions.map((x) => String(x.id)));
+    for (const [label, id] of [['original', i1.id], ['amend', c1.id], ['second amend', c2.id], ['retracted original', i2.id], ['retraction', r2.id]] as const) {
+      if (!gotIds.has(id)) throw new Error(`windowed export data is missing the ${label} (${id}) -- chain was split`);
+    }
+
+    // Seam 2: chain grouping renders original-first with every correction
+    // after it, in chain order; the retraction keeps its reason.
+    const chains = groupInteractionChains(data.interactions);
+    const chain1 = chains.find((ch) => String(ch.root.id) === i1.id);
+    if (!chain1) throw new Error('amended entry must render as a chain ROOT (original first, never collapsed)');
+    if (chain1.corrections.map((x) => String(x.id)).join(',') !== `${c1.id},${c2.id}`) {
+      throw new Error(`chain order wrong: ${chain1.corrections.map((x) => x.id).join(',')}`);
+    }
+    const chain2 = chains.find((ch) => String(ch.root.id) === i2.id);
+    if (!chain2) throw new Error('retracted entry must still render as a chain root, not be hidden');
+    const retr = chain2.corrections[0];
+    if (!retr || retr.correction_kind !== 'retract' || !String(retr.body).includes('unit 2B')) {
+      throw new Error('retraction with its reason must follow the retracted original');
+    }
+    // No chain member may ALSO appear as a root (that would be the
+    // collapsed view sneaking in).
+    const rootIds = new Set(chains.map((ch) => String(ch.root.id)));
+    for (const id of [c1.id, c2.id, r2.id]) {
+      if (rootIds.has(id)) throw new Error('a correction leaked into the root set (latest-only collapse)');
+    }
+
+    // And the real artifact still builds end-to-end with chains in scope.
+    const exp = await api('POST', `/v1/accounts/${A.accountId}/evidence-exports`, {
+      token: A.accessToken, body: { tenancy_id: A.tenancyId },
+    });
+    assertStatus(exp, 201, 'export with correction chains');
   });
 
   // =========================================================================

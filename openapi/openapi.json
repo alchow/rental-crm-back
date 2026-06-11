@@ -2611,7 +2611,8 @@
               "tenant",
               "vendor",
               "inspector",
-              "other"
+              "other",
+              "none"
             ]
           },
           "party_id": {
@@ -2637,7 +2638,8 @@
               "email",
               "letter",
               "in_app",
-              "import"
+              "import",
+              "note"
             ]
           },
           "direction": {
@@ -2659,6 +2661,40 @@
           },
           "logged_at": {
             "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "communication",
+              "note"
+            ]
+          },
+          "corrects_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "correction_kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "amend",
+              "retract"
+            ]
+          },
+          "superseded_by_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "is_head": {
+            "type": "boolean"
           },
           "tenancy_id": {
             "type": [
@@ -2720,6 +2756,11 @@
           "body",
           "occurred_at",
           "logged_at",
+          "kind",
+          "corrects_id",
+          "correction_kind",
+          "superseded_by_id",
+          "is_head",
           "tenancy_id",
           "maintenance_request_id",
           "area_id",
@@ -2754,13 +2795,21 @@
       "CreateInteractionBody": {
         "type": "object",
         "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "communication",
+              "note"
+            ]
+          },
           "party_type": {
             "type": "string",
             "enum": [
               "tenant",
               "vendor",
               "inspector",
-              "other"
+              "other",
+              "none"
             ]
           },
           "party_id": {
@@ -2781,7 +2830,8 @@
               "email",
               "letter",
               "in_app",
-              "import"
+              "import",
+              "note"
             ]
           },
           "direction": {
@@ -2799,6 +2849,17 @@
           "occurred_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "corrects_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "correction_kind": {
+            "type": "string",
+            "enum": [
+              "amend",
+              "retract"
+            ]
           },
           "tenancy_id": {
             "type": "string",
@@ -2820,13 +2881,7 @@
             "type": "string",
             "format": "uuid"
           }
-        },
-        "required": [
-          "party_type",
-          "channel",
-          "direction",
-          "occurred_at"
-        ]
+        }
       },
       "Attachment": {
         "type": "object",
@@ -9275,6 +9330,18 @@
             "required": false,
             "name": "maintenance_request_id",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "latest_only",
+            "in": "query"
           }
         ],
         "responses": {
@@ -9324,7 +9391,7 @@
         "tags": [
           "interactions"
         ],
-        "summary": "Log a contact (offline call, doorstep conversation, etc.). logged_at is server-set.",
+        "summary": "Log a contact, a note, or a correction/retraction of an earlier entry. logged_at is server-set. Corrections are new immutable rows (the log is append-only); correcting a non-head or retracted entry returns 409.",
         "parameters": [
           {
             "schema": {

@@ -65,6 +65,9 @@ export type ErrorCode =
   | 'forbidden'
   | 'not_found'
   | 'conflict'
+  // correcting/retracting an interaction that is not the current head of
+  // its chain (already superseded, or the chain is closed by a retraction)
+  | 'invalid_correction_target'
   | 'database_error'
   | 'internal_error';
 
