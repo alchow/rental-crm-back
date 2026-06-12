@@ -227,6 +227,18 @@ begin
   ) values
     (v_acc_a, v_pay_a, v_charge_a, 70000),
     (v_acc_b, v_pay_b, v_charge_b, 50000);
+
+  -- Messaging (agent-api Phase 4): message_outbox is member-readable, so the
+  -- isolation sweep requires seeded rows for BOTH accounts. 'failed' rows so
+  -- no provider_sid / interaction link is implied.
+  insert into public.message_outbox (
+    account_id, channel, tenant_id, to_phone, body, status,
+    error_code, error_message, author_type, created_by_actor
+  ) values
+    (v_acc_a, 'sms', v_tenant_a, '+15550000001', 'seed outbox A', 'failed',
+       'seed', 'seeded row', 'landlord', 'user:' || v_user_a::text),
+    (v_acc_b, 'sms', v_tenant_b, '+15550000002', 'seed outbox B', 'failed',
+       'seed', 'seeded row', 'landlord', 'user:' || v_user_b::text);
 end $$;
 
 -- Phase 3 (ADR-0002): establish a chain watermark per account so the
