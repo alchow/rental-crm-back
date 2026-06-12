@@ -3,6 +3,7 @@ import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
+import { withResolvedAuthorship } from './_lib/authorship';
 
 // The channel-aware contact log. The high-stakes records are OFFLINE
 // contacts logged after the fact -- a doorstep conversation, a phone call,
@@ -43,6 +44,20 @@ const Direction = z.enum(['inbound', 'outbound', 'none']);
 const Kind = z.enum(['communication', 'note']);
 const CorrectionKind = z.enum(['amend', 'retract']);
 
+// Read-side vocabulary is a superset of what a client may CREATE:
+// kind='agent_event' rows (channel sentinel 'agent_event') are agent
+// exhaust, written only by the agent principal through the firewall
+// (Workstream D) -- never creatable through the plain landlord body below.
+const KindOut = z.enum(['communication', 'note', 'agent_event']);
+const ChannelOut = z.enum([
+  'in_person', 'phone', 'voicemail', 'sms', 'email', 'letter', 'in_app',
+  'import', 'note', 'agent_event',
+]);
+const EntryType = z.enum([
+  'proposal_created', 'proposal_approved', 'proposal_rejected', 'step_executed',
+]);
+const AuthorType = z.enum(['landlord', 'tenant', 'agent', 'system']);
+
 const Interaction = z
   .object({
     id: z.string().uuid(),
@@ -51,12 +66,24 @@ const Interaction = z
     party_type: PartyType,
     party_id: z.string().uuid().nullable(),
     party_label: z.string().nullable(),
-    channel: Channel,
+    channel: ChannelOut,
     direction: Direction,
     body: z.string().nullable(),
     occurred_at: z.string(),
     logged_at: z.string(),
-    kind: Kind,
+    kind: KindOut,
+    /** Authorship capacity. Stamped from the resolved principal on new
+     *  writes; resolved from `actor` for pre-capacity rows. Never null on
+     *  the wire (ADR-0008). */
+    author_type: AuthorType,
+    /** Landlord user who explicitly approved an agent-authored entry. */
+    approved_by: z.string().uuid().nullable(),
+    /** Opaque agent-side approval/proposal reference. */
+    approval_ref: z.string().nullable(),
+    /** Agent exhaust vocabulary; set exactly on kind='agent_event' rows. */
+    entry_type: EntryType.nullable(),
+    /** Provider-side message id (e.g. Twilio MessageSid) on send-pipeline rows. */
+    external_ref: z.string().nullable(),
     /** Set on a correcting entry: the id of the entry this row supersedes. */
     corrects_id: z.string().uuid().nullable(),
     correction_kind: CorrectionKind.nullable(),
@@ -247,7 +274,10 @@ interactionsApp.openapi(list, async (c) => {
     limit,
     column: 'occurred_at',
   });
-  return c.json({ data: items, next_cursor: nextCursor } as z.infer<typeof ListResponse>, 200);
+  const data = (items as { author_type?: string | null; actor: string }[]).map(
+    withResolvedAuthorship,
+  );
+  return c.json({ data, next_cursor: nextCursor } as z.infer<typeof ListResponse>, 200);
 });
 
 interactionsApp.openapi(get, async (c) => {
@@ -262,7 +292,12 @@ interactionsApp.openapi(get, async (c) => {
     .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
   if (!data) throw new ApiError(404, 'not_found', 'not found');
-  return c.json(data as z.infer<typeof Interaction>, 200);
+  return c.json(
+    withResolvedAuthorship(data as { author_type?: string | null; actor: string }) as z.infer<
+      typeof Interaction
+    >,
+    200,
+  );
 });
 
 // An amend may re-state context fields (it WAS a phone call, not in-person);
@@ -277,6 +312,18 @@ function assertCoherentShape(row: {
   party_id: unknown;
   party_label: unknown;
 }): void {
+  if (row.kind === 'agent_event') {
+    if (
+      row.channel !== 'agent_event' || row.direction !== 'none' || row.party_type !== 'none' ||
+      row.party_id !== null || row.party_label !== null
+    ) {
+      throw new ApiError(400, 'invalid_request', 'an agent_event correction cannot change the event shape (channel/direction/party fields)');
+    }
+    return;
+  }
+  if (row.channel === 'agent_event') {
+    throw new ApiError(400, 'invalid_request', "channel 'agent_event' is reserved for kind='agent_event'");
+  }
   if (row.kind === 'note') {
     if (
       row.channel !== 'note' || row.direction !== 'none' || row.party_type !== 'none' ||
@@ -342,6 +389,16 @@ interactionsApp.openapi(create, async (c) => {
     row = {
       account_id: accountId,
       actor,
+      // The CORRECTOR's capacity, not the original author's: a landlord
+      // retracting an agent entry is a landlord-authored row. approval and
+      // external_ref stay with the original row they attest to; entry_type
+      // is inherited (DB pairing: an agent_event correction is an
+      // agent_event and must carry its type).
+      author_type: 'landlord',
+      approved_by: null,
+      approval_ref: null,
+      entry_type: original.entry_type ?? null,
+      external_ref: null,
       kind: original.kind,
       party_type: isAmend ? (body.party_type ?? original.party_type) : original.party_type,
       party_id: isAmend ? (body.party_id ?? original.party_id) : original.party_id,
@@ -367,6 +424,13 @@ interactionsApp.openapi(create, async (c) => {
     row = {
       account_id: accountId,
       actor,
+      // User-JWT path = landlord capacity. The agent principal (Phase 2)
+      // routes through the firewall, which stamps its own capacity.
+      author_type: 'landlord',
+      approved_by: null,
+      approval_ref: null,
+      entry_type: null,
+      external_ref: null,
       kind: 'note',
       party_type: 'none',
       party_id: null,
@@ -387,6 +451,11 @@ interactionsApp.openapi(create, async (c) => {
     row = {
       account_id: accountId,
       actor,
+      author_type: 'landlord',
+      approved_by: null,
+      approval_ref: null,
+      entry_type: null,
+      external_ref: null,
       kind: 'communication',
       party_type: body.party_type,
       party_id: body.party_id ?? null,
@@ -422,7 +491,9 @@ interactionsApp.openapi(create, async (c) => {
   // Derived fields, true by construction for a row that did not exist a
   // moment ago: nothing can reference it yet.
   return c.json(
-    { ...data, superseded_by_id: null, is_head: true } as z.infer<typeof Interaction>,
+    withResolvedAuthorship({ ...data, superseded_by_id: null, is_head: true }) as z.infer<
+      typeof Interaction
+    >,
     201,
   );
 });
