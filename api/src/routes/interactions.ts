@@ -4,6 +4,7 @@ import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { withResolvedAuthorship } from './_lib/authorship';
+import { assertAgentJournalWrite } from './_lib/agent-firewall';
 
 // The channel-aware contact log. The high-stakes records are OFFLINE
 // contacts logged after the fact -- a doorstep conversation, a phone call,
@@ -39,15 +40,14 @@ import { withResolvedAuthorship } from './_lib/authorship';
 // valid ONLY in that combination; DB checks mirror the refines on
 // CreateInteractionBody below) rather than nullable columns.
 const PartyType = z.enum(['tenant', 'vendor', 'inspector', 'other', 'none']);
-const Channel   = z.enum(['in_person', 'phone', 'voicemail', 'sms', 'email', 'letter', 'in_app', 'import', 'note']);
+const Channel   = z.enum(['in_person', 'phone', 'voicemail', 'sms', 'email', 'letter', 'in_app', 'import', 'note', 'agent_event']);
 const Direction = z.enum(['inbound', 'outbound', 'none']);
-const Kind = z.enum(['communication', 'note']);
+const Kind = z.enum(['communication', 'note', 'agent_event']);
 const CorrectionKind = z.enum(['amend', 'retract']);
 
-// Read-side vocabulary is a superset of what a client may CREATE:
-// kind='agent_event' rows (channel sentinel 'agent_event') are agent
-// exhaust, written only by the agent principal through the firewall
-// (Workstream D) -- never creatable through the plain landlord body below.
+// Read-side output enum (identical to input after Workstream D lands both):
+// kind='agent_event' and channel='agent_event' are accepted in the body but
+// gated by the firewall -- a landlord who sends kind='agent_event' gets 403.
 const KindOut = z.enum(['communication', 'note', 'agent_event']);
 const ChannelOut = z.enum([
   'in_person', 'phone', 'voicemail', 'sms', 'email', 'letter', 'in_app',
@@ -118,7 +118,8 @@ const Interaction = z
 //                  reason in body.
 export const CreateInteractionBody = z
   .object({
-    /** Defaults to 'communication'. A correction always inherits the original's kind. */
+    /** Defaults to 'communication'. A correction always inherits the original's kind.
+     *  'agent_event' is agent-principal only (firewall enforced). */
     kind: Kind.optional(),
     party_type: PartyType.optional(),
     party_id: z.string().uuid().optional(),
@@ -139,6 +140,13 @@ export const CreateInteractionBody = z
     area_id: z.string().uuid().optional(),
     work_order_id: z.string().uuid().optional(),
     vendor_id: z.string().uuid().optional(),
+    /** Agent-principal only: structured entry vocabulary. Forbidden on
+     *  kind='communication'|'note'; forbidden together with corrects_id. */
+    entry_type: EntryType.optional(),
+    /** Landlord user who explicitly approved this agent-authored entry. */
+    approved_by: z.string().uuid().optional(),
+    /** Opaque agent-side approval/proposal reference. */
+    approval_ref: z.string().min(1).max(200).optional(),
   })
   .superRefine((b, ctx) => {
     const issue = (path: string, message: string) =>
@@ -147,6 +155,12 @@ export const CreateInteractionBody = z
     if ((b.corrects_id === undefined) !== (b.correction_kind === undefined)) {
       issue('correction_kind', 'corrects_id and correction_kind must be provided together');
       return;
+    }
+
+    // entry_type is forbidden on a correction (corrections inherit kind;
+    // entry_type is stamped from the original).
+    if (b.corrects_id !== undefined && b.entry_type !== undefined) {
+      issue('entry_type', 'entry_type is inherited from the corrected entry and cannot be supplied on a correction');
     }
 
     if (b.corrects_id !== undefined) {
@@ -168,9 +182,39 @@ export const CreateInteractionBody = z
       return;
     }
 
+    const kind = b.kind ?? 'communication';
+
+    if (kind === 'agent_event') {
+      // occurred_at required for agent_events (they are timestamped machine exhaust).
+      if (b.occurred_at === undefined) issue('occurred_at', 'occurred_at is required');
+      // entry_type required: every agent_event must carry structured vocabulary.
+      if (b.entry_type === undefined) issue('entry_type', 'entry_type is required for kind=\'agent_event\'');
+      // channel must be the sentinel or omitted.
+      if (b.channel !== undefined && b.channel !== 'agent_event') {
+        issue('channel', "channel must be 'agent_event' or omitted for kind='agent_event'");
+      }
+      // direction must be 'none' or omitted.
+      if (b.direction !== undefined && b.direction !== 'none') {
+        issue('direction', "direction must be 'none' or omitted for kind='agent_event'");
+      }
+      // party_type must be 'none' or omitted.
+      if (b.party_type !== undefined && b.party_type !== 'none') {
+        issue('party_type', "party_type must be 'none' or omitted for kind='agent_event'");
+      }
+      // party_id and party_label are forbidden (no counterparty on a machine event).
+      if (b.party_id !== undefined) issue('party_id', "party_id is forbidden for kind='agent_event'");
+      if (b.party_label !== undefined) issue('party_label', "party_label is forbidden for kind='agent_event'");
+      return;
+    }
+
+    // entry_type is forbidden on communication/note (it pairs exclusively with agent_event).
+    if (b.entry_type !== undefined) {
+      issue('entry_type', "entry_type is only valid for kind='agent_event'");
+    }
+
     if (b.occurred_at === undefined) issue('occurred_at', 'occurred_at is required');
 
-    if ((b.kind ?? 'communication') === 'communication') {
+    if (kind === 'communication') {
       if (b.channel === undefined) issue('channel', 'channel is required for a communication');
       if (b.direction === undefined) issue('direction', 'direction is required for a communication');
       if (b.party_type === undefined) issue('party_type', 'party_type is required for a communication');
@@ -178,6 +222,7 @@ export const CreateInteractionBody = z
         issue('direction', "direction 'none' is only valid for channel 'import'");
       }
       if (b.channel === 'note') issue('channel', "channel 'note' is reserved for kind='note'");
+      if (b.channel === 'agent_event') issue('channel', "channel 'agent_event' is reserved for kind='agent_event'");
       if (b.party_type === 'none') issue('party_type', "party_type 'none' is reserved for kind='note'");
     } else {
       // note: a dated observation with no counterparty. The sentinel values
@@ -349,11 +394,34 @@ interactionsApp.openapi(create, async (c) => {
   const body = c.req.valid('json');
   const sb = getSb(c);
   const auth = c.get('auth');
+  const principal = c.get('principal');
 
-  // actor is derived from the authenticated user; the Phase 4 actor-integrity
-  // trigger logic for the audit chain will set the same thing on the audit
-  // event. We persist it here so the row carries its own actor field too.
+  // Firewall: enforce the write vocabulary permitted to each principal type.
+  // Landlord checks are fast path (no DB). Agent checks may also be fast.
+  // Both run before any DB write so violations never touch the journal.
+  assertAgentJournalWrite(principal, body);
+
+  // actor is derived from the authenticated user; the audit chain records the
+  // same value via auth.uid(). Agent-authored rows use actor='user:<agent-uuid>'
+  // (truthful -- it IS that principal); author_type is the capacity signal
+  // (ADR-0006/0008). No 'agent:' prefix here.
   const actor = `user:${auth.userId}`;
+
+  // author_type is stamped from the resolved principal, never client-supplied.
+  const authorType = principal.type === 'agent' ? 'agent' : 'landlord';
+
+  // When approved_by is supplied (agent paths only, post-firewall), verify
+  // the target is a real, non-agent member of this account. The RPC uses
+  // security definer so it can see other members despite self-only RLS.
+  if (body.approved_by !== undefined) {
+    const { data: ok } = await sb.rpc('is_approver_member', {
+      p_account_id: accountId,
+      p_user_id: body.approved_by,
+    });
+    if (!ok) {
+      throw new ApiError(400, 'invalid_request', 'approved_by must be a non-agent member of this account');
+    }
+  }
 
   let row: Record<string, unknown>;
 
@@ -394,7 +462,7 @@ interactionsApp.openapi(create, async (c) => {
       // external_ref stay with the original row they attest to; entry_type
       // is inherited (DB pairing: an agent_event correction is an
       // agent_event and must carry its type).
-      author_type: 'landlord',
+      author_type: authorType,
       approved_by: null,
       approval_ref: null,
       entry_type: original.entry_type ?? null,
@@ -420,15 +488,40 @@ interactionsApp.openapi(create, async (c) => {
       vendor_id: isAmend ? (body.vendor_id ?? original.vendor_id) : original.vendor_id,
     };
     assertCoherentShape(row as Parameters<typeof assertCoherentShape>[0]);
+  } else if ((body.kind ?? 'communication') === 'agent_event') {
+    // Agent exhaust entry: structured machine event with sentinel shape.
+    row = {
+      account_id: accountId,
+      actor,
+      author_type: authorType,
+      approved_by: body.approved_by ?? null,
+      approval_ref: body.approval_ref ?? null,
+      entry_type: body.entry_type ?? null,
+      external_ref: null,
+      kind: 'agent_event',
+      party_type: 'none',
+      party_id: null,
+      party_label: null,
+      channel: 'agent_event',
+      direction: 'none',
+      body: body.body ?? null,
+      occurred_at: body.occurred_at,
+      corrects_id: null,
+      correction_kind: null,
+      tenancy_id: body.tenancy_id ?? null,
+      maintenance_request_id: body.maintenance_request_id ?? null,
+      area_id: body.area_id ?? null,
+      work_order_id: body.work_order_id ?? null,
+      vendor_id: body.vendor_id ?? null,
+    };
   } else if ((body.kind ?? 'communication') === 'note') {
     row = {
       account_id: accountId,
       actor,
-      // User-JWT path = landlord capacity. The agent principal (Phase 2)
-      // routes through the firewall, which stamps its own capacity.
-      author_type: 'landlord',
-      approved_by: null,
-      approval_ref: null,
+      author_type: authorType,
+      // Agent notes carry approval fields; landlord notes always null.
+      approved_by: principal.type === 'agent' ? (body.approved_by ?? null) : null,
+      approval_ref: principal.type === 'agent' ? (body.approval_ref ?? null) : null,
       entry_type: null,
       external_ref: null,
       kind: 'note',
@@ -451,7 +544,7 @@ interactionsApp.openapi(create, async (c) => {
     row = {
       account_id: accountId,
       actor,
-      author_type: 'landlord',
+      author_type: authorType,
       approved_by: null,
       approval_ref: null,
       entry_type: null,

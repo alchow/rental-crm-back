@@ -6995,14 +6995,14 @@ export interface components {
         };
         CreateInteractionBody: {
             /** @enum {string} */
-            kind?: "communication" | "note";
+            kind?: "communication" | "note" | "agent_event";
             /** @enum {string} */
             party_type?: "tenant" | "vendor" | "inspector" | "other" | "none";
             /** Format: uuid */
             party_id?: string;
             party_label?: string;
             /** @enum {string} */
-            channel?: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app" | "import" | "note";
+            channel?: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app" | "import" | "note" | "agent_event";
             /** @enum {string} */
             direction?: "inbound" | "outbound" | "none";
             body?: string;
@@ -7022,6 +7022,11 @@ export interface components {
             work_order_id?: string;
             /** Format: uuid */
             vendor_id?: string;
+            /** @enum {string} */
+            entry_type?: "proposal_created" | "proposal_approved" | "proposal_rejected" | "step_executed";
+            /** Format: uuid */
+            approved_by?: string;
+            approval_ref?: string;
         };
         Attachment: {
             /** Format: uuid */
