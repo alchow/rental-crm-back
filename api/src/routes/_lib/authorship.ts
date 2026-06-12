@@ -7,7 +7,7 @@
 // it here instead of backfilling a possibly-false constant into an evidence
 // table. The API never emits a null author_type.
 
-export type AuthorType = 'landlord' | 'tenant' | 'agent' | 'system';
+export type AuthorType = 'landlord' | 'tenant' | 'vendor' | 'agent' | 'system';
 
 export function resolveAuthorType(row: {
   author_type?: string | null;
@@ -16,6 +16,7 @@ export function resolveAuthorType(row: {
   if (
     row.author_type === 'landlord' ||
     row.author_type === 'tenant' ||
+    row.author_type === 'vendor' ||
     row.author_type === 'agent' ||
     row.author_type === 'system'
   ) {
@@ -25,6 +26,7 @@ export function resolveAuthorType(row: {
   // attributions) resolve to 'system' -- they are not user-JWT writes.
   if (row.actor.startsWith('user:')) return 'landlord';
   if (row.actor.startsWith('tenant:')) return 'tenant';
+  if (row.actor.startsWith('vendor:')) return 'vendor';
   if (row.actor.startsWith('agent:')) return 'agent';
   return 'system';
 }

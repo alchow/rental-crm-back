@@ -56,7 +56,7 @@ const ChannelOut = z.enum([
 const EntryType = z.enum([
   'proposal_created', 'proposal_approved', 'proposal_rejected', 'step_executed',
 ]);
-const AuthorType = z.enum(['landlord', 'tenant', 'agent', 'system']);
+const AuthorType = z.enum(['landlord', 'tenant', 'vendor', 'agent', 'system']);
 
 // Exported: the messages route returns the journal entry created by a
 // confirmed send and must reference THIS schema so the SDK contract is typed.
