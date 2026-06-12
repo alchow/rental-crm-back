@@ -1,6 +1,14 @@
 # Agent-facing API: architecture & implementation plan (Group 1)
 
-- **Status:** PLANNED — discovery executed 2026-06-12; no code yet
+- **Status:** EXECUTED 2026-06-12 — PRs 0–6 implemented and green on the full
+  suite (migrations 20260616000001–04). NOT yet deployed: prod requires
+  migrations pushed BEFORE the code deploy (the interactions insert path
+  writes the new columns), plus env (`AGENT_USER_ID`, `TWILIO_*`,
+  `PUBLIC_BASE_URL`), agent provisioning (docs/agent-runbook.md), janitor
+  scheduling, and the real-credential smoke test. Open: reconcile
+  `core-api-agent-extension.yaml` when the agent repo provides it; CTO
+  product decision on what `approval_ref` points at (per-message vs
+  standing approval).
 - **Date:** 2026-06-12
 - **Source:** external build request "Core API — Agent-Facing Changes (Group 1)";
   discovery findings and amendments accepted by CTO 2026-06-12

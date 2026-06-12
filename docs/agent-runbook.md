@@ -83,6 +83,30 @@ Enable **Advanced Opt-Out** on the Messaging Service in the Twilio Console. Twil
 
 Brand and campaign registration for 10DLC is operational, outside this repo. Complete registration before sending to US numbers.
 
+### Real-credential smoke test (run once per environment, after env vars are set)
+
+All automated tests run against a fake provider; this is the one manual pass
+that proves the real Twilio wiring. Use a phone you control as the tenant's
+number.
+
+1. `GET /healthz` → `capabilities.messaging.configured` must be `true`.
+2. Create (or pick) a tenant whose `phones[0]` is your test phone in E.164.
+3. `POST /v1/accounts/{accountId}/messages` as a landlord user with
+   `{ "channel": "sms", "recipient_type": "tenant", "recipient_id": "...", "body": "smoke test" }`
+   and an `Idempotency-Key`. Expect 201 with a `provider_sid` (starts `SM`),
+   and the SMS on your phone.
+4. Replay the exact request with the SAME `Idempotency-Key` → identical 201
+   body, **no second SMS** (the dangerous double-send surface — this replay
+   check is the point of the smoke test).
+5. Within ~a minute, `GET /v1/accounts/{accountId}/messages/{outbox_id}` →
+   `status: "delivered"`, and `GET .../interactions/{interaction_id}` →
+   `delivery_status: "delivered"` (proves the status webhook round-trip).
+6. Reply **STOP** from your phone; then repeat step 3 with a new key →
+   `409 sms_opted_out` (proves inbound webhook + opt-out registry). Reply
+   **START** to clean up, and verify a send works again.
+7. Reply with a normal text; `GET .../interactions` should show the inbound
+   entry with `author_type: "tenant"` and your message body.
+
 ---
 
 ## `needs_reconcile` outbox rows — manual recovery procedure
