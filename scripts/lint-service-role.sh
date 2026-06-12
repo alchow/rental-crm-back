@@ -59,6 +59,7 @@ EXCLUDES=(
   ':!api/test/phase12.test.ts'
   ':!api/test/interactions-journal.test.ts'
   ':!api/test/agent-principal.test.ts'
+  ':!api/test/events-feed.test.ts'
   ':!api/test/imports.test.ts'
   ':!api/test/imports-live.test.ts'
   # api/test/ledger.test.ts / bench-import.ts: same shape as

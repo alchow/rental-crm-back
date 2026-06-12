@@ -15,6 +15,7 @@ import { rentSchedulesApp } from './routes/rent-schedules';
 import { chargesApp } from './routes/charges';
 import { paymentsApp } from './routes/payments';
 import { ledgerApp } from './routes/ledger';
+import { eventsApp } from './routes/events';
 import { intakeTokensApp } from './routes/intake-tokens';
 import { maintenanceRequestsApp } from './routes/maintenance-requests';
 import { interactionsApp } from './routes/interactions';
@@ -181,6 +182,7 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', chargesApp);
   app.route('/v1', paymentsApp);
   app.route('/v1', ledgerApp);
+  app.route('/v1', eventsApp);
   app.route('/v1', intakeTokensApp);
   app.route('/v1', maintenanceRequestsApp);
   app.route('/v1', interactionsApp);

@@ -366,9 +366,23 @@ Money received. Inline allocations are atomic: if any allocation fails (cross-te
 
 `method` values: `cash` / `check` / `ach` / `card` / `zelle_venmo` / `money_order` / `other`.
 
+### Event feed (read-only, agent-polling)
+
+A lossless, per-account event feed ordered by `account_seq`. The cursor is a plain integer — no opaque encoding. The guarantee: `account_seq` is gap-free, strictly increasing, assigned under the per-account advisory lock and committed in the same transaction. A poller that supplies `after_seq=<last seen>` can never miss or double-see a committed event.
+
+| Method | Path | Query |
+|---|---|---|
+| `GET` | `/v1/accounts/{accountId}/events` | `after_seq` (int ≥ 0, default 0), `entity_type` (optional, `^[a-z_]{1,63}$`), `limit` (1–200, default 100). |
+
+Response: `{ data: [{account_seq, entity_type, entity_id, event_type, occurred_at, actor, snapshot}], next_seq }`. `snapshot` is `payload.after` when present, `payload.before` on `hard_deleted`, else `null`. `next_seq` equals the last item's `account_seq`, or the request's `after_seq` on an empty page — pass it back verbatim on the next poll.
+
 ### Ledger (read-only)
 
-The derived financial view of a tenancy. Balances are computed from charges minus allocations — never stored.
+The derived financial view of a tenancy. Balances are computed from charges minus allocations — never stored. Optional `?as_of=YYYY-MM-DD` gives a point-in-time balance as of end of that date: charges included when `due_date <= as_of`; payments when `received_at` date-part `<= as_of`; voids respected only when `voided_at` date-part `<= as_of` (a charge voided after `as_of` counts as live at that date); allocations count when both sides qualify.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/v1/accounts/{accountId}/tenancies/{tenancyId}/ledger` | Optional `?as_of=YYYY-MM-DD` for point-in-time view. |
 
 ```bash
 GET /v1/accounts/{accountId}/tenancies/{tenancyId}/ledger

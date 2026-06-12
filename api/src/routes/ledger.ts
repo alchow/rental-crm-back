@@ -93,12 +93,28 @@ const TenancyParam = z.object({
   tenancyId: z.string().uuid().openapi({ param: { name: 'tenancyId', in: 'path' } }),
 });
 
+const LedgerQuery = z.object({
+  // Point-in-time view as of END of that date.
+  //   Charges included when due_date <= as_of.
+  //   Payments included when received_at (date part) <= as_of.
+  //   A void is respected only when voided_at (date part) <= as_of — a
+  //   charge/payment voided AFTER as_of counts as live at as_of.
+  //   Allocations count when both sides qualify.
+  // Omit for the current view.
+  as_of: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+});
+
 const get = createRoute({
   method: 'get',
   path: '/accounts/{accountId}/tenancies/{tenancyId}/ledger',
   tags: ['ledger'],
   summary: 'Per-tenancy ledger: charges + payments + allocations + derived balances',
-  request: { params: TenancyParam },
+  description:
+    'Derived financial view. Balances are recomputed from charges + payments + ' +
+    'allocations on every call — never stored. Optional ?as_of=YYYY-MM-DD gives a ' +
+    'point-in-time view as of end of that date: charges by due_date, payments by ' +
+    'received_at date, voids respected only when voided_at date <= as_of.',
+  request: { params: TenancyParam, query: LedgerQuery },
   responses: {
     200: { description: 'ledger', content: { 'application/json': { schema: LedgerResponse } } },
     ...errorResponses,
@@ -142,6 +158,7 @@ interface AllocationRow {
 
 ledgerApp.openapi(get, async (c) => {
   const { accountId, tenancyId } = c.req.valid('param');
+  const { as_of } = c.req.valid('query');
   const sb = getSb(c);
 
   const [charges, payments] = await Promise.all([
@@ -152,8 +169,33 @@ ledgerApp.openapi(get, async (c) => {
   if (charges.error) throw new ApiError(500, 'database_error', charges.error.message);
   if (payments.error) throw new ApiError(500, 'database_error', payments.error.message);
 
-  const chargeRows = (charges.data ?? []) as ChargeRow[];
-  const paymentRows = (payments.data ?? []) as PaymentRow[];
+  let chargeRows = (charges.data ?? []) as ChargeRow[];
+  let paymentRows = (payments.data ?? []) as PaymentRow[];
+
+  // Point-in-time filter. Applied BEFORE aggregation so no logic is duplicated.
+  // as_of semantics (see route description and §7 of the architecture plan):
+  //   - Charges included when due_date <= as_of.
+  //   - Payments included when received_at (date part) <= as_of.
+  //   - A void is respected only when voided_at (date part) <= as_of —
+  //     a charge/payment voided AFTER as_of counts as live at that date.
+  //   - Allocations referencing excluded rows fall out naturally via the
+  //     existing chargeById / paymentIds filters below.
+  if (as_of !== undefined) {
+    chargeRows = chargeRows.filter((cr) => cr.due_date <= as_of);
+    paymentRows = paymentRows.filter((pr) => pr.received_at.slice(0, 10) <= as_of);
+    // Null out voided_at/void_reason when the void happened AFTER as_of,
+    // so the row is treated as live at the as_of date.
+    chargeRows = chargeRows.map((cr) =>
+      cr.voided_at !== null && cr.voided_at.slice(0, 10) > as_of
+        ? { ...cr, voided_at: null, void_reason: null }
+        : cr,
+    );
+    paymentRows = paymentRows.map((pr) =>
+      pr.voided_at !== null && pr.voided_at.slice(0, 10) > as_of
+        ? { ...pr, voided_at: null, void_reason: null }
+        : pr,
+    );
+  }
   const chargeById = new Map(chargeRows.map((cr) => [cr.id, cr]));
 
   // Allocations are fetched for THIS tenancy's charges only (chunked .in()

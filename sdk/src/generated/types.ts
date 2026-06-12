@@ -3603,10 +3603,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Per-tenancy ledger: charges + payments + allocations + derived balances */
+        /**
+         * Per-tenancy ledger: charges + payments + allocations + derived balances
+         * @description Derived financial view. Balances are recomputed from charges + payments + allocations on every call — never stored. Optional ?as_of=YYYY-MM-DD gives a point-in-time view as of end of that date: charges by due_date, payments by received_at date, voids respected only when voided_at date <= as_of.
+         */
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    as_of?: string;
+                };
                 header?: never;
                 path: {
                     accountId: string;
@@ -3623,6 +3628,78 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["LedgerResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lossless per-account event feed ordered by account_seq
+         * @description Returns audit events for the account in account_seq order. account_seq is gap-free and strictly increasing, assigned under the per-account advisory lock and committed in the same transaction (ADR-0001). A poller that requests after_seq=<last seen> can provably never miss or double-see a committed event. Pass next_seq back verbatim on the next poll. snapshot is payload[after] when present, payload[before] on hard_deleted, else null.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after_seq?: number | null;
+                    entity_type?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description event page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EventFeedResponse"];
                     };
                 };
                 /** @description invalid request */
@@ -6865,6 +6942,21 @@ export interface components {
                 total_allocated_cents: number;
                 unapplied_credit_cents: number;
             };
+        };
+        EventFeedItem: {
+            account_seq: number;
+            entity_type: string;
+            /** Format: uuid */
+            entity_id: string;
+            /** @enum {string} */
+            event_type: "inserted" | "updated" | "deleted" | "restored" | "hard_deleted";
+            occurred_at: string;
+            actor: string;
+            snapshot?: unknown;
+        };
+        EventFeedResponse: {
+            data: components["schemas"]["EventFeedItem"][];
+            next_seq: number;
         };
         IntakeTokenRow: {
             /** Format: uuid */
