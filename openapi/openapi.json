@@ -2734,6 +2734,7 @@
             "enum": [
               "landlord",
               "tenant",
+              "vendor",
               "agent",
               "system"
             ]

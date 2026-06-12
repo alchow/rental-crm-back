@@ -22,6 +22,7 @@
     "test:events-feed": "tsx test/events-feed.test.ts",
     "test:agent-principal": "tsx test/agent-principal.test.ts",
     "test:messaging": "tsx test/messaging.test.ts",
+    "test:twilio-webhooks": "tsx test/twilio-webhooks.test.ts",
     "test:imports-live": "tsx test/imports-live.test.ts",
     "bench:import": "tsx test/bench-import.ts",
     "test:unit": "vitest run"

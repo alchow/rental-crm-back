@@ -5,6 +5,7 @@ import { ApiError, errorResponses } from './_lib/error';
 import { withResolvedAuthorship } from './_lib/authorship';
 import { Interaction } from './interactions';
 import { getMessagingProvider, ProviderError } from '../messaging/provider';
+import { normalizePhone } from '../messaging/phone';
 import { loadEnv } from '../env';
 import { getLogger } from '../log';
 
@@ -122,29 +123,6 @@ const getOutbox = createRoute({
 });
 
 export const messagesApp = newApiApp();
-
-// ---------------------------------------------------------------------------
-// Normalise a raw phone string to E.164.
-// Rules (Req 4 spec; deliberate — wrong country-code guesses send to strangers):
-//   1. Strip spaces, dashes, parens, dots.
-//   2. Keep a leading '+'.
-//   3. Exactly 11 digits starting with '1' → prepend '+' (NANP convention).
-//   4. Match ^\+[1-9][0-9]{6,14}$ → return as-is.
-//   5. Anything else → return null (caller raises 422 no_sms_destination).
-// ---------------------------------------------------------------------------
-function normalizePhone(raw: string): string | null {
-  // Strip formatting characters that commonly appear in stored phone numbers.
-  let s = raw.replace(/[\s\-().]/g, '');
-  // 11 digits starting with '1' → NANP number without the '+'.
-  if (/^1[2-9]\d{9}$/.test(s)) {
-    s = '+' + s;
-  }
-  // Accept if it matches E.164.
-  if (/^\+[1-9][0-9]{6,14}$/.test(s)) {
-    return s;
-  }
-  return null;
-}
 
 // ---------------------------------------------------------------------------
 // POST /accounts/{accountId}/messages

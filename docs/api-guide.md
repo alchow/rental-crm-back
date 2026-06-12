@@ -585,6 +585,50 @@ A successful send produces a `kind='communication'`, `channel='sms'`, `direction
 
 ---
 
+## 8c. Twilio webhooks (inbound SMS and delivery status)
+
+These routes exist for Twilio to call — they are **not** part of the SDK surface and must not be called by API clients directly. They are documented here for operators who need to configure the Messaging Service or diagnose delivery issues.
+
+### Authentication model
+
+Both webhook endpoints validate the `X-Twilio-Signature` header using HMAC-SHA1 over the exact URL (including query string) and sorted form parameters, keyed with `TWILIO_AUTH_TOKEN`. Any request with a missing or invalid signature receives `403`. Both endpoints respond `404` when messaging is not configured (`TWILIO_AUTH_TOKEN` or `PUBLIC_BASE_URL` absent) — the webhooks do not exist in unconfigured environments and should never be registered with Twilio there.
+
+Both endpoints always respond `200 text/xml` with an empty `<Response/>` body on success. Twilio expects this content-type.
+
+### POST /v1/twilio/inbound
+
+Called by Twilio when an SMS arrives at the Messaging Service number.
+
+Processing steps (in order):
+1. Signature validation.
+2. Keyword detection on the trimmed, uppercased `Body`: opt-out keywords (`STOP`, `STOPALL`, `UNSUBSCRIBE`, `CANCEL`, `END`, `QUIT`) upsert a row in `sms_opt_outs`; opt-in keywords (`START`, `YES`, `UNSTOP`) delete it. `HELP` is recorded but does not change opt-out state. Twilio Advanced Opt-Out sends the carrier-mandated auto-replies; this step keeps the authoritative local state so the send path can refuse before dialling.
+3. Phone matching: the `From` number is compared (after E.164 normalisation) against all non-deleted tenants' `phones` arrays and vendors' `contact->>'phone'` across all accounts.
+4. Exactly one match → a journal interaction is appended (`direction='inbound'`, `channel='sms'`, `author_type='tenant'|'vendor'`, `actor='system:twilio-inbound'`, `external_ref=MessageSid`). Zero matches → stored as `unmatched`. More than one match → stored as `ambiguous`. No contact is ever auto-created.
+5. The raw webhook payload is inserted into `twilio_inbound_raw`. If a duplicate `MessageSid` is detected (Twilio retry), the handler returns `200` immediately without reprocessing.
+
+### POST /v1/twilio/status?outbox_id=\<uuid\>
+
+Called by Twilio when the delivery status of an outbound message changes. The `outbox_id` query parameter is appended to the `StatusCallback` URL when the message is sent, so delivery state can always re-associate even if the synchronous send response was lost.
+
+Processing steps:
+1. Signature validation + UUID validation on `outbox_id` (400 on invalid UUID).
+2. Load the outbox row. Missing → `200` (idempotent ack; Twilio would retry forever on a non-2xx).
+3. If the outbox row has no `provider_sid` and `MessageStatus=sent`: crash-window recovery — `complete_sms_send_system()` runs to atomically append the journal interaction and mark the outbox `sent`, attributing the write to `system:twilio-status` while preserving the original `author_type` (landlord or agent) from the outbox row.
+4. Twilio `MessageStatus` is mapped to the outbox vocabulary (`sent`→`sent`, `delivered`→`delivered`, `undelivered`→`undeliverable`, `failed`→`failed`). Transitions are monotonic; duplicate or out-of-order callbacks are ignored.
+5. Error code `21610` (carrier opt-out) also upserts `sms_opt_outs` for the outbound `To` number.
+
+### /healthz messaging capability
+
+`GET /healthz` includes a `capabilities.messaging` object:
+- `configured: boolean` — all required env vars present (`TWILIO_AUTH_TOKEN`, `PUBLIC_BASE_URL`).
+- `unmatched_inbound: number | null` — count of inbound messages awaiting human attention (rows where `match_status <> 'matched'`). `null` when unconfigured or the DB query fails. Ops should monitor this counter; see the runbook for the resolution procedure.
+
+### Idempotency and crash safety
+
+The inbound handler inserts the raw capture row _last_ (after matching and journal work). A crash mid-handler causes Twilio to retry; all steps before the insert are idempotent (upsert/delete/RPC), and the `provider_sid` UNIQUE constraint on `twilio_inbound_raw` catches duplicate replays on the final insert.
+
+---
+
 ## 9. Attachments & file uploads
 
 Files tied to any entity — maintenance requests, inspection items, inspections, evidence exports.

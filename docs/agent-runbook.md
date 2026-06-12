@@ -49,3 +49,87 @@ needed — the agent service picks up new credentials on its next login cycle.
   ```
   The membership middleware returns 404 on the next request; no JWT
   invalidation is required. Re-enable by clearing `deleted_at`.
+
+---
+
+## Twilio webhook setup
+
+### Required environment variables
+
+Set these in the service's environment (Render dashboard or equivalent):
+
+| Variable | Description |
+|---|---|
+| `TWILIO_ACCOUNT_SID` | Your Twilio Account SID (starts with `AC`). |
+| `TWILIO_AUTH_TOKEN` | Your Twilio Auth Token (used to validate webhook signatures). |
+| `TWILIO_MESSAGING_SERVICE_SID` | Your Twilio Messaging Service SID (starts with `MG`). |
+| `PUBLIC_BASE_URL` | The public HTTPS URL of this API, e.g. `https://rental-crm-api.onrender.com`. **No trailing slash.** Used to construct status-callback URLs and to reconstruct the exact URL Twilio signed. |
+
+If any of these are absent, the send endpoints return `503 messaging_unconfigured` and the webhook endpoints return `404`. `GET /healthz` → `capabilities.messaging.configured` tells you whether all vars are present.
+
+### Webhook URLs to configure on the Messaging Service
+
+In the Twilio Console → Messaging → Services → your Messaging Service:
+
+- **Inbound message webhook URL**: `<PUBLIC_BASE_URL>/v1/twilio/inbound`
+  HTTP method: `POST`
+- **Status callback URL** (on each outbound message): set automatically by the send path as `<PUBLIC_BASE_URL>/v1/twilio/status?outbox_id=<uuid>`. You do not configure this in the console; it is per-message.
+
+### Advanced Opt-Out (carrier compliance)
+
+Enable **Advanced Opt-Out** on the Messaging Service in the Twilio Console. Twilio sends the carrier-mandated STOP/START/HELP auto-replies; this API keeps the authoritative local opt-out registry (`sms_opt_outs`) in sync so the send path can refuse before dialling without an extra Twilio lookup. The two systems are complementary — do not disable either.
+
+### 10DLC registration
+
+Brand and campaign registration for 10DLC is operational, outside this repo. Complete registration before sending to US numbers.
+
+---
+
+## `needs_reconcile` outbox rows — manual recovery procedure
+
+An outbox row enters `needs_reconcile` status when the reconcile janitor finds it stuck in `sending` for longer than the configured threshold (default 1 hour). This means:
+- The API's synchronous `complete_sms_send` call did not run (the API crashed or the RPC failed).
+- No Twilio status callback arrived to complete the record.
+
+There is no SQL-side way to know whether Twilio accepted the message without querying the Twilio API, so the janitor parks the row for human review rather than guessing.
+
+### How to resolve
+
+1. **Identify the message in the Twilio console.** Go to Monitor → Logs → Messages. Filter by the `To` number and the approximate send time. Find the message and note its `MessageSid`.
+
+2. **If Twilio accepted the message (SID exists):**
+   ```sql
+   -- Step A: complete the outbox record and append the journal interaction.
+   select public.complete_sms_send_system('<outbox-uuid>', '<MessageSid>');
+
+   -- Step B: apply the current delivery status.
+   -- p_status one of: 'sent', 'delivered', 'undeliverable', 'failed'
+   select public.update_sms_delivery('<outbox-uuid>', '<MessageSid>', 'delivered');
+   ```
+   Both functions are SECURITY DEFINER and must be called as the service role (Supabase SQL editor → service role, or via `psql` with the service-role connection string).
+
+3. **If Twilio never received the message (no SID):**
+   ```sql
+   -- Mark as failed; no journal entry (nothing was sent — ADR-0007).
+   update public.message_outbox
+   set status = 'failed',
+       error_code = 'no_provider_sid',
+       error_message = 'manually resolved: Twilio never received this message',
+       updated_at = now()
+   where id = '<outbox-uuid>';
+   ```
+
+4. **Verify.** After resolution, `GET /accounts/{accountId}/messages/{id}` should show the correct status. If the message was delivered, `GET /interactions/{id}` should show `delivery_status='delivered'`.
+
+---
+
+## Reconcile janitor scheduling
+
+The `reconcile_message_outbox` function parks stale `sending` rows. Schedule it as an operational cron job — the same convention as the Phase 11 janitors (`prune_ip_rate_buckets`, `prune_idempotency_keys`):
+
+```sql
+-- Run every 15 minutes; park rows stuck in 'sending' for > 1 hour.
+select public.reconcile_message_outbox(3600);
+```
+
+Schedule via `pg_cron` (Supabase Dashboard → Database → Cron Jobs) or an external scheduler that can connect to the DB with the service role. The function is idempotent and safe to run concurrently (it locks rows `for update` internally).

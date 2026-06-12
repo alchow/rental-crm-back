@@ -7188,7 +7188,7 @@ export interface components {
             /** @enum {string} */
             kind: "communication" | "note" | "agent_event";
             /** @enum {string} */
-            author_type: "landlord" | "tenant" | "agent" | "system";
+            author_type: "landlord" | "tenant" | "vendor" | "agent" | "system";
             /** Format: uuid */
             approved_by: string | null;
             approval_ref: string | null;
