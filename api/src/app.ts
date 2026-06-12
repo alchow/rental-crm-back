@@ -36,6 +36,7 @@ import { requestLog } from './middleware/request-log';
 import { getLogger } from './log';
 import { requireAuth } from './middleware/auth';
 import { requireAccountMembership } from './middleware/account-context';
+import { resolvePrincipal } from './middleware/principal';
 import { requireIdempotency } from './middleware/idempotency';
 import { requireImmediateParent } from './middleware/immediate-parent';
 import { assertImageStackAtBoot, heicSupported } from './admin/heic-probe';
@@ -138,13 +139,14 @@ export function buildApp(): OpenAPIHono {
   // run propertiesApp's and areasApp's idempotency middleware in series and
   // claim the same key twice. One mount = one execution.
   //
-  // Order matters: auth -> membership -> immediate-parent (specific
-  // sub-paths only) -> idempotency.
+  // Order matters: auth -> membership -> principal -> immediate-parent
+  // (specific sub-paths only) -> idempotency.
 
   app.use(
     '/v1/accounts/:accountId/*',
     requireAuth(),
     requireAccountMembership(),
+    resolvePrincipal(),
   );
 
   // Sub-resources whose URL has an extra path-parent (tenancyId / areaId)

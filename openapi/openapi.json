@@ -2846,7 +2846,8 @@
             "type": "string",
             "enum": [
               "communication",
-              "note"
+              "note",
+              "agent_event"
             ]
           },
           "party_type": {
@@ -2878,7 +2879,8 @@
               "letter",
               "in_app",
               "import",
-              "note"
+              "note",
+              "agent_event"
             ]
           },
           "direction": {
@@ -2927,6 +2929,24 @@
           "vendor_id": {
             "type": "string",
             "format": "uuid"
+          },
+          "entry_type": {
+            "type": "string",
+            "enum": [
+              "proposal_created",
+              "proposal_approved",
+              "proposal_rejected",
+              "step_executed"
+            ]
+          },
+          "approved_by": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "approval_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
           }
         }
       },

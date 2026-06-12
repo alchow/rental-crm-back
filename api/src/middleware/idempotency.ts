@@ -69,12 +69,21 @@ export function requireIdempotency(): MiddlewareHandler {
     // Fingerprint the request without consuming the body downstream. The
     // request can only be read once; Request.clone() gives us a separate
     // readable copy.
+    //
+    // The authenticated userId is included in the preimage so the same
+    // key + body from different principals (e.g. landlord vs. agent) produces
+    // a fingerprint mismatch rather than replaying one principal's cached
+    // response to the other. Deploy-window effect: a key claimed pre-deploy
+    // and retried post-deploy gets 409 instead of a replay -- acceptable and
+    // transient (keys are 30-day TTL).
     const cloneReq = c.req.raw.clone();
     const bodyText = method === 'DELETE' ? '' : await cloneReq.text();
     const fingerprint = createHash('sha256')
       .update(method)
       .update('\n')
       .update(c.req.path)
+      .update('\n')
+      .update(c.get('auth').userId)
       .update('\n')
       .update(bodyText)
       .digest('hex');

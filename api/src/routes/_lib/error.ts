@@ -69,7 +69,11 @@ export type ErrorCode =
   // its chain (already superseded, or the chain is closed by a retraction)
   | 'invalid_correction_target'
   | 'database_error'
-  | 'internal_error';
+  | 'internal_error'
+  // agent-principal firewall codes (Workstream D)
+  | 'agent_forbidden'           // agent attempted a forbidden operation (correction/retraction)
+  | 'agent_entry_type_forbidden' // agent attempted to append a communication directly
+  | 'agent_only';               // landlord attempted an agent-only field or kind
 
 export class ApiError extends Error {
   constructor(
