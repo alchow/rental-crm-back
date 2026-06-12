@@ -2309,6 +2309,64 @@
           "totals"
         ]
       },
+      "EventFeedItem": {
+        "type": "object",
+        "properties": {
+          "account_seq": {
+            "type": "integer"
+          },
+          "entity_type": {
+            "type": "string"
+          },
+          "entity_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_type": {
+            "type": "string",
+            "enum": [
+              "inserted",
+              "updated",
+              "deleted",
+              "restored",
+              "hard_deleted"
+            ]
+          },
+          "occurred_at": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "snapshot": {}
+        },
+        "required": [
+          "account_seq",
+          "entity_type",
+          "entity_id",
+          "event_type",
+          "occurred_at",
+          "actor"
+        ]
+      },
+      "EventFeedResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EventFeedItem"
+            }
+          },
+          "next_seq": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "data",
+          "next_seq"
+        ]
+      },
       "IntakeTokenRow": {
         "type": "object",
         "properties": {
@@ -8926,6 +8984,7 @@
           "ledger"
         ],
         "summary": "Per-tenancy ledger: charges + payments + allocations + derived balances",
+        "description": "Derived financial view. Balances are recomputed from charges + payments + allocations on every call — never stored. Optional ?as_of=YYYY-MM-DD gives a point-in-time view as of end of that date: charges by due_date, payments by received_at date, voids respected only when voided_at date <= as_of.",
         "parameters": [
           {
             "schema": {
@@ -8944,6 +9003,15 @@
             "required": true,
             "name": "tenancyId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            "required": false,
+            "name": "as_of",
+            "in": "query"
           }
         ],
         "responses": {
@@ -8953,6 +9021,101 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LedgerResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/events": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Lossless per-account event feed ordered by account_seq",
+        "description": "Returns audit events for the account in account_seq order. account_seq is gap-free and strictly increasing, assigned under the per-account advisory lock and committed in the same transaction (ADR-0001). A poller that requests after_seq=<last seen> can provably never miss or double-see a committed event. Pass next_seq back verbatim on the next poll. snapshot is payload[after] when present, payload[before] on hard_deleted, else null.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "default": 0
+            },
+            "required": false,
+            "name": "after_seq",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z_]{1,63}$"
+            },
+            "required": false,
+            "name": "entity_type",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 200,
+              "default": 100
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "event page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventFeedResponse"
                 }
               }
             }
