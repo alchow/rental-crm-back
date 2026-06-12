@@ -2842,6 +2842,26 @@
               "string",
               "null"
             ]
+          },
+          "delivery_status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "sending",
+              "sent",
+              "delivered",
+              "failed",
+              "undeliverable",
+              "needs_reconcile"
+            ]
+          },
+          "delivered_at": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2873,7 +2893,9 @@
           "vendor_id",
           "created_at",
           "updated_at",
-          "deleted_at"
+          "deleted_at",
+          "delivery_status",
+          "delivered_at"
         ]
       },
       "InteractionListResponse": {
@@ -3007,6 +3029,230 @@
             "maxLength": 200
           }
         }
+      },
+      "SendMessageResponse": {
+        "type": "object",
+        "properties": {
+          "outbox_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "sent"
+            ]
+          },
+          "provider_sid": {
+            "type": "string"
+          },
+          "interaction": {
+            "$ref": "#/components/schemas/Interaction"
+          }
+        },
+        "required": [
+          "outbox_id",
+          "status",
+          "provider_sid",
+          "interaction"
+        ]
+      },
+      "SendMessageBody": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "enum": [
+              "sms"
+            ]
+          },
+          "recipient_type": {
+            "type": "string",
+            "enum": [
+              "tenant",
+              "vendor"
+            ]
+          },
+          "recipient_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1600
+          },
+          "approval_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "tenancy_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "maintenance_request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "work_order_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "channel",
+          "recipient_type",
+          "recipient_id",
+          "body"
+        ]
+      },
+      "MessageOutbox": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "sms"
+            ]
+          },
+          "tenant_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "vendor_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "to_phone": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "sending",
+              "sent",
+              "delivered",
+              "failed",
+              "undeliverable",
+              "needs_reconcile"
+            ]
+          },
+          "provider_sid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "interaction_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "author_type": {
+            "type": "string",
+            "enum": [
+              "landlord",
+              "agent"
+            ]
+          },
+          "created_by_actor": {
+            "type": "string"
+          },
+          "approval_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tenancy_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "maintenance_request_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "work_order_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "delivered_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "channel",
+          "tenant_id",
+          "vendor_id",
+          "to_phone",
+          "body",
+          "status",
+          "provider_sid",
+          "error_code",
+          "error_message",
+          "interaction_id",
+          "author_type",
+          "created_by_actor",
+          "approval_ref",
+          "tenancy_id",
+          "maintenance_request_id",
+          "work_order_id",
+          "created_at",
+          "updated_at",
+          "delivered_at"
+        ]
       },
       "Attachment": {
         "type": "object",
@@ -9911,6 +10157,147 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Interaction"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/messages": {
+      "post": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "Send an outbound SMS to a tenant or vendor. The intent is recorded before the provider call (ADR-0007). On success returns the created outbox row and the journal interaction.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendMessageBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendMessageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/messages/{id}": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "Retrieve an outbox row by id. Use this to resolve a send_state_unknown response.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "outbox row",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageOutbox"
                 }
               }
             }

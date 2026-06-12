@@ -546,6 +546,45 @@ Magic links for unauthenticated tenant submissions. See §11 for the public inta
 
 ---
 
+## 8b. Outbound messaging
+
+Send SMS messages to tenants and vendors through the API. Every send attempt is recorded in an operational outbox row _before_ the provider is called (ADR-0007: the outbox is the intent record; the journal entry is appended only on confirmed send). Delivery state advances on the outbox row and is surfaced on interactions via the `delivery_status` / `delivered_at` view fields — the journal is never mutated.
+
+### Send semantics
+
+**`approval_ref` conditionality (Req 4).** When the request comes from the agent principal (`AGENT_USER_ID` match), `approval_ref` is **required** — it ties every sent message to an agent-side proposal or task for audit continuity. When the request comes from a landlord user, `approval_ref` is **forbidden** (it is reserved for the agent principal). The server enforces both directions; there is no opt-in toggle.
+
+**`send_state_unknown` contract.** When the provider call times out or returns a 5xx, the response is `409 send_state_unknown`. The 409 status code is deliberate: the idempotency middleware caches 4xx responses, so retrying with the same key returns this cached response rather than re-dialling the provider (a 5xx would free the key and a retry could double-send). Callers receiving `send_state_unknown` must check the outbox id (returned in `details.outbox_id`) via `GET /messages/{id}` and use a **new** idempotency key only after confirming the message did not go out.
+
+**Opt-out refusal.** If the resolved E.164 number is in the opt-out registry, the send is refused before any provider call or outbox write. The response is `409 sms_opted_out`; no operational or evidence record is created (nothing happened).
+
+### Endpoints
+
+| Method | Path | Body / Notes |
+|---|---|---|
+| `POST` | `/messages` | Send an SMS. Body: `channel` (literal `"sms"`), `recipient_type` (`"tenant"\|"vendor"`), `recipient_id` (uuid), `body` (1–1600 chars), `approval_ref` (agent only), `tenancy_id`/`maintenance_request_id`/`work_order_id` (optional context). Returns `201` with `{ outbox_id, status, provider_sid, interaction }` on success. |
+| `GET` | `/messages/{id}` | Retrieve an outbox row by id. Use this to resolve a `send_state_unknown` response. Returns the outbox status; poll until it leaves `"sending"`. |
+
+### Phone resolution
+
+The API resolves the recipient's phone from stored data — no raw number is accepted in the request body. Tenants: `phones[0]` (the first entry is the primary number by convention). Vendors: `contact->>'phone'`. The raw value is normalised to E.164 at send time and frozen in the outbox row. If no usable E.164 number can be resolved, the send returns `422 no_sms_destination` before any write.
+
+### Interactions integration
+
+A successful send produces a `kind='communication'`, `channel='sms'`, `direction='outbound'` journal interaction. `author_type` mirrors the sending principal (`landlord` or `agent`). `external_ref` carries the Twilio `MessageSid`. Delivery state (`delivery_status`, `delivered_at`) is visible on `GET /interactions/{id}` and in the list — sourced from the outbox row via the view join, not stored on the interaction itself.
+
+### Error codes
+
+| Code | Status | Meaning |
+|---|---|---|
+| `messaging_unconfigured` | 503 | Twilio env vars absent for this environment. |
+| `no_sms_destination` | 422 | Recipient has no usable E.164 phone number. Store one and retry. |
+| `sms_opted_out` | 409 | Recipient's number is in the opt-out registry. No outbox row written. |
+| `send_failed` | 422 | Provider definitively rejected the send (Twilio 4xx). Outbox row is `failed`; no interaction. `details.provider_code` carries the Twilio error code. |
+| `send_state_unknown` | 409 | Provider call timed out or returned 5xx. Outbox stays `sending`. Check via `GET /messages/{id}` before using a new idempotency key. |
+
+---
+
 ## 9. Attachments & file uploads
 
 Files tied to any entity — maintenance requests, inspection items, inspections, evidence exports.
