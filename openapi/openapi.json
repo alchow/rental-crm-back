@@ -2639,7 +2639,8 @@
               "letter",
               "in_app",
               "import",
-              "note"
+              "note",
+              "agent_event"
             ]
           },
           "direction": {
@@ -2666,7 +2667,48 @@
             "type": "string",
             "enum": [
               "communication",
-              "note"
+              "note",
+              "agent_event"
+            ]
+          },
+          "author_type": {
+            "type": "string",
+            "enum": [
+              "landlord",
+              "tenant",
+              "agent",
+              "system"
+            ]
+          },
+          "approved_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "approval_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "entry_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "proposal_created",
+              "proposal_approved",
+              "proposal_rejected",
+              "step_executed"
+            ]
+          },
+          "external_ref": {
+            "type": [
+              "string",
+              "null"
             ]
           },
           "corrects_id": {
@@ -2757,6 +2799,11 @@
           "occurred_at",
           "logged_at",
           "kind",
+          "author_type",
+          "approved_by",
+          "approval_ref",
+          "entry_type",
+          "external_ref",
           "corrects_id",
           "correction_kind",
           "superseded_by_id",

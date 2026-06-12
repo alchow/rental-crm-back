@@ -930,10 +930,22 @@ async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
       const what =
         root.kind === 'note'
           ? 'note'.padEnd(19)
-          : `${(root.direction as string).padEnd(8)} ${(root.channel as string).padEnd(10)}`;
+          : root.kind === 'agent_event'
+            ? `agent:${root.entry_type as string}`.padEnd(19)
+            : `${(root.direction as string).padEnd(8)} ${(root.channel as string).padEnd(10)}`;
+      // Authorship capacity (post-capacity-migration rows). Agent-authored
+      // entries carry the approval trail the chain protects; rendering it is
+      // the point of the capacity fields. Legacy rows show actor= alone.
+      const capacity = root.author_type
+        ? `  capacity=${root.author_type as string}` +
+          (root.author_type === 'agent'
+            ? `  approved_by=${(root.approved_by as string | null) ?? '—'}  approval_ref=${(root.approval_ref as string | null) ?? '—'}`
+            : '')
+        : '';
+      const sid = root.external_ref ? `  provider_ref=${root.external_ref as string}` : '';
       doc.text(
         `• ${root.occurred_at as string}  ${what} ` +
-        `actor=${root.actor as string}  (logged ${root.logged_at as string})`,
+        `actor=${root.actor as string}${capacity}${sid}  (logged ${root.logged_at as string})`,
       );
       if (root.body) doc.text(`    ${String(root.body).slice(0, 400)}`);
       for (const corr of chain.corrections) {

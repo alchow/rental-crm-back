@@ -6952,14 +6952,22 @@ export interface components {
             party_id: string | null;
             party_label: string | null;
             /** @enum {string} */
-            channel: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app" | "import" | "note";
+            channel: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app" | "import" | "note" | "agent_event";
             /** @enum {string} */
             direction: "inbound" | "outbound" | "none";
             body: string | null;
             occurred_at: string;
             logged_at: string;
             /** @enum {string} */
-            kind: "communication" | "note";
+            kind: "communication" | "note" | "agent_event";
+            /** @enum {string} */
+            author_type: "landlord" | "tenant" | "agent" | "system";
+            /** Format: uuid */
+            approved_by: string | null;
+            approval_ref: string | null;
+            /** @enum {string|null} */
+            entry_type: "proposal_created" | "proposal_approved" | "proposal_rejected" | "step_executed" | null;
+            external_ref: string | null;
             /** Format: uuid */
             corrects_id: string | null;
             /** @enum {string|null} */
