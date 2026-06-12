@@ -58,7 +58,9 @@ const EntryType = z.enum([
 ]);
 const AuthorType = z.enum(['landlord', 'tenant', 'agent', 'system']);
 
-const Interaction = z
+// Exported: the messages route returns the journal entry created by a
+// confirmed send and must reference THIS schema so the SDK contract is typed.
+export const Interaction = z
   .object({
     id: z.string().uuid(),
     account_id: z.string().uuid(),
@@ -99,6 +101,13 @@ const Interaction = z
     created_at: z.string(),
     updated_at: z.string(),
     deleted_at: z.string().nullable(),
+    /** Derived from the linked message_outbox row via the view join.
+     *  Null on entries that were not produced by the send pipeline
+     *  (e.g. direct journal notes, logged phone calls). */
+    delivery_status: z
+      .enum(['sending', 'sent', 'delivered', 'failed', 'undeliverable', 'needs_reconcile'])
+      .nullable(),
+    delivered_at: z.string().nullable(),
   })
   .openapi('Interaction');
 
@@ -582,11 +591,16 @@ interactionsApp.openapi(create, async (c) => {
     throw new ApiError(500, 'database_error', error.message);
   }
   // Derived fields, true by construction for a row that did not exist a
-  // moment ago: nothing can reference it yet.
+  // moment ago: nothing can reference it yet, and there is no outbox row for
+  // a directly-logged entry.
   return c.json(
-    withResolvedAuthorship({ ...data, superseded_by_id: null, is_head: true }) as z.infer<
-      typeof Interaction
-    >,
+    withResolvedAuthorship({
+      ...data,
+      superseded_by_id: null,
+      is_head: true,
+      delivery_status: null,
+      delivered_at: null,
+    }) as z.infer<typeof Interaction>,
     201,
   );
 });

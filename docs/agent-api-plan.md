@@ -284,9 +284,10 @@ on `interaction_id` → derived read-only fields `delivery_status`,
 `{ channel:'sms', recipient_type, recipient_id, body (1..1600 ch), occurred_context refs?, approval_ref? }`
 
 1. Validate; resolve principal. **Agent → `approval_ref` required (400
-   without); landlord → optional** (Req 4: spec documents the conditional,
-   server enforces — there is no pre-existing client to break since the
-   endpoint is new).
+   without); landlord → forbidden (400)**, mirroring the journal firewall's
+   "approval fields are agent-only" rule (Req 4: spec documents the
+   conditional, server enforces — there is no pre-existing client to break
+   since the endpoint is new).
 2. Resolve recipient → phone: tenants = `phones[0]` (documented convention:
    first entry is primary), vendors = `contact->>'phone'`; normalize to
    E.164; 422 `no_sms_destination` if absent/unparseable. Raw numbers from
@@ -300,12 +301,14 @@ on `interaction_id` → derived read-only fields `delivery_status`,
    outbox to `sent`+SID **and** inserts the journal interaction
    (`channel='sms'`, `direction='outbound'`, party ref, body, capacity
    fields, `external_ref=SID`), links `interaction_id`, returns 201 with
-   both ids. Definitive Twilio 4xx → outbox `failed`, 502/422 to caller, **no
-   journal entry** (nothing was sent; the operational record carries the
-   attempt). Timeout/unknown → outbox stays `sending`, 502
-   `send_state_unknown`; the status callback or the reconcile janitor
-   resolves it; the idempotency key returns the same answer on retry rather
-   than re-sending.
+   both ids. Definitive Twilio 4xx → outbox `failed`, 422 `send_failed` to
+   caller, **no journal entry** (nothing was sent; the operational record
+   carries the attempt). Timeout/unknown → outbox stays `sending`, **409
+   `send_state_unknown`** — deliberately a 4xx, because the idempotency
+   middleware caches 4xx (replay returns the same answer, never re-dials)
+   but frees the key on 5xx (a retry could double-send); the status
+   callback or the reconcile janitor resolves the row, and the caller uses
+   a new key only after confirming via `GET /messages/{id}`.
 
 Synchronous in-request for v1 (one outbound HTTP call; no queue
 infrastructure at single-landlord scale). **Scale seam:** the outbox row is

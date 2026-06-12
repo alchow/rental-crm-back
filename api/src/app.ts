@@ -19,6 +19,7 @@ import { eventsApp } from './routes/events';
 import { intakeTokensApp } from './routes/intake-tokens';
 import { maintenanceRequestsApp } from './routes/maintenance-requests';
 import { interactionsApp } from './routes/interactions';
+import { messagesApp } from './routes/messages';
 import { intakeApp } from './admin/intake';
 import { attachmentsApp } from './routes/attachments';
 import { evidenceExportsApp } from './routes/evidence-exports';
@@ -186,6 +187,7 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', intakeTokensApp);
   app.route('/v1', maintenanceRequestsApp);
   app.route('/v1', interactionsApp);
+  app.route('/v1', messagesApp);
   app.route('/v1', attachmentsApp);
   app.route('/v1', inspectionTemplatesApp);
   app.route('/v1', inspectionsApp);

@@ -73,11 +73,17 @@ export type ErrorCode =
   // agent-principal firewall codes (Workstream D)
   | 'agent_forbidden'           // agent attempted a forbidden operation (correction/retraction)
   | 'agent_entry_type_forbidden' // agent attempted to append a communication directly
-  | 'agent_only';               // landlord attempted an agent-only field or kind
+  | 'agent_only'                // landlord attempted an agent-only field or kind
+  // messaging codes (Workstream E)
+  | 'messaging_unconfigured'    // Twilio env vars absent; send endpoint returns 503
+  | 'no_sms_destination'        // recipient has no usable E.164 phone number
+  | 'sms_opted_out'             // recipient's phone is in sms_opt_outs
+  | 'send_failed'               // provider definitively rejected the send (Twilio 4xx)
+  | 'send_state_unknown';       // provider call timed out / 5xx; outbox stays 'sending'
 
 export class ApiError extends Error {
   constructor(
-    public readonly status: 400 | 401 | 403 | 404 | 409 | 429 | 500 | 502,
+    public readonly status: 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500 | 502 | 503,
     public readonly code: ErrorCode,
     message: string,
     public readonly details?: unknown,
