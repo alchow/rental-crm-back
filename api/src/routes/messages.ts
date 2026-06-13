@@ -1,7 +1,7 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
-import { ApiError, errorResponses } from './_lib/error';
+import { ApiError, dbError, errorResponses } from './_lib/error';
 import { withResolvedAuthorship } from './_lib/authorship';
 import { Interaction } from './interactions';
 import { getMessagingProvider, ProviderError } from '../messaging/provider';
@@ -263,7 +263,9 @@ messagesApp.openapi(send, async (c) => {
     if (outboxErr.code === '23503') {
       throw new ApiError(404, 'not_found', 'a referenced row does not belong to this account');
     }
-    throw new ApiError(500, 'database_error', outboxErr.message);
+    // 42501 (RLS denial) -> 403: a just-revoked agent still inside the
+    // membership-cache TTL window (ADR-0009 Phase 4). Else 500.
+    throw dbError(outboxErr);
   }
 
   const outboxId = (outbox as { id: string }).id;

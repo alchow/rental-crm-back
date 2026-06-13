@@ -92,3 +92,19 @@ export class ApiError extends Error {
     this.name = 'ApiError';
   }
 }
+
+/**
+ * Map a PostgREST/Postgres write error to an ApiError. Use on user-scoped
+ * write paths where a blanket 500 would mask an authorization outcome: a row
+ * RLS refuses surfaces as Postgres 42501 (insufficient_privilege) -- map it to
+ * a clean 403 rather than 500. This is the ADR-0009 Phase 4 fix for the
+ * narrow window where a just-revoked agent still passes the cached membership
+ * middleware but the live RLS check denies the write. Unrecognised codes keep
+ * the generic database_error 500.
+ */
+export function dbError(error: { code?: string; message: string }): ApiError {
+  if (error.code === '42501') {
+    return new ApiError(403, 'forbidden', 'not authorized to write this resource');
+  }
+  return new ApiError(500, 'database_error', error.message);
+}

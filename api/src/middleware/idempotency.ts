@@ -1,7 +1,7 @@
 import type { MiddlewareHandler } from 'hono';
 import { createHash } from 'node:crypto';
 import { getSb } from '../supabase/request-client';
-import { ApiError } from '../routes/_lib/error';
+import { ApiError, dbError } from '../routes/_lib/error';
 import { getLogger } from '../log';
 
 // Generic Idempotency-Key middleware. Mounted on every mutating endpoint
@@ -97,7 +97,12 @@ export function requireIdempotency(): MiddlewareHandler {
       p_key: key,
       p_fingerprint: fingerprint,
     });
-    if (claimErr) throw new ApiError(500, 'database_error', claimErr.message);
+    // The claim RPC is SECURITY INVOKER, so this INSERT is the FIRST
+    // RLS-gated write on any mutating request -- a just-revoked agent (still
+    // inside the membership-cache TTL, so it passed requireAccountMembership)
+    // is denied HERE with 42501. Map it to a clean 403 rather than 500
+    // (ADR-0009 Phase 4).
+    if (claimErr) throw dbError(claimErr);
     const claim = (Array.isArray(claimData) ? claimData[0] : claimData) as {
       claimed: boolean;
       fingerprint_matches: boolean;

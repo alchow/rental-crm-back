@@ -26,12 +26,13 @@ PATTERNS=(
 #     ASSIGNED, never read into a client constructor.
 #   - api/test/attachments.test.ts / intake.test.ts / phase9.test.ts /
 #     phase10.test.ts / phase11.test.ts / phase12.test.ts /
-#     interactions-journal.test.ts / agent-grants.test.ts: integration tests
-#     that read rows back via the admin client to verify what the system
-#     actually stored (audit attribution, storage path, derived_from chain,
-#     byte-for-byte immutability of corrected interactions, unreachable
-#     fixture states like a soft-deleted membership, agent grant membership
-#     lifecycle).
+#     interactions-journal.test.ts / agent-grants.test.ts /
+#     agent-tokens.test.ts: integration tests that read rows back via the
+#     admin client to verify what the system actually stored (audit
+#     attribution, storage path, derived_from chain, byte-for-byte
+#     immutability of corrected interactions, unreachable fixture states like
+#     a soft-deleted membership, agent grant membership lifecycle, agent token
+#     exchange and RLS-denial mapping).
 #     These are TEST code, never shipped; the quarantine defends production
 #     runtime, and verification of that runtime sits on the other side of the
 #     boundary by design.
@@ -61,6 +62,7 @@ EXCLUDES=(
   ':!api/test/interactions-journal.test.ts'
   ':!api/test/agent-principal.test.ts'
   ':!api/test/agent-grants.test.ts'
+  ':!api/test/agent-tokens.test.ts'
   ':!api/test/events-feed.test.ts'
   ':!api/test/messaging.test.ts'
   ':!api/test/twilio-webhooks.test.ts'

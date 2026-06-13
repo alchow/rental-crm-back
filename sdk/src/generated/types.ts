@@ -6685,6 +6685,142 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/agent/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the accounts this agent principal may serve (X-Agent-Secret auth)
+         * @description Discovery for the agent fan-out. Authenticated by the root bearer secret in the `X-Agent-Secret` header; returns the principal's ACTIVE grants. This is the authoritative source of which accounts the agent serves.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description granted accounts */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AgentAccountsResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange the agent root secret for a per-account session (X-Agent-Secret auth)
+         * @description Authenticated by the root bearer secret in the `X-Agent-Secret` header. Mints a short-lived Supabase session scoped to the requested account (the agent must hold an active grant for it). Refresh the returned token via POST /v1/auth/refresh; re-mint only on a new account or refresh failure.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AgentTokenRequest"];
+                };
+            };
+            responses: {
+                /** @description minted session */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AgentTokenResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -7912,6 +8048,29 @@ export interface components {
             /** Format: uuid */
             derivative_id: string | null;
             deduped_onto_existing: boolean;
+        };
+        AgentGrantedAccount: {
+            /** Format: uuid */
+            account_id: string;
+            scopes: string[];
+            granted_at: string;
+        };
+        AgentAccountsResponse: {
+            data: components["schemas"]["AgentGrantedAccount"][];
+        };
+        AgentTokenResponse: {
+            access_token: string;
+            refresh_token: string;
+            /** @enum {string} */
+            token_type: "bearer";
+            expires_in: number;
+            /** Format: uuid */
+            account_id: string;
+            scopes: string[];
+        };
+        AgentTokenRequest: {
+            /** Format: uuid */
+            account_id: string;
         };
     };
     responses: never;

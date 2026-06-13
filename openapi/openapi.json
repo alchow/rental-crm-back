@@ -4950,6 +4950,93 @@
           "derivative_id",
           "deduped_onto_existing"
         ]
+      },
+      "AgentGrantedAccount": {
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "granted_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "scopes",
+          "granted_at"
+        ]
+      },
+      "AgentAccountsResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentGrantedAccount"
+            }
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "AgentTokenResponse": {
+        "type": "object",
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "refresh_token": {
+            "type": "string"
+          },
+          "token_type": {
+            "type": "string",
+            "enum": [
+              "bearer"
+            ]
+          },
+          "expires_in": {
+            "type": "integer"
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "access_token",
+          "refresh_token",
+          "token_type",
+          "expires_in",
+          "account_id",
+          "scopes"
+        ]
+      },
+      "AgentTokenRequest": {
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "account_id"
+        ]
       }
     },
     "parameters": {}
@@ -13021,6 +13108,118 @@
           },
           "429": {
             "description": "rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/accounts": {
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "List the accounts this agent principal may serve (X-Agent-Secret auth)",
+        "description": "Discovery for the agent fan-out. Authenticated by the root bearer secret in the `X-Agent-Secret` header; returns the principal's ACTIVE grants. This is the authoritative source of which accounts the agent serves.",
+        "responses": {
+          "200": {
+            "description": "granted accounts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentAccountsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/tokens": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Exchange the agent root secret for a per-account session (X-Agent-Secret auth)",
+        "description": "Authenticated by the root bearer secret in the `X-Agent-Secret` header. Mints a short-lived Supabase session scoped to the requested account (the agent must hold an active grant for it). Refresh the returned token via POST /v1/auth/refresh; re-mint only on a new account or refresh failure.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "minted session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentTokenResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
             "content": {
               "application/json": {
                 "schema": {
