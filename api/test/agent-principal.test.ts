@@ -543,6 +543,94 @@ async function main(): Promise<void> {
     if (row.author_type !== 'tenant') throw new Error(`resolved author_type: ${row.author_type}`);
   });
 
+  // =========================================================================
+  // (n) new entry_types: proposal_failed → 201, author_type=agent, echoed
+  // =========================================================================
+  await check('(n) agent proposal_failed → 201, author_type=agent, entry_type echoed', async () => {
+    const r = await agentPost({
+      kind: 'agent_event',
+      entry_type: 'proposal_failed',
+      approval_ref: 'prop-proposal_failed',
+      occurred_at: now(),
+    });
+    const row = assertStatus(r, 201, 'proposal_failed') as Record<string, unknown>;
+    if (row.author_type !== 'agent') throw new Error(`author_type: ${row.author_type}`);
+    if (row.entry_type !== 'proposal_failed') throw new Error(`entry_type: ${row.entry_type}`);
+  });
+
+  // =========================================================================
+  // (o) new entry_types: proposal_blocked → 201, author_type=agent, echoed
+  // =========================================================================
+  await check('(o) agent proposal_blocked → 201, author_type=agent, entry_type echoed', async () => {
+    const r = await agentPost({
+      kind: 'agent_event',
+      entry_type: 'proposal_blocked',
+      approval_ref: 'prop-proposal_blocked',
+      occurred_at: now(),
+    });
+    const row = assertStatus(r, 201, 'proposal_blocked') as Record<string, unknown>;
+    if (row.author_type !== 'agent') throw new Error(`author_type: ${row.author_type}`);
+    if (row.entry_type !== 'proposal_blocked') throw new Error(`entry_type: ${row.entry_type}`);
+  });
+
+  // =========================================================================
+  // (p) new entry_types: resume_target_dead → 201, author_type=agent, echoed
+  // =========================================================================
+  await check('(p) agent resume_target_dead → 201, author_type=agent, entry_type echoed', async () => {
+    const r = await agentPost({
+      kind: 'agent_event',
+      entry_type: 'resume_target_dead',
+      approval_ref: 'prop-resume_target_dead',
+      occurred_at: now(),
+    });
+    const row = assertStatus(r, 201, 'resume_target_dead') as Record<string, unknown>;
+    if (row.author_type !== 'agent') throw new Error(`author_type: ${row.author_type}`);
+    if (row.entry_type !== 'resume_target_dead') throw new Error(`entry_type: ${row.entry_type}`);
+  });
+
+  // =========================================================================
+  // (q) new entry_types: proposal_superseded → 201, author_type=agent, echoed
+  // =========================================================================
+  await check('(q) agent proposal_superseded → 201, author_type=agent, entry_type echoed', async () => {
+    const r = await agentPost({
+      kind: 'agent_event',
+      entry_type: 'proposal_superseded',
+      approval_ref: 'prop-proposal_superseded',
+      occurred_at: now(),
+    });
+    const row = assertStatus(r, 201, 'proposal_superseded') as Record<string, unknown>;
+    if (row.author_type !== 'agent') throw new Error(`author_type: ${row.author_type}`);
+    if (row.entry_type !== 'proposal_superseded') throw new Error(`entry_type: ${row.entry_type}`);
+  });
+
+  // =========================================================================
+  // (r) step_executed with references_interaction_id → 201, field echoed back
+  // =========================================================================
+  await check('(r) agent step_executed with references_interaction_id → 201, field echoed', async () => {
+    // Create a fresh landlord note to use as the anchor interaction.
+    const anchorR = await landlordPost({
+      kind: 'note',
+      occurred_at: now(),
+      body: 'Anchor note for references_interaction_id test.',
+    });
+    const anchorRow = assertStatus(anchorR, 201, 'anchor note') as Record<string, unknown>;
+    const anchorId = anchorRow.id as string;
+
+    const r = await agentPost({
+      kind: 'agent_event',
+      entry_type: 'step_executed',
+      approval_ref: 'step-ref-3',
+      occurred_at: now(),
+      tenancy_id: landlord.tenancyId,
+      references_interaction_id: anchorId,
+    });
+    const row = assertStatus(r, 201, 'step_executed with references_interaction_id') as Record<string, unknown>;
+    if (row.author_type !== 'agent') throw new Error(`author_type: ${row.author_type}`);
+    if (row.references_interaction_id !== anchorId) {
+      throw new Error(`references_interaction_id: expected ${anchorId}, got ${row.references_interaction_id}`);
+    }
+  });
+
   // --- done -----------------------------------------------------------------
   console.info('');
   if (failures.length > 0) {

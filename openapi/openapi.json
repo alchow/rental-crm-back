@@ -2761,7 +2761,11 @@
               "proposal_created",
               "proposal_approved",
               "proposal_rejected",
-              "step_executed"
+              "step_executed",
+              "proposal_failed",
+              "proposal_blocked",
+              "resume_target_dead",
+              "proposal_superseded"
             ]
           },
           "external_ref": {
@@ -2832,6 +2836,13 @@
             ],
             "format": "uuid"
           },
+          "references_interaction_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
           "created_at": {
             "type": "string"
           },
@@ -2892,6 +2903,7 @@
           "area_id",
           "work_order_id",
           "vendor_id",
+          "references_interaction_id",
           "created_at",
           "updated_at",
           "deleted_at",
@@ -3017,7 +3029,11 @@
               "proposal_created",
               "proposal_approved",
               "proposal_rejected",
-              "step_executed"
+              "step_executed",
+              "proposal_failed",
+              "proposal_blocked",
+              "resume_target_dead",
+              "proposal_superseded"
             ]
           },
           "approved_by": {
@@ -3028,6 +3044,11 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          },
+          "references_interaction_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Anchors a step_executed agent_event to a prior interaction / journal entry."
           }
         }
       },
