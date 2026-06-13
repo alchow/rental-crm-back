@@ -68,6 +68,7 @@ async function findExistingAgentUserId(
     .select('user_id')
     .eq('account_id', accountId)
     .eq('role', 'agent')
+    .order('created_at', { ascending: true })
     .limit(1)
     .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
@@ -189,6 +190,24 @@ export async function revokeAgentGrant(
   if (!grant) throw new ApiError(404, 'not_found', 'agent grant not found or already revoked');
 
   const nowIso = new Date().toISOString();
+
+  // RLS kill FIRST, then record the revocation. Ordering is load-bearing: if we
+  // marked the grant revoked first and the membership soft-delete then failed,
+  // a retry would 404 on the already-revoked grant and the membership would
+  // stay live -- revoked-on-paper but the agent keeps acting. Doing the
+  // membership kill first means a mid-flight failure leaves the grant still
+  // active (revoked_at null), so a retry re-finds it and converges; the
+  // membership step is an idempotent no-op the second time. Per-account, so the
+  // agent keeps serving its other accounts.
+  const { error: memErr } = await admin
+    .from('account_members')
+    .update({ deleted_at: nowIso, updated_at: nowIso })
+    .eq('account_id', accountId)
+    .eq('user_id', grant.agent_user_id as string)
+    .eq('role', 'agent')
+    .is('deleted_at', null);
+  if (memErr) throw new ApiError(500, 'database_error', memErr.message);
+
   const { data: revoked, error: revErr } = await admin
     .from('agent_grants')
     .update({ revoked_at: nowIso, revoked_by: revokedBy })
@@ -198,17 +217,6 @@ export async function revokeAgentGrant(
     .maybeSingle();
   if (revErr) throw new ApiError(500, 'database_error', revErr.message);
   if (!revoked) throw new ApiError(404, 'not_found', 'agent grant not found or already revoked');
-
-  // RLS kill: soft-delete the agent's membership for this account. Per-account,
-  // so the agent keeps serving its other accounts.
-  const { error: memErr } = await admin
-    .from('account_members')
-    .update({ deleted_at: nowIso, updated_at: nowIso })
-    .eq('account_id', accountId)
-    .eq('user_id', grant.agent_user_id as string)
-    .eq('role', 'agent')
-    .is('deleted_at', null);
-  if (memErr) throw new ApiError(500, 'database_error', memErr.message);
 
   return { id: revoked.id as string, revoked_at: revoked.revoked_at as string };
 }
