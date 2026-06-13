@@ -251,6 +251,19 @@ jobs:
         # (test:imports-live) is intentionally NOT run here.
         run: pnpm --filter ./api test:imports
 
+      - name: Run agent-principal DoD checks (ADR-0006/0009)
+        # role='agent' principal classification, the journal firewall
+        # (agent-only fields + approval gating), idempotency principal
+        # isolation, and the proposal-lifecycle entry_type vocabulary.
+        run: pnpm --filter ./api test:agent-principal
+
+      - name: Run agent-grant lifecycle checks (ADR-0009 Phase 2)
+        # Landlord enable/revoke: provisioning the per-account service-account
+        # user + membership, the active-grant guard (409), the revoke RLS kill
+        # (membership soft-delete), identity reuse across re-enable, and
+        # owner/manager authorization.
+        run: pnpm --filter ./api test:agent-grants
+
       - name: Stop Supabase stack
         if: always()
         working-directory: db
