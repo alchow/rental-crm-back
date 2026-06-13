@@ -1,6 +1,9 @@
 # ADR-0009: Per-account scoped agent tokens (multi-tenant agent principal)
 
-- **Status:** proposed, 2026-06-12
+- **Status:** accepted, 2026-06-13 — phases 0-4 implemented and merged to main
+  (#11–#13 + the token-exchange PR); phase 5 (decommission the legacy single
+  agent's broad memberships) is the documented ops step in
+  `docs/agent-runbook.md`.
 - **Context owner:** agent-facing API plan; resolves the single-agent identity
   seam left open by ADR-0006 ("multiple agent identities" revisit trigger).
 

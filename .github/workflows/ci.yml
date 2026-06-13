@@ -264,6 +264,11 @@ jobs:
         # owner/manager authorization.
         run: pnpm --filter ./api test:agent-grants
 
+      - name: Run agent token exchange checks (ADR-0009 Phase 3)
+        # Root-secret auth, per-account session minting, grant-gated 403,
+        # post-revoke list/token denial, and the 42501→403 RLS-denial mapping.
+        run: pnpm --filter ./api test:agent-tokens
+
       - name: Stop Supabase stack
         if: always()
         working-directory: db

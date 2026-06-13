@@ -23,6 +23,7 @@ import { interactionsApp } from './routes/interactions';
 import { messagesApp } from './routes/messages';
 import { intakeApp } from './admin/intake';
 import { twilioWebhooksApp } from './admin/twilio-webhooks';
+import { agentTokensApp } from './admin/agent-tokens';
 import { messagingCapability } from './admin/messaging-health';
 import { attachmentsApp } from './routes/attachments';
 import { evidenceExportsApp } from './routes/evidence-exports';
@@ -210,6 +211,13 @@ export function buildApp(): OpenAPIHono {
   // it can't pass requireAuth (there is no JWT) and account-id comes from
   // the verified token, not the URL.
   app.route('/v1', intakeApp);
+
+  // ROOT-AUTHED agent token exchange (ADR-0009 Phase 3). In src/admin/ because
+  // it mints per-account sessions with the service-role client. Authenticated
+  // by the X-Agent-Secret header (a hashed bearer secret), NOT a user JWT --
+  // so, like intakeApp, it is mounted OUTSIDE the v1 account stack
+  // (/v1/agent/* never matches /v1/accounts/:accountId/*).
+  app.route('/v1', agentTokensApp);
 
   // PUBLIC, UNAUTHENTICATED Twilio webhooks. Lives in src/admin/ because
   // it uses the service-role client (no user JWT from Twilio; RLS would
