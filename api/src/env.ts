@@ -41,13 +41,6 @@ const RawEnvSchema = z.object({
   // its presence at call time and 502s cleanly if it's unset.
   ANTHROPIC_API_KEY: z.string().min(20).optional(),
 
-  // Identifies the per-environment machine-owned service-account user
-  // (ADR-0006). When set, any authenticated request whose userId matches
-  // this value is classified as the agent principal by principal.ts --
-  // the ONLY place this comparison may appear. Unset = no request can
-  // classify as the agent principal (safe default in every environment).
-  AGENT_USER_ID: z.string().uuid().optional(),
-
   // Extra browser origins allowed to call the API via CORS, beyond the
   // built-in Lovable defaults (see middleware/cors.ts). Comma-separated;
   // each entry is either an exact origin (https://app.example.com) or a
@@ -78,9 +71,6 @@ export interface Env {
   SUPABASE_JWT_AUDIENCE: string;
   CORS_ALLOWED_ORIGINS: string[];
   ANTHROPIC_API_KEY: string | null;
-  /** Identifies the per-environment machine-owned service-account user (ADR-0006).
-   *  Null = no request can classify as the agent principal (safe default). */
-  AGENT_USER_ID: string | null;
   /** Twilio credentials for outbound SMS. All four are null when unset;
    *  send endpoints return 503 messaging_unconfigured in that case. */
   TWILIO_ACCOUNT_SID: string | null;
@@ -118,7 +108,6 @@ export function loadEnv(): Env {
       ? raw.CORS_ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
       : [],
     ANTHROPIC_API_KEY: raw.ANTHROPIC_API_KEY ?? null,
-    AGENT_USER_ID: raw.AGENT_USER_ID ?? null,
     TWILIO_ACCOUNT_SID: raw.TWILIO_ACCOUNT_SID ?? null,
     TWILIO_AUTH_TOKEN: raw.TWILIO_AUTH_TOKEN ?? null,
     TWILIO_MESSAGING_SERVICE_SID: raw.TWILIO_MESSAGING_SERVICE_SID ?? null,
