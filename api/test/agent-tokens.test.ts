@@ -66,6 +66,7 @@ const { buildApp } = await import('../src/app');
 // Import provisionRootSecret after env is set so the admin client picks up the
 // right credentials (admin client is lazily initialised on first call).
 const { provisionRootSecret } = await import('../src/admin/agent-tokens');
+const { getAnonClient } = await import('../src/supabase/anon-client');
 
 const app = buildApp();
 
@@ -224,8 +225,7 @@ async function main(): Promise<void> {
     }
     mintedAccessToken = body.access_token;
     mintedRefreshToken = body.refresh_token;
-    // Suppress unused-variable warning — stored for case (c).
-    void mintedRefreshToken;
+    // Stored for use in (c) and (f2).
   });
 
   // =========================================================================
@@ -328,6 +328,35 @@ async function main(): Promise<void> {
     });
     assertStatus(tokenResp, 403, 'token after revoke');
     if (errCode(tokenResp) !== 'forbidden') throw new Error(`code: ${errCode(tokenResp)}`);
+  });
+
+  // =========================================================================
+  // (f2) Refresh token dies on revoke: the refresh_token captured in (b) must
+  //      no longer be exchangeable for a new session after the grant is revoked
+  //      in (f). This is the regression guard for the best-effort GoTrue
+  //      sign-out added to revokeAgentGrant (Goal 1, ADR-0009 SHOULD):
+  //      WITHOUT that sign-out call, the GoTrue session would still be alive
+  //      and refreshSession() would succeed here — proving the sign-out closed
+  //      the refresh-token window.
+  //
+  //      RLS is the hard floor (data is already denied), but this asserts the
+  //      belt-and-suspenders layer works: the refresh token itself is dead.
+  // =========================================================================
+  await check('(f2) refresh_token from (b) is dead after grant revoke in (f)', async () => {
+    if (!mintedRefreshToken) {
+      throw new Error('mintedRefreshToken not set (case (b) must pass first)');
+    }
+    const anonClient = getAnonClient();
+    const { data, error } = await anonClient.auth.refreshSession({ refresh_token: mintedRefreshToken });
+    // The refresh must fail: either an error is returned, or the session is null.
+    // A successful refresh (data.session non-null and error null) means the
+    // sign-out did NOT invalidate the refresh token -- that is the regression.
+    if (!error && data?.session) {
+      throw new Error(
+        `refresh_token was still exchangeable after revoke (revokeAgentGrant sign-out regression): ` +
+          `got session user=${data.session.user?.id}`,
+      );
+    }
   });
 
   // =========================================================================

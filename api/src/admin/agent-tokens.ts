@@ -1,10 +1,10 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { createRoute, z } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import { newApiApp } from '../routes/_lib/app';
 import { ApiError, errorResponses } from '../routes/_lib/error';
 import { getAdminClient } from './supabase-admin';
-import { getAnonClient } from '../supabase/anon-client';
+import { hashSecret, ensurePrincipalByName, mintSessionForUser } from './agent-shared';
 
 // ============================================================================
 // Agent token exchange (ADR-0009 Phase 3).
@@ -29,11 +29,10 @@ import { getAnonClient } from '../supabase/anon-client';
 // secret stored hash-only matches the intake-token precedent. Client-assertion
 // is the upgrade path if the agent ever becomes third-party (ADR-0009).
 
-// ----- secret helpers --------------------------------------------------------
+// ----- root-secret provisioning ----------------------------------------------
 
-function hashSecret(secret: string): string {
-  return '\\x' + createHash('sha256').update(secret, 'utf8').digest('hex');
-}
+// hashSecret and ensurePrincipalByName are shared with agent-grants.ts and now
+// live in agent-shared.ts (imported above).
 
 /**
  * Provision (or rotate) the bearer secret for a root principal. Ensures the
@@ -44,20 +43,16 @@ export async function provisionRootSecret(
   name = 'default',
 ): Promise<{ id: string; name: string; secret: string }> {
   const admin = getAdminClient();
-  const { error: upErr } = await admin
-    .from('agent_principals')
-    .upsert({ name }, { onConflict: 'name', ignoreDuplicates: true });
-  if (upErr) throw new ApiError(500, 'database_error', upErr.message);
+  const principal = await ensurePrincipalByName(admin, name);
 
   const secret = randomBytes(32).toString('base64url');
-  const { data, error } = await admin
+  const { error } = await admin
     .from('agent_principals')
     .update({ secret_hash: hashSecret(secret), secret_set_at: new Date().toISOString() })
-    .eq('name', name)
-    .select('id, name')
-    .single();
+    .eq('id', principal.id);
   if (error) throw new ApiError(500, 'database_error', error.message);
-  return { id: data!.id as string, name: data!.name as string, secret };
+
+  return { id: principal.id, name: principal.name, secret };
 }
 
 interface RootPrincipal {
@@ -123,29 +118,13 @@ async function mintAccountSession(
     throw new ApiError(500, 'database_error', `agent identity unavailable: ${uErr?.message ?? 'no email'}`);
   }
 
-  // Mint a session WITHOUT a password: admin magic-link -> verifyOtp. The
-  // generated link is not emailed; we consume its hashed_token directly.
-  const { data: link, error: lErr } = await admin.auth.admin.generateLink({
-    type: 'magiclink',
-    email: userResp.user.email,
-  });
-  const hashedToken = link?.properties?.hashed_token;
-  if (lErr || !hashedToken) {
-    throw new ApiError(502, 'internal_error', `failed to mint agent session: ${lErr?.message ?? 'no token'}`);
-  }
-  const { data: sess, error: vErr } = await getAnonClient().auth.verifyOtp({
-    type: 'email',
-    token_hash: hashedToken,
-  });
-  if (vErr || !sess?.session) {
-    throw new ApiError(502, 'internal_error', `failed to mint agent session: ${vErr?.message ?? 'no session'}`);
-  }
+  const session = await mintSessionForUser(admin, userResp.user.email);
 
   return {
-    access_token: sess.session.access_token,
-    refresh_token: sess.session.refresh_token,
+    access_token: session.access_token,
+    refresh_token: session.refresh_token,
     token_type: 'bearer',
-    expires_in: sess.session.expires_in ?? 3600,
+    expires_in: session.expires_in ?? 3600,
     account_id: accountId,
     scopes: (grant.scopes as string[] | null) ?? [],
   };

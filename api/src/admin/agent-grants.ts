@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { ApiError } from '../routes/_lib/error';
 import { getAdminClient } from './supabase-admin';
+import { getLogger } from '../log';
+import { GRANT_COLS, ensurePrincipalByName, mintSessionForUser } from './agent-shared';
 
 // ============================================================================
 // Agent grant provisioning (ADR-0009 Phase 2).
@@ -39,27 +41,13 @@ export interface AgentGrant {
   revoked_by: string | null;
 }
 
-const GRANT_COLS =
-  'id, account_id, agent_principal_id, agent_user_id, scopes, granted_by, granted_at, revoked_at, revoked_by';
-
 // The single default root principal (one agent product per deployment for now;
 // per-product principals are an ADR-0009 revisit trigger). Ensured idempotently
 // so no separate seed migration is needed.
 async function ensureDefaultPrincipalId(
   admin: ReturnType<typeof getAdminClient>,
 ): Promise<string> {
-  const { error: upErr } = await admin
-    .from('agent_principals')
-    .upsert({ name: 'default' }, { onConflict: 'name', ignoreDuplicates: true });
-  if (upErr) throw new ApiError(500, 'database_error', upErr.message);
-
-  const { data, error } = await admin
-    .from('agent_principals')
-    .select('id')
-    .eq('name', 'default')
-    .single();
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  return data!.id as string;
+  return (await ensurePrincipalByName(admin, 'default')).id;
 }
 
 // Reuse the account's existing agent identity if one was ever provisioned
@@ -177,6 +165,12 @@ export async function enableAgentForAccount(
  * membership (the membership removal is the real RLS kill -- the agent's
  * token, if any, fails account-scoped queries on the next request). The agent
  * identity is preserved so a later re-enable reuses the same journal actor.
+ *
+ * Best-effort session kill: after marking the grant revoked, we mint a
+ * throwaway session for the agent sub-user and call signOut('global') to
+ * revoke ALL of its GoTrue refresh tokens. This is belt-and-suspenders on top
+ * of the membership kill (ADR-0009 SHOULD). The membership removal (RLS kill)
+ * is the hard floor -- a sign-out failure must never abort the revoke response.
  */
 export async function revokeAgentGrant(
   accountId: string,
@@ -195,6 +189,7 @@ export async function revokeAgentGrant(
   if (findErr) throw new ApiError(500, 'database_error', findErr.message);
   if (!grant) throw new ApiError(404, 'not_found', 'agent grant not found or already revoked');
 
+  const agentUserId = grant.agent_user_id as string;
   const nowIso = new Date().toISOString();
 
   // RLS kill FIRST, then record the revocation. Ordering is load-bearing: if we
@@ -209,7 +204,7 @@ export async function revokeAgentGrant(
     .from('account_members')
     .update({ deleted_at: nowIso, updated_at: nowIso })
     .eq('account_id', accountId)
-    .eq('user_id', grant.agent_user_id as string)
+    .eq('user_id', agentUserId)
     .eq('role', 'agent')
     .is('deleted_at', null);
   if (memErr) throw new ApiError(500, 'database_error', memErr.message);
@@ -224,5 +219,54 @@ export async function revokeAgentGrant(
   if (revErr) throw new ApiError(500, 'database_error', revErr.message);
   if (!revoked) throw new ApiError(404, 'not_found', 'agent grant not found or already revoked');
 
+  // Best-effort: revoke all of the agent sub-user's GoTrue refresh tokens so
+  // previously-minted sessions cannot be exchanged for new access tokens after
+  // revoke. This is belt-and-suspenders on top of the membership soft-delete
+  // (the RLS hard floor): even without this, the agent's next DB write will
+  // be denied because the role='agent' membership is gone. We SHOULD also kill
+  // the refresh tokens per ADR-0009 to close the window between the revoke and
+  // the next natural token expiry.
+  //
+  // Why a global sign-out on this sub-user is correctly scoped: the agent
+  // sub-user is provisioned as a per-account identity (one auth user per
+  // account×agent pairing, email = agent+<accountId>@agents.internal). A
+  // global sign-out of THIS sub-user therefore only affects sessions for THIS
+  // account's agent -- it cannot affect the agent's sessions for other
+  // accounts, which are separate auth users.
+  await signOutAgentUser(admin, agentUserId);
+
   return { id: revoked.id as string, revoked_at: revoked.revoked_at as string };
+}
+
+/**
+ * Best-effort: mint a throwaway session for the agent sub-user, then call
+ * admin.auth.admin.signOut(jwt, 'global') to revoke ALL of that sub-user's
+ * GoTrue refresh tokens. Logs a warning on failure but never throws -- the
+ * membership kill (RLS) is the hard security floor.
+ */
+async function signOutAgentUser(
+  admin: ReturnType<typeof getAdminClient>,
+  agentUserId: string,
+): Promise<void> {
+  try {
+    const { data: userResp, error: uErr } = await admin.auth.admin.getUserById(agentUserId);
+    if (uErr || !userResp?.user?.email) {
+      getLogger().warn(
+        { agentUserId, err: uErr },
+        'agent revoke: could not resolve agent email for sign-out; ' +
+          'refresh token survives until expiry but RLS still enforces denial',
+      );
+      return;
+    }
+    const session = await mintSessionForUser(admin, userResp.user.email);
+    await admin.auth.admin.signOut(session.access_token, 'global');
+  } catch (err) {
+    // Never surface sign-out failures to the caller. The membership kill
+    // already prevents the agent from reading or writing account data via RLS.
+    getLogger().warn(
+      { agentUserId, err },
+      'agent revoke: best-effort sign-out failed; ' +
+        'refresh token survives until expiry but RLS still enforces denial',
+    );
+  }
 }
