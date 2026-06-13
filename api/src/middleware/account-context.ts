@@ -1,6 +1,7 @@
 import type { MiddlewareHandler } from 'hono';
 import { getSb } from '../supabase/request-client';
 import { loadEnv } from '../env';
+import { createLruTtlCache } from './lru-ttl-cache';
 
 // The active-account context. Resource routes mount under
 // /v1/accounts/:accountId/... and this middleware verifies the caller is a
@@ -50,11 +51,12 @@ function notFound(): Response {
 // guard -- a stale entry cannot read or write anything the DB refuses, it
 // only delays the 404-on-revocation convenience by at most the TTL.
 // Negative results are NEVER cached (a just-added member must not be locked
-// out for the TTL). Size-capped with clear-all eviction: simplest correct
-// behavior, and 10k concurrent (user, account) pairs is far past this
-// deployment's scale.
-const membershipCache = new Map<string, { role: string; expiresAt: number }>();
+// out for the TTL). Bounded LRU eviction: on overflow the single oldest
+// (least-recently-used) entry is evicted — never the entire cache — so
+// multi-tenant agent fan-out cannot cause a thundering-herd cliff where one
+// overflow forces every concurrent request back to a PostgREST round trip.
 const MEMBERSHIP_CACHE_MAX = 10_000;
+const membershipCache = createLruTtlCache<{ role: string }>(MEMBERSHIP_CACHE_MAX);
 
 export function _clearMembershipCacheForTests(): void {
   membershipCache.clear();
@@ -74,7 +76,8 @@ export function requireAccountMembership(): MiddlewareHandler {
     const cacheKey = `${c.get('auth').userId}:${accountId}`;
     if (ttl > 0) {
       const hit = membershipCache.get(cacheKey);
-      if (hit && hit.expiresAt > Date.now()) {
+      if (hit) {
+        // Cache enforces TTL internally; no manual expiresAt check needed.
         c.set('account', { accountId, role: hit.role });
         return next();
       }
@@ -101,8 +104,7 @@ export function requireAccountMembership(): MiddlewareHandler {
     }
 
     if (ttl > 0) {
-      if (membershipCache.size >= MEMBERSHIP_CACHE_MAX) membershipCache.clear();
-      membershipCache.set(cacheKey, { role: data.role, expiresAt: Date.now() + ttl });
+      membershipCache.set(cacheKey, { role: data.role }, ttl);
     }
     c.set('account', { accountId, role: data.role });
     return next();
