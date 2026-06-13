@@ -190,8 +190,11 @@ jobs:
     # JWT path and what Supabase actually issues -- exactly where a cross-
     # tenant leak would hide. Slower than the other jobs (image pulls ~3min on
     # cold cache), so kept on its own tier rather than blocking the fast loop.
+    # Bumped 20->30 when the agent/messaging/journal/events + phase9-12 suites
+    # were wired in (this job's suite count roughly doubled); a timeout-induced
+    # red would otherwise mask whether the newly-gated suites actually pass.
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
