@@ -552,7 +552,7 @@ Send SMS messages to tenants and vendors through the API. Every send attempt is 
 
 ### Send semantics
 
-**`approval_ref` conditionality (Req 4).** When the request comes from the agent principal (`AGENT_USER_ID` match), `approval_ref` is **required** — it ties every sent message to an agent-side proposal or task for audit continuity. When the request comes from a landlord user, `approval_ref` is **forbidden** (it is reserved for the agent principal). The server enforces both directions; there is no opt-in toggle.
+**`approval_ref` conditionality (Req 4).** When the request comes from the agent principal (a member with `role='agent'`; ADR-0009), `approval_ref` is **required** — it ties every sent message to an agent-side proposal or task for audit continuity. When the request comes from a landlord user, `approval_ref` is **forbidden** (it is reserved for the agent principal). The server enforces both directions; there is no opt-in toggle.
 
 **`send_state_unknown` contract.** When the provider call times out or returns a 5xx, the response is `409 send_state_unknown`. The 409 status code is deliberate: the idempotency middleware caches 4xx responses, so retrying with the same key returns this cached response rather than re-dialling the provider (a 5xx would free the key and a retry could double-send). Callers receiving `send_state_unknown` must check the outbox id (returned in `details.outbox_id`) via `GET /messages/{id}` and use a **new** idempotency key only after confirming the message did not go out.
 

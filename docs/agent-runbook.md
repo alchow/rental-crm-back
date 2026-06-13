@@ -1,7 +1,8 @@
 # Agent service-account provisioning runbook
 
-Per-environment operations for the agent principal (ADR-0006). One service
-account per environment; one membership row per serviced account.
+Per-environment operations for the agent principal (ADR-0006; identity
+classification generalized in ADR-0009). One service account per environment;
+one membership row per serviced account.
 
 ## Provision a new environment
 
@@ -11,16 +12,15 @@ account per environment; one membership row per serviced account.
    - Password: strong random secret — store in the environment's secret manager
    - Confirm email immediately (`email_confirm: true` on the admin API call)
 
-2. **Set `AGENT_USER_ID`** in the service's environment variables to the new
-   user's UUID. Until this is set, no request can classify as the agent
-   principal (safe default).
-
-3. **Insert an `account_members` row** for each account the agent must service:
+2. **Insert an `account_members` row** for each account the agent must service:
    ```sql
    insert into public.account_members (account_id, user_id, role)
    values ('<account-uuid>', '<agent-user-uuid>', 'agent');
    ```
    The agent must be a member before its JWT passes `requireAccountMembership`.
+   This `role='agent'` membership is also what classifies the request as the
+   agent principal (ADR-0009) — there is **no `AGENT_USER_ID` env var to set**.
+   A landlord can never hold `role='agent'`, so the mapping is exact.
 
 ## Agent authentication
 
