@@ -190,8 +190,11 @@ jobs:
     # JWT path and what Supabase actually issues -- exactly where a cross-
     # tenant leak would hide. Slower than the other jobs (image pulls ~3min on
     # cold cache), so kept on its own tier rather than blocking the fast loop.
+    # Bumped 20->30 when the agent/messaging/journal/events + phase9-12 suites
+    # were wired in (this job's suite count roughly doubled); a timeout-induced
+    # red would otherwise mask whether the newly-gated suites actually pass.
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -268,6 +271,56 @@ jobs:
         # Root-secret auth, per-account session minting, grant-gated 403,
         # post-revoke list/token denial, and the 42501→403 RLS-denial mapping.
         run: pnpm --filter ./api test:agent-tokens
+
+      - name: Run outbound messaging checks (ADR-0007 / Workstream E)
+        # Landlord and agent send paths, approval_ref enforcement, opt-out
+        # handling, idempotency, provider error mapping, phone normalization,
+        # and the messaging-unconfigured 503 guard. Twilio creds are fakes
+        # injected by the test; no live Twilio network calls are made.
+        run: pnpm --filter ./api test:messaging
+
+      - name: Run Twilio webhook integration checks (Phase 5)
+        # Inbound SMS matching, signature verification, dedup, opt-out/opt-in
+        # via STOP/START, vendor inbound, status callbacks, crash-window
+        # recovery, and the stale-sending reconcile janitor. Twilio creds
+        # are fakes injected by the test; signature is computed locally.
+        run: pnpm --filter ./api test:twilio-webhooks
+
+      - name: Run interactions evidentiary-journal checks
+        # Append-only correction/retraction chains: amend, retract, linear-
+        # chain guards (no correcting a superseded entry), immutability (no
+        # PATCH/DELETE), cross-account corrects_id → 404, and audit attribution.
+        run: pnpm --filter ./api test:interactions-journal
+
+      - name: Run events feed + ledger as_of checks (Phase 3)
+        # Poller contract under concurrency (40 POSTs, cursor drain), next_seq
+        # semantics, entity_type filter, cross-account isolation, validation
+        # 400s, and ledger point-in-time as_of accounting.
+        run: pnpm --filter ./api test:events-feed
+
+      - name: Run Phase 9 DoD checks
+        # Cron idempotency (generate_rent_charges / generate_scheduled_task_runs),
+        # HEIC transcoding + provenance, per-IP DB rate limit (survives restart),
+        # and Storage RLS cross-account direct denial.
+        run: pnpm --filter ./api test:phase9
+
+      - name: Run Phase 10 DoD checks (evidence export bundle)
+        # Full export round-trip, audit chain status in bundle, tampered-chain
+        # detection, soft-deleted tenancy export, HEIC photo provenance,
+        # hardened download proxy headers, and cross-account isolation.
+        run: pnpm --filter ./api test:phase10
+
+      - name: Run Phase 11 DoD checks
+        # verify_chain_sweep tamper detection + alert dedup, prune_ip_rate_buckets,
+        # prune_idempotency_keys safety invariant, date-range export opening
+        # balance, broken-chain structured stderr, and reference CLI end-to-end walk.
+        run: pnpm --filter ./api test:phase11
+
+      - name: Run Phase 12 DoD checks
+        # Guide-vs-spec drift fixes: GET /v1/me, DELETE inspection-template,
+        # DELETE inspection item (completion-gate). Each route verified in
+        # openapi.json AND reachable via the generated SDK over a real HTTP round trip.
+        run: pnpm --filter ./api test:phase12
 
       - name: Stop Supabase stack
         if: always()
