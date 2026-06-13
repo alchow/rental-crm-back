@@ -11,8 +11,10 @@ import { getAdminClient } from './supabase-admin';
 // role='agent' membership, and writes the agent_grants registry row. All of
 // that bypasses RLS, so it lives here in src/admin/ behind the service-role
 // quarantine -- the route handler only verifies the caller is an owner/manager
-// of the account (RLS-checked) before delegating here, exactly like the
-// intake-token mint pattern.
+// of the account (from the cached account_members role on c.get('account'),
+// NOT a live RLS query) before delegating here, exactly like the intake-token
+// mint pattern. The DB-level guard on agent_grants is the absence of any
+// authenticated INSERT/UPDATE policy (writes are service-role only).
 //
 // Identity reuse: the agent's journal actor must be STABLE per account across
 // revoke/re-enable cycles, so we reuse the existing role='agent' member of the
@@ -26,6 +28,10 @@ export interface AgentGrant {
   account_id: string;
   agent_principal_id: string;
   agent_user_id: string;
+  // scopes: DEFERRED enforcement (ADR-0009). Stored, returned, and threaded
+  // into the minted session, but NO code reads it yet -- every operation is
+  // permitted regardless of scope values, and the column has no value
+  // constraint. Add per-op gating here (and in the firewall) when it lands.
   scopes: string[];
   granted_by: string | null;
   granted_at: string;

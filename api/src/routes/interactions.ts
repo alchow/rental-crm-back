@@ -607,8 +607,10 @@ interactionsApp.openapi(create, async (c) => {
     if (error.code === '23503') {
       throw new ApiError(404, 'not_found', 'a referenced row does not belong to this account');
     }
-    // 42501 (RLS denial) -> 403: a just-revoked agent still inside the
-    // membership-cache TTL window (ADR-0009 Phase 4). Else 500.
+    // 42501 (RLS denial) -> 403 (ADR-0009 Phase 4). Defensive: for mutating
+    // requests the idempotency middleware claims a key FIRST and a revoked
+    // agent is denied there, so this branch fires only if a write ever reaches
+    // the handler without that claim. Else 500.
     throw dbError(error);
   }
   // Derived fields, true by construction for a row that did not exist a
