@@ -57,6 +57,9 @@ const NOT_ACCOUNT_SCOPED = new Set([
   // REVOKE; the stronger zero-visibility assertion below applies.
   'sms_opt_outs',
   'twilio_inbound_raw',
+  // ADR-0009 (agent principals): principal registry, not account-scoped by
+  // design. Deny-all via RLS-without-policies + REVOKE on authenticated.
+  'agent_principals',
 ]);
 // Tables we do NOT seed with domain rows. They still get the cross-tenant
 // isolation check (cross-account count == 0), but we skip the
@@ -85,6 +88,10 @@ const NO_SEED_REQUIRED = new Set([
   // by design (see NOT_ACCOUNT_SCOPED) — nothing to seed, nothing readable.
   'sms_opt_outs',
   'twilio_inbound_raw',
+  // ADR-0009 (agent principals): neither table is seeded by the two-account
+  // fixture. agent_grants still gets the cross-tenant == 0 isolation check.
+  'agent_grants',
+  'agent_principals',
 ]);
 
 interface ColumnInfo {

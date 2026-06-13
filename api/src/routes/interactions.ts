@@ -55,6 +55,7 @@ const ChannelOut = z.enum([
 ]);
 const EntryType = z.enum([
   'proposal_created', 'proposal_approved', 'proposal_rejected', 'step_executed',
+  'proposal_failed', 'proposal_blocked', 'resume_target_dead', 'proposal_superseded',
 ]);
 const AuthorType = z.enum(['landlord', 'tenant', 'vendor', 'agent', 'system']);
 
@@ -98,6 +99,10 @@ export const Interaction = z
     area_id: z.string().uuid().nullable(),
     work_order_id: z.string().uuid().nullable(),
     vendor_id: z.string().uuid().nullable(),
+    /** The prior interaction / journal entry this entry references — e.g. a
+     *  step_executed agent_event anchored to the proposal it acts on. Null
+     *  when unset. */
+    references_interaction_id: z.string().uuid().nullable(),
     created_at: z.string(),
     updated_at: z.string(),
     deleted_at: z.string().nullable(),
@@ -156,6 +161,14 @@ export const CreateInteractionBody = z
     approved_by: z.string().uuid().optional(),
     /** Opaque agent-side approval/proposal reference. */
     approval_ref: z.string().min(1).max(200).optional(),
+    /** Optional same-account reference to a prior interaction / journal entry
+     *  this entry follows from. Primarily used by step_executed agent_events to
+     *  anchor to the entry they act on (and satisfies the firewall's
+     *  step_executed entity-ref requirement), but handled like any other
+     *  context ref. */
+    references_interaction_id: z.string().uuid().optional().openapi({
+      description: "Same-account reference to a prior interaction / journal entry this entry follows from (e.g. a step_executed agent_event's anchor).",
+    }),
   })
   .superRefine((b, ctx) => {
     const issue = (path: string, message: string) =>
@@ -180,7 +193,7 @@ export const CreateInteractionBody = z
         const forbidden = [
           'kind', 'party_type', 'party_id', 'party_label', 'channel', 'direction',
           'occurred_at', 'tenancy_id', 'maintenance_request_id', 'area_id',
-          'work_order_id', 'vendor_id',
+          'work_order_id', 'vendor_id', 'references_interaction_id',
         ] as const;
         for (const f of forbidden) {
           if (b[f] !== undefined) {
@@ -495,6 +508,9 @@ interactionsApp.openapi(create, async (c) => {
       area_id: isAmend ? (body.area_id ?? original.area_id) : original.area_id,
       work_order_id: isAmend ? (body.work_order_id ?? original.work_order_id) : original.work_order_id,
       vendor_id: isAmend ? (body.vendor_id ?? original.vendor_id) : original.vendor_id,
+      references_interaction_id: isAmend
+        ? (body.references_interaction_id ?? original.references_interaction_id)
+        : original.references_interaction_id,
     };
     assertCoherentShape(row as Parameters<typeof assertCoherentShape>[0]);
   } else if ((body.kind ?? 'communication') === 'agent_event') {
@@ -522,6 +538,7 @@ interactionsApp.openapi(create, async (c) => {
       area_id: body.area_id ?? null,
       work_order_id: body.work_order_id ?? null,
       vendor_id: body.vendor_id ?? null,
+      references_interaction_id: body.references_interaction_id ?? null,
     };
   } else if ((body.kind ?? 'communication') === 'note') {
     row = {
@@ -548,6 +565,7 @@ interactionsApp.openapi(create, async (c) => {
       area_id: body.area_id ?? null,
       work_order_id: body.work_order_id ?? null,
       vendor_id: body.vendor_id ?? null,
+      references_interaction_id: body.references_interaction_id ?? null,
     };
   } else {
     row = {
@@ -573,6 +591,7 @@ interactionsApp.openapi(create, async (c) => {
       area_id: body.area_id ?? null,
       work_order_id: body.work_order_id ?? null,
       vendor_id: body.vendor_id ?? null,
+      references_interaction_id: body.references_interaction_id ?? null,
     };
   }
 

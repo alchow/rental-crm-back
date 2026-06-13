@@ -7193,7 +7193,7 @@ export interface components {
             approved_by: string | null;
             approval_ref: string | null;
             /** @enum {string|null} */
-            entry_type: "proposal_created" | "proposal_approved" | "proposal_rejected" | "step_executed" | null;
+            entry_type: "proposal_created" | "proposal_approved" | "proposal_rejected" | "step_executed" | "proposal_failed" | "proposal_blocked" | "resume_target_dead" | "proposal_superseded" | null;
             external_ref: string | null;
             /** Format: uuid */
             corrects_id: string | null;
@@ -7212,6 +7212,8 @@ export interface components {
             work_order_id: string | null;
             /** Format: uuid */
             vendor_id: string | null;
+            /** Format: uuid */
+            references_interaction_id: string | null;
             created_at: string;
             updated_at: string;
             deleted_at: string | null;
@@ -7253,10 +7255,15 @@ export interface components {
             /** Format: uuid */
             vendor_id?: string;
             /** @enum {string} */
-            entry_type?: "proposal_created" | "proposal_approved" | "proposal_rejected" | "step_executed";
+            entry_type?: "proposal_created" | "proposal_approved" | "proposal_rejected" | "step_executed" | "proposal_failed" | "proposal_blocked" | "resume_target_dead" | "proposal_superseded";
             /** Format: uuid */
             approved_by?: string;
             approval_ref?: string;
+            /**
+             * Format: uuid
+             * @description Same-account reference to a prior interaction / journal entry this entry follows from (e.g. a step_executed agent_event's anchor).
+             */
+            references_interaction_id?: string;
         };
         SendMessageResponse: {
             /** Format: uuid */

@@ -60,8 +60,9 @@ process.env.SUPABASE_JWKS_URL = `${status.API_URL}/auth/v1/.well-known/jwks.json
 process.env.SUPABASE_JWT_ISSUER = `${status.API_URL}/auth/v1`;
 process.env.SUPABASE_JWT_AUDIENCE = 'authenticated';
 
-// Create the agent auth user via the admin client BEFORE importing app
-// (so AGENT_USER_ID is wired into the env cache before buildApp() runs).
+// Create the agent auth user via the admin client. The agent is classified by
+// its role='agent' membership (ADR-0009), inserted below in main() -- not by
+// any env var; we just need the user id here for that membership row.
 const { _resetAdminClientForTests, getAdminClient } = await import('../src/admin/supabase-admin');
 _resetAdminClientForTests();
 const adminForSetup = getAdminClient();
@@ -77,7 +78,6 @@ if (agentCreateErr || !agentAuthData?.user) {
   throw new Error(`Failed to create agent auth user: ${agentCreateErr?.message}`);
 }
 const agentUserId = agentAuthData.user.id;
-process.env.AGENT_USER_ID = agentUserId;
 
 const { _resetEnvCacheForTests } = await import('../src/env');
 _resetEnvCacheForTests();
@@ -541,6 +541,94 @@ async function main(): Promise<void> {
     const r = await api('GET', `${base}/${legacyId}`, { token: landlord.accessToken });
     const row = assertStatus(r, 200, 'legacy get') as Record<string, unknown>;
     if (row.author_type !== 'tenant') throw new Error(`resolved author_type: ${row.author_type}`);
+  });
+
+  // =========================================================================
+  // (n) new entry_types: proposal_failed → 201, author_type=agent, echoed
+  // =========================================================================
+  await check('(n) agent proposal_failed → 201, author_type=agent, entry_type echoed', async () => {
+    const r = await agentPost({
+      kind: 'agent_event',
+      entry_type: 'proposal_failed',
+      approval_ref: 'prop-proposal_failed',
+      occurred_at: now(),
+    });
+    const row = assertStatus(r, 201, 'proposal_failed') as Record<string, unknown>;
+    if (row.author_type !== 'agent') throw new Error(`author_type: ${row.author_type}`);
+    if (row.entry_type !== 'proposal_failed') throw new Error(`entry_type: ${row.entry_type}`);
+  });
+
+  // =========================================================================
+  // (o) new entry_types: proposal_blocked → 201, author_type=agent, echoed
+  // =========================================================================
+  await check('(o) agent proposal_blocked → 201, author_type=agent, entry_type echoed', async () => {
+    const r = await agentPost({
+      kind: 'agent_event',
+      entry_type: 'proposal_blocked',
+      approval_ref: 'prop-proposal_blocked',
+      occurred_at: now(),
+    });
+    const row = assertStatus(r, 201, 'proposal_blocked') as Record<string, unknown>;
+    if (row.author_type !== 'agent') throw new Error(`author_type: ${row.author_type}`);
+    if (row.entry_type !== 'proposal_blocked') throw new Error(`entry_type: ${row.entry_type}`);
+  });
+
+  // =========================================================================
+  // (p) new entry_types: resume_target_dead → 201, author_type=agent, echoed
+  // =========================================================================
+  await check('(p) agent resume_target_dead → 201, author_type=agent, entry_type echoed', async () => {
+    const r = await agentPost({
+      kind: 'agent_event',
+      entry_type: 'resume_target_dead',
+      approval_ref: 'prop-resume_target_dead',
+      occurred_at: now(),
+    });
+    const row = assertStatus(r, 201, 'resume_target_dead') as Record<string, unknown>;
+    if (row.author_type !== 'agent') throw new Error(`author_type: ${row.author_type}`);
+    if (row.entry_type !== 'resume_target_dead') throw new Error(`entry_type: ${row.entry_type}`);
+  });
+
+  // =========================================================================
+  // (q) new entry_types: proposal_superseded → 201, author_type=agent, echoed
+  // =========================================================================
+  await check('(q) agent proposal_superseded → 201, author_type=agent, entry_type echoed', async () => {
+    const r = await agentPost({
+      kind: 'agent_event',
+      entry_type: 'proposal_superseded',
+      approval_ref: 'prop-proposal_superseded',
+      occurred_at: now(),
+    });
+    const row = assertStatus(r, 201, 'proposal_superseded') as Record<string, unknown>;
+    if (row.author_type !== 'agent') throw new Error(`author_type: ${row.author_type}`);
+    if (row.entry_type !== 'proposal_superseded') throw new Error(`entry_type: ${row.entry_type}`);
+  });
+
+  // =========================================================================
+  // (r) step_executed with references_interaction_id → 201, field echoed back
+  // =========================================================================
+  await check('(r) agent step_executed with references_interaction_id → 201, field echoed', async () => {
+    // Create a fresh landlord note to use as the anchor interaction.
+    const anchorR = await landlordPost({
+      kind: 'note',
+      occurred_at: now(),
+      body: 'Anchor note for references_interaction_id test.',
+    });
+    const anchorRow = assertStatus(anchorR, 201, 'anchor note') as Record<string, unknown>;
+    const anchorId = anchorRow.id as string;
+
+    const r = await agentPost({
+      kind: 'agent_event',
+      entry_type: 'step_executed',
+      approval_ref: 'step-ref-3',
+      occurred_at: now(),
+      tenancy_id: landlord.tenancyId,
+      references_interaction_id: anchorId,
+    });
+    const row = assertStatus(r, 201, 'step_executed with references_interaction_id') as Record<string, unknown>;
+    if (row.author_type !== 'agent') throw new Error(`author_type: ${row.author_type}`);
+    if (row.references_interaction_id !== anchorId) {
+      throw new Error(`references_interaction_id: expected ${anchorId}, got ${row.references_interaction_id}`);
+    }
   });
 
   // --- done -----------------------------------------------------------------

@@ -32,6 +32,7 @@ export interface AgentFirewallBody {
   vendor_id?: string;
   tenancy_id?: string;
   area_id?: string;
+  references_interaction_id?: string;
 }
 
 export function assertAgentJournalWrite(
@@ -97,12 +98,13 @@ export function assertAgentJournalWrite(
           body.maintenance_request_id !== undefined ||
           body.vendor_id !== undefined ||
           body.tenancy_id !== undefined ||
-          body.area_id !== undefined;
+          body.area_id !== undefined ||
+          body.references_interaction_id !== undefined;
         if (!hasEntityRef) {
           throw new ApiError(
             400,
             'invalid_request',
-            'step_executed requires at least one entity reference (work_order_id, maintenance_request_id, vendor_id, tenancy_id, or area_id)',
+            'step_executed requires at least one entity reference (work_order_id, maintenance_request_id, vendor_id, tenancy_id, area_id, or references_interaction_id)',
             { fieldErrors: { entry_type: ['step_executed requires at least one entity reference'] } },
           );
         }
