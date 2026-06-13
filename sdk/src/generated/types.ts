@@ -7261,7 +7261,7 @@ export interface components {
             approval_ref?: string;
             /**
              * Format: uuid
-             * @description Anchors a step_executed agent_event to a prior interaction / journal entry.
+             * @description Same-account reference to a prior interaction / journal entry this entry follows from (e.g. a step_executed agent_event's anchor).
              */
             references_interaction_id?: string;
         };

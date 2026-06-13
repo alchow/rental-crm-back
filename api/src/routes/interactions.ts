@@ -99,8 +99,9 @@ export const Interaction = z
     area_id: z.string().uuid().nullable(),
     work_order_id: z.string().uuid().nullable(),
     vendor_id: z.string().uuid().nullable(),
-    /** Agent-principal only: the prior interaction / journal entry that this
-     *  step_executed event is anchored to, or null. */
+    /** The prior interaction / journal entry this entry references — e.g. a
+     *  step_executed agent_event anchored to the proposal it acts on. Null
+     *  when unset. */
     references_interaction_id: z.string().uuid().nullable(),
     created_at: z.string(),
     updated_at: z.string(),
@@ -160,11 +161,13 @@ export const CreateInteractionBody = z
     approved_by: z.string().uuid().optional(),
     /** Opaque agent-side approval/proposal reference. */
     approval_ref: z.string().min(1).max(200).optional(),
-    /** Agent-principal only (kind='agent_event'): anchors a step_executed
-     *  event to a prior interaction or journal entry that this step follows
-     *  from (e.g. the proposal_created entry it acts on). */
+    /** Optional same-account reference to a prior interaction / journal entry
+     *  this entry follows from. Primarily used by step_executed agent_events to
+     *  anchor to the entry they act on (and satisfies the firewall's
+     *  step_executed entity-ref requirement), but handled like any other
+     *  context ref. */
     references_interaction_id: z.string().uuid().optional().openapi({
-      description: "Anchors a step_executed agent_event to a prior interaction / journal entry.",
+      description: "Same-account reference to a prior interaction / journal entry this entry follows from (e.g. a step_executed agent_event's anchor).",
     }),
   })
   .superRefine((b, ctx) => {
@@ -562,7 +565,7 @@ interactionsApp.openapi(create, async (c) => {
       area_id: body.area_id ?? null,
       work_order_id: body.work_order_id ?? null,
       vendor_id: body.vendor_id ?? null,
-      references_interaction_id: null,
+      references_interaction_id: body.references_interaction_id ?? null,
     };
   } else {
     row = {
@@ -588,7 +591,7 @@ interactionsApp.openapi(create, async (c) => {
       area_id: body.area_id ?? null,
       work_order_id: body.work_order_id ?? null,
       vendor_id: body.vendor_id ?? null,
-      references_interaction_id: null,
+      references_interaction_id: body.references_interaction_id ?? null,
     };
   }
 

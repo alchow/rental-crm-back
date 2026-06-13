@@ -14,8 +14,9 @@
 #
 # `deploy` is safe WITHOUT Twilio and without the agent user: messaging
 # endpoints return 503 messaging_unconfigured, webhooks 404, and no request
-# can classify as the agent principal until AGENT_USER_ID is set. Nothing
-# changes for the live PWA.
+# can classify as the agent principal until the agent's role='agent' account
+# membership row exists (ADR-0009; the AGENT_USER_ID env var was retired in
+# phase 0). Nothing changes for the live PWA.
 #
 # WHY THE ORDER INSIDE `deploy` IS LOAD-BEARING: Render does NOT run DB
 # migrations, and the new code writes columns prod does not have yet — so
@@ -99,7 +100,7 @@ EOF
     if curl -sf --max-time 10 "$API_BASE_URL/healthz" | grep -q '"messaging"'; then
       echo "OK: new build is live. Messaging stays dark (503/404) until the"
       echo "'twilio' stage; the agent principal stays off until the 'agent'"
-      echo "stage sets AGENT_USER_ID. The PWA sees no behavior change."
+      echo "stage inserts its role='agent' membership. The PWA sees no change."
       return 0
     fi
     [[ "$i" == 60 ]] && { echo "TIMED OUT — check Render deploy logs, then re-run: bash scripts/deploy-agent-api.sh deploy"; exit 1; }
@@ -136,11 +137,9 @@ EOF
             values ('$ACCOUNT_ID', '$AGENT_USER_ID', 'agent')
             on conflict (account_id, user_id) do nothing"
   cat <<EOF
-OK: membership in place (role=agent).
-
-Now set in RENDER -> rental-crm-api -> Environment:
-  AGENT_USER_ID   $AGENT_USER_ID
-(Saving restarts the service. Until set, the agent cannot act.)
+OK: membership in place (role=agent) — that row IS the activation gate
+(ADR-0009). The agent can act for this account as soon as it logs in; there
+is NO AGENT_USER_ID env var to set (retired in ADR-0009 phase 0).
 
 Hand to the agent-service team: the email + password, account id(s)
 enabled, and openapi/openapi.json.

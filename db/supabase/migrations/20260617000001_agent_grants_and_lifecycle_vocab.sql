@@ -118,19 +118,23 @@ alter table public.interactions add constraint interactions_entry_type_check
     'proposal_failed', 'proposal_blocked', 'resume_target_dead', 'proposal_superseded'
   ));
 
--- references_interaction_id: lets a step_executed event anchor to a prior
--- journal entry / interaction (e.g. the communication it acted on), in
--- addition to the existing maintenance_request_id / work_order_id / vendor_id
--- / tenancy_id / area_id refs. Same composite-FK, same-account pattern as
--- corrects_id; MATCH SIMPLE leaves the FK unenforced when the column is null
--- (optional ref). on delete set null: an anchor's deletion never cascades
--- into the immutable journal.
+-- references_interaction_id: lets an entry reference a prior journal entry /
+-- interaction in the same account (e.g. a step_executed agent_event anchoring
+-- to the communication it acted on), in addition to the existing
+-- maintenance_request_id / work_order_id / vendor_id / tenancy_id / area_id
+-- refs. Same composite-FK, same-account, NO-ON-DELETE pattern as corrects_id:
+-- MATCH SIMPLE leaves the FK unenforced when the column is null (optional ref),
+-- and the absence of an ON DELETE action keeps the immutable journal untouched
+-- -- a referenced anchor cannot be hard-deleted out from under its referrer
+-- (interactions are soft-deleted, so this never fires in practice). We
+-- deliberately do NOT use ON DELETE SET NULL, which would silently rewrite a
+-- journal row and emit a spurious audit 'updated' event.
 alter table public.interactions
   add column references_interaction_id uuid;
 alter table public.interactions
   add constraint interactions_references_interaction_fk
   foreign key (account_id, references_interaction_id)
-  references public.interactions (account_id, id) on delete set null;
+  references public.interactions (account_id, id);
 create index interactions_references_interaction_idx
   on public.interactions (references_interaction_id)
   where references_interaction_id is not null;

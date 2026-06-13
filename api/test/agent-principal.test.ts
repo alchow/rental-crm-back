@@ -60,8 +60,9 @@ process.env.SUPABASE_JWKS_URL = `${status.API_URL}/auth/v1/.well-known/jwks.json
 process.env.SUPABASE_JWT_ISSUER = `${status.API_URL}/auth/v1`;
 process.env.SUPABASE_JWT_AUDIENCE = 'authenticated';
 
-// Create the agent auth user via the admin client BEFORE importing app
-// (so AGENT_USER_ID is wired into the env cache before buildApp() runs).
+// Create the agent auth user via the admin client. The agent is classified by
+// its role='agent' membership (ADR-0009), inserted below in main() -- not by
+// any env var; we just need the user id here for that membership row.
 const { _resetAdminClientForTests, getAdminClient } = await import('../src/admin/supabase-admin');
 _resetAdminClientForTests();
 const adminForSetup = getAdminClient();
@@ -77,7 +78,6 @@ if (agentCreateErr || !agentAuthData?.user) {
   throw new Error(`Failed to create agent auth user: ${agentCreateErr?.message}`);
 }
 const agentUserId = agentAuthData.user.id;
-process.env.AGENT_USER_ID = agentUserId;
 
 const { _resetEnvCacheForTests } = await import('../src/env');
 _resetEnvCacheForTests();

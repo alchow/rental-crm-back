@@ -3048,7 +3048,7 @@
           "references_interaction_id": {
             "type": "string",
             "format": "uuid",
-            "description": "Anchors a step_executed agent_event to a prior interaction / journal entry."
+            "description": "Same-account reference to a prior interaction / journal entry this entry follows from (e.g. a step_executed agent_event's anchor)."
           }
         }
       },
