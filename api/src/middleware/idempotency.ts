@@ -114,20 +114,33 @@ export function requireIdempotency(): MiddlewareHandler {
 
     if (!claim.claimed) {
       if (!claim.fingerprint_matches) {
+        // Same key, different body: the caller's key derivation is wrong.
+        // Distinct code so clients do NOT blind-retry (a retry repeats the
+        // conflict); contrast send_state_unknown, where the client SHOULD
+        // poll + re-send with a NEW key.
         throw new ApiError(
           409,
-          'conflict',
+          'idempotency_conflict',
           'Idempotency-Key was used for a different request',
         );
       }
       if (claim.in_flight) {
         // Still in flight on the original request (or the row vanished mid-
-        // race -- also retryable). Tell the client to retry.
-        throw new ApiError(409, 'conflict', 'Idempotency-Key request in flight; retry shortly');
+        // race -- also retryable). Distinct, retryable code: retry shortly
+        // with the SAME key + body.
+        throw new ApiError(
+          409,
+          'idempotency_in_flight',
+          'Idempotency-Key request in flight; retry shortly',
+        );
       }
+      // Replay of a completed request: return the cached response verbatim.
+      // The Idempotency-Replay header lets the caller distinguish an absorbed
+      // retry from a fresh execution (e.g. for dedup-rate metrics); the body
+      // and status are byte-identical to the original either way.
       return new Response(JSON.stringify(claim.body), {
         status: claim.status_code ?? 200,
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'Idempotency-Replay': 'true' },
       });
     }
 

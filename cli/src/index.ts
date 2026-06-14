@@ -85,16 +85,16 @@ async function main(): Promise<void> {
   log(1, 'signup', `user=${userId.slice(0, 8)}… account=${accountId.slice(0, 8)}…`);
 
   // From here on every mutating call goes through /v1/accounts/:accountId/...
-  // and requires an Idempotency-Key header. openapi-fetch lets us inject
-  // per-call headers.
-  const mutating = (h: Record<string, string> = {}) => ({ 'Idempotency-Key': idKey(), ...h });
+  // and requires an Idempotency-Key header, exposed by the generated contract
+  // as a typed header parameter (params.header). Real clients persist a key
+  // across retries of the SAME operation so a network blip doesn't double-write.
+  const idemHeader = () => ({ 'Idempotency-Key': idKey() });
 
   // -------------------------------------------------------------------------
   // 2. property + area (a unit)
   // -------------------------------------------------------------------------
   const propRes = await client.POST('/v1/accounts/{accountId}/properties', {
-    params: { path: { accountId } },
-    headers: mutating(),
+    params: { path: { accountId }, header: idemHeader() },
     body: { name: '123 Main St', address: { line1: '123 Main', city: 'Boston', state: 'MA', zip: '02118' } },
   });
   if (propRes.error || !propRes.data) dieOnError(2, 'create property', propRes.error);
@@ -102,8 +102,7 @@ async function main(): Promise<void> {
   log(2, 'property', propertyId.slice(0, 8) + '…');
 
   const areaRes = await client.POST('/v1/accounts/{accountId}/areas', {
-    params: { path: { accountId } },
-    headers: mutating(),
+    params: { path: { accountId }, header: idemHeader() },
     body: { property_id: propertyId, kind: 'unit', name: 'Apt 2R' },
   });
   if (areaRes.error || !areaRes.data) dieOnError(3, 'create area', areaRes.error);
@@ -114,8 +113,7 @@ async function main(): Promise<void> {
   // 4. tenancy
   // -------------------------------------------------------------------------
   const tenRes = await client.POST('/v1/accounts/{accountId}/tenancies', {
-    params: { path: { accountId } },
-    headers: mutating(),
+    params: { path: { accountId }, header: idemHeader() },
     body: { area_id: areaId, start_date: '2026-01-01', status: 'active' },
   });
   if (tenRes.error || !tenRes.data) dieOnError(4, 'create tenancy', tenRes.error);
@@ -126,8 +124,7 @@ async function main(): Promise<void> {
   // 5. rent schedule + the next charge
   // -------------------------------------------------------------------------
   const schedRes = await client.POST('/v1/accounts/{accountId}/rent-schedules', {
-    params: { path: { accountId } },
-    headers: mutating(),
+    params: { path: { accountId }, header: idemHeader() },
     body: {
       tenancy_id: tenancyId, kind: 'rent', amount_cents: 200000, currency: 'USD',
       due_day: 1, start_date: '2026-01-01',
@@ -137,8 +134,7 @@ async function main(): Promise<void> {
   log(5, 'rent_schedule', `$2000/mo due day 1`);
 
   const chargeRes = await client.POST('/v1/accounts/{accountId}/charges', {
-    params: { path: { accountId } },
-    headers: mutating(),
+    params: { path: { accountId }, header: idemHeader() },
     body: {
       tenancy_id: tenancyId, type: 'rent', amount_cents: 200000, currency: 'USD',
       due_date: '2026-02-01', period_start: '2026-02-01', period_end: '2026-02-28',
@@ -153,8 +149,7 @@ async function main(): Promise<void> {
   // 7. partial payment ($1500) -- leaves a $500 balance on the rent charge
   // -------------------------------------------------------------------------
   const payRes = await client.POST('/v1/accounts/{accountId}/payments', {
-    params: { path: { accountId } },
-    headers: mutating(),
+    params: { path: { accountId }, header: idemHeader() },
     body: {
       tenancy_id: tenancyId, amount_cents: 150000, currency: 'USD',
       received_at: '2026-02-04T10:00:00Z', method: 'check', reference: '4567',
@@ -175,8 +170,7 @@ async function main(): Promise<void> {
   // 9. maintenance request + interaction
   // -------------------------------------------------------------------------
   const mreqRes = await client.POST('/v1/accounts/{accountId}/maintenance-requests', {
-    params: { path: { accountId } },
-    headers: mutating(),
+    params: { path: { accountId }, header: idemHeader() },
     body: {
       area_id: areaId, title: 'Leaky kitchen faucet', description: 'Drip from cold side',
       severity: 'routine',
@@ -189,8 +183,7 @@ async function main(): Promise<void> {
   // The API derives interactions.actor from auth.uid() server-side, so
   // the request body doesn't include it (Phase 4 actor-integrity).
   const intRes = await client.POST('/v1/accounts/{accountId}/interactions', {
-    params: { path: { accountId } },
-    headers: mutating(),
+    params: { path: { accountId }, header: idemHeader() },
     body: {
       party_type: 'tenant', channel: 'phone', direction: 'outbound',
       body: 'Spoke with tenant, scheduled plumber for Thursday',
@@ -205,8 +198,7 @@ async function main(): Promise<void> {
   // 11. inspection + item + complete
   // -------------------------------------------------------------------------
   const inspRes = await client.POST('/v1/accounts/{accountId}/inspections', {
-    params: { path: { accountId } },
-    headers: mutating(),
+    params: { path: { accountId }, header: idemHeader() },
     body: { area_id: areaId, performed_at: '2026-02-15T14:00:00Z', notes: 'Move-in inspection' },
   });
   if (inspRes.error || !inspRes.data) dieOnError(11, 'create inspection', inspRes.error);
@@ -214,16 +206,14 @@ async function main(): Promise<void> {
   log(11, 'inspection', inspectionId.slice(0, 8) + '…');
 
   const itemRes = await client.POST('/v1/accounts/{accountId}/inspections/{inspectionId}/items', {
-    params: { path: { accountId, inspectionId } },
-    headers: mutating(),
+    params: { path: { accountId, inspectionId }, header: idemHeader() },
     body: { label: 'Kitchen sink faucet', condition: 'leaks (cold side)' },
   });
   if (itemRes.error || !itemRes.data) dieOnError(12, 'create inspection_item', itemRes.error);
   log(12, 'inspection_item', itemRes.data.id.slice(0, 8) + '…');
 
   const compRes = await client.POST('/v1/accounts/{accountId}/inspections/{id}/complete', {
-    params: { path: { accountId, id: inspectionId } },
-    headers: mutating(),
+    params: { path: { accountId, id: inspectionId }, header: idemHeader() },
   });
   if (compRes.error || !compRes.data) dieOnError(13, 'complete inspection', compRes.error);
   log(13, 'inspection complete', `report=${compRes.data.report.attachment_id.slice(0, 8)}…`);
@@ -234,8 +224,7 @@ async function main(): Promise<void> {
   // Async contract (Phase 2.1): POST queues the export (202) and the client
   // polls until the background job lands the bundle.
   const expRes = await client.POST('/v1/accounts/{accountId}/evidence-exports', {
-    params: { path: { accountId } },
-    headers: mutating(),
+    params: { path: { accountId }, header: idemHeader() },
     body: { tenancy_id: tenancyId },
   });
   if (expRes.error || !expRes.data) dieOnError(14, 'create evidence_export', expRes.error);
