@@ -65,6 +65,14 @@ export type ErrorCode =
   | 'forbidden'
   | 'not_found'
   | 'conflict'
+  // idempotency-middleware codes (distinct from domain 409s like
+  // send_state_unknown / invalid_correction_target because they demand the
+  // OPPOSITE client behavior). idempotency_conflict: the same Idempotency-Key
+  // was replayed with a DIFFERENT request body -- the client's key derivation
+  // is wrong; do NOT blind-retry. idempotency_in_flight: the original request
+  // for this key is still running -- retry shortly with the SAME key+body.
+  | 'idempotency_conflict'
+  | 'idempotency_in_flight'
   // correcting/retracting an interaction that is not the current head of
   // its chain (already superseded, or the chain is closed by a retraction)
   | 'invalid_correction_target'

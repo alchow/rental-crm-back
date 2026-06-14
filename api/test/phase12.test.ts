@@ -405,8 +405,10 @@ async function main(): Promise<void> {
 
       sdkToken = A.accessToken;
       const { error, response } = await sdk.DELETE('/v1/accounts/{accountId}/inspection-templates/{id}', {
-        params: { path: { accountId: A.accountId, id: cb.id } },
-        headers: { 'Idempotency-Key': `sdk-probe-${rnd()}` },
+        params: {
+          path: { accountId: A.accountId, id: cb.id },
+          header: { 'Idempotency-Key': `sdk-probe-${rnd()}` },
+        },
       });
       if (error) throw new Error(`SDK DELETE template failed: ${response.status} ${JSON.stringify(error)}`);
       if (response.status !== 204) throw new Error(`expected 204 via SDK, got ${response.status}`);
@@ -496,8 +498,10 @@ async function main(): Promise<void> {
 
       sdkToken = A.accessToken;
       const { error, response } = await sdk.DELETE('/v1/accounts/{accountId}/inspections/{inspectionId}/items/{id}', {
-        params: { path: { accountId: A.accountId, inspectionId: probeInspectionId, id: probeItemId } },
-        headers: { 'Idempotency-Key': `sdk-probe-${rnd()}` },
+        params: {
+          path: { accountId: A.accountId, inspectionId: probeInspectionId, id: probeItemId },
+          header: { 'Idempotency-Key': `sdk-probe-${rnd()}` },
+        },
       });
       if (error) throw new Error(`SDK DELETE item failed: ${response.status} ${JSON.stringify(error)}`);
       if (response.status !== 204) throw new Error(`expected 204 via SDK, got ${response.status}`);
