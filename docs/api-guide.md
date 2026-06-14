@@ -141,11 +141,17 @@ await authedFetch(`/v1/accounts/${accountId}/properties`, {
   },
   body: JSON.stringify({ name: "12 Maple St", address: { line1: "12 Maple St", city: "Springfield", state: "IL", zip: "62701" } }),
 });
-// A retry with the SAME key + body replays the original response — no duplicate row.
-// A retry with the SAME key + DIFFERENT body → 409 idempotency_key_reuse.
+// A retry with the SAME key + body replays the original response — no duplicate
+// row — and carries the `Idempotency-Replay: true` response header so you can
+// tell an absorbed retry from a fresh execution.
+// A retry with the SAME key + DIFFERENT body → 409 `idempotency_conflict`
+//   (your key derivation is wrong; do NOT blind-retry).
+// A retry while the original is still running → 409 `idempotency_in_flight`
+//   (retry shortly with the same key + body).
+// Omitting the header on a mutating request → 400 `invalid_request`.
 ```
 
-Keys are stored 24 hours for in-flight or completed requests; in-flight keys older than 7 days are never freed (safety invariant: a key that may have committed is never recycled).
+The key is scoped to `(account_id, key)`; the method, path, authenticated principal, and body are folded into a stored fingerprint (so one key reused across two different endpoints is a conflict — use one key per write). Completed keys are retained **30 days**; an in-flight key whose request never completed is freed after 7 days (safety invariant: a key that may have committed is never recycled before then).
 
 ### Pagination
 
@@ -176,11 +182,11 @@ async function* listAll<T>(path: string): AsyncGenerator<T> {
 
 | HTTP | `code` | Meaning |
 |---|---|---|
-| 400 | `invalid_request`, `missing_idempotency_key` | Bad/missing input. `details` contains field-level validation errors. |
+| 400 | `invalid_request` | Bad/missing input (incl. a missing/malformed `Idempotency-Key`). `details` contains field-level validation errors. |
 | 401 | `unauthenticated` | Missing/expired token — refresh and retry. |
-| 403 | `forbidden` | Authenticated but not a member of this account. |
+| 403 | `forbidden` | Authenticated but not authorized (not a member, or lacks the role for this write). |
 | 404 | `not_found` | Resource absent, soft-deleted, or belongs to another account (no existence oracle). |
-| 409 | `conflict`, `idempotency_key_reuse`, `invalid_status_transition`, `duplicate_active_token` | State conflict. |
+| 409 | `idempotency_conflict` (same key, different body — do not retry), `idempotency_in_flight` (original still running — retry shortly), `conflict`, `invalid_correction_target` | State conflict. Branch on the specific code: an idempotency conflict means fix your key; a domain conflict (e.g. `send_state_unknown` on a send) means poll then re-send with a NEW key. |
 | 422 | `allocation_exceeds_payment`, `cross_tenancy_allocation`, `currency_mismatch` | Money-integrity rejections. |
 | 429 | `rate_limited` | Public intake throttle (per-token or per-IP). |
 | 500 | `internal_error`, `database_error` | Server fault. |
@@ -626,6 +632,28 @@ Processing steps:
 ### Idempotency and crash safety
 
 The inbound handler inserts the raw capture row _last_ (after matching and journal work). A crash mid-handler causes Twilio to retry; all steps before the insert are idempotent (upsert/delete/RPC), and the `provider_sid` UNIQUE constraint on `twilio_inbound_raw` catches duplicate replays on the final insert.
+
+---
+
+## 8d. Account flags (retention / legal hold)
+
+Per-account control flags, authoritative in core. The first flag is `legal_hold`: a litigation hold that, when `true`, means **retention purges must delete nothing for this account**. It lives in core (not in any agent-side store) precisely so it survives an agent database wipe — a retention worker reads it every cycle and fails closed (deletes nothing) if it cannot confirm `legal_hold=false`.
+
+The response is an **object**, not a bare boolean, so future flags (`retention_days`, `purge_enabled`, …) land additively. Bind to the field, not the envelope.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/account-flags` | Read the flags. Readable by **any member**, including the `role='agent'` principal. Returns `{ "legal_hold": boolean }`. |
+| `PATCH` | `/account-flags` | Update flags. **Owner/manager only** (agents and viewers get `403`). Body: `{ "legal_hold"?: boolean }`. Mutating, so it requires an `Idempotency-Key`. Returns the updated `{ "legal_hold": boolean }`. |
+
+```ts
+// Retention worker: read the authoritative hold before purging.
+const res = await authedFetch(`/v1/accounts/${accountId}/account-flags`);
+const { legal_hold } = await res.json();
+if (legal_hold) return; // hold in force — delete nothing
+```
+
+`legal_hold` toggles are hash-chained in the audit event stream like any other evidence-grade change.
 
 ---
 
