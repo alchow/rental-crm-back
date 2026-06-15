@@ -86,6 +86,7 @@ const app = buildApp();
 interface ApiCall {
   status: number;
   body: unknown;
+  headers: Headers;
 }
 
 async function api(
@@ -111,7 +112,7 @@ async function api(
   const res = await app.fetch(new Request(`http://test${path}`, init));
   const text = await res.text();
   const body = text ? JSON.parse(text) : null;
-  return { status: res.status, body };
+  return { status: res.status, body, headers: res.headers };
 }
 
 function rnd(): string {
@@ -786,8 +787,9 @@ async function main(): Promise<void> {
   // -----------------------------------------------------------------------
   // Idempotency-Key contract:
   //   (1) Mutating endpoints REQUIRE the header (missing -> 400).
-  //   (2) Same key + same body returns the cached response (no double-create).
-  //   (3) Same key + DIFFERENT body returns 409 (conflict).
+  //   (2) Same key + same body returns the cached response (no double-create),
+  //       with the Idempotency-Replay: true header on the replay.
+  //   (3) Same key + DIFFERENT body returns 409 (idempotency_conflict).
   // -----------------------------------------------------------------------
   await check('idempotency: missing Idempotency-Key on POST -> 400', async () => {
     // Drive the request directly so we can omit the header (the api()
@@ -840,6 +842,14 @@ async function main(): Promise<void> {
       if (id1 !== id2) {
         throw new Error(`replay returned DIFFERENT id: ${id1} vs ${id2} (double-create)`);
       }
+      // The replay must be flagged so the caller can distinguish an absorbed
+      // retry from a fresh execution; the first response must NOT carry it.
+      if (r2.headers.get('idempotency-replay') !== 'true') {
+        throw new Error(`replay missing Idempotency-Replay: true header`);
+      }
+      if (r1.headers.get('idempotency-replay') !== null) {
+        throw new Error(`first (non-replay) response should not carry Idempotency-Replay`);
+      }
 
       const list2 = await api('GET', `/v1/accounts/${A.accountId}/properties`, {
         token: A.accessToken,
@@ -852,7 +862,7 @@ async function main(): Promise<void> {
   );
 
   await check(
-    'idempotency: same key + DIFFERENT body -> 409 conflict',
+    'idempotency: same key + DIFFERENT body -> 409 idempotency_conflict',
     async () => {
       const key = `mismatch-${crypto.randomUUID()}`;
       const r1 = await api('POST', `/v1/accounts/${A.accountId}/vendors`, {
@@ -868,7 +878,9 @@ async function main(): Promise<void> {
       });
       await expectStatus('mismatched replay', r2, 409);
       const body = r2.body as { error?: { code?: string } };
-      if (body.error?.code !== 'conflict') throw new Error(`expected conflict code`);
+      if (body.error?.code !== 'idempotency_conflict') {
+        throw new Error(`expected idempotency_conflict code, got ${body.error?.code}`);
+      }
     },
   );
 

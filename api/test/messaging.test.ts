@@ -514,7 +514,7 @@ async function main(): Promise<void> {
       body: 'Different body.',
     }, key);
     assertStatus(r2, 409, 'conflict');
-    if (errCode(r2) !== 'conflict') throw new Error(`code: ${errCode(r2)}`);
+    if (errCode(r2) !== 'idempotency_conflict') throw new Error(`code: ${errCode(r2)}`);
   });
 
   // =========================================================================
