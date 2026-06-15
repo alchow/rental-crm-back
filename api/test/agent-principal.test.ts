@@ -476,7 +476,7 @@ async function main(): Promise<void> {
       occurred_at: now(),
     }, sharedKey);
     assertStatus(agentR, 409, 'agent same key conflict');
-    if (errCode(agentR) !== 'conflict') throw new Error(`code: ${errCode(agentR)}`);
+    if (errCode(agentR) !== 'idempotency_conflict') throw new Error(`code: ${errCode(agentR)}`);
   });
 
   // =========================================================================
