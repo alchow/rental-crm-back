@@ -48,6 +48,7 @@ import { requireImmediateParent } from './middleware/immediate-parent';
 import { assertImageStackAtBoot, heicSupported } from './admin/heic-probe';
 import { recoverOrphanedEvidenceExports } from './admin/export-pdf';
 import { importCapability, recoverOrphanedImportSessions } from './admin/import-health';
+import { OPENAPI_DOC_CONFIG, injectIdempotencyContract } from './openapi/idempotency-contract';
 
 // The Hono app, configured but NOT listening. index.ts mounts it on a
 // node-server port; tests call app.fetch(request) directly without binding
@@ -226,19 +227,18 @@ export function buildApp(): OpenAPIHono {
   // as intakeApp.
   app.route('/', twilioWebhooksApp);
 
-  // Emitted OpenAPI document. The /openapi.json route also serves clients
-  // that want to fetch the spec at runtime.
-  app.doc('/openapi.json', {
-    openapi: '3.1.0',
-    info: {
-      title: 'rental-crm-back',
-      version: '0.1.0',
-      description:
-        'Landlord CRM backend -- record-keeping-first. All clients bind only to this contract.',
-    },
-    servers: [
-      { url: '/', description: 'same-origin' },
-    ],
+  // Emitted OpenAPI document, served at runtime for clients that fetch the
+  // spec live (e.g. to regenerate a typed client). Post-processed through the
+  // SAME injector as the committed openapi/openapi.json (openapi/emit.ts), so
+  // the live spec and the file the SDK is generated from are byte-identical --
+  // in particular both declare the app-level Idempotency-Key contract that the
+  // per-route definitions can't express. Computed once, lazily, on first hit.
+  let openApiDocument: ReturnType<typeof app.getOpenAPI31Document> | undefined;
+  app.get('/openapi.json', (c) => {
+    if (!openApiDocument) {
+      openApiDocument = injectIdempotencyContract(app.getOpenAPI31Document(OPENAPI_DOC_CONFIG));
+    }
+    return c.json(openApiDocument);
   });
 
   app.notFound((c) =>
