@@ -273,6 +273,30 @@ async function main(): Promise<void> {
 
   try {
     // =======================================================================
+    // Runtime /openapi.json == committed contract
+    // =======================================================================
+
+    await check('openapi: runtime GET /openapi.json byte-equals the committed openapi.json', async () => {
+      // The runtime endpoint (app.ts) and the committed file (openapi/emit.ts)
+      // are produced by the SAME injectIdempotencyContract + OPENAPI_DOC_CONFIG,
+      // so a spec-bound client gets the identical contract whether it fetches
+      // the live URL or regenerates from the file -- including the app-level
+      // Idempotency-Key header that per-route definitions can't express. Guard
+      // against the two ever diverging.
+      const res = await fetch(`http://127.0.0.1:${port}/openapi.json`);
+      if (res.status !== 200) throw new Error(`expected 200, got ${res.status}`);
+      const runtime = await res.json();
+      if (JSON.stringify(runtime) !== JSON.stringify(spec)) {
+        throw new Error('runtime /openapi.json differs from committed openapi.json (regenerate or fix the runtime handler)');
+      }
+      const post = (runtime as typeof spec).paths['/v1/accounts/{accountId}/tenancies']?.['post'] as
+        | { parameters?: Array<{ name?: string; required?: boolean; in?: string }> }
+        | undefined;
+      const hdr = post?.parameters?.find((p) => p.in === 'header' && p.name === 'Idempotency-Key');
+      if (!hdr?.required) throw new Error('runtime spec missing required Idempotency-Key header on POST tenancies');
+    });
+
+    // =======================================================================
     // GET /v1/me
     // =======================================================================
 
