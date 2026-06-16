@@ -8378,7 +8378,14 @@ export interface components {
             /** Format: uuid */
             tenancy_id: string | null;
         };
-        SearchContext: components["schemas"]["TenantContext"] | components["schemas"]["AreaContext"] | components["schemas"]["PropertyContext"] | components["schemas"]["MaintenanceRequestContext"] | null;
+        VendorContext: {
+            /** @enum {string} */
+            kind: "vendor";
+            contact: string | null;
+            last_used_at: string | null;
+            job_count: number;
+        };
+        SearchContext: components["schemas"]["TenantContext"] | components["schemas"]["AreaContext"] | components["schemas"]["PropertyContext"] | components["schemas"]["MaintenanceRequestContext"] | components["schemas"]["VendorContext"] | null;
         SearchResult: {
             /** @enum {string} */
             entity_type: "tenant" | "vendor" | "property" | "area" | "maintenance_request";

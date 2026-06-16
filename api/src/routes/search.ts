@@ -84,12 +84,25 @@ const MaintenanceRequestContext = z
   })
   .openapi('MaintenanceRequestContext');
 
+// `vendor`: outreach target + work-order history ("the vendor we used last
+// time"). No status (soft-delete already excludes deactivated vendors) and
+// no trade (separate categorization track).
+const VendorContext = z
+  .object({
+    kind: z.literal('vendor'),
+    contact: z.string().nullable(),
+    last_used_at: z.string().nullable(),
+    job_count: z.number().int(),
+  })
+  .openapi('VendorContext');
+
 const SearchContext = z
   .discriminatedUnion('kind', [
     TenantContext,
     AreaContext,
     PropertyContext,
     MaintenanceRequestContext,
+    VendorContext,
   ])
   .openapi('SearchContext');
 
