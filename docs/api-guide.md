@@ -629,6 +629,18 @@ The inbound handler inserts the raw capture row _last_ (after matching and journ
 
 ---
 
+## 8d. Entity search
+
+A single account-scoped endpoint for finding entities by name or keyword. Results are ranked by relevance (higher `score` = better match) and capped at the requested `limit` — the response is **not paginated**, because search is ranked rather than sequentially ordered. The same endpoint serves both the dashboard typeahead and the AI agent's entity disambiguation ("which Jon did the landlord mean?"); callers branch on `entity_type` to render or resolve the match.
+
+| Method | Path | Body / Notes |
+|---|---|---|
+| `GET` | `/search` | Ranked fuzzy search across account entities. Query: `q` (>=2 chars), `types`/`exclude` (comma-sep subset of tenant,vendor,property,area,maintenance_request), `limit` (<=25). |
+
+`entity_type` values in the response: `tenant` / `vendor` / `property` / `area` / `maintenance_request`. Each result carries a `title`, an optional `subtitle`, and a `score`. No `Idempotency-Key` is required (read-only).
+
+---
+
 ## 9. Attachments & file uploads
 
 Files tied to any entity — maintenance requests, inspection items, inspections, evidence exports.

@@ -28,6 +28,7 @@ import { messagingCapability } from './admin/messaging-health';
 import { attachmentsApp } from './routes/attachments';
 import { evidenceExportsApp } from './routes/evidence-exports';
 import { importsApp } from './routes/imports';
+import { searchApp } from './routes/search';
 import {
   inspectionTemplatesApp,
   inspectionsApp,
@@ -193,6 +194,8 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', paymentsApp);
   app.route('/v1', ledgerApp);
   app.route('/v1', eventsApp);
+  // Read-only, account-scoped, ranked search across all entity kinds.
+  app.route('/v1', searchApp);
   app.route('/v1', intakeTokensApp);
   app.route('/v1', agentGrantsApp);
   app.route('/v1', maintenanceRequestsApp);

@@ -4187,6 +4187,79 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/accounts/{accountId}/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ranked entity search
+         * @description Search across all entity kinds within an account and return results ranked by relevance. `q` is the search text (minimum 2 characters). `types` narrows results to specific entity kinds (comma-separated subset of tenant, vendor, property, area, maintenance_request); omitting it searches all kinds. `exclude` removes kinds from results (same format); omitting it excludes nothing. Results are ordered by score (higher = better match) and capped at `limit` (max 25, default 10) — the response is not paginated because search is ranked rather than sequentially ordered. Serves both the dashboard typeahead and agent entity disambiguation; branch on `entity_type` to render or resolve the match. `tenant` results include a structured `context` (current unit + property) so two same-named tenants can be told apart without a follow-up fetch; `context` is null for other kinds.
+         */
+        get: {
+            parameters: {
+                query: {
+                    q: string;
+                    types?: string;
+                    exclude?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description ranked results */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SearchResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/accounts/{accountId}/tenancies/{tenancyId}/intake-tokens": {
         parameters: {
             query?: never;
@@ -8248,6 +8321,28 @@ export interface components {
         EventFeedResponse: {
             data: components["schemas"]["EventFeedItem"][];
             next_seq: number;
+        };
+        SearchContext: {
+            unit_name: string | null;
+            property_name: string | null;
+            /** Format: uuid */
+            area_id: string | null;
+            /** Format: uuid */
+            tenancy_id: string | null;
+            tenancy_status: string | null;
+        } | null;
+        SearchResult: {
+            /** @enum {string} */
+            entity_type: "tenant" | "vendor" | "property" | "area" | "maintenance_request";
+            /** Format: uuid */
+            entity_id: string;
+            title: string;
+            subtitle: string | null;
+            score: number;
+            context: components["schemas"]["SearchContext"];
+        };
+        SearchResponse: {
+            data: components["schemas"]["SearchResult"][];
         };
         IntakeTokenRow: {
             /** Format: uuid */
