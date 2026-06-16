@@ -229,6 +229,13 @@ jobs:
       - name: Run API-level cross-tenant isolation
         run: pnpm --filter ./api test:api-isolation
 
+      - name: Run entity-search DoD checks
+        # Trigram search_entities() RPC behind GET /search: multi-type ranked
+        # results, narrow (?types=) / exclude (?exclude=), email-fragment match,
+        # the LIKE-metacharacter escape, and -- load-bearing -- cross-account
+        # isolation via the SECURITY INVOKER RPC under real PostgREST RLS.
+        run: pnpm --filter ./api test:search
+
       - name: Run intake DoD checks (Phase 7)
         # The public, unauthenticated, RLS-bypassing surface. Covers
         # forged-token rejection, area-scope-from-token, dedup, per-token

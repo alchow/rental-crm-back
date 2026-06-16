@@ -2367,6 +2367,109 @@
           "next_seq"
         ]
       },
+      "SearchContext": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "unit_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "property_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "area_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "tenancy_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "tenancy_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "unit_name",
+          "property_name",
+          "area_id",
+          "tenancy_id",
+          "tenancy_status"
+        ]
+      },
+      "SearchResult": {
+        "type": "object",
+        "properties": {
+          "entity_type": {
+            "type": "string",
+            "enum": [
+              "tenant",
+              "vendor",
+              "property",
+              "area",
+              "maintenance_request"
+            ]
+          },
+          "entity_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string"
+          },
+          "subtitle": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "score": {
+            "type": "number"
+          },
+          "context": {
+            "$ref": "#/components/schemas/SearchContext"
+          }
+        },
+        "required": [
+          "entity_type",
+          "entity_id",
+          "title",
+          "subtitle",
+          "score",
+          "context"
+        ]
+      },
+      "SearchResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchResult"
+            }
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
       "IntakeTokenRow": {
         "type": "object",
         "properties": {
@@ -10618,6 +10721,105 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EventFeedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/search": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Ranked entity search",
+        "description": "Search across all entity kinds within an account and return results ranked by relevance. `q` is the search text (minimum 2 characters). `types` narrows results to specific entity kinds (comma-separated subset of tenant, vendor, property, area, maintenance_request); omitting it searches all kinds. `exclude` removes kinds from results (same format); omitting it excludes nothing. Results are ordered by score (higher = better match) and capped at `limit` (max 25, default 10) — the response is not paginated because search is ranked rather than sequentially ordered. Serves both the dashboard typeahead and agent entity disambiguation; branch on `entity_type` to render or resolve the match. `tenant` results include a structured `context` (current unit + property) so two same-named tenants can be told apart without a follow-up fetch; `context` is null for other kinds.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 100
+            },
+            "required": true,
+            "name": "q",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "types",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "exclude",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 25,
+              "default": 10
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ranked results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
                 }
               }
             }

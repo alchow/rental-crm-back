@@ -53,6 +53,11 @@ EXCLUDES=(
   ':!.env*'
   ':!.env.example'
   ':!api/test/api-isolation.test.ts'
+  #   - api/test/search.test.ts: same shape as api-isolation.test.ts -- assigns
+  #     process.env from supabase status so the app under test (whose signup
+  #     path uses the admin GoTrue API) sees the CI env. ASSIGNED, never read
+  #     into a client constructor in this file.
+  ':!api/test/search.test.ts'
   ':!api/test/attachments.test.ts'
   ':!api/test/intake.test.ts'
   ':!api/test/phase9.test.ts'
