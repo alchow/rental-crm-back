@@ -252,6 +252,15 @@ async function main(): Promise<void> {
     }
   });
 
+  await check('synonym: "apt <nonce>" matches the "Unit <nonce>" area', async () => {
+    // The setup names the unit area "Unit <nonce>"; searching the synonym
+    // "apt <nonce>" must find it (apt -> unit normalization), end-to-end.
+    const { hits } = await searchHits(A, `apt ${A.nonce}`, '&types=area');
+    const area = hits.find((h) => h.entity_type === 'area');
+    if (!area) throw new Error(`"apt ${A.nonce}" did not match the unit area: ${JSON.stringify(hits)}`);
+    if (area.title !== `Unit ${A.nonce}`) throw new Error(`unexpected area title: ${area.title}`);
+  });
+
   await check('validation: unknown type -> 400 invalid_request', async () => {
     const r = await api('GET', `/v1/accounts/${A.accountId}/search?q=${A.nonce}&types=banana`, {
       token: A.token,
