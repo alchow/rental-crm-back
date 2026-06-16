@@ -2367,12 +2367,15 @@
           "next_seq"
         ]
       },
-      "SearchContext": {
-        "type": [
-          "object",
-          "null"
-        ],
+      "TenantContext": {
+        "type": "object",
         "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "tenant"
+            ]
+          },
           "unit_name": {
             "type": [
               "string",
@@ -2407,11 +2410,82 @@
           }
         },
         "required": [
+          "kind",
           "unit_name",
           "property_name",
           "area_id",
           "tenancy_id",
           "tenancy_status"
+        ]
+      },
+      "AreaContext": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "area"
+            ]
+          },
+          "property_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "property_name": {
+            "type": "string"
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "area_kind": {
+            "type": "string"
+          },
+          "active_tenancy_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "tenant_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "occupancy_status": {
+            "type": "string",
+            "enum": [
+              "occupied",
+              "vacant"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "property_id",
+          "property_name",
+          "address",
+          "area_kind",
+          "active_tenancy_id",
+          "tenant_names",
+          "occupancy_status"
+        ]
+      },
+      "SearchContext": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TenantContext"
+          },
+          {
+            "$ref": "#/components/schemas/AreaContext"
+          },
+          {
+            "type": "null"
+          }
         ]
       },
       "SearchResult": {

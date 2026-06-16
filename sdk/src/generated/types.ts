@@ -8322,7 +8322,9 @@ export interface components {
             data: components["schemas"]["EventFeedItem"][];
             next_seq: number;
         };
-        SearchContext: {
+        TenantContext: {
+            /** @enum {string} */
+            kind: "tenant";
             unit_name: string | null;
             property_name: string | null;
             /** Format: uuid */
@@ -8330,7 +8332,22 @@ export interface components {
             /** Format: uuid */
             tenancy_id: string | null;
             tenancy_status: string | null;
-        } | null;
+        };
+        AreaContext: {
+            /** @enum {string} */
+            kind: "area";
+            /** Format: uuid */
+            property_id: string;
+            property_name: string;
+            address: string | null;
+            area_kind: string;
+            /** Format: uuid */
+            active_tenancy_id: string | null;
+            tenant_names: string[];
+            /** @enum {string} */
+            occupancy_status: "occupied" | "vacant";
+        };
+        SearchContext: components["schemas"]["TenantContext"] | components["schemas"]["AreaContext"] | null;
         SearchResult: {
             /** @enum {string} */
             entity_type: "tenant" | "vendor" | "property" | "area" | "maintenance_request";

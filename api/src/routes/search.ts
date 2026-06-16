@@ -7,19 +7,44 @@ import { ApiError, errorResponses } from './_lib/error';
 // runtime (validation) and in the OpenAPI schema (enum).
 const SEARCHABLE_TYPES = ['tenant', 'vendor', 'property', 'area', 'maintenance_request'] as const;
 
-// Structured disambiguation context. Returned (non-null) for `tenant` results:
-// the tenant's current unit + property, resolved server-side through their most
-// relevant tenancy. Null for other entity kinds and for tenants with no
-// resolvable tenancy. Typed fields (not a flattened string) so the dashboard
-// and the agent branch on `context.unit_name` etc. rather than parsing text.
-const SearchContext = z
+// Structured disambiguation context, returned as a TAGGED discriminated union
+// keyed on `context.kind` so consumers (dashboard + agent) narrow cleanly in a
+// generated client instead of casting on the sibling `entity_type`. Each entity
+// kind that carries context emits its own object; `context` is null for kinds
+// without one yet, and for tenants with no resolvable tenancy.
+
+// `tenant`: the tenant's current unit + property via their most relevant tenancy
+// (unchanged fields from the original SearchContext; now tagged kind='tenant').
+const TenantContext = z
   .object({
+    kind: z.literal('tenant'),
     unit_name: z.string().nullable(),
     property_name: z.string().nullable(),
     area_id: z.string().uuid().nullable(),
     tenancy_id: z.string().uuid().nullable(),
     tenancy_status: z.string().nullable(),
   })
+  .openapi('TenantContext');
+
+// `area`: the unit's property (the disambiguator) + its current occupancy. The
+// area's own unit/common kind is `area_kind` (the discriminator already owns
+// `kind`). `active_tenancy_id` is the relational handoff — "the tenant of this
+// unit" — so the caller can address the occupant with no second fetch.
+const AreaContext = z
+  .object({
+    kind: z.literal('area'),
+    property_id: z.string().uuid(),
+    property_name: z.string(),
+    address: z.string().nullable(),
+    area_kind: z.string(),
+    active_tenancy_id: z.string().uuid().nullable(),
+    tenant_names: z.array(z.string()),
+    occupancy_status: z.enum(['occupied', 'vacant']),
+  })
+  .openapi('AreaContext');
+
+const SearchContext = z
+  .discriminatedUnion('kind', [TenantContext, AreaContext])
   .openapi('SearchContext');
 
 const SearchResult = z

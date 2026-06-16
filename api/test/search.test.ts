@@ -90,12 +90,24 @@ function rnd(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
+// Tagged union (context.kind ∈ 'tenant' | 'area' | ...); loosely typed here so
+// one shape covers every arm without re-deriving the discriminated union.
 interface SearchContext {
-  unit_name: string | null;
-  property_name: string | null;
-  area_id: string | null;
-  tenancy_id: string | null;
-  tenancy_status: string | null;
+  kind?: string;
+  // tenant arm
+  unit_name?: string | null;
+  tenancy_id?: string | null;
+  tenancy_status?: string | null;
+  // area arm
+  property_id?: string | null;
+  area_id?: string | null;
+  area_kind?: string | null;
+  active_tenancy_id?: string | null;
+  tenant_names?: string[];
+  occupancy_status?: string | null;
+  // shared
+  property_name?: string | null;
+  address?: string | null;
 }
 
 interface SearchHit {
@@ -229,6 +241,7 @@ async function main(): Promise<void> {
     const t = hits.find((h) => h.entity_type === 'tenant');
     if (!t) throw new Error('no tenant hit');
     if (!t.context) throw new Error(`tenant context missing: ${JSON.stringify(t)}`);
+    if (t.context.kind !== 'tenant') throw new Error(`expected context.kind=tenant, got ${t.context.kind}`);
     if (t.context.unit_name !== `Unit ${A.nonce}`) {
       throw new Error(`unit_name=${t.context.unit_name}`);
     }
@@ -243,12 +256,32 @@ async function main(): Promise<void> {
     }
   });
 
-  await check('non-tenant result has null context', async () => {
-    const { hits } = await searchHits(A, A.nonce, '&exclude=tenant');
-    const nonTenant = hits.find((h) => h.entity_type !== 'tenant');
-    if (!nonTenant) throw new Error('no non-tenant hit');
-    if (nonTenant.context != null) {
-      throw new Error(`non-tenant context should be null, got ${JSON.stringify(nonTenant.context)}`);
+  await check('area result carries STRUCTURED AreaContext (property + occupancy + handoff)', async () => {
+    // The setup puts an active tenancy with member "Tenant <nonce>" on the unit
+    // "Unit <nonce>" under "Property <nonce>" -- so the area context should be
+    // occupied, name the property, expose area_kind, and carry the relational
+    // active_tenancy_id + occupant names (the "tenant of this unit" handoff).
+    const { hits } = await searchHits(A, A.nonce, '&types=area');
+    const area = hits.find((h) => h.entity_type === 'area');
+    if (!area || !area.context) throw new Error(`area context missing: ${JSON.stringify(hits)}`);
+    const c = area.context;
+    if (c.kind !== 'area') throw new Error(`expected context.kind=area, got ${c.kind}`);
+    if (c.property_name !== `Property ${A.nonce}`) throw new Error(`property_name=${c.property_name}`);
+    if (!c.property_id) throw new Error('property_id should be set');
+    if (c.area_kind !== 'unit') throw new Error(`area_kind=${c.area_kind}`);
+    if (c.occupancy_status !== 'occupied') throw new Error(`occupancy_status=${c.occupancy_status}`);
+    if (!c.active_tenancy_id) throw new Error('active_tenancy_id should be set for an occupied unit');
+    if (!Array.isArray(c.tenant_names) || !c.tenant_names.includes(`Tenant ${A.nonce}`)) {
+      throw new Error(`tenant_names should include the occupant: ${JSON.stringify(c.tenant_names)}`);
+    }
+  });
+
+  await check('vendor result has null context (not enriched until a later PR)', async () => {
+    const { hits } = await searchHits(A, A.nonce, '&types=vendor');
+    const vendor = hits.find((h) => h.entity_type === 'vendor');
+    if (!vendor) throw new Error('no vendor hit');
+    if (vendor.context != null) {
+      throw new Error(`vendor context should be null, got ${JSON.stringify(vendor.context)}`);
     }
   });
 
