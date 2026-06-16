@@ -105,6 +105,22 @@ interface SearchContext {
   active_tenancy_id?: string | null;
   tenant_names?: string[];
   occupancy_status?: string | null;
+  // tenant adds
+  is_primary?: boolean;
+  other_tenancies?: Array<{
+    tenancy_id: string;
+    unit_name: string | null;
+    property_name: string | null;
+    tenancy_status: string;
+    is_primary: boolean;
+  }>;
+  // property arm
+  unit_count?: number;
+  // maintenance_request arm
+  status?: string;
+  severity?: string;
+  created_at?: string;
+  assigned_vendor_id?: string | null;
   // shared
   property_name?: string | null;
   address?: string | null;
@@ -154,6 +170,13 @@ async function setup(label: string): Promise<Account> {
   const tenancy = await post('tenancies', { area_id: unit.id, start_date: '2026-01-01', status: 'active' });
   await post(`tenancies/${tenancy.id}/members`, { tenant_id: tenant.id, role: 'primary' });
   await post('vendors', { name: `Vendor ${nonce}` });
+  // Second unit + an earlier tenancy for the SAME tenant -> the resolved/current
+  // tenancy is the 2026 one on `unit`, and this one lands in other_tenancies.
+  const unit2 = await post('areas', { property_id: property.id, kind: 'unit', name: `Unit2 ${nonce}` });
+  const tenancy2 = await post('tenancies', { area_id: unit2.id, start_date: '2025-01-01', status: 'active' });
+  await post(`tenancies/${tenancy2.id}/members`, { tenant_id: tenant.id, role: 'occupant' });
+  // A maintenance request on the primary unit -> maintenance_request context.
+  await post('maintenance-requests', { area_id: unit.id, title: `Leak ${nonce}`, severity: 'routine' });
   return { token, accountId, nonce, propertyId: property.id };
 }
 
@@ -254,6 +277,39 @@ async function main(): Promise<void> {
     if (!t.context.area_id || !t.context.tenancy_id) {
       throw new Error(`missing ids in context: ${JSON.stringify(t.context)}`);
     }
+    // PR2 adds: the resolved tenancy is the 2026 primary one; the 2025 occupant
+    // tenancy on Unit2 lands in other_tenancies.
+    if (t.context.is_primary !== true) throw new Error(`expected is_primary=true, got ${t.context.is_primary}`);
+    const others = t.context.other_tenancies;
+    if (!Array.isArray(others) || others.length < 1) {
+      throw new Error(`other_tenancies should list the second tenancy: ${JSON.stringify(others)}`);
+    }
+    const u2 = others.find((o) => o.unit_name === `Unit2 ${A.nonce}`);
+    if (!u2) throw new Error(`other_tenancies missing Unit2: ${JSON.stringify(others)}`);
+    if (u2.is_primary !== false) throw new Error(`Unit2 membership should be non-primary, got ${u2.is_primary}`);
+  });
+
+  await check('property result carries STRUCTURED PropertyContext (address + unit_count)', async () => {
+    const { hits } = await searchHits(A, A.nonce, '&types=property');
+    const p = hits.find((h) => h.entity_type === 'property');
+    if (!p || !p.context) throw new Error(`property context missing: ${JSON.stringify(hits)}`);
+    if (p.context.kind !== 'property') throw new Error(`expected kind=property, got ${p.context.kind}`);
+    if (p.context.unit_count !== 2) throw new Error(`expected unit_count=2 (Unit + Unit2), got ${p.context.unit_count}`);
+  });
+
+  await check('maintenance_request result carries STRUCTURED MR context', async () => {
+    const { hits } = await searchHits(A, A.nonce, '&types=maintenance_request');
+    const mr = hits.find((h) => h.entity_type === 'maintenance_request');
+    if (!mr || !mr.context) throw new Error(`MR context missing: ${JSON.stringify(hits)}`);
+    const c = mr.context;
+    if (c.kind !== 'maintenance_request') throw new Error(`expected kind=maintenance_request, got ${c.kind}`);
+    if (c.severity !== 'routine') throw new Error(`severity=${c.severity}`);
+    if (c.unit_name !== `Unit ${A.nonce}`) throw new Error(`unit_name=${c.unit_name}`);
+    if (c.property_name !== `Property ${A.nonce}`) throw new Error(`property_name=${c.property_name}`);
+    if (!c.area_id) throw new Error('area_id should be set');
+    if (typeof c.status !== 'string' || !c.status) throw new Error(`status should be set, got ${c.status}`);
+    if (c.assigned_vendor_id != null) throw new Error(`assigned_vendor_id should be null (no work order), got ${c.assigned_vendor_id}`);
+    if (!c.tenancy_id) throw new Error('derived tenancy_id (the unit’s active tenancy) should be set');
   });
 
   await check('area result carries STRUCTURED AreaContext (property + occupancy + handoff)', async () => {
@@ -262,7 +318,7 @@ async function main(): Promise<void> {
     // occupied, name the property, expose area_kind, and carry the relational
     // active_tenancy_id + occupant names (the "tenant of this unit" handoff).
     const { hits } = await searchHits(A, A.nonce, '&types=area');
-    const area = hits.find((h) => h.entity_type === 'area');
+    const area = hits.find((h) => h.entity_type === 'area' && h.title === `Unit ${A.nonce}`);
     if (!area || !area.context) throw new Error(`area context missing: ${JSON.stringify(hits)}`);
     const c = area.context;
     if (c.kind !== 'area') throw new Error(`expected context.kind=area, got ${c.kind}`);

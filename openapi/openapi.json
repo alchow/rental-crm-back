@@ -2367,6 +2367,40 @@
           "next_seq"
         ]
       },
+      "TenancyRef": {
+        "type": "object",
+        "properties": {
+          "tenancy_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "unit_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "property_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tenancy_status": {
+            "type": "string"
+          },
+          "is_primary": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "tenancy_id",
+          "unit_name",
+          "property_name",
+          "tenancy_status",
+          "is_primary"
+        ]
+      },
       "TenantContext": {
         "type": "object",
         "properties": {
@@ -2407,6 +2441,15 @@
               "string",
               "null"
             ]
+          },
+          "is_primary": {
+            "type": "boolean"
+          },
+          "other_tenancies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TenancyRef"
+            }
           }
         },
         "required": [
@@ -2415,7 +2458,9 @@
           "property_name",
           "area_id",
           "tenancy_id",
-          "tenancy_status"
+          "tenancy_status",
+          "is_primary",
+          "other_tenancies"
         ]
       },
       "AreaContext": {
@@ -2475,6 +2520,86 @@
           "occupancy_status"
         ]
       },
+      "PropertyContext": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "property"
+            ]
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unit_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "address",
+          "unit_count"
+        ]
+      },
+      "MaintenanceRequestContext": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "maintenance_request"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "area_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "unit_name": {
+            "type": "string"
+          },
+          "property_name": {
+            "type": "string"
+          },
+          "assigned_vendor_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "tenancy_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "kind",
+          "status",
+          "severity",
+          "created_at",
+          "area_id",
+          "unit_name",
+          "property_name",
+          "assigned_vendor_id",
+          "tenancy_id"
+        ]
+      },
       "SearchContext": {
         "oneOf": [
           {
@@ -2482,6 +2607,12 @@
           },
           {
             "$ref": "#/components/schemas/AreaContext"
+          },
+          {
+            "$ref": "#/components/schemas/PropertyContext"
+          },
+          {
+            "$ref": "#/components/schemas/MaintenanceRequestContext"
           },
           {
             "type": "null"

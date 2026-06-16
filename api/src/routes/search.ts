@@ -13,8 +13,21 @@ const SEARCHABLE_TYPES = ['tenant', 'vendor', 'property', 'area', 'maintenance_r
 // kind that carries context emits its own object; `context` is null for kinds
 // without one yet, and for tenants with no resolvable tenancy.
 
-// `tenant`: the tenant's current unit + property via their most relevant tenancy
-// (unchanged fields from the original SearchContext; now tagged kind='tenant').
+// A reference to one of a tenant's tenancies (for `other_tenancies`), enough to
+// disambiguate current vs. past without a second fetch.
+const TenancyRef = z
+  .object({
+    tenancy_id: z.string().uuid(),
+    unit_name: z.string().nullable(),
+    property_name: z.string().nullable(),
+    tenancy_status: z.string(),
+    is_primary: z.boolean(),
+  })
+  .openapi('TenancyRef');
+
+// `tenant`: the tenant's current unit + property via their most relevant
+// tenancy. `is_primary` is the role in that resolved tenancy; `other_tenancies`
+// lists the tenant's remaining tenancies (current/past) for disambiguation.
 const TenantContext = z
   .object({
     kind: z.literal('tenant'),
@@ -23,6 +36,8 @@ const TenantContext = z
     area_id: z.string().uuid().nullable(),
     tenancy_id: z.string().uuid().nullable(),
     tenancy_status: z.string().nullable(),
+    is_primary: z.boolean(),
+    other_tenancies: z.array(TenancyRef),
   })
   .openapi('TenantContext');
 
@@ -43,8 +58,39 @@ const AreaContext = z
   })
   .openapi('AreaContext');
 
+// `property`: within-account disambiguators (account = owner, so no owner field).
+const PropertyContext = z
+  .object({
+    kind: z.literal('property'),
+    address: z.string().nullable(),
+    unit_count: z.number().int(),
+  })
+  .openapi('PropertyContext');
+
+// `maintenance_request`: disambiguate "the leak" by unit/status/date, and carry
+// the ids the next call reuses. `tenancy_id` is DERIVED (the area's current
+// tenancy) — a scope hint, since an MR stores no tenancy.
+const MaintenanceRequestContext = z
+  .object({
+    kind: z.literal('maintenance_request'),
+    status: z.string(),
+    severity: z.string(),
+    created_at: z.string(),
+    area_id: z.string().uuid(),
+    unit_name: z.string(),
+    property_name: z.string(),
+    assigned_vendor_id: z.string().uuid().nullable(),
+    tenancy_id: z.string().uuid().nullable(),
+  })
+  .openapi('MaintenanceRequestContext');
+
 const SearchContext = z
-  .discriminatedUnion('kind', [TenantContext, AreaContext])
+  .discriminatedUnion('kind', [
+    TenantContext,
+    AreaContext,
+    PropertyContext,
+    MaintenanceRequestContext,
+  ])
   .openapi('SearchContext');
 
 const SearchResult = z

@@ -8322,6 +8322,14 @@ export interface components {
             data: components["schemas"]["EventFeedItem"][];
             next_seq: number;
         };
+        TenancyRef: {
+            /** Format: uuid */
+            tenancy_id: string;
+            unit_name: string | null;
+            property_name: string | null;
+            tenancy_status: string;
+            is_primary: boolean;
+        };
         TenantContext: {
             /** @enum {string} */
             kind: "tenant";
@@ -8332,6 +8340,8 @@ export interface components {
             /** Format: uuid */
             tenancy_id: string | null;
             tenancy_status: string | null;
+            is_primary: boolean;
+            other_tenancies: components["schemas"]["TenancyRef"][];
         };
         AreaContext: {
             /** @enum {string} */
@@ -8347,7 +8357,28 @@ export interface components {
             /** @enum {string} */
             occupancy_status: "occupied" | "vacant";
         };
-        SearchContext: components["schemas"]["TenantContext"] | components["schemas"]["AreaContext"] | null;
+        PropertyContext: {
+            /** @enum {string} */
+            kind: "property";
+            address: string | null;
+            unit_count: number;
+        };
+        MaintenanceRequestContext: {
+            /** @enum {string} */
+            kind: "maintenance_request";
+            status: string;
+            severity: string;
+            created_at: string;
+            /** Format: uuid */
+            area_id: string;
+            unit_name: string;
+            property_name: string;
+            /** Format: uuid */
+            assigned_vendor_id: string | null;
+            /** Format: uuid */
+            tenancy_id: string | null;
+        };
+        SearchContext: components["schemas"]["TenantContext"] | components["schemas"]["AreaContext"] | components["schemas"]["PropertyContext"] | components["schemas"]["MaintenanceRequestContext"] | null;
         SearchResult: {
             /** @enum {string} */
             entity_type: "tenant" | "vendor" | "property" | "area" | "maintenance_request";
