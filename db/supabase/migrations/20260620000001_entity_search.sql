@@ -162,9 +162,9 @@ begin
         'tenancy_status', tn.status
       )
       from public.tenancy_tenants tt
-      join public.tenancies  tn on tn.id = tt.tenancy_id   and tn.deleted_at is null
-      join public.areas      ar on ar.id = tn.area_id      and ar.deleted_at is null
-      join public.properties pr on pr.id = ar.property_id  and pr.deleted_at is null
+      join public.tenancies  tn on tn.id = tt.tenancy_id  and tn.account_id = p_account_id and tn.deleted_at is null
+      join public.areas      ar on ar.id = tn.area_id     and ar.account_id = p_account_id and ar.deleted_at is null
+      join public.properties pr on pr.id = ar.property_id and pr.account_id = p_account_id and pr.deleted_at is null
       where tt.tenant_id  = s.entity_id
         and tt.account_id = p_account_id
         and tt.deleted_at is null
