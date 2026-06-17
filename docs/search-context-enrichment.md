@@ -39,9 +39,9 @@ because the union discriminator owns `kind`.
 
 | PR | Scope | Status |
 |---|---|---|
-| **PR 1** | `area` context + the tagged union shape (`TenantContext` + `AreaContext`) | **Done** — this PR |
-| PR 2 | `maintenance_request` + `property` context; `tenant` `is_primary` + `other_tenancies[]` | next |
-| PR 3 | `vendor` context (`contact`, `last_used_at`, `job_count`) | after |
+| **PR 1** | `area` context + the tagged union shape (`TenantContext` + `AreaContext`) | **Done** (#25) |
+| **PR 2** | `maintenance_request` + `property` context; `tenant` `is_primary` + `other_tenancies[]` (`TenancyRef`) | **Done** — this PR |
+| PR 3 | `vendor` context (`contact`, `last_used_at`, `job_count`) | next |
 | Separate track | vendor `trade`/categorization (schema + CRUD + searchable) | needs product sign-off |
 
 ## What PR 1 ships — `AreaContext`
