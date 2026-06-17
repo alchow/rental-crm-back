@@ -2600,6 +2600,38 @@
           "tenancy_id"
         ]
       },
+      "VendorContext": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "vendor"
+            ]
+          },
+          "contact": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "contact",
+          "last_used_at",
+          "job_count"
+        ]
+      },
       "SearchContext": {
         "oneOf": [
           {
@@ -2613,6 +2645,9 @@
           },
           {
             "$ref": "#/components/schemas/MaintenanceRequestContext"
+          },
+          {
+            "$ref": "#/components/schemas/VendorContext"
           },
           {
             "type": "null"

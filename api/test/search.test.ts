@@ -116,6 +116,10 @@ interface SearchContext {
   }>;
   // property arm
   unit_count?: number;
+  // vendor arm
+  contact?: string | null;
+  last_used_at?: string | null;
+  job_count?: number;
   // maintenance_request arm
   status?: string;
   severity?: string;
@@ -169,7 +173,7 @@ async function setup(label: string): Promise<Account> {
   const tenant = await post('tenants', { full_name: `Tenant ${nonce}`, emails: [`${nonce}@mail.test`] });
   const tenancy = await post('tenancies', { area_id: unit.id, start_date: '2026-01-01', status: 'active' });
   await post(`tenancies/${tenancy.id}/members`, { tenant_id: tenant.id, role: 'primary' });
-  await post('vendors', { name: `Vendor ${nonce}` });
+  await post('vendors', { name: `Vendor ${nonce}`, contact: { email: `vendor-${nonce}@mail.test` } });
   // Second unit + an earlier tenancy for the SAME tenant -> the resolved/current
   // tenancy is the 2026 one on `unit`, and this one lands in other_tenancies.
   const unit2 = await post('areas', { property_id: property.id, kind: 'unit', name: `Unit2 ${nonce}` });
@@ -332,13 +336,15 @@ async function main(): Promise<void> {
     }
   });
 
-  await check('vendor result has null context (not enriched until a later PR)', async () => {
+  await check('vendor result carries STRUCTURED VendorContext', async () => {
     const { hits } = await searchHits(A, A.nonce, '&types=vendor');
     const vendor = hits.find((h) => h.entity_type === 'vendor');
-    if (!vendor) throw new Error('no vendor hit');
-    if (vendor.context != null) {
-      throw new Error(`vendor context should be null, got ${JSON.stringify(vendor.context)}`);
-    }
+    if (!vendor || !vendor.context) throw new Error(`vendor context missing: ${JSON.stringify(hits)}`);
+    const c = vendor.context;
+    if (c.kind !== 'vendor') throw new Error(`expected kind=vendor, got ${c.kind}`);
+    if (c.contact !== `vendor-${A.nonce}@mail.test`) throw new Error(`contact=${c.contact}`);
+    if (c.job_count !== 0) throw new Error(`expected job_count=0 (no work orders), got ${c.job_count}`);
+    if (c.last_used_at != null) throw new Error(`expected last_used_at=null, got ${c.last_used_at}`);
   });
 
   await check('synonym: "apt <nonce>" matches the "Unit <nonce>" area', async () => {
