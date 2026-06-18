@@ -32,7 +32,8 @@ PATTERNS=(
 #     attribution, storage path, derived_from chain, byte-for-byte
 #     immutability of corrected interactions, unreachable fixture states like
 #     a soft-deleted membership, agent grant membership lifecycle, agent token
-#     exchange and RLS-denial mapping).
+#     exchange and RLS-denial mapping, account_settings auto-provision + the
+#     legal_hold audit event).
 #     These are TEST code, never shipped; the quarantine defends production
 #     runtime, and verification of that runtime sits on the other side of the
 #     boundary by design.
@@ -63,6 +64,7 @@ EXCLUDES=(
   ':!api/test/agent-principal.test.ts'
   ':!api/test/agent-grants.test.ts'
   ':!api/test/agent-tokens.test.ts'
+  ':!api/test/account-flags.test.ts'
   ':!api/test/events-feed.test.ts'
   ':!api/test/messaging.test.ts'
   ':!api/test/twilio-webhooks.test.ts'
