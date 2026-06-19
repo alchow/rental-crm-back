@@ -3,8 +3,8 @@
 // notes, retractions.
 //
 // Covers:
-//   (A) Existing behavior unchanged: a communication creates/reads exactly
-//       as before; missing direction/party_type still rejected.
+//   (A) Communication create/read: party_type still required; direction is
+//       now OPTIONAL (omitted -> 'unspecified'), and 'mutual' is accepted.
 //   (B) kind='note': creates with no direction/party_type/channel; reads
 //       back note-shaped; counterparty fields rejected.
 //   (C) Amend: the correcting row carries corrects_id+correction_kind;
@@ -226,11 +226,26 @@ async function main(): Promise<void> {
     if (got.is_head !== true) throw new Error('fresh row must be a head');
   });
 
-  await check('communication: missing direction / party_type still rejected', async () => {
+  await check('communication: missing direction defaults to unspecified; missing party_type still rejected', async () => {
     const noDir = await createInteraction(commBody({ direction: undefined }));
-    assertStatus(noDir, 400, 'missing direction');
+    const row = assertStatus(noDir, 201, 'missing direction is now allowed') as InteractionRow;
+    if (row.direction !== 'unspecified') {
+      throw new Error(`omitted direction must store 'unspecified', got '${row.direction}'`);
+    }
     const noParty = await createInteraction(commBody({ party_type: undefined }));
     assertStatus(noParty, 400, 'missing party_type');
+  });
+
+  await check('communication: explicit mutual direction is accepted (two-way contact)', async () => {
+    const r = await createInteraction(commBody({
+      direction: 'mutual', channel: 'in_person',
+      body: 'Doorstep back-and-forth about front-lawn usage.',
+    }));
+    const row = assertStatus(r, 201, 'mutual direction') as InteractionRow;
+    if (row.direction !== 'mutual') throw new Error(`expected 'mutual', got '${row.direction}'`);
+    const g = await api('GET', `${base}/${row.id}`, { token: A.accessToken });
+    const got = assertStatus(g, 200, 'read back mutual') as InteractionRow;
+    if (got.direction !== 'mutual') throw new Error(`read back direction: ${got.direction}`);
   });
 
   // =========================================================================

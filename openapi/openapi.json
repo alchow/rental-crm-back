@@ -3140,6 +3140,8 @@
             "enum": [
               "inbound",
               "outbound",
+              "mutual",
+              "unspecified",
               "none"
             ]
           },
@@ -3415,6 +3417,8 @@
             "enum": [
               "inbound",
               "outbound",
+              "mutual",
+              "unspecified",
               "none"
             ]
           },

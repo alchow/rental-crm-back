@@ -8512,7 +8512,7 @@ export interface components {
             /** @enum {string} */
             channel: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app" | "import" | "note" | "agent_event";
             /** @enum {string} */
-            direction: "inbound" | "outbound" | "none";
+            direction: "inbound" | "outbound" | "mutual" | "unspecified" | "none";
             body: string | null;
             occurred_at: string;
             logged_at: string;
@@ -8567,7 +8567,7 @@ export interface components {
             /** @enum {string} */
             channel?: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app" | "import" | "note" | "agent_event";
             /** @enum {string} */
-            direction?: "inbound" | "outbound" | "none";
+            direction?: "inbound" | "outbound" | "mutual" | "unspecified" | "none";
             body?: string;
             /** Format: date-time */
             occurred_at?: string;

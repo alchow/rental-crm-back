@@ -41,7 +41,11 @@ import { assertAgentJournalWrite } from './_lib/agent-firewall';
 // CreateInteractionBody below) rather than nullable columns.
 const PartyType = z.enum(['tenant', 'vendor', 'inspector', 'other', 'none']);
 const Channel   = z.enum(['in_person', 'phone', 'voicemail', 'sms', 'email', 'letter', 'in_app', 'import', 'note', 'agent_event']);
-const Direction = z.enum(['inbound', 'outbound', 'none']);
+// 'mutual' = a genuine two-way contact (drop the inbound/outbound binary for a
+// back-and-forth). 'unspecified' = a communication whose direction was not
+// stated (server-filled when the client omits it). 'none' stays the
+// NON-communication sentinel (note/import/agent_event).
+const Direction = z.enum(['inbound', 'outbound', 'mutual', 'unspecified', 'none']);
 const Kind = z.enum(['communication', 'note', 'agent_event']);
 const CorrectionKind = z.enum(['amend', 'retract']);
 
@@ -121,8 +125,8 @@ export const Interaction = z
 //
 // Three creation shapes, one schema (the superRefine below enforces the
 // matrix):
-//   communication  channel + direction + party_type + occurred_at required
-//                  (today's behavior, unchanged)
+//   communication  channel + party_type + occurred_at required; direction
+//                  optional (omitted -> 'unspecified'; or inbound/outbound/mutual)
 //   note           occurred_at required; channel/direction/party_type may
 //                  be omitted (server fills the sentinels) or sent as the
 //                  sentinels; no counterparty fields
@@ -238,7 +242,9 @@ export const CreateInteractionBody = z
 
     if (kind === 'communication') {
       if (b.channel === undefined) issue('channel', 'channel is required for a communication');
-      if (b.direction === undefined) issue('direction', 'direction is required for a communication');
+      // direction is OPTIONAL on a communication: omit it (server stores
+      // 'unspecified') or send inbound/outbound/mutual. 'none' stays reserved
+      // for the non-communication sentinel channels (checked below).
       if (b.party_type === undefined) issue('party_type', 'party_type is required for a communication');
       if (b.direction === 'none' && b.channel !== 'import') {
         issue('direction', "direction 'none' is only valid for channel 'import'");
@@ -581,7 +587,9 @@ interactionsApp.openapi(create, async (c) => {
       party_id: body.party_id ?? null,
       party_label: body.party_label ?? null,
       channel: body.channel,
-      direction: body.direction,
+      // Optional now: an omitted direction is stored as the 'unspecified'
+      // sentinel rather than forcing the landlord to fabricate inbound/outbound.
+      direction: body.direction ?? 'unspecified',
       body: body.body ?? null,
       occurred_at: body.occurred_at,
       corrects_id: null,
