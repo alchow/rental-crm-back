@@ -325,6 +325,10 @@ interface ExportData {
   events: Array<Record<string, unknown>>;
   uploaderNames: Map<string, string>;
   intakeTokenById: Map<string, string>;
+  /** Resolved counterparty names for the interactions render: party_id -> name
+   *  (tenant full_name / vendor name). party_id has no FK, so this is built by
+   *  looking ids up by type; party_label and 'unspecified' are render-time. */
+  partyNames: Map<string, string>;
 }
 
 // A correction chain is one event: the original entry plus the append-only
@@ -399,6 +403,25 @@ export function groupInteractionChains(rows: Record<string, unknown>[]): Interac
 // Exported for the export test suite: the PDF binary is not string-greppable
 // (PDFKit hex-encodes text), so "the export carries complete chains" is
 // asserted against THIS -- the exact data set the renderer consumes.
+// Human-facing counterparty for an interaction row in the export. Resolves
+// party_id to a name (tenant full_name / vendor name) via partyNames; falls
+// back to the free-text party_label, then the party_type itself ('unspecified'
+// for a role-unknown capture). Empty for notes/agent_events (party_type 'none').
+// Exported for unit testing (mirrors groupInteractionChains).
+export function interactionPartyDisplay(
+  row: Record<string, unknown>,
+  partyNames: Map<string, string>,
+): string {
+  const pt = (row.party_type as string) ?? '';
+  if (pt === '' || pt === 'none') return '';
+  const id = row.party_id as string | null;
+  const resolved = id ? partyNames.get(id) : undefined;
+  if (resolved) return `${resolved} (${pt})`;
+  const label = row.party_label as string | null;
+  if (label) return `${label} (${pt})`;
+  return pt;
+}
+
 export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   const admin = getAdminClient();
 
@@ -575,6 +598,33 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     }
   }
 
+  // Resolve counterparties for the interactions render: party_id -> name.
+  // party_id has no FK (it is a typed reference), so collect the referenced ids
+  // and look them up in tenants/vendors. party_label and the 'unspecified'
+  // sentinel are handled at render time (interactionPartyDisplay).
+  const partyNames = new Map<string, string>();
+  for (const o of occupants) {
+    const t = (o as { tenants?: { id?: string; full_name?: string } }).tenants;
+    if (t?.id && t.full_name) partyNames.set(t.id, t.full_name);
+  }
+  const partyIds = new Set<string>();
+  for (const r of interactions) {
+    if ((r.party_type === 'tenant' || r.party_type === 'vendor') && r.party_id) {
+      partyIds.add(String(r.party_id));
+    }
+    if (r.vendor_id) partyIds.add(String(r.vendor_id));
+  }
+  for (const id of partyNames.keys()) partyIds.delete(id);
+  if (partyIds.size > 0) {
+    const ids = [...partyIds];
+    const [tRes, vRes] = await Promise.all([
+      admin.from('tenants').select('id, full_name').eq('account_id', scope.accountId).in('id', ids),
+      admin.from('vendors').select('id, name').eq('account_id', scope.accountId).in('id', ids),
+    ]);
+    for (const t of ((tRes.data as { id: string; full_name: string }[] | null) ?? [])) partyNames.set(t.id, t.full_name);
+    for (const v of ((vRes.data as { id: string; name: string }[] | null) ?? [])) partyNames.set(v.id, v.name);
+  }
+
   return {
     account_name: accountName,
     tenancy,
@@ -596,6 +646,7 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     events,
     uploaderNames,
     intakeTokenById,
+    partyNames,
   };
 }
 
@@ -943,22 +994,26 @@ async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
             : '')
         : '';
       const sid = root.external_ref ? `  provider_ref=${root.external_ref as string}` : '';
+      // Counterparty (PR 2): communications now name who they were with --
+      // resolved tenant/vendor name, else party_label, else party_type
+      // ('unspecified' for a role-unknown capture). Notes/agent_events: none.
+      const party = interactionPartyDisplay(root, data.partyNames);
       doc.text(
-        `• ${root.occurred_at as string}  ${what} ` +
+        `• ${root.occurred_at as string}  ${what}${party ? `  with ${party}` : ''}  ` +
         `actor=${root.actor as string}${capacity}${sid}  (logged ${root.logged_at as string})`,
       );
       if (root.body) doc.text(`    ${String(root.body).slice(0, 400)}`);
       for (const corr of chain.corrections) {
         // classify completes metadata only -- the body is inherited, unchanged.
         // Labeling it "Corrected: <body>" would mis-state that content changed,
-        // so render it as the attribution-completion it is. (PR 2 will name the
-        // resolved counterparty here; until then the actor + logged line below
-        // is the honest minimum.)
+        // so name the attribution it added (resolved counterparty), falling back
+        // to a generic note when it completed non-party metadata.
+        const classified = interactionPartyDisplay(corr, data.partyNames);
         const label =
           corr.correction_kind === 'retract'
             ? `Retracted: ${String(corr.body ?? '').slice(0, 400)}`
             : corr.correction_kind === 'classify'
-              ? 'Attribution completed (metadata)'
+              ? `Attribution: ${classified && classified !== 'unspecified' ? classified : 'metadata completed'}`
               : `Corrected: ${String(corr.body ?? '').slice(0, 400)}`;
         const redated =
           corr.occurred_at !== root.occurred_at ? `  occurred ${corr.occurred_at as string}` : '';
