@@ -299,6 +299,19 @@ async function main(): Promise<void> {
     if (errCode(r) !== 'agent_forbidden') throw new Error(`code: ${errCode(r)}`);
   });
 
+  // The firewall blocks ALL corrections by correction_kind-agnostic check on
+  // corrects_id, so a classify (the metadata-completion kind) is forbidden too,
+  // and rejected before any DB read/write.
+  await check('(c) agent classify correction → 403 agent_forbidden', async () => {
+    const r = await agentPost({
+      corrects_id: landlordEntryId,
+      correction_kind: 'classify',
+      party_id: crypto.randomUUID(),
+    });
+    assertStatus(r, 403, 'agent classify correction');
+    if (errCode(r) !== 'agent_forbidden') throw new Error(`code: ${errCode(r)}`);
+  });
+
   // =========================================================================
   // (d) agent note without approvals → 400; with approved_by+ref → 201
   // =========================================================================

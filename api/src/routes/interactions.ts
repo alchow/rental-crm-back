@@ -23,8 +23,10 @@ import { assertAgentJournalWrite } from './_lib/agent-firewall';
 //   kind='note'                       dated observation, no counterparty
 //                                     ("inspected roof, cracked tile")
 //   corrects_id + correction_kind     this row supersedes corrects_id;
-//                                     'amend' (body = corrected content) or
-//                                     'retract' (body = reason)
+//                                     'amend' (body = corrected content),
+//                                     'retract' (body = reason), or 'classify'
+//                                     (metadata only: body + occurred_at
+//                                     inherited, fill-only context fields)
 //
 // The original row is never written to. Supersession (superseded_by_id,
 // is_head) is DERIVED from the forward corrects_id link by the
@@ -39,7 +41,11 @@ import { assertAgentJournalWrite } from './_lib/agent-firewall';
 // stores channel='note', direction='none', party_type='none' (sentinels,
 // valid ONLY in that combination; DB checks mirror the refines on
 // CreateInteractionBody below) rather than nullable columns.
-const PartyType = z.enum(['tenant', 'vendor', 'inspector', 'other', 'none']);
+// 'unspecified' = a real counterparty whose ROLE is not yet known (one-tap Log
+// before the Enrich step). Communication-only, and carries no party_id until a
+// later classify resolves it. Distinct from "role known, person unknown", which
+// is party_type='<role>' + party_id=null.
+const PartyType = z.enum(['tenant', 'vendor', 'inspector', 'other', 'none', 'unspecified']);
 const Channel   = z.enum(['in_person', 'phone', 'voicemail', 'sms', 'email', 'letter', 'in_app', 'import', 'note', 'agent_event']);
 // 'mutual' = a genuine two-way contact (drop the inbound/outbound binary for a
 // back-and-forth). 'unspecified' = a communication whose direction was not
@@ -47,7 +53,11 @@ const Channel   = z.enum(['in_person', 'phone', 'voicemail', 'sms', 'email', 'le
 // NON-communication sentinel (note/import/agent_event).
 const Direction = z.enum(['inbound', 'outbound', 'mutual', 'unspecified', 'none']);
 const Kind = z.enum(['communication', 'note', 'agent_event']);
-const CorrectionKind = z.enum(['amend', 'retract']);
+// 'classify' = metadata-completion: append-only like amend, but body- and
+// occurred_at-immutable and FILL-ONLY (fills an empty context field, never
+// overwrites a recorded one -- that stays an amend). Lets attribution be
+// attached after capture without the record reading as a content edit.
+const CorrectionKind = z.enum(['amend', 'retract', 'classify']);
 
 // Read-side output enum (identical to input after Workstream D lands both):
 // kind='agent_event' and channel='agent_event' are accepted in the body but
@@ -130,10 +140,11 @@ export const Interaction = z
 //   note           occurred_at required; channel/direction/party_type may
 //                  be omitted (server fills the sentinels) or sent as the
 //                  sentinels; no counterparty fields
-//   correction     corrects_id + correction_kind + body required; context
-//                  fields are inherited from the original server-side.
-//                  'amend' may override them; 'retract' carries ONLY the
-//                  reason in body.
+//   correction     corrects_id + correction_kind required. Context fields are
+//                  inherited from the original server-side. 'amend': body
+//                  required, may override context. 'retract': body=reason only.
+//                  'classify': body + occurred_at MUST be omitted (inherited);
+//                  may set context fields, fill-only (empty -> value).
 export const CreateInteractionBody = z
   .object({
     /** Defaults to 'communication'. A correction always inherits the original's kind.
@@ -190,6 +201,18 @@ export const CreateInteractionBody = z
     }
 
     if (b.corrects_id !== undefined) {
+      if (b.correction_kind === 'classify') {
+        // Metadata completion only: body + occurred_at are inherited from the
+        // corrected row and must not be supplied (substantive -> amend). The
+        // whitelisted context fields may be set, subject to fill-only at write.
+        if (b.body !== undefined) {
+          issue('body', "classify cannot change body (it is inherited; use correction_kind='amend' for substantive edits)");
+        }
+        if (b.occurred_at !== undefined) {
+          issue('occurred_at', "classify cannot change occurred_at (it is inherited; use correction_kind='amend' to re-date)");
+        }
+        return;
+      }
       if (b.body === undefined) {
         issue('body', 'a correction requires body (amend: corrected content; retract: reason)');
       }
@@ -252,6 +275,12 @@ export const CreateInteractionBody = z
       if (b.channel === 'note') issue('channel', "channel 'note' is reserved for kind='note'");
       if (b.channel === 'agent_event') issue('channel', "channel 'agent_event' is reserved for kind='agent_event'");
       if (b.party_type === 'none') issue('party_type', "party_type 'none' is reserved for kind='note'");
+      // 'unspecified' is the role-unknown capture sentinel: valid on a
+      // communication, but it cannot carry a party_id (you can't know the id of
+      // someone whose role you don't know). classify resolves it later.
+      if (b.party_type === 'unspecified' && b.party_id !== undefined) {
+        issue('party_id', "party_type 'unspecified' cannot carry a party_id (resolve the role first, or omit party_id)");
+      }
     } else {
       // note: a dated observation with no counterparty. The sentinel values
       // may be sent explicitly but nothing else.
@@ -415,6 +444,55 @@ function assertCoherentShape(row: {
   if (row.direction === 'none' && row.channel !== 'import') {
     throw new ApiError(400, 'invalid_request', "direction 'none' is only valid for channel 'import'");
   }
+  if (row.party_type === 'unspecified' && row.party_id !== null) {
+    throw new ApiError(400, 'invalid_request', "party_type 'unspecified' cannot carry a party_id (resolve the role, or clear party_id)");
+  }
+}
+
+// classify is fill-only: it may populate a context field that was EMPTY on the
+// corrected row, but must never overwrite a value already recorded there
+// (overwriting a stated fact is a substantive change -> amend). 'unspecified'
+// (party_type) / 'unspecified'|'none' (direction) / null all count as empty.
+// This is the app-side clean 400; the DB trigger interactions_classify_fill_only
+// is the evidence-grade backstop for direct writes.
+function assertClassifyFillOnly(
+  original: Record<string, unknown>,
+  row: Record<string, unknown>,
+): void {
+  const fieldError = (f: string, msg: string) =>
+    new ApiError(400, 'invalid_request', msg, { fieldErrors: { [f]: [msg] } });
+
+  const nullable = [
+    'party_id', 'party_label', 'tenancy_id', 'maintenance_request_id',
+    'area_id', 'work_order_id', 'vendor_id', 'references_interaction_id',
+  ] as const;
+  for (const f of nullable) {
+    if (original[f] != null && row[f] !== original[f]) {
+      throw fieldError(f, `classify cannot overwrite ${f} (already set; use correction_kind='amend' to change a recorded value)`);
+    }
+  }
+  // party_type: 'unspecified'/'none' are empty (fillable); a concrete role is locked.
+  if (
+    original.party_type !== 'unspecified' && original.party_type !== 'none' &&
+    row.party_type !== original.party_type
+  ) {
+    throw fieldError('party_type', "classify cannot overwrite party_type (use correction_kind='amend')");
+  }
+  // direction: 'unspecified'/'none' are empty (fillable); a stated direction is locked.
+  if (
+    original.direction !== 'unspecified' && original.direction !== 'none' &&
+    row.direction !== original.direction
+  ) {
+    throw fieldError('direction', "classify cannot overwrite direction (use correction_kind='amend')");
+  }
+  // channel is never empty on a communication -> effectively immutable here.
+  if (row.channel !== original.channel) {
+    throw fieldError('channel', "classify cannot change channel (use correction_kind='amend')");
+  }
+  // atomic resolve: naming a party_id requires resolving the role too.
+  if (row.party_id != null && row.party_type === 'unspecified') {
+    throw fieldError('party_type', 'classify must resolve party_type (tenant/vendor/inspector/other) when setting party_id');
+  }
 }
 
 interactionsApp.openapi(create, async (c) => {
@@ -482,6 +560,12 @@ interactionsApp.openapi(create, async (c) => {
     }
 
     const isAmend = body.correction_kind === 'amend';
+    const isClassify = body.correction_kind === 'classify';
+    // amend and classify may both set context fields; retract inherits all.
+    // amend may also rewrite body/occurred_at; classify may not (superRefine
+    // rejects them) and is fill-only (assertClassifyFillOnly + the DB trigger):
+    // it fills an empty field but never overwrites a recorded one.
+    const mayCorrectContext = isAmend || isClassify;
     row = {
       account_id: accountId,
       actor,
@@ -496,29 +580,31 @@ interactionsApp.openapi(create, async (c) => {
       entry_type: original.entry_type ?? null,
       external_ref: null,
       kind: original.kind,
-      party_type: isAmend ? (body.party_type ?? original.party_type) : original.party_type,
-      party_id: isAmend ? (body.party_id ?? original.party_id) : original.party_id,
-      party_label: isAmend ? (body.party_label ?? original.party_label) : original.party_label,
-      channel: isAmend ? (body.channel ?? original.channel) : original.channel,
-      direction: isAmend ? (body.direction ?? original.direction) : original.direction,
-      body: body.body,
+      party_type: mayCorrectContext ? (body.party_type ?? original.party_type) : original.party_type,
+      party_id: mayCorrectContext ? (body.party_id ?? original.party_id) : original.party_id,
+      party_label: mayCorrectContext ? (body.party_label ?? original.party_label) : original.party_label,
+      channel: mayCorrectContext ? (body.channel ?? original.channel) : original.channel,
+      direction: mayCorrectContext ? (body.direction ?? original.direction) : original.direction,
+      // classify inherits body (substantive -> amend-only); amend/retract carry it.
+      body: isClassify ? original.body : body.body,
       // Same event -> same timeline position, unless an amend explicitly
-      // re-dates it. logged_at stays server-set as always.
+      // re-dates it. classify always inherits. logged_at stays server-set.
       occurred_at: isAmend ? (body.occurred_at ?? original.occurred_at) : original.occurred_at,
       corrects_id: body.corrects_id,
       correction_kind: body.correction_kind,
-      tenancy_id: isAmend ? (body.tenancy_id ?? original.tenancy_id) : original.tenancy_id,
-      maintenance_request_id: isAmend
+      tenancy_id: mayCorrectContext ? (body.tenancy_id ?? original.tenancy_id) : original.tenancy_id,
+      maintenance_request_id: mayCorrectContext
         ? (body.maintenance_request_id ?? original.maintenance_request_id)
         : original.maintenance_request_id,
-      area_id: isAmend ? (body.area_id ?? original.area_id) : original.area_id,
-      work_order_id: isAmend ? (body.work_order_id ?? original.work_order_id) : original.work_order_id,
-      vendor_id: isAmend ? (body.vendor_id ?? original.vendor_id) : original.vendor_id,
-      references_interaction_id: isAmend
+      area_id: mayCorrectContext ? (body.area_id ?? original.area_id) : original.area_id,
+      work_order_id: mayCorrectContext ? (body.work_order_id ?? original.work_order_id) : original.work_order_id,
+      vendor_id: mayCorrectContext ? (body.vendor_id ?? original.vendor_id) : original.vendor_id,
+      references_interaction_id: mayCorrectContext
         ? (body.references_interaction_id ?? original.references_interaction_id)
         : original.references_interaction_id,
     };
     assertCoherentShape(row as Parameters<typeof assertCoherentShape>[0]);
+    if (isClassify) assertClassifyFillOnly(original as Record<string, unknown>, row);
   } else if ((body.kind ?? 'communication') === 'agent_event') {
     // Agent exhaust entry: structured machine event with sentinel shape.
     row = {

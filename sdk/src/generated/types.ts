@@ -8505,7 +8505,7 @@ export interface components {
             account_id: string;
             actor: string;
             /** @enum {string} */
-            party_type: "tenant" | "vendor" | "inspector" | "other" | "none";
+            party_type: "tenant" | "vendor" | "inspector" | "other" | "none" | "unspecified";
             /** Format: uuid */
             party_id: string | null;
             party_label: string | null;
@@ -8529,7 +8529,7 @@ export interface components {
             /** Format: uuid */
             corrects_id: string | null;
             /** @enum {string|null} */
-            correction_kind: "amend" | "retract" | null;
+            correction_kind: "amend" | "retract" | "classify" | null;
             /** Format: uuid */
             superseded_by_id: string | null;
             is_head: boolean;
@@ -8560,7 +8560,7 @@ export interface components {
             /** @enum {string} */
             kind?: "communication" | "note" | "agent_event";
             /** @enum {string} */
-            party_type?: "tenant" | "vendor" | "inspector" | "other" | "none";
+            party_type?: "tenant" | "vendor" | "inspector" | "other" | "none" | "unspecified";
             /** Format: uuid */
             party_id?: string;
             party_label?: string;
@@ -8574,7 +8574,7 @@ export interface components {
             /** Format: uuid */
             corrects_id?: string;
             /** @enum {string} */
-            correction_kind?: "amend" | "retract";
+            correction_kind?: "amend" | "retract" | "classify";
             /** Format: uuid */
             tenancy_id?: string;
             /** Format: uuid */

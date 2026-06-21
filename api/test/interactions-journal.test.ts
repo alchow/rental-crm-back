@@ -171,6 +171,8 @@ interface InteractionRow {
   channel: string;
   direction: string;
   party_type: string;
+  party_id: string | null;
+  party_label: string | null;
   body: string | null;
   occurred_at: string;
   logged_at: string;
@@ -540,6 +542,205 @@ async function main(): Promise<void> {
     if (ev.actor !== `user:${A.userId}`) {
       throw new Error(`actor: ${ev.actor}, want user:${A.userId}`);
     }
+  });
+
+  // =========================================================================
+  // (I) classify correction + 'unspecified' party_type capture sentinel
+  //
+  // classify = metadata-completion correction: same chain mechanics as amend
+  // (corrects_id; server owns is_head/linearity; 409 on a stale/retracted head)
+  // but body- and occurred_at-IMMUTABLE and FILL-ONLY (fills an empty context
+  // field, never overwrites a recorded one). party_type='unspecified' is the
+  // role-unknown capture sentinel: communication-only, carries no party_id at
+  // capture, resolved later by a classify (party_type + party_id atomically).
+  // =========================================================================
+
+  // AC1: classify filling an empty field (party_id null -> attached) -> 201;
+  // new head; body unchanged; occurred_at unchanged; correction_kind='classify'.
+  await check('classify: fills an empty context field (attaches party_id) → new head, body+occurred_at inherited', async () => {
+    const original = (await createInteraction(commBody({
+      party_type: 'tenant', // role known, person unknown -> party_id null
+      body: 'Tenant called about a leaking tap.',
+      occurred_at: '2026-03-10T12:00:00.000Z',
+    }))).body as InteractionRow;
+    if (original.party_id !== null) throw new Error(`precondition: party_id must start null, got ${original.party_id}`);
+
+    const newPartyId = crypto.randomUUID();
+    const r = await createInteraction({
+      corrects_id: original.id,
+      correction_kind: 'classify',
+      party_id: newPartyId,
+    });
+    const cls = assertStatus(r, 201, 'classify fill party_id') as InteractionRow;
+    if (cls.correction_kind !== 'classify') throw new Error(`correction_kind: ${cls.correction_kind}`);
+    if (cls.corrects_id !== original.id) throw new Error(`corrects_id: ${cls.corrects_id}`);
+    if (cls.party_id !== newPartyId) throw new Error(`party_id not filled: ${cls.party_id}`);
+    if (cls.kind !== 'communication') throw new Error(`kind not inherited: ${cls.kind}`);
+    if (cls.party_type !== 'tenant') throw new Error(`party_type not inherited: ${cls.party_type}`);
+    if (cls.channel !== original.channel) throw new Error(`channel not inherited: ${cls.channel}`);
+    if (cls.body !== original.body) throw new Error(`body must be inherited unchanged: ${cls.body}`);
+    if (cls.occurred_at !== original.occurred_at) throw new Error(`occurred_at must be inherited unchanged: ${cls.occurred_at} vs ${original.occurred_at}`);
+    if (cls.superseded_by_id !== null || cls.is_head !== true) {
+      throw new Error(`classify must be the new head: superseded_by_id=${cls.superseded_by_id} is_head=${cls.is_head}`);
+    }
+
+    // The original now reads as superseded by the classify row.
+    const g = await api('GET', `${base}/${original.id}`, { token: A.accessToken });
+    const got = assertStatus(g, 200, 'read original after classify') as InteractionRow;
+    if (got.superseded_by_id !== cls.id) throw new Error(`original superseded_by_id: ${got.superseded_by_id}, want ${cls.id}`);
+    if (got.is_head !== false) throw new Error('original must no longer be a head');
+  });
+
+  // AC2: classify with body present -> 400; classify with occurred_at present -> 400.
+  await check('classify: body present → 400; occurred_at present → 400 (both inherited)', async () => {
+    const target1 = (await createInteraction(commBody({ party_type: 'tenant' }))).body as InteractionRow;
+    const withBody = await createInteraction({
+      corrects_id: target1.id, correction_kind: 'classify', body: 'trying to change the body',
+    });
+    assertStatus(withBody, 400, 'classify with body');
+    if (errCode(withBody) !== 'invalid_request') throw new Error(`body code: ${errCode(withBody)}`);
+    // The offending field name surfaces in the zod validation details.
+    if (!JSON.stringify(withBody.body).includes('body')) throw new Error(`expected 'body' in error detail: ${JSON.stringify(withBody.body)}`);
+
+    const target2 = (await createInteraction(commBody({ party_type: 'tenant' }))).body as InteractionRow;
+    const withOccurredAt = await createInteraction({
+      corrects_id: target2.id, correction_kind: 'classify', occurred_at: '2026-03-11T00:00:00.000Z',
+    });
+    assertStatus(withOccurredAt, 400, 'classify with occurred_at');
+    if (errCode(withOccurredAt) !== 'invalid_request') throw new Error(`occurred_at code: ${errCode(withOccurredAt)}`);
+    if (!JSON.stringify(withOccurredAt.body).includes('occurred_at')) throw new Error(`expected 'occurred_at' in error detail: ${JSON.stringify(withOccurredAt.body)}`);
+  });
+
+  // AC3: classify overwriting an already-set field -> 400 invalid_request.
+  await check('classify: overwriting an already-set field → 400 (fill-only, not overwrite)', async () => {
+    const partyX = crypto.randomUUID();
+    // Capture WITH a party_id already set (party_type concrete so the id is legal).
+    const original = (await createInteraction(commBody({
+      party_type: 'tenant', party_id: partyX, body: 'Has a counterparty already.',
+    }))).body as InteractionRow;
+    if (original.party_id !== partyX) throw new Error(`precondition: party_id should be set, got ${original.party_id}`);
+
+    const partyY = crypto.randomUUID();
+    const r = await createInteraction({
+      corrects_id: original.id, correction_kind: 'classify', party_id: partyY,
+    });
+    assertStatus(r, 400, 'classify overwrite party_id');
+    if (errCode(r) !== 'invalid_request') throw new Error(`code: ${errCode(r)}`);
+    if (!JSON.stringify(r.body).includes('party_id')) throw new Error(`expected 'party_id' in error detail: ${JSON.stringify(r.body)}`);
+  });
+
+  // AC4: classify targeting a stale/already-superseded head -> 409; on a
+  // retracted head -> 409 (same chain guards as amend).
+  await check('classify: targeting a superseded head → 409 invalid_correction_target', async () => {
+    const root = (await createInteraction(commBody({ party_type: 'tenant' }))).body as InteractionRow;
+    // Supersede it with a first classify (fills party_id).
+    const first = await createInteraction({
+      corrects_id: root.id, correction_kind: 'classify', party_id: crypto.randomUUID(),
+    });
+    assertStatus(first, 201, 'first classify');
+    // Now classify the STALE root again -> 409.
+    const stale = await createInteraction({
+      corrects_id: root.id, correction_kind: 'classify', party_label: 'late',
+    });
+    assertStatus(stale, 409, 'classify stale head');
+    if (errCode(stale) !== 'invalid_correction_target') throw new Error(`code: ${errCode(stale)}`);
+  });
+
+  await check('classify: on a retracted head → 409 (chain is closed)', async () => {
+    const target = (await createInteraction(commBody({ party_type: 'tenant' }))).body as InteractionRow;
+    const ret = await createInteraction({
+      corrects_id: target.id, correction_kind: 'retract', body: 'logged in error',
+    });
+    const retraction = assertStatus(ret, 201, 'retract for classify guard') as InteractionRow;
+    const r = await createInteraction({
+      corrects_id: retraction.id, correction_kind: 'classify', party_id: crypto.randomUUID(),
+    });
+    assertStatus(r, 409, 'classify retracted head');
+    if (errCode(r) !== 'invalid_correction_target') throw new Error(`code: ${errCode(r)}`);
+  });
+
+  // AC5: capture a communication with party_type='unspecified' and no party_id
+  // -> 201; then classify resolving party_type='tenant' + party_id -> 201.
+  await check("capture party_type='unspecified' (no party_id) → 201, then classify resolves role + party_id → 201", async () => {
+    const capture = await createInteraction(commBody({
+      party_type: 'unspecified',
+      party_id: undefined,
+      body: 'Someone phoned about the bins; role unclear at the time.',
+      occurred_at: '2026-03-12T09:30:00.000Z',
+    }));
+    const captured = assertStatus(capture, 201, "capture party_type='unspecified'") as InteractionRow;
+    if (captured.party_type !== 'unspecified') throw new Error(`party_type: ${captured.party_type}`);
+    if (captured.party_id !== null) throw new Error(`unspecified capture must carry no party_id: ${captured.party_id}`);
+
+    const resolvedPartyId = crypto.randomUUID();
+    const r = await createInteraction({
+      corrects_id: captured.id,
+      correction_kind: 'classify',
+      party_type: 'tenant',
+      party_id: resolvedPartyId,
+    });
+    const resolved = assertStatus(r, 201, 'classify resolves unspecified') as InteractionRow;
+    if (resolved.party_type !== 'tenant') throw new Error(`resolved party_type: ${resolved.party_type}`);
+    if (resolved.party_id !== resolvedPartyId) throw new Error(`resolved party_id: ${resolved.party_id}`);
+    if (resolved.body !== captured.body) throw new Error('body must be inherited through the resolve');
+    if (resolved.occurred_at !== captured.occurred_at) throw new Error('occurred_at must be inherited through the resolve');
+    if (resolved.is_head !== true) throw new Error('the resolving classify must be the head');
+  });
+
+  // AC6: capture party_type='unspecified' WITH party_id -> 400.
+  await check("capture party_type='unspecified' WITH party_id → 400", async () => {
+    const r = await createInteraction(commBody({
+      party_type: 'unspecified', party_id: crypto.randomUUID(),
+      body: 'role unknown but somehow an id?',
+    }));
+    assertStatus(r, 400, "unspecified capture with party_id");
+    if (errCode(r) !== 'invalid_request') throw new Error(`code: ${errCode(r)}`);
+    if (!JSON.stringify(r.body).includes('party_id')) throw new Error(`expected 'party_id' in error detail: ${JSON.stringify(r.body)}`);
+  });
+
+  // AC7: classify setting party_id while leaving party_type='unspecified'
+  // (role unresolved) -> 400 (atomic resolve).
+  await check("classify: setting party_id with party_type still 'unspecified' → 400 (atomic resolve)", async () => {
+    const captured = (await createInteraction(commBody({
+      party_type: 'unspecified', party_id: undefined,
+      body: 'Counterparty role still unknown.',
+    }))).body as InteractionRow;
+    if (captured.party_type !== 'unspecified') throw new Error(`precondition party_type: ${captured.party_type}`);
+
+    // Set party_id but do NOT resolve the role -> 400.
+    const r = await createInteraction({
+      corrects_id: captured.id,
+      correction_kind: 'classify',
+      party_id: crypto.randomUUID(),
+      // party_type omitted -> inherits 'unspecified' -> illegal id+unspecified pair.
+    });
+    assertStatus(r, 400, 'classify party_id without resolving role');
+    if (errCode(r) !== 'invalid_request') throw new Error(`code: ${errCode(r)}`);
+    if (!JSON.stringify(r.body).includes('party_type')) throw new Error(`expected 'party_type' in error detail: ${JSON.stringify(r.body)}`);
+  });
+
+  // AC8: GET ?latest_only=true returns the classify row as the head (chain
+  // collapses to it; the corrected original drops out of the head set).
+  await check('classify: ?latest_only=true collapses the chain to the classify head', async () => {
+    const original = (await createInteraction(commBody({
+      party_type: 'tenant', body: 'Chain-collapse classify subject.',
+      occurred_at: '2026-03-13T14:00:00.000Z',
+    }))).body as InteractionRow;
+    const cls = assertStatus(
+      await createInteraction({ corrects_id: original.id, correction_kind: 'classify', party_id: crypto.randomUUID() }),
+      201, 'classify for collapse',
+    ) as InteractionRow;
+
+    const heads = await api('GET', `${base}?latest_only=true&limit=100`, { token: A.accessToken });
+    const headRows = (assertStatus(heads, 200, 'latest_only') as { data: InteractionRow[] }).data;
+    const headIds = new Set(headRows.map((x) => x.id));
+    if (!headIds.has(cls.id)) throw new Error('latest_only must include the classify head');
+    if (headIds.has(original.id)) throw new Error('latest_only must not include the superseded original');
+
+    const full = await api('GET', `${base}?limit=100`, { token: A.accessToken });
+    const fullRows = (assertStatus(full, 200, 'full list') as { data: InteractionRow[] }).data;
+    const fullIds = new Set(fullRows.map((x) => x.id));
+    if (!fullIds.has(original.id) || !fullIds.has(cls.id)) throw new Error('full list must carry the complete chain');
   });
 
   // --- summary ---------------------------------------------------------------

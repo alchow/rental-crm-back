@@ -3104,7 +3104,8 @@
               "vendor",
               "inspector",
               "other",
-              "none"
+              "none",
+              "unspecified"
             ]
           },
           "party_id": {
@@ -3224,7 +3225,8 @@
             ],
             "enum": [
               "amend",
-              "retract"
+              "retract",
+              "classify"
             ]
           },
           "superseded_by_id": {
@@ -3386,7 +3388,8 @@
               "vendor",
               "inspector",
               "other",
-              "none"
+              "none",
+              "unspecified"
             ]
           },
           "party_id": {
@@ -3438,7 +3441,8 @@
             "type": "string",
             "enum": [
               "amend",
-              "retract"
+              "retract",
+              "classify"
             ]
           },
           "tenancy_id": {
