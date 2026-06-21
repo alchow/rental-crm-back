@@ -949,10 +949,17 @@ async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
       );
       if (root.body) doc.text(`    ${String(root.body).slice(0, 400)}`);
       for (const corr of chain.corrections) {
+        // classify completes metadata only -- the body is inherited, unchanged.
+        // Labeling it "Corrected: <body>" would mis-state that content changed,
+        // so render it as the attribution-completion it is. (PR 2 will name the
+        // resolved counterparty here; until then the actor + logged line below
+        // is the honest minimum.)
         const label =
           corr.correction_kind === 'retract'
             ? `Retracted: ${String(corr.body ?? '').slice(0, 400)}`
-            : `Corrected: ${String(corr.body ?? '').slice(0, 400)}`;
+            : corr.correction_kind === 'classify'
+              ? 'Attribution completed (metadata)'
+              : `Corrected: ${String(corr.body ?? '').slice(0, 400)}`;
         const redated =
           corr.occurred_at !== root.occurred_at ? `  occurred ${corr.occurred_at as string}` : '';
         doc.text(
