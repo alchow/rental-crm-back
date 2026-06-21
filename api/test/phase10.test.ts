@@ -74,7 +74,7 @@ _resetJwksCacheForTests();
 const { _resetAdminClientForTests, getAdminClient } = await import('../src/admin/supabase-admin');
 _resetAdminClientForTests();
 const { _resetIntakeIpBucketsForTests } = await import('../src/admin/intake');
-const { groupInteractionChains, loadExportData } = await import('../src/admin/export-pdf');
+const { groupInteractionChains, loadExportData, interactionPartyDisplay } = await import('../src/admin/export-pdf');
 const { buildApp } = await import('../src/app');
 
 const app = buildApp();
@@ -605,6 +605,142 @@ async function main(): Promise<void> {
 
     // And the real artifact still builds end-to-end with chains in scope.
     await createExportAndWait(A.accessToken, A.accountId, { tenancy_id: A.tenancyId });
+  });
+
+  // =========================================================================
+  // (K) Counterparty rendering (PR 2): a communication now names WHO it was
+  // with. interactionPartyDisplay is the render-time seam (the PDF binary is
+  // not string-greppable -- see (E)), so the resolution rules are asserted
+  // against it directly, and loadExportData's party_id -> name resolution is
+  // asserted against the data set the renderer consumes.
+  // =========================================================================
+
+  // (K.A) Pure helper -- no DB. Every branch of the resolution ladder:
+  // resolved name > party_label > party_type; none/'' -> empty.
+  await check('export: interactionPartyDisplay resolves party_id -> "<name> (<type>)"', async () => {
+    const tenantRow = { party_type: 'tenant', party_id: 'X' };
+    const tenantGot = interactionPartyDisplay(tenantRow, new Map([['X', 'Jane Doe']]));
+    if (tenantGot !== 'Jane Doe (tenant)') throw new Error(`tenant resolved: got ${JSON.stringify(tenantGot)}`);
+
+    const vendorRow = { party_type: 'vendor', party_id: 'V' };
+    const vendorGot = interactionPartyDisplay(vendorRow, new Map([['V', 'Acme Plumbing']]));
+    if (vendorGot !== 'Acme Plumbing (vendor)') throw new Error(`vendor resolved: got ${JSON.stringify(vendorGot)}`);
+  });
+
+  await check('export: interactionPartyDisplay falls back to party_type when id is unresolved', async () => {
+    const got = interactionPartyDisplay({ party_type: 'tenant', party_id: 'X' }, new Map());
+    if (got !== 'tenant') throw new Error(`unresolved id with no label should yield the type: got ${JSON.stringify(got)}`);
+  });
+
+  await check('export: interactionPartyDisplay uses party_label when there is no resolved id', async () => {
+    const other = interactionPartyDisplay({ party_type: 'other', party_id: null, party_label: 'The neighbor' }, new Map());
+    if (other !== 'The neighbor (other)') throw new Error(`other+label: got ${JSON.stringify(other)}`);
+
+    const inspector = interactionPartyDisplay({ party_type: 'inspector', party_id: null, party_label: 'Gas Safe Ltd' }, new Map());
+    if (inspector !== 'Gas Safe Ltd (inspector)') throw new Error(`inspector+label: got ${JSON.stringify(inspector)}`);
+  });
+
+  await check('export: interactionPartyDisplay shows the bare type for unspecified, empty for none', async () => {
+    const unspecified = interactionPartyDisplay({ party_type: 'unspecified', party_id: null }, new Map());
+    if (unspecified !== 'unspecified') throw new Error(`unspecified should render as the bare sentinel: got ${JSON.stringify(unspecified)}`);
+
+    const none = interactionPartyDisplay({ party_type: 'none' }, new Map());
+    if (none !== '') throw new Error(`party_type 'none' (note/agent_event) must render empty: got ${JSON.stringify(none)}`);
+  });
+
+  // (K.B) loadExportData resolves party_id -> name from tenants + vendors.
+  // Scope a FRESH tenancy so the assertions are isolated from the rest of
+  // the suite's interactions. The referenced tenant is deliberately NOT an
+  // occupant of this tenancy, so the resolution exercises the by-type
+  // tenants/vendors lookup (not the occupant pre-seed).
+  await check('export: loadExportData partyNames maps tenant id -> full_name and vendor id -> name', async () => {
+    const tenancy = await post<{ id: string }>(
+      `/v1/accounts/${A.accountId}/tenancies`,
+      { area_id: A.unitAreaId, start_date: '2026-03-01', status: 'active' },
+    );
+    const tenant = await post<{ id: string; full_name: string }>(
+      `/v1/accounts/${A.accountId}/tenants`, { full_name: 'Jane Tenant' },
+    );
+    const vendor = await post<{ id: string; name: string }>(
+      `/v1/accounts/${A.accountId}/vendors`, { name: 'Acme Plumbing' },
+    );
+    // A communication with this tenant as the resolved counterparty.
+    await post(`/v1/accounts/${A.accountId}/interactions`, {
+      tenancy_id: tenancy.id, party_type: 'tenant', party_id: tenant.id,
+      channel: 'phone', direction: 'inbound', occurred_at: '2026-03-05T10:00:00.000Z',
+      body: 'Tenant called about the boiler.',
+    });
+    // A communication with this vendor as the resolved counterparty.
+    await post(`/v1/accounts/${A.accountId}/interactions`, {
+      tenancy_id: tenancy.id, party_type: 'vendor', party_id: vendor.id,
+      channel: 'phone', direction: 'outbound', occurred_at: '2026-03-06T10:00:00.000Z',
+      body: 'Called the plumber to book the boiler repair.',
+    });
+
+    const data = await loadExportData({
+      accountId: A.accountId, tenancyId: tenancy.id, exporter: null,
+    });
+    if (data.partyNames.get(tenant.id) !== 'Jane Tenant') {
+      throw new Error(`partyNames should map the tenant id to full_name; got ${JSON.stringify(data.partyNames.get(tenant.id))}`);
+    }
+    if (data.partyNames.get(vendor.id) !== 'Acme Plumbing') {
+      throw new Error(`partyNames should map the vendor id to name; got ${JSON.stringify(data.partyNames.get(vendor.id))}`);
+    }
+    // And the rows feed through the render seam to the human-facing string.
+    const ids = new Set([tenant.id, vendor.id]);
+    const seen = new Set<string>();
+    for (const r of data.interactions) {
+      const pid = r.party_id as string | null;
+      if (pid && ids.has(pid)) seen.add(interactionPartyDisplay(r, data.partyNames));
+    }
+    if (!seen.has('Jane Tenant (tenant)')) throw new Error("expected a row to render as 'Jane Tenant (tenant)'");
+    if (!seen.has('Acme Plumbing (vendor)')) throw new Error("expected a row to render as 'Acme Plumbing (vendor)'");
+  });
+
+  // (K.C) End-to-end classify chain: capture role-unknown ('unspecified', no
+  // party_id), then classify it to a concrete tenant. The export must show
+  // "logged unspecified -> attributed to <name>": the root still reads
+  // 'unspecified', while the classify head names the resolved tenant.
+  await check('export: a classify attribution resolves to the tenant name; the root stays unspecified', async () => {
+    const tenancy = await post<{ id: string }>(
+      `/v1/accounts/${A.accountId}/tenancies`,
+      { area_id: A.unitAreaId, start_date: '2026-05-01', status: 'active' },
+    );
+    const tenant = await post<{ id: string; full_name: string }>(
+      `/v1/accounts/${A.accountId}/tenants`, { full_name: 'Sam Caller' },
+    );
+    // Capture: one-tap Log -- a real counterparty whose ROLE is not yet known.
+    const captured = await post<{ id: string }>(`/v1/accounts/${A.accountId}/interactions`, {
+      tenancy_id: tenancy.id, party_type: 'unspecified',
+      channel: 'phone', direction: 'inbound', occurred_at: '2026-05-10T10:00:00.000Z',
+      body: 'Someone phoned about a leak; took the details.',
+    });
+    // Enrich: classify completes the attribution (metadata only; body inherited).
+    const head = await post<{ id: string }>(`/v1/accounts/${A.accountId}/interactions`, {
+      corrects_id: captured.id, correction_kind: 'classify',
+      party_type: 'tenant', party_id: tenant.id,
+    });
+
+    const data = await loadExportData({
+      accountId: A.accountId, tenancyId: tenancy.id, exporter: null,
+    });
+    // (a) the classified tenant id resolves.
+    if (data.partyNames.get(tenant.id) !== 'Sam Caller') {
+      throw new Error(`partyNames should resolve the classified tenant; got ${JSON.stringify(data.partyNames.get(tenant.id))}`);
+    }
+    // (b) the chain head (the classify) names the tenant; the root stays unspecified.
+    const chain = groupInteractionChains(data.interactions).find((ch) => String(ch.root.id) === captured.id);
+    if (!chain) throw new Error('the captured entry must render as a chain root');
+    const rootDisplay = interactionPartyDisplay(chain.root, data.partyNames);
+    if (rootDisplay !== 'unspecified') {
+      throw new Error(`the root should still read 'unspecified' (the capture truth); got ${JSON.stringify(rootDisplay)}`);
+    }
+    const headRow = chain.corrections.find((x) => String(x.id) === head.id);
+    if (!headRow) throw new Error('the classify correction must appear in the chain');
+    const headDisplay = interactionPartyDisplay(headRow, data.partyNames);
+    if (headDisplay !== 'Sam Caller (tenant)') {
+      throw new Error(`the classify head should resolve to '<full_name> (tenant)'; got ${JSON.stringify(headDisplay)}`);
+    }
   });
 
   // =========================================================================
