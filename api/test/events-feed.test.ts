@@ -16,6 +16,11 @@
 //   (f) Ledger as_of: point-in-time accounting with charges, payment,
 //       allocation, and a future void.
 //   (g) Regression: ledger without as_of unchanged in shape and totals.
+//   (h) Snapshot contract: the interactions snapshot the agent's trigger poller
+//       binds to carries kind/direction/party_type/body/occurred_at present +
+//       typed, plus the vendor_id/party_id correlation handles present (nullable)
+//       -- pins docs/interactions-feed-ordering-reply-2.md so a column rename or
+//       type change fails in CI, not silently in the agent's prod.
 // ----------------------------------------------------------------------------
 
 import { execSync } from 'node:child_process';
@@ -371,6 +376,86 @@ await check('(a) concurrent writers vs polling reader: no gaps/dupes, strictly i
   }
   if (emptyPage.next_seq !== cursor) {
     throw new Error(`empty final page next_seq: expected ${cursor}, got ${emptyPage.next_seq}`);
+  }
+});
+
+// =========================================================================
+// (h) Snapshot contract — the fields the agent's trigger poller binds to
+// =========================================================================
+// Pins the contract in docs/interactions-feed-ordering-reply-2.md. The OpenAPI
+// types `snapshot` as unknown, so nothing else catches a silent reshape; this
+// is the enforcement. The snapshot is the raw row (to_jsonb(NEW)), identical
+// across insert paths, so a landlord-posted communication exercises the same
+// shape as the inbound capture_inbound_sms path the agent actually triggers on.
+
+await check('(h) interactions snapshot carries the contracted trigger fields, present + typed', async () => {
+  // Shaped like the rows the agent triggers on: an inbound contact with a body
+  // and a counterparty.
+  const occurred = '2026-05-02T14:30:00.000Z';
+  const probeBody = 'snapshot contract probe — leak under the sink';
+  const create = await api('POST', `/v1/accounts/${A.accountId}/interactions`, {
+    token: A.accessToken,
+    body: {
+      kind: 'communication',
+      channel: 'sms',
+      direction: 'inbound',
+      party_type: 'tenant',
+      body: probeBody,
+      occurred_at: occurred,
+    },
+  });
+  const created = assertStatus(create, 201, 'create communication') as { id: string };
+
+  // Locate this interaction's event in the feed (page until found).
+  let snap: Record<string, unknown> | null = null;
+  let cursor = 0;
+  for (let guard = 0; guard < 50; guard++) {
+    const page = await getFeed(A.accessToken, A.accountId,
+      { after_seq: cursor, entity_type: 'interactions', limit: 200 });
+    const hit = page.data.find((e) => e.entity_id === created.id);
+    if (hit) { snap = hit.snapshot; break; }
+    if (page.data.length === 0 || page.next_seq === cursor) break;
+    cursor = page.next_seq;
+  }
+  if (snap === null) throw new Error('contracted interaction event/snapshot not found in feed');
+
+  // Contract: every field is PRESENT (a rename drops the key → fail here).
+  // vendor_id/party_id are nullable correlation handles; presence is the
+  // guarantee, not non-null (this tenant row has vendor_id=null by construction).
+  const requiredKeys = ['kind', 'direction', 'party_type', 'body', 'occurred_at', 'party_id', 'vendor_id'] as const;
+  for (const k of requiredKeys) {
+    if (!(k in snap)) throw new Error(`snapshot missing contracted field '${k}'`);
+  }
+
+  // Contract: the trigger fields carry the exact values we wrote. We assert the
+  // value WE SENT, never the whole enum — additive enum growth (e.g. #29's
+  // mutual/unspecified directions) must stay non-breaking for an allowlist
+  // filter like direction == 'inbound'.
+  assertEq(snap['kind'], 'communication', 'snapshot.kind');
+  assertEq(snap['direction'], 'inbound', 'snapshot.direction');
+  assertEq(snap['party_type'], 'tenant', 'snapshot.party_type');
+  assertEq(snap['body'], probeBody, 'snapshot.body');
+
+  // Type guard (a type change → fail here).
+  for (const k of ['kind', 'direction', 'party_type', 'body'] as const) {
+    if (typeof snap[k] !== 'string') throw new Error(`snapshot.${k} not a string: got ${typeof snap[k]}`);
+  }
+
+  // occurred_at: jsonb renders timestamptz in pg's own format, not necessarily
+  // our input string, so assert the same INSTANT rather than byte-equality.
+  if (typeof snap['occurred_at'] !== 'string') {
+    throw new Error(`snapshot.occurred_at not a string: got ${typeof snap['occurred_at']}`);
+  }
+  if (new Date(snap['occurred_at'] as string).getTime() !== new Date(occurred).getTime()) {
+    throw new Error(`snapshot.occurred_at instant mismatch: ${String(snap['occurred_at'])}`);
+  }
+
+  // Correlation handles: string-or-null when present.
+  for (const k of ['party_id', 'vendor_id'] as const) {
+    const v = snap[k];
+    if (v !== null && typeof v !== 'string') {
+      throw new Error(`snapshot.${k} must be string|null, got ${typeof v}`);
+    }
   }
 });
 
