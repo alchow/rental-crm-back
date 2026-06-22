@@ -4,6 +4,8 @@ import { getAnonClient } from '../supabase/anon-client';
 import { getUserClient } from '../supabase/user-client';
 import { loadEnv } from '../env';
 import { ApiError, errorResponses } from './_lib/error';
+import { enableAgentForAccount } from '../admin/agent-grants';
+import { getLogger } from '../log';
 
 // /v1/auth/* fronts Supabase Auth. Clients only see this contract; the
 // underlying supabase-js calls and the atomic account-creation RPC are
@@ -158,6 +160,22 @@ auth.openapi(signupRoute, async (c) => {
   if (!row?.account_id) {
     throw new ApiError(500, 'database_error', 'RPC returned no account row');
   }
+
+  // Every new account gets the agent enabled by default (ADR-0009 grant flow,
+  // applied automatically here instead of waiting for the owner to opt in).
+  // Best-effort: the account is already committed by the RPC above and cannot
+  // be rolled back, so a failure here must not fail signup -- the owner can
+  // enable later via POST /v1/accounts/{id}/agent-grants. Removal stays manual
+  // via POST /v1/accounts/{id}/agent-grants/{id}/revoke.
+  try {
+    await enableAgentForAccount(row.account_id, data.user.id);
+  } catch (err) {
+    getLogger().error(
+      { err, accountId: row.account_id, userId: data.user.id },
+      'signup: default agent enablement failed; account created without agent',
+    );
+  }
+
   return c.json({
     user: { id: data.user.id, email: data.user.email ?? null },
     account: { id: row.account_id, role: row.role },

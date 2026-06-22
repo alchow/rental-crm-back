@@ -155,12 +155,19 @@ async function main(): Promise<void> {
   let capturedAgentUserId = '';
 
   // =========================================================================
-  // (a) owner enables agent → 201; uuid agent_user_id, granted_by=owner,
-  //     revoked_at=null.
+  // (a) signup auto-enables the agent (default-on): the new account already
+  //     has exactly one active grant, granted_by=owner, revoked_at=null,
+  //     uuid agent_user_id -- no owner POST required.
   // =========================================================================
-  await check('(a) owner enables agent → 201, grant shape correct', async () => {
-    const r = await api('POST', base, { token: owner.accessToken });
-    const grant = assertStatus(r, 201, 'enable') as Record<string, unknown>;
+  await check('(a) signup auto-enabled agent → one active grant, shape correct', async () => {
+    const r = await api('GET', base, { token: owner.accessToken });
+    assertStatus(r, 200, 'list');
+    const { data } = r.body as { data: Record<string, unknown>[] };
+    const active = data.filter((g) => g.revoked_at === null);
+    if (active.length !== 1) {
+      throw new Error(`expected exactly 1 active grant after signup, got ${active.length}`);
+    }
+    const grant = active[0]!;
     grantId = grant.id as string;
     if (!UUID_RE.test(grant.agent_user_id as string)) {
       throw new Error(`agent_user_id not a uuid: ${grant.agent_user_id}`);
