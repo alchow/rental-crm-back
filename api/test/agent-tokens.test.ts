@@ -166,12 +166,17 @@ async function main(): Promise<void> {
   const admin = getAdminClient();
   const grantsBase = `/v1/accounts/${owner.accountId}/agent-grants`;
 
-  // Provision the agent identity + grant for the owner's account.
-  const grantResp = await api('POST', grantsBase, { token: owner.accessToken });
-  if (grantResp.status !== 201) {
-    throw new Error(`setup: POST agent-grants failed: ${grantResp.status} ${JSON.stringify(grantResp.body)}`);
+  // The agent identity + grant are auto-provisioned at signup (default-on),
+  // so read the existing active grant instead of creating one.
+  const grantResp = await api('GET', grantsBase, { token: owner.accessToken });
+  if (grantResp.status !== 200) {
+    throw new Error(`setup: GET agent-grants failed: ${grantResp.status} ${JSON.stringify(grantResp.body)}`);
   }
-  const grantBody = grantResp.body as { id: string; agent_user_id: string };
+  const grantList = (grantResp.body as { data: { id: string; agent_user_id: string; revoked_at: string | null }[] }).data;
+  const grantBody = grantList.find((g) => g.revoked_at === null);
+  if (!grantBody) {
+    throw new Error(`setup: no active agent grant after signup: ${JSON.stringify(grantList)}`);
+  }
   let grantId = grantBody.id;
 
   // Provision the root secret (stores hash in DB, returns plaintext once).
