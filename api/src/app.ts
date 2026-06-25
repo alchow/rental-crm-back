@@ -116,6 +116,12 @@ export function buildApp(): OpenAPIHono {
     (UPLOAD_PATH_RE.test(c.req.path) ? uploadBodyLimit : defaultBodyLimit)(c, next),
   );
 
+  // Liveness probe: "the process is up", nothing more. No auth, no DB, no
+  // capability probes -- deliberately cheaper than /healthz so a keep-alive
+  // pinger (e.g. a scheduled curl to stop the host idling) doesn't trigger a
+  // DB round-trip on every hit. Use /healthz when you need dependency health.
+  app.get('/livez', (c) => c.text('ok'));
+
   app.get('/healthz', async (c) => {
     const heic = heicSupported();
     return c.json({
