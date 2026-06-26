@@ -92,6 +92,12 @@ const NO_SEED_REQUIRED = new Set([
   // fixture. agent_grants still gets the cross-tenant == 0 isolation check.
   'agent_grants',
   'agent_principals',
+  // Tenant document vault: created on demand by document upload/template/link
+  // APIs; the static two-account fixture has no natural document rows.
+  'documents',
+  'document_versions',
+  'document_access_tokens',
+  'document_access_events',
 ]);
 
 interface ColumnInfo {

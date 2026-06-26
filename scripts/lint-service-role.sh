@@ -32,7 +32,7 @@ PATTERNS=(
 #     attribution, storage path, derived_from chain, byte-for-byte
 #     immutability of corrected interactions, unreachable fixture states like
 #     a soft-deleted membership, agent grant membership lifecycle, agent token
-#     exchange and RLS-denial mapping).
+#     exchange, document access events, and RLS-denial mapping).
 #     These are TEST code, never shipped; the quarantine defends production
 #     runtime, and verification of that runtime sits on the other side of the
 #     boundary by design.
@@ -59,6 +59,7 @@ EXCLUDES=(
   #     into a client constructor in this file.
   ':!api/test/search.test.ts'
   ':!api/test/attachments.test.ts'
+  ':!api/test/documents.test.ts'
   ':!api/test/intake.test.ts'
   ':!api/test/phase9.test.ts'
   ':!api/test/phase10.test.ts'
