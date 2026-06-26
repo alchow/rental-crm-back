@@ -10,6 +10,7 @@
     "build": "tsup && cp -R src/static dist/static",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:api-isolation": "tsx test/api-isolation.test.ts",
+    "test:profile": "tsx test/profile.test.ts",
     "test:search": "tsx test/search.test.ts",
     "test:intake": "tsx test/intake.test.ts",
     "test:attachments": "tsx test/attachments.test.ts",

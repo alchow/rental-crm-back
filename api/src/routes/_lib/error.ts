@@ -78,6 +78,8 @@ export type ErrorCode =
   | 'invalid_correction_target'
   | 'database_error'
   | 'internal_error'
+  // profile: a submitted phone number cannot be normalised to E.164
+  | 'invalid_phone'
   // agent-principal firewall codes (Workstream D)
   | 'agent_forbidden'           // agent attempted a forbidden operation (correction/retraction)
   | 'agent_entry_type_forbidden' // agent attempted to append a communication directly
