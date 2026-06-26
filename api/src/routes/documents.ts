@@ -3,7 +3,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
-import { processAndStoreBytes } from '../admin/storage';
+import { processAndStoreBytes, removeOrphanStoredObject } from '../admin/storage';
 import {
   documentTemplates,
   getDocumentTemplate,
@@ -34,18 +34,28 @@ function boolFromForm(v: string | File | undefined, fallback: boolean): boolean 
   return ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase());
 }
 
-function clientIp(c: { req: { header: (n: string) => string | undefined } }): string {
-  return (
-    c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ??
-    c.req.header('cf-connecting-ip') ??
-    'unknown'
-  );
+function clientIp(c: { req: { header: (n: string) => string | undefined } }): string | null {
+  // Returns null (not a sentinel) when there is no usable client IP. An empty
+  // `X-Forwarded-For` first hop yields '' -- falsy but NOT nullish, so a `??`
+  // fallback would keep it; that '' then fails the limiter's length CHECK, and
+  // a shared 'unknown' bucket would let one client's volume lock out everyone.
+  const xff = c.req.header('x-forwarded-for')?.split(',')[0]?.trim();
+  if (xff) return xff;
+  const cf = c.req.header('cf-connecting-ip')?.trim();
+  if (cf) return cf;
+  return null;
 }
 
-// Per-IP rate limit guard for the public, unauthenticated document-access
-// endpoints. Throws 429 when over (fail-closed if the limiter infra is down).
+// Per-IP rate-limit guard for the public, unauthenticated document-access
+// endpoints. When the client IP can't be identified we SKIP the cap rather than
+// bucket everyone into one shared key (that would be a self-inflicted DoS); the
+// token is the real auth and the viewed-dedupe bounds writes regardless. The
+// limiter itself fails OPEN (see bumpDocAccessIpRate) so a limiter hiccup can't
+// lock tenants out of their own documents.
 async function guardDocAccessRate(c: Parameters<typeof clientIp>[0]): Promise<void> {
-  const { ok } = await bumpDocAccessIpRate(clientIp(c));
+  const ip = clientIp(c);
+  if (!ip) return;
+  const { ok } = await bumpDocAccessIpRate(ip);
   if (!ok) throw new ApiError(429, 'conflict', 'rate limit exceeded; try again later');
 }
 
@@ -516,22 +526,31 @@ documentsApp.openapi(uploadRoute, async (c) => {
 
   // Store the bytes first (service-role; content-addressed). The attachment +
   // document + version ROWS are then written atomically by the RPC. If the RPC
-  // fails, the stored object is an orphan a storage-GC cron prunes -- never a
-  // half-written document.
+  // fails, the rows never land and we remove the just-stored object so the
+  // tenant PDF isn't leaked -- never a half-written document.
   const bytes = new Uint8Array(await (file as File).arrayBuffer());
   const stored = await processAndStoreBytes(accountId, bytes, 'application/pdf');
-  const document = await createTenancyDocument(sb, {
-    p_account_id: accountId,
-    p_tenancy_id: parsed.data.tenancy_id,
-    p_document_type: parsed.data.document_type,
-    p_title: parsed.data.title,
-    p_requires_ack: parsed.data.requires_ack ?? false,
-    p_source: 'landlord_upload',
-    p_content_hash: stored.primary.hash,
-    p_mime_type: stored.primary.mimeType,
-    p_size_bytes: stored.primary.sizeBytes,
-    p_attachment_path: stored.primary.storagePath,
-  });
+  let document: z.infer<typeof DocumentRow>;
+  try {
+    document = await createTenancyDocument(sb, {
+      p_account_id: accountId,
+      p_tenancy_id: parsed.data.tenancy_id,
+      p_document_type: parsed.data.document_type,
+      p_title: parsed.data.title,
+      p_requires_ack: parsed.data.requires_ack ?? false,
+      p_source: 'landlord_upload',
+      p_content_hash: stored.primary.hash,
+      p_mime_type: stored.primary.mimeType,
+      p_size_bytes: stored.primary.sizeBytes,
+      p_attachment_path: stored.primary.storagePath,
+    });
+  } catch (e) {
+    // Rows didn't land -> don't leak the stored PDF (tenant PII). Reference-
+    // counted: only removes the object if no live attachment references these
+    // content-addressed bytes (a byte-identical upload could share them).
+    await removeOrphanStoredObject(accountId, stored.primary.storagePath);
+    throw e;
+  }
   return c.json(document, 201);
 });
 
@@ -667,7 +686,7 @@ documentAccessApp.openapi(tenantAccessRoute, async (c) => {
   const { token: rawToken } = c.req.valid('param');
   const payload = await tenantDocumentAccessPayload({
     secret: rawToken,
-    ip: clientIp(c),
+    ip: clientIp(c) ?? 'unknown',
     userAgent: c.req.header('user-agent') ?? null,
   });
   return c.json(payload as z.infer<typeof TenantAccessResponse>, 200);
@@ -689,7 +708,7 @@ documentAccessApp.openapi(accessDownloadRoute, async (c) => {
     documentId,
     documentVersionId: document.latest_version?.id ?? null,
     eventType: 'downloaded',
-    ip: clientIp(c),
+    ip: clientIp(c) ?? 'unknown',
     userAgent: c.req.header('user-agent') ?? null,
   });
   return binaryResponse(bytes, { mimeType, filename, contentHash });
@@ -708,7 +727,7 @@ documentAccessApp.openapi(ackRoute, async (c) => {
     documentId,
     documentVersionId: document.latest_version?.id ?? null,
     eventType: 'acknowledged',
-    ip: clientIp(c),
+    ip: clientIp(c) ?? 'unknown',
     userAgent: c.req.header('user-agent') ?? null,
   });
   return c.json({

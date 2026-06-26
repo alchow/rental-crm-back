@@ -56,8 +56,14 @@ const TOKEN_TOUCH_MIN_INTERVAL_MS = 60 * 1000;
 
 /**
  * Per-IP sliding-window rate limit for the public document-access endpoints.
- * Fail-closed: if the rate-limit infra is unreachable we deny rather than leave
- * a leaked link un-bounded (a temporary 429 is strictly safer).
+ *
+ * Fails OPEN (unlike intake.ts, which fails closed): these endpoints serve a
+ * tenant READING their own documents, authenticated by the magic-link token.
+ * The IP cap is a soft abuse backstop, not an authz control, so a limiter
+ * hiccup (DB blip, bucket-table contention, function missing in an env) must
+ * never lock a tenant out of their lease. Write-amplification is bounded
+ * structurally by the once-per-(token,document) viewed dedupe regardless of
+ * this limiter, so failing open here costs nothing on the write side.
  */
 export async function bumpDocAccessIpRate(ip: string): Promise<{ ok: boolean }> {
   const admin = getAdminClient();
@@ -66,15 +72,10 @@ export async function bumpDocAccessIpRate(ip: string): Promise<{ ok: boolean }> 
     p_scope: DOC_ACCESS_IP_SCOPE,
     p_window_sec: DOC_ACCESS_IP_WINDOW_S,
   });
-  if (error) return { ok: false };
+  if (error) return { ok: true };
   const count = typeof data === 'number' ? data : Number(data);
+  if (!Number.isFinite(count)) return { ok: true };
   return { ok: count <= DOC_ACCESS_IP_LIMIT };
-}
-
-/** Test-only: clears the per-IP DB buckets so tests don't leak across runs. */
-export async function _resetDocAccessIpBucketsForTests(): Promise<void> {
-  const admin = getAdminClient();
-  await admin.from('ip_rate_buckets').delete().eq('scope', DOC_ACCESS_IP_SCOPE);
 }
 
 async function latestVersionsAdmin(
@@ -317,10 +318,14 @@ export async function tenantDocumentAccessPayload(args: {
         ip: args.ip.slice(0, 128),
         user_agent: args.userAgent?.slice(0, 500) ?? null,
       }));
-    if (viewedRows.length > 0) {
-      const { error: evErr } = await admin.from('document_access_events').insert(viewedRows);
-      // 23505 = a concurrent first-view won the race; the viewed row exists,
-      // which is the desired end state, so this is not an error.
+    // Insert per-row, not as one batch: the unique partial index makes a
+    // multi-row INSERT atomic, so a 23505 on one already-raced document would
+    // roll back the whole statement and drop the sibling documents' first-view
+    // events. Per-row, a concurrent first-view race on one doc (swallowed
+    // 23505 -- the viewed row already exists, the desired end state) leaves the
+    // others recorded. The SELECT-filter above keeps this loop short.
+    for (const row of viewedRows) {
+      const { error: evErr } = await admin.from('document_access_events').insert(row);
       if (evErr && evErr.code !== '23505') throw new ApiError(500, 'database_error', evErr.message);
     }
   }
