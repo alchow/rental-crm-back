@@ -393,3 +393,28 @@ export async function softDeleteAttachment(
 export function sha256Bytes(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
+
+/**
+ * Best-effort removal of a freshly-stored object whose owning DB row(s) failed
+ * to commit (e.g. an atomic create RPC threw AFTER the bytes were uploaded).
+ * Reference-counted by the content-addressed path: under the Phase 9 scheme
+ * (`<account>/<hash>.<ext>`) two attachment rows can share one storage object,
+ * so we only delete the object when NO live attachments row references it --
+ * otherwise we would orphan another attachment's bytes. Safe to call when the
+ * caller's own row never landed (the common failure case).
+ */
+export async function removeOrphanStoredObject(
+  accountId: string,
+  storagePath: string,
+): Promise<void> {
+  const admin = getAdminClient();
+  const { data } = await admin
+    .from('attachments')
+    .select('id')
+    .eq('account_id', accountId)
+    .eq('storage_path', storagePath)
+    .is('deleted_at', null)
+    .limit(1);
+  if (data && data.length > 0) return;
+  await admin.storage.from(BUCKET).remove([storagePath]).catch(() => {});
+}
