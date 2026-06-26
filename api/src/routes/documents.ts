@@ -3,13 +3,14 @@ import { randomBytes, createHash } from 'node:crypto';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
-import { uploadAttachment } from '../admin/storage';
+import { processAndStoreBytes } from '../admin/storage';
 import {
   documentTemplates,
   getDocumentTemplate,
   readStaticDocumentAsset,
 } from '../admin/document-templates';
 import {
+  bumpDocAccessIpRate,
   insertDocumentAccessEvent,
   loadDocumentForDownload,
   lookupDocumentAccessToken,
@@ -40,6 +41,22 @@ function clientIp(c: { req: { header: (n: string) => string | undefined } }): st
     'unknown'
   );
 }
+
+// Per-IP rate limit guard for the public, unauthenticated document-access
+// endpoints. Throws 429 when over (fail-closed if the limiter infra is down).
+async function guardDocAccessRate(c: Parameters<typeof clientIp>[0]): Promise<void> {
+  const { ok } = await bumpDocAccessIpRate(clientIp(c));
+  if (!ok) throw new ApiError(429, 'conflict', 'rate limit exceeded; try again later');
+}
+
+// 429 added to the OpenAPI response map for the public routes (reuses the
+// shared error envelope, mirroring the intake endpoint).
+const rateLimitedResponse = {
+  429: {
+    description: 'rate limited',
+    content: { 'application/json': { schema: errorResponses[400].content['application/json'].schema } },
+  },
+} as const;
 
 const DocumentType = z.enum(['lease', 'move_in', 'move_out', 'lead_paint', 'disclosure', 'other']);
 const VersionSource = z.enum(['landlord_upload', 'bundled_static']);
@@ -256,6 +273,40 @@ function binaryResponse(bytes: Uint8Array, opts: {
   });
 }
 
+// Atomic create: the documents + document_versions (+ attachment for uploads)
+// rows land in one transaction via the create_tenancy_document RPC. Called
+// through the RLS client so membership + tenancy scoping are enforced and the
+// audit actor is the landlord (auth.uid()). A missing/soft-deleted tenancy
+// surfaces as P0002 -> 404.
+async function createTenancyDocument(
+  sb: ReturnType<typeof getSb>,
+  params: {
+    p_account_id: string;
+    p_tenancy_id: string;
+    p_document_type: z.infer<typeof DocumentType>;
+    p_title: string;
+    p_requires_ack: boolean;
+    p_source: z.infer<typeof VersionSource>;
+    p_content_hash: string;
+    p_mime_type: string;
+    p_size_bytes: number;
+    p_attachment_path?: string | null;
+    p_static_template_id?: string | null;
+    p_static_asset_path?: string | null;
+  },
+): Promise<z.infer<typeof DocumentRow>> {
+  const { data, error } = await sb.rpc('create_tenancy_document', params);
+  if (error) {
+    if (error.code === 'P0002' || /tenancy_not_found/.test(error.message)) {
+      throw new ApiError(404, 'not_found', 'tenancy not found');
+    }
+    throw new ApiError(500, 'database_error', error.message);
+  }
+  const result = data as { document: object; version: object } | null;
+  if (!result) throw new ApiError(500, 'database_error', 'document creation returned no row');
+  return { ...(result.document as object), latest_version: result.version } as z.infer<typeof DocumentRow>;
+}
+
 // ----- authenticated landlord routes ---------------------------------------
 
 const listTemplatesRoute = createRoute({
@@ -450,7 +501,9 @@ documentsApp.openapi(uploadRoute, async (c) => {
   }
 
   const sb = getSb(c);
-  const auth = c.get('auth');
+  // Cheap tenancy pre-check before we spend bytes on storage: avoids an orphan
+  // blob on the common "bad tenancy" 404. The RPC re-checks under RLS as the
+  // authoritative, transactional guard.
   const { data: tenancy, error: tErr } = await sb
     .from('tenancies')
     .select('id')
@@ -461,52 +514,25 @@ documentsApp.openapi(uploadRoute, async (c) => {
   if (tErr) throw new ApiError(500, 'database_error', tErr.message);
   if (!tenancy) throw new ApiError(404, 'not_found', 'tenancy not found');
 
-  const { data: document, error: docErr } = await sb
-    .from('documents')
-    .insert({
-      account_id: accountId,
-      tenancy_id: parsed.data.tenancy_id,
-      document_type: parsed.data.document_type,
-      title: parsed.data.title,
-      requires_ack: parsed.data.requires_ack ?? false,
-      published_at: new Date().toISOString(),
-      created_by: auth.userId,
-    })
-    .select('*')
-    .single();
-  if (docErr || !document) throw new ApiError(500, 'database_error', docErr?.message ?? 'document insert failed');
-
-  const versionId = crypto.randomUUID();
+  // Store the bytes first (service-role; content-addressed). The attachment +
+  // document + version ROWS are then written atomically by the RPC. If the RPC
+  // fails, the stored object is an orphan a storage-GC cron prunes -- never a
+  // half-written document.
   const bytes = new Uint8Array(await (file as File).arrayBuffer());
-  const uploaded = await uploadAttachment({
-    accountId,
-    entityType: 'document_versions',
-    entityId: versionId,
-    bytes,
-    mimeType: 'application/pdf',
-    filename: (file as File).name,
-    uploadedBy: auth.userId,
+  const stored = await processAndStoreBytes(accountId, bytes, 'application/pdf');
+  const document = await createTenancyDocument(sb, {
+    p_account_id: accountId,
+    p_tenancy_id: parsed.data.tenancy_id,
+    p_document_type: parsed.data.document_type,
+    p_title: parsed.data.title,
+    p_requires_ack: parsed.data.requires_ack ?? false,
+    p_source: 'landlord_upload',
+    p_content_hash: stored.primary.hash,
+    p_mime_type: stored.primary.mimeType,
+    p_size_bytes: stored.primary.sizeBytes,
+    p_attachment_path: stored.primary.storagePath,
   });
-  const { data: version, error: verErr } = await sb
-    .from('document_versions')
-    .insert({
-      id: versionId,
-      account_id: accountId,
-      document_id: document.id,
-      version_no: 1,
-      source: 'landlord_upload',
-      attachment_id: uploaded.primary.id,
-      content_hash: uploaded.primary.content_hash,
-      mime_type: uploaded.primary.mime_type,
-      size_bytes: uploaded.primary.size_bytes,
-      created_by: auth.userId,
-    })
-    .select('*')
-    .single();
-  if (verErr || !version) {
-    throw new ApiError(500, 'database_error', verErr?.message ?? 'document version insert failed');
-  }
-  return c.json({ ...(document as object), latest_version: version } as z.infer<typeof DocumentRow>, 201);
+  return c.json(document, 201);
 });
 
 documentsApp.openapi(fromTemplateRoute, async (c) => {
@@ -515,53 +541,21 @@ documentsApp.openapi(fromTemplateRoute, async (c) => {
   const template = getDocumentTemplate(body.template_id);
   if (!template) throw new ApiError(404, 'not_found', 'document template not found');
   const sb = getSb(c);
-  const auth = c.get('auth');
-  const { data: tenancy, error: tErr } = await sb
-    .from('tenancies')
-    .select('id')
-    .eq('account_id', accountId)
-    .eq('id', body.tenancy_id)
-    .is('deleted_at', null)
-    .maybeSingle();
-  if (tErr) throw new ApiError(500, 'database_error', tErr.message);
-  if (!tenancy) throw new ApiError(404, 'not_found', 'tenancy not found');
-
   const asset = await readStaticDocumentAsset(template.asset_path);
-  const { data: document, error: docErr } = await sb
-    .from('documents')
-    .insert({
-      account_id: accountId,
-      tenancy_id: body.tenancy_id,
-      document_type: template.document_type,
-      title: body.title ?? template.title,
-      requires_ack: body.requires_ack ?? template.requires_ack,
-      published_at: new Date().toISOString(),
-      created_by: auth.userId,
-    })
-    .select('*')
-    .single();
-  if (docErr || !document) throw new ApiError(500, 'database_error', docErr?.message ?? 'document insert failed');
-
-  const { data: version, error: verErr } = await sb
-    .from('document_versions')
-    .insert({
-      account_id: accountId,
-      document_id: document.id,
-      version_no: 1,
-      source: 'bundled_static',
-      static_template_id: template.id,
-      static_asset_path: template.asset_path,
-      content_hash: asset.content_hash,
-      mime_type: template.mime_type,
-      size_bytes: asset.size_bytes,
-      created_by: auth.userId,
-    })
-    .select('*')
-    .single();
-  if (verErr || !version) {
-    throw new ApiError(500, 'database_error', verErr?.message ?? 'document version insert failed');
-  }
-  return c.json({ ...(document as object), latest_version: version } as z.infer<typeof DocumentRow>, 201);
+  const document = await createTenancyDocument(sb, {
+    p_account_id: accountId,
+    p_tenancy_id: body.tenancy_id,
+    p_document_type: template.document_type,
+    p_title: body.title ?? template.title,
+    p_requires_ack: body.requires_ack ?? template.requires_ack,
+    p_source: 'bundled_static',
+    p_content_hash: asset.content_hash,
+    p_mime_type: template.mime_type,
+    p_size_bytes: asset.size_bytes,
+    p_static_template_id: template.id,
+    p_static_asset_path: template.asset_path,
+  });
+  return c.json(document, 201);
 });
 
 documentsApp.openapi(downloadRoute, async (c) => {
@@ -636,6 +630,7 @@ const tenantAccessRoute = createRoute({
   responses: {
     200: { description: 'documents', content: { 'application/json': { schema: TenantAccessResponse } } },
     ...errorResponses,
+    ...rateLimitedResponse,
   },
 });
 
@@ -648,6 +643,7 @@ const ackRoute = createRoute({
   responses: {
     200: { description: 'acknowledged', content: { 'application/json': { schema: AckResponse } } },
     ...errorResponses,
+    ...rateLimitedResponse,
   },
 });
 
@@ -660,12 +656,14 @@ const accessDownloadRoute = createRoute({
   responses: {
     200: { description: 'document bytes' },
     ...errorResponses,
+    ...rateLimitedResponse,
   },
 });
 
 export const documentAccessApp = newApiApp();
 
 documentAccessApp.openapi(tenantAccessRoute, async (c) => {
+  await guardDocAccessRate(c);
   const { token: rawToken } = c.req.valid('param');
   const payload = await tenantDocumentAccessPayload({
     secret: rawToken,
@@ -676,6 +674,7 @@ documentAccessApp.openapi(tenantAccessRoute, async (c) => {
 });
 
 documentAccessApp.openapi(accessDownloadRoute, async (c) => {
+  await guardDocAccessRate(c);
   const { token: rawToken, documentId } = c.req.valid('param');
   const token = await lookupDocumentAccessToken(rawToken);
   const { document, bytes, mimeType, filename, contentHash } = await loadDocumentForDownload(
@@ -697,6 +696,7 @@ documentAccessApp.openapi(accessDownloadRoute, async (c) => {
 });
 
 documentAccessApp.openapi(ackRoute, async (c) => {
+  await guardDocAccessRate(c);
   const { token: rawToken, documentId } = c.req.valid('param');
   const token = await lookupDocumentAccessToken(rawToken);
   const { document } = await loadDocumentForDownload(token.account_id, documentId);

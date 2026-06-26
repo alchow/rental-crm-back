@@ -5,6 +5,9 @@
 *.pem
 *.key
 
+# Codex CLI local config — holds a RENDER_API_KEY in config.toml; never commit
+.codex/
+
 # Node
 node_modules/
 .pnpm-store/

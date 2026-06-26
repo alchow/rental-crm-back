@@ -154,6 +154,9 @@ async function main(): Promise<void> {
   const admin = createClient(status.API_URL, status.SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
+  // Clear the per-IP doc-access rate buckets so repeated test runs in the same
+  // 10-minute window don't trip the limiter.
+  await admin.from('ip_rate_buckets').delete().eq('scope', 'doc_access');
 
   let uploadedDocId = '';
   let bundledDocId = '';
@@ -215,6 +218,24 @@ async function main(): Promise<void> {
     const ids = body.documents.map((d) => d.id);
     if (!ids.includes(uploadedDocId) || !ids.includes(bundledDocId)) {
       throw new Error(`public list missing docs: ${ids.join(',')}`);
+    }
+  });
+
+  await check('repeated magic-link loads do not multiply viewed events', async () => {
+    // One load already happened in the previous check; load twice more. The
+    // once-per-(token,document) dedupe must keep the viewed count at one row
+    // per published document rather than growing with each refresh.
+    for (let i = 0; i < 2; i++) {
+      const r = await api('GET', `/v1/document-access/${linkSecret}`);
+      assertStatus(r, 200, `repeat list ${i}`);
+    }
+    const { data } = await admin
+      .from('document_access_events')
+      .select('id')
+      .eq('token_id', linkId)
+      .eq('event_type', 'viewed');
+    if (!data || data.length !== 2) {
+      throw new Error(`expected 2 viewed events after repeated loads, got ${data?.length ?? 0}`);
     }
   });
 

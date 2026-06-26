@@ -45,6 +45,38 @@ export interface DocumentAccessTokenRow {
   expires_at: string;
 }
 
+// Magic-link reads are legitimate (a tenant may browse several documents), so
+// the per-IP cap is generous; the real write bound is the once-per-(token,doc)
+// 'viewed' dedupe below. This window is the abuse backstop on an unauthenticated
+// surface, reusing the same DB sliding-window the intake flow uses.
+const DOC_ACCESS_IP_SCOPE = 'doc_access';
+const DOC_ACCESS_IP_WINDOW_S = 10 * 60;
+const DOC_ACCESS_IP_LIMIT = 120;
+const TOKEN_TOUCH_MIN_INTERVAL_MS = 60 * 1000;
+
+/**
+ * Per-IP sliding-window rate limit for the public document-access endpoints.
+ * Fail-closed: if the rate-limit infra is unreachable we deny rather than leave
+ * a leaked link un-bounded (a temporary 429 is strictly safer).
+ */
+export async function bumpDocAccessIpRate(ip: string): Promise<{ ok: boolean }> {
+  const admin = getAdminClient();
+  const { data, error } = await admin.rpc('bump_ip_rate_bucket', {
+    p_ip: ip.slice(0, 64),
+    p_scope: DOC_ACCESS_IP_SCOPE,
+    p_window_sec: DOC_ACCESS_IP_WINDOW_S,
+  });
+  if (error) return { ok: false };
+  const count = typeof data === 'number' ? data : Number(data);
+  return { ok: count <= DOC_ACCESS_IP_LIMIT };
+}
+
+/** Test-only: clears the per-IP DB buckets so tests don't leak across runs. */
+export async function _resetDocAccessIpBucketsForTests(): Promise<void> {
+  const admin = getAdminClient();
+  await admin.from('ip_rate_buckets').delete().eq('scope', DOC_ACCESS_IP_SCOPE);
+}
+
 async function latestVersionsAdmin(
   accountId: string,
   documentIds: string[],
@@ -130,7 +162,7 @@ export async function lookupDocumentAccessToken(secret: string): Promise<Documen
   const hash = hashSecret(secret);
   const { data, error } = await admin
     .from('document_access_tokens')
-    .select('id, account_id, tenancy_id, tenant_id, expires_at, revoked_at, deleted_at')
+    .select('id, account_id, tenancy_id, tenant_id, expires_at, revoked_at, deleted_at, last_used_at')
     .eq('secret_hash', '\\x' + hash.toString('hex'))
     .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
@@ -140,10 +172,17 @@ export async function lookupDocumentAccessToken(secret: string): Promise<Documen
   if (new Date(data.expires_at as string).getTime() <= Date.now()) {
     throw new ApiError(404, 'not_found', 'invalid token');
   }
-  await admin
-    .from('document_access_tokens')
-    .update({ last_used_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-    .eq('id', data.id);
+  // Throttle the last_used_at write: every UPDATE here fires the audit trigger
+  // (a per-account chain row), so on a refresh-heavy magic link we'd amplify
+  // audit writes one-per-request. Only bump when the stamp is stale (>60s).
+  const lastUsedMs = data.last_used_at ? new Date(data.last_used_at as string).getTime() : 0;
+  if (Date.now() - lastUsedMs > TOKEN_TOUCH_MIN_INTERVAL_MS) {
+    const nowIso = new Date().toISOString();
+    await admin
+      .from('document_access_tokens')
+      .update({ last_used_at: nowIso, updated_at: nowIso })
+      .eq('id', data.id);
+  }
   return {
     id: data.id as string,
     account_id: data.account_id as string,
@@ -253,19 +292,37 @@ export async function tenantDocumentAccessPayload(args: {
   const ackByDoc = new Map((ackRows ?? []).map((r) => [r.document_id as string, r.occurred_at as string]));
 
   if (docsWithVersions.length > 0) {
-    const viewedRows = docsWithVersions.map((d) => ({
-      account_id: token.account_id,
-      tenancy_id: token.tenancy_id,
-      document_id: d.id,
-      document_version_id: d.latest_version.id,
-      token_id: token.id,
-      tenant_id: token.tenant_id,
-      event_type: 'viewed',
-      ip: args.ip.slice(0, 128),
-      user_agent: args.userAgent?.slice(0, 500) ?? null,
-    }));
-    const { error: evErr } = await admin.from('document_access_events').insert(viewedRows);
-    if (evErr) throw new ApiError(500, 'database_error', evErr.message);
+    // Record at most one 'viewed' event per (token, document). Without this a
+    // refresh re-inserts a viewed row (and a per-account audit-chain row) for
+    // every document on every load. We skip docs this token has already viewed
+    // and let the unique partial index back-stop races (swallow 23505).
+    const { data: seenRows, error: seenErr } = await admin
+      .from('document_access_events')
+      .select('document_id')
+      .eq('token_id', token.id)
+      .eq('event_type', 'viewed')
+      .is('deleted_at', null);
+    if (seenErr) throw new ApiError(500, 'database_error', seenErr.message);
+    const alreadyViewed = new Set((seenRows ?? []).map((r) => r.document_id as string));
+    const viewedRows = docsWithVersions
+      .filter((d) => !alreadyViewed.has(d.id))
+      .map((d) => ({
+        account_id: token.account_id,
+        tenancy_id: token.tenancy_id,
+        document_id: d.id,
+        document_version_id: d.latest_version.id,
+        token_id: token.id,
+        tenant_id: token.tenant_id,
+        event_type: 'viewed',
+        ip: args.ip.slice(0, 128),
+        user_agent: args.userAgent?.slice(0, 500) ?? null,
+      }));
+    if (viewedRows.length > 0) {
+      const { error: evErr } = await admin.from('document_access_events').insert(viewedRows);
+      // 23505 = a concurrent first-view won the race; the viewed row exists,
+      // which is the desired end state, so this is not an error.
+      if (evErr && evErr.code !== '23505') throw new ApiError(500, 'database_error', evErr.message);
+    }
   }
 
   const area = Array.isArray(tenancy.areas) ? tenancy.areas[0] : tenancy.areas;

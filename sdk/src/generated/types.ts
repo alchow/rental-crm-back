@@ -8203,6 +8203,15 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description rate limited */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
                 /** @description server error */
                 500: {
                     headers: {
@@ -8260,6 +8269,15 @@ export interface paths {
                 };
                 /** @description not found / not a member */
                 404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description rate limited */
+                429: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -8328,6 +8346,15 @@ export interface paths {
                 };
                 /** @description not found / not a member */
                 404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description rate limited */
+                429: {
                     headers: {
                         [name: string]: unknown;
                     };
