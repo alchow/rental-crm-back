@@ -63,6 +63,7 @@ export const ALLOWED_ENTITY_TYPES = new Set<string>([
   'inspections',
   'inspection_report',
   'interactions',
+  'document_versions',
 ]);
 
 function mimeToExt(mime: string): string {

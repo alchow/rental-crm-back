@@ -32,7 +32,7 @@ PATTERNS=(
 #     attribution, storage path, derived_from chain, byte-for-byte
 #     immutability of corrected interactions, unreachable fixture states like
 #     a soft-deleted membership, agent grant membership lifecycle, agent token
-#     exchange and RLS-denial mapping).
+#     exchange, document access events, and RLS-denial mapping).
 #     These are TEST code, never shipped; the quarantine defends production
 #     runtime, and verification of that runtime sits on the other side of the
 #     boundary by design.
@@ -59,6 +59,7 @@ EXCLUDES=(
   #     into a client constructor in this file.
   ':!api/test/search.test.ts'
   ':!api/test/attachments.test.ts'
+  ':!api/test/documents.test.ts'
   ':!api/test/intake.test.ts'
   ':!api/test/phase9.test.ts'
   ':!api/test/phase10.test.ts'
@@ -68,6 +69,12 @@ EXCLUDES=(
   ':!api/test/agent-principal.test.ts'
   ':!api/test/agent-grants.test.ts'
   ':!api/test/agent-tokens.test.ts'
+  #   - api/test/agent-membership-divergence.test.ts: induces an out-of-band
+  #     agent-membership soft-delete via the admin client and reads the row back
+  #     to assert the grant<->membership invariant (the 2026-06-25 incident
+  #     regression). TEST code; assigns process.env from supabase status and
+  #     uses the admin client only to set up/verify an unreachable fixture state.
+  ':!api/test/agent-membership-divergence.test.ts'
   ':!api/test/events-feed.test.ts'
   ':!api/test/messaging.test.ts'
   ':!api/test/twilio-webhooks.test.ts'

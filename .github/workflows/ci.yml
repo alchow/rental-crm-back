@@ -285,6 +285,13 @@ jobs:
         # post-revoke list/token denial, and the 42501→403 RLS-denial mapping.
         run: pnpm --filter ./api test:agent-tokens
 
+      - name: Run agent grant<->membership invariant checks (incident 2026-06-25)
+        # The agent_grants source-of-truth invariant: the projection trigger,
+        # the out-of-band soft-delete guard, and clean revoke/re-enable so the
+        # membership (authz) and grant (discovery) can never diverge into the
+        # permanent 404 loop the incident hit.
+        run: pnpm --filter ./api test:agent-membership-divergence
+
       - name: Run outbound messaging checks (ADR-0007 / Workstream E)
         # Landlord and agent send paths, approval_ref enforcement, opt-out
         # handling, idempotency, provider error mapping, phone normalization,

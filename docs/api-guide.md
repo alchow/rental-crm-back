@@ -17,13 +17,14 @@
 7. [Money — rent subledger](#7-money--rent-subledger)
 8. [Maintenance & interactions](#8-maintenance--interactions)
 9. [Attachments & file uploads](#9-attachments--file-uploads)
-10. [Inspections](#10-inspections)
-11. [Public intake (unauthenticated tenant submissions)](#11-public-intake-unauthenticated-tenant-submissions)
-12. [Evidence exports](#12-evidence-exports)
-13. [Using the generated TypeScript SDK](#13-using-the-generated-typescript-sdk)
-14. [End-to-end: the golden path](#14-end-to-end-the-golden-path)
-15. [Guarantees you can rely on](#15-guarantees-you-can-rely-on)
-16. [Onboarding import — bring your existing rent roll](#16-onboarding-import--bring-your-existing-rent-roll)
+10. [Tenant documents & magic links](#10-tenant-documents--magic-links)
+11. [Inspections](#11-inspections)
+12. [Public intake (unauthenticated tenant submissions)](#12-public-intake-unauthenticated-tenant-submissions)
+13. [Evidence exports](#13-evidence-exports)
+14. [Using the generated TypeScript SDK](#14-using-the-generated-typescript-sdk)
+15. [End-to-end: the golden path](#15-end-to-end-the-golden-path)
+16. [Guarantees you can rely on](#16-guarantees-you-can-rely-on)
+17. [Onboarding import — bring your existing rent roll](#17-onboarding-import--bring-your-existing-rent-roll)
 
 ---
 
@@ -659,7 +660,7 @@ Files tied to any entity — maintenance requests, inspection items, inspections
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `entity_type` | string | yes | `maintenance_requests` / `inspections` / `inspection_items` / `evidence_export` / `inspection_report` |
+| `entity_type` | string | yes | `maintenance_requests` / `inspections` / `inspection_items` / `evidence_export` / `inspection_report` / `document_versions` |
 | `entity_id` | uuid | yes | ID of the entity |
 | `file` | binary | yes | Max 50 MB. Accepted MIME types: `image/jpeg`, `image/png`, `image/heic`, `image/heif`, `application/pdf` |
 
@@ -724,7 +725,56 @@ Always verify `X-Content-Sha256` against the `content_hash` you stored — this 
 
 ---
 
-## 10. Inspections
+## 10. Tenant documents & magic links
+
+Tenancy-scoped document vault for signed leases, move-in/move-out packets, and required disclosures. V1 does **not** do e-signature. Tenant acknowledgment means "the tenant used the portal action"; it is not a legal signature.
+
+### Landlord document APIs
+
+All landlord document endpoints are account-scoped. Mutating calls require `Idempotency-Key`.
+
+| Method | Path | Body / Notes |
+|---|---|---|
+| `GET` | `/document-templates` | Bundled disclosure catalog. V1 includes the EPA lead pamphlet template. |
+| `GET` | `/documents` | Supports `?tenancy_id=` and `?document_type=`. Returns latest version metadata. |
+| `POST` | `/documents` | Multipart PDF upload: `tenancy_id`, `document_type`, `title`, `requires_ack`, `file`. Publishes immediately. |
+| `POST` | `/documents/from-template` | Attach a bundled template to a tenancy: `tenancy_id`, `template_id`, optional `title`, optional `requires_ack`. |
+| `GET` | `/documents/{id}` | Metadata plus latest version. |
+| `GET` | `/documents/{id}/download` | Raw PDF bytes with `X-Content-Sha256`. |
+| `DELETE` | `/documents/{id}` | Soft-delete. |
+| `POST` | `/tenancies/{tenancyId}/document-links` | Mint a short-lived tenant link. Returns plaintext `secret` once. |
+
+`document_type` values: `lease`, `move_in`, `move_out`, `lead_paint`, `disclosure`, `other`.
+
+Magic links default to 120 minutes. The response includes only-once plaintext:
+
+```jsonc
+{
+  "id": "token_1",
+  "secret": "43-char-random-secret",
+  "account_id": "8a1b...",
+  "tenancy_id": "ten_1",
+  "tenant_id": null,
+  "expires_at": "2026-06-26T20:00:00Z",
+  "created_at": "2026-06-26T18:00:00Z"
+}
+```
+
+### Tenant magic-link APIs
+
+These endpoints are public and unauthenticated. The URL secret is the auth factor; the database stores only a SHA-256 hash.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/v1/document-access/{token}` | Lists published documents for the token's tenancy and records `viewed` events. |
+| `GET` | `/v1/document-access/{token}/documents/{documentId}/download` | Downloads one published document and records a `downloaded` event. |
+| `POST` | `/v1/document-access/{token}/documents/{documentId}/acknowledge` | Records one idempotent `acknowledged` event per token + document. |
+
+Expired, revoked, malformed, cross-account, and cross-tenancy tokens/documents return `404` without revealing what exists.
+
+---
+
+## 11. Inspections
 
 Walk-through inspections with a checklist of items, optional template, and a deterministic PDF report on completion.
 
@@ -819,7 +869,7 @@ const result = await post(`/v1/accounts/${accountId}/inspections/${ins.id}/compl
 
 ---
 
-## 11. Public intake (unauthenticated tenant submissions)
+## 12. Public intake (unauthenticated tenant submissions)
 
 A landlord mints a per-tenancy token; tenants submit maintenance requests through it — no account, no login. The link is create-only, rate-limited, and auto-revoked when the tenancy ends.
 
@@ -885,7 +935,7 @@ curl -sX POST https://rental-crm-api.onrender.com/v1/intake/y3Jq... \
 
 ---
 
-## 12. Evidence exports
+## 13. Evidence exports
 
 A tamper-evident PDF bundle of everything in the system about a tenancy or area — for use in housing court, insurance claims, or dispute resolution.
 
@@ -962,7 +1012,7 @@ curl -s https://rental-crm-api.onrender.com/v1/accounts/8a1b.../attachments/$ATT
 
 ---
 
-## 13. Using the generated TypeScript SDK
+## 14. Using the generated TypeScript SDK
 
 Generate a typed client from the live spec rather than hand-writing types.
 
@@ -1009,7 +1059,7 @@ For non-TypeScript clients, generate from `GET /openapi.json` using your languag
 
 ---
 
-## 14. End-to-end: the golden path
+## 15. End-to-end: the golden path
 
 A minimal integration covering the full lifecycle: signup → unit → tenant → rent → maintenance → inspection → evidence export.
 
@@ -1096,7 +1146,7 @@ const exp = await post(`/v1/accounts/${accountId}/evidence-exports`,
 
 ---
 
-## 15. Guarantees you can rely on
+## 16. Guarantees you can rely on
 
 **Isolation**
 You only ever see data for accounts you're a member of; everything else is `404`. Enforced at the database (row-level security), not just the API layer. Cross-account and cross-tenancy references always return `404` — the API never confirms that another account's record exists.
@@ -1118,7 +1168,7 @@ Evidence exports embed a chain-of-custody for every file (upload time, hash, act
 
 ---
 
-## 16. Onboarding import — bring your existing rent roll
+## 17. Onboarding import — bring your existing rent roll
 
 Upload an arbitrary Excel/CSV of historical data, let the API recognize what's in it, map its columns to our schema through an interactive (LLM-assisted) flow, **preview** the result, and **commit** it. The same invariants as every other write apply: audit trail, idempotency, RLS, provenance.
 
