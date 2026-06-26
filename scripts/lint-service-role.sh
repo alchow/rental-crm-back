@@ -68,6 +68,12 @@ EXCLUDES=(
   ':!api/test/agent-principal.test.ts'
   ':!api/test/agent-grants.test.ts'
   ':!api/test/agent-tokens.test.ts'
+  #   - api/test/agent-membership-divergence.test.ts: induces an out-of-band
+  #     agent-membership soft-delete via the admin client and reads the row back
+  #     to assert the grant<->membership invariant (the 2026-06-25 incident
+  #     regression). TEST code; assigns process.env from supabase status and
+  #     uses the admin client only to set up/verify an unreachable fixture state.
+  ':!api/test/agent-membership-divergence.test.ts'
   ':!api/test/events-feed.test.ts'
   ':!api/test/messaging.test.ts'
   ':!api/test/twilio-webhooks.test.ts'

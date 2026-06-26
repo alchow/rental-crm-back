@@ -161,16 +161,21 @@ export async function enableAgentForAccount(
 }
 
 /**
- * Revoke an active grant: mark it revoked and soft-delete the agent's
- * membership (the membership removal is the real RLS kill -- the agent's
- * token, if any, fails account-scoped queries on the next request). The agent
- * identity is preserved so a later re-enable reuses the same journal actor.
+ * Revoke an active grant: mark it revoked. The agent's role='agent' membership
+ * is soft-deleted as a DERIVED side effect by the agent_grants trigger
+ * (trg_sync_agent_membership_from_grant, migration 20260625000001) in the SAME
+ * statement -- so the RLS kill and the revocation are atomic and can never
+ * diverge (the bug behind the 2026-06-25 incident, where the membership was
+ * dead but the grant stayed active, leaving the agent in a permanent 404 loop).
+ * The agent identity is preserved (soft-delete, not removed) so a later
+ * re-enable reuses the same journal actor.
  *
  * Best-effort session kill: after marking the grant revoked, we mint a
  * throwaway session for the agent sub-user and call signOut('global') to
  * revoke ALL of its GoTrue refresh tokens. This is belt-and-suspenders on top
- * of the membership kill (ADR-0009 SHOULD). The membership removal (RLS kill)
- * is the hard floor -- a sign-out failure must never abort the revoke response.
+ * of the membership kill (ADR-0009 SHOULD). The membership removal (RLS kill,
+ * now trigger-driven) is the hard floor -- a sign-out failure must never abort
+ * the revoke response.
  */
 export async function revokeAgentGrant(
   accountId: string,
@@ -192,23 +197,9 @@ export async function revokeAgentGrant(
   const agentUserId = grant.agent_user_id as string;
   const nowIso = new Date().toISOString();
 
-  // RLS kill FIRST, then record the revocation. Ordering is load-bearing: if we
-  // marked the grant revoked first and the membership soft-delete then failed,
-  // a retry would 404 on the already-revoked grant and the membership would
-  // stay live -- revoked-on-paper but the agent keeps acting. Doing the
-  // membership kill first means a mid-flight failure leaves the grant still
-  // active (revoked_at null), so a retry re-finds it and converges; the
-  // membership step is an idempotent no-op the second time. Per-account, so the
-  // agent keeps serving its other accounts.
-  const { error: memErr } = await admin
-    .from('account_members')
-    .update({ deleted_at: nowIso, updated_at: nowIso })
-    .eq('account_id', accountId)
-    .eq('user_id', agentUserId)
-    .eq('role', 'agent')
-    .is('deleted_at', null);
-  if (memErr) throw new ApiError(500, 'database_error', memErr.message);
-
+  // Single source of truth: write ONLY the grant. The agent_grants trigger
+  // derives the membership soft-delete atomically (see the doc comment above),
+  // so there is no longer a two-write ordering that can half-apply.
   const { data: revoked, error: revErr } = await admin
     .from('agent_grants')
     .update({ revoked_at: nowIso, revoked_by: revokedBy })
