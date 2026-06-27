@@ -229,6 +229,12 @@ jobs:
       - name: Run API-level cross-tenant isolation
         run: pnpm --filter ./api test:api-isolation
 
+      - name: Run landlord profile checks
+        # GET/PATCH /v1/profile against public.users: E.164 normalisation on
+        # write, 422 on un-normalisable input, null-clears, display_name vs
+        # phone independence, self-scope (auth.uid()-keyed), and the 401 guard.
+        run: pnpm --filter ./api test:profile
+
       - name: Run entity-search DoD checks
         # Trigram search_entities() RPC behind GET /search: multi-type ranked
         # results, narrow (?types=) / exclude (?exclude=), email-fragment match,
