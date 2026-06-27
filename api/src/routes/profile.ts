@@ -3,7 +3,7 @@ import { newApiApp } from './_lib/app';
 import { requireAuth } from '../middleware/auth';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
-import { normalizePhone } from '../messaging/phone';
+import { normalizePhone } from './_lib/phone';
 
 // GET/PATCH /v1/profile -- the landlord's own profile (public.users mirror).
 //
@@ -14,9 +14,8 @@ import { normalizePhone } from '../messaging/phone';
 // need an explicit ownership filter beyond `id = auth.userId`.
 //
 // phone is stored in E.164. PATCH normalises whatever the client sends via
-// normalizePhone() (the same helper the SMS send/inbound paths use) so the
-// stored value matches the DB CHECK and the messaging layer's expectations;
-// a number that can't be normalised is a 422, never a silent drop.
+// normalizePhone() so the stored value matches the DB CHECK; a number that
+// can't be normalised is a 422, never a silent drop.
 
 const Profile = z
   .object({
