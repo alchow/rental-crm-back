@@ -22,6 +22,10 @@ const Profile = z
     id: z.string().uuid(),
     display_name: z.string().nullable(),
     phone: z.string().nullable(),
+    // Non-null only when `phone` was confirmed via the SMS OTP flow
+    // (landlord-agent issues the code; the verified result is written here).
+    // Editing phone via PATCH below clears this back to null.
+    phone_verified_at: z.string().nullable(),
   })
   .openapi('Profile');
 
@@ -71,7 +75,7 @@ profile.openapi(getRoute, async (c) => {
   const sb = getSb(c);
   const { data, error } = await sb
     .from('users')
-    .select('id, display_name, phone')
+    .select('id, display_name, phone, phone_verified_at')
     .eq('id', auth.userId)
     .is('deleted_at', null)
     .maybeSingle();
@@ -88,6 +92,10 @@ profile.openapi(patchRoute, async (c) => {
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (body.display_name !== undefined) update.display_name = body.display_name;
   if (body.phone !== undefined) {
+    // Any change to the number (set or clear) invalidates a prior verification:
+    // phone_verified_at must only ever describe the number currently on file.
+    // Re-verification goes back through the agent's SMS OTP flow.
+    update.phone_verified_at = null;
     if (body.phone === null) {
       update.phone = null;
     } else {
@@ -108,7 +116,7 @@ profile.openapi(patchRoute, async (c) => {
     .update(update)
     .eq('id', auth.userId)
     .is('deleted_at', null)
-    .select('id, display_name, phone')
+    .select('id, display_name, phone, phone_verified_at')
     .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
   if (!data) throw new ApiError(404, 'not_found', 'profile not found');
