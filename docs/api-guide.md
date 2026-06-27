@@ -73,6 +73,8 @@ The API fronts its own auth endpoints; you never import a vendor auth SDK. The f
 | `POST` | `/v1/auth/refresh` | Exchange a refresh token for a fresh access token. |
 | `POST` | `/v1/auth/logout` | Revoke the token. `scope` ∈ `global` (default) / `local` / `others`. |
 | `GET`  | `/v1/me` | Current user + account memberships with roles. Not account-scoped. |
+| `GET`  | `/v1/profile` | The caller's own profile (`id`, `display_name`, `phone`). Not account-scoped. |
+| `PATCH` | `/v1/profile` | Update the caller's `display_name` and/or `phone`. Phone is normalised to E.164; `null` clears it. |
 
 ### Signup request / response
 

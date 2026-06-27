@@ -1,6 +1,7 @@
 import type { OpenAPIHono } from '@hono/zod-openapi';
 import { newApiApp } from './routes/_lib/app';
 import meRoutes from './routes/me';
+import profileRoutes from './routes/profile';
 import authRoutes from './routes/auth';
 import { propertiesApp } from './routes/properties';
 import { vendorsApp } from './routes/vendors';
@@ -57,6 +58,7 @@ import { OPENAPI_DOC_CONFIG, injectIdempotencyContract } from './openapi/idempot
 //   /healthz                                            (no auth)
 //   /v1/auth/{signup,login,refresh,logout}              (no auth)
 //   /v1/me                                              (requireAuth)
+//   /v1/profile                                         (requireAuth)
 //   /v1/accounts/{accountId}/properties/...             (requireAuth + requireAccountMembership)
 //   /v1/accounts/{accountId}/vendors/...                (same)
 //   /v1/accounts/{accountId}/tenants/...                (same)
@@ -143,6 +145,7 @@ export function buildApp(): OpenAPIHono {
 
   // Authenticated, account-agnostic
   app.route('/v1', meRoutes);
+  app.route('/v1', profileRoutes);
 
   // ----- Account-scoped middleware stack ---------------------------------
   // Mounted ONCE at the v1 level rather than per-resource-sub-app. With
