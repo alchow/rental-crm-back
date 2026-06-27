@@ -299,12 +299,19 @@
               "string",
               "null"
             ]
+          },
+          "phone_verified_at": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "id",
           "display_name",
-          "phone"
+          "phone",
+          "phone_verified_at"
         ]
       },
       "PatchProfileBody": {
@@ -3518,6 +3525,44 @@
             "description": "Same-account reference to a prior interaction / journal entry this entry follows from (e.g. a step_executed agent_event's anchor)."
           }
         }
+      },
+      "OwnerPhoneResponse": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "phone_verified_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "phone",
+          "phone_verified_at"
+        ]
+      },
+      "VerifyOwnerPhoneBody": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "phone": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          }
+        },
+        "required": [
+          "user_id",
+          "phone"
+        ]
       },
       "Attachment": {
         "type": "object",
@@ -12708,6 +12753,110 @@
           },
           "404": {
             "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/owner-phone-verifications": {
+      "post": {
+        "tags": [
+          "owner-phone"
+        ],
+        "summary": "Record a landlord phone as verified. Agent principal only — called by landlord-agent after it has confirmed the SMS OTP. Persists phone + phone_verified_at on the target user.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyOwnerPhoneBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "verified",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerPhoneResponse"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource",
             "content": {
               "application/json": {
                 "schema": {
