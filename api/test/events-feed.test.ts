@@ -386,7 +386,7 @@ await check('(a) concurrent writers vs polling reader: no gaps/dupes, strictly i
 // types `snapshot` as unknown, so nothing else catches a silent reshape; this
 // is the enforcement. The snapshot is the raw row (to_jsonb(NEW)), identical
 // across insert paths, so a landlord-posted communication exercises the same
-// shape as the inbound capture_inbound_sms path the agent actually triggers on.
+// shape the agent triggers on.
 
 await check('(h) interactions snapshot carries the contracted trigger fields, present + typed', async () => {
   // Shaped like the rows the agent triggers on: an inbound contact with a body

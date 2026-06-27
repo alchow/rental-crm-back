@@ -50,13 +50,6 @@ const ACCOUNT_PK_TABLE = 'accounts';
 // in the cross-tenant column-based check.
 const NOT_ACCOUNT_SCOPED = new Set([
   'ip_rate_buckets',
-  // Messaging (agent-api Phase 5): global carrier opt-out registry and raw
-  // inbound webhook capture. Deliberately service-level — rows may not
-  // belong to any account (unmatched numbers), and member visibility would
-  // be a cross-account phone oracle. Deny-all via RLS-without-policies +
-  // REVOKE; the stronger zero-visibility assertion below applies.
-  'sms_opt_outs',
-  'twilio_inbound_raw',
   // ADR-0009 (agent principals): principal registry, not account-scoped by
   // design. Deny-all via RLS-without-policies + REVOKE on authenticated.
   'agent_principals',
@@ -84,10 +77,6 @@ const NO_SEED_REQUIRED = new Set([
   'import_sessions',
   'import_rows',
   'import_provenance',
-  // Messaging (agent-api Phase 5): service-level tables, member-invisible
-  // by design (see NOT_ACCOUNT_SCOPED) — nothing to seed, nothing readable.
-  'sms_opt_outs',
-  'twilio_inbound_raw',
   // ADR-0009 (agent principals): neither table is seeded by the two-account
   // fixture. agent_grants still gets the cross-tenant == 0 isolation check.
   'agent_grants',

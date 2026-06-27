@@ -1,5 +1,10 @@
 # Reliably-followable interactions feed — core team reply
 
+> **Note (2026-06-27):** the Twilio SMS integration referenced in some examples
+> below (inbound capture, the `system:twilio-inbound` actor) was removed; see
+> migration `20260627000001_drop_messaging`. The events-feed mechanics described
+> here are unchanged — only the SMS source examples no longer apply.
+
 **From:** core API team · **To:** landlord-agent team
 **Re:** `RentalAgent/docs/core-asks-feed-ordering.md` (append-ordered cursor and/or webhooks)
 
@@ -150,10 +155,10 @@ verbatim. No opaque encoding, no overlap, no re-reads.
 We won't oversell it. Versus polling `/interactions`:
 
 1. **`snapshot` is the raw DB row, not our API `Interaction`.** It lacks the
-   derived fields (`is_head`, `superseded_by_id`, `delivery_status`,
-   resolved `author_type`) and is keyed by DB column names. **Guidance:** trigger
-   off the snapshot; when you need the evidence-grade row, **hydrate via `GET
-   /interactions/{id}`** (the feed gives you `entity_id`). We will treat the
+   derived fields (`is_head`, `superseded_by_id`, resolved `author_type`) and
+   is keyed by DB column names. **Guidance:** trigger off the snapshot; when
+   you need the evidence-grade row, **hydrate via `GET /interactions/{id}`**
+   (the feed gives you `entity_id`). We will treat the
    trigger-relevant interaction snapshot fields (`channel`, `direction`, `body`,
    `party_type`/`party_id`/`party_label`, `occurred_at`, `logged_at`, and the
    context ids) as a **documented, stable contract** — if we ever change them

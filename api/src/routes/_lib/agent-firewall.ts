@@ -5,9 +5,9 @@
 // them):
 //   - The agent cannot correct or retract any journal entry (only landlords
 //     supersede history).
-//   - The agent cannot append kind='communication' directly (communications
-//     are produced by the send pipeline, which guarantees a Twilio SID behind
-//     them; a direct append could fabricate a contact that never happened).
+//   - The agent cannot append kind='communication' directly: a direct append
+//     could fabricate a contact that never happened. Communications enter the
+//     journal only through a verified provider-backed path, never agent free-text.
 //   - Agent notes require explicit landlord approval (approved_by + approval_ref).
 //   - agent_events carry structured metadata and are vocabulary-constrained.
 //   - Landlord users cannot supply agent-only fields (entry_type, approval_ref,
@@ -52,14 +52,14 @@ export function assertAgentJournalWrite(
       );
     }
 
-    // Communications are produced exclusively by the send pipeline so that a
-    // Twilio SID is always present behind them. A direct append would let the
-    // agent claim a contact that never happened.
+    // Communications enter the journal only through a verified provider-backed
+    // path, never as agent free-text. A direct append would let the agent claim
+    // a contact that never happened.
     if (kind === 'communication') {
       throw new ApiError(
         403,
         'agent_entry_type_forbidden',
-        'communications are journaled by the send pipeline; the agent may not append them directly',
+        'the agent may not append communications directly',
       );
     }
 
