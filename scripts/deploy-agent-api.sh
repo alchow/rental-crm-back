@@ -9,14 +9,12 @@
 #
 #   bash scripts/deploy-agent-api.sh deploy    # migrations -> push -> verify
 #   bash scripts/deploy-agent-api.sh agent     # create agent user + membership
-#   bash scripts/deploy-agent-api.sh twilio    # env vars + webhook + janitor
 #   bash scripts/deploy-agent-api.sh           # all of the above in order
 #
-# `deploy` is safe WITHOUT Twilio and without the agent user: messaging
-# endpoints return 503 messaging_unconfigured, webhooks 404, and no request
-# can classify as the agent principal until the agent's role='agent' account
-# membership row exists (ADR-0009; the AGENT_USER_ID env var was retired in
-# phase 0). Nothing changes for the live PWA.
+# `deploy` is safe without the agent user: no request can classify as the
+# agent principal until the agent's role='agent' account membership row exists
+# (ADR-0009; the AGENT_USER_ID env var was retired in phase 0). Nothing
+# changes for the live PWA.
 #
 # WHY THE ORDER INSIDE `deploy` IS LOAD-BEARING: Render does NOT run DB
 # migrations, and the new code writes columns prod does not have yet — so
@@ -94,12 +92,11 @@ EOF
   bold "DEPLOY 3/3 — push main (Render auto-deploys), verify live"
   confirm "Push main to origin and trigger the prod deploy?"
   git push origin main
-  echo "Waiting for the new build (capabilities.messaging key only exists in"
+  echo "Waiting for the new build (capabilities.heic_decode key present in"
   echo "the new code; polling every 15s, up to 15 min)..."
   for i in $(seq 1 60); do
-    if curl -sf --max-time 10 "$API_BASE_URL/healthz" | grep -q '"messaging"'; then
-      echo "OK: new build is live. Messaging stays dark (503/404) until the"
-      echo "'twilio' stage; the agent principal stays off until the 'agent'"
+    if curl -sf --max-time 10 "$API_BASE_URL/healthz" | grep -q '"heic_decode"'; then
+      echo "OK: new build is live. The agent principal stays off until the 'agent'"
       echo "stage inserts its role='agent' membership. The PWA sees no change."
       return 0
     fi
@@ -146,56 +143,9 @@ enabled, and openapi/openapi.json.
 EOF
 }
 
-# ============================================================================
-stage_twilio() {
-# ============================================================================
-  bold "TWILIO — env, webhook, janitor, smoke test"
-  need_prod_db
-  cat <<EOF
-Prerequisites in the TWILIO CONSOLE: an account, a Messaging Service
-(SID starts MG) with a number attached, 10DLC registration done, and
-Advanced Opt-Out enabled on the Messaging Service.
-
-1. RENDER -> rental-crm-api -> Environment, add:
-     TWILIO_ACCOUNT_SID            (starts AC)
-     TWILIO_AUTH_TOKEN
-     TWILIO_MESSAGING_SERVICE_SID  (starts MG)
-     PUBLIC_BASE_URL               $API_BASE_URL        <- no trailing slash
-
-2. TWILIO CONSOLE -> Messaging Service -> Integration:
-     inbound webhook: POST $API_BASE_URL/v1/twilio/inbound
-EOF
-  confirm "Env vars saved in Render AND Twilio inbound webhook configured?"
-
-  echo "Polling healthz until messaging reports configured (up to 10 min)..."
-  for i in $(seq 1 40); do
-    if curl -sf --max-time 10 "$API_BASE_URL/healthz" | grep -q '"configured":true'; then
-      echo "OK: messaging configured."
-      break
-    fi
-    [[ "$i" == 40 ]] && { echo "Not configured after 10 min — check env vars and Render logs, re-run this stage."; exit 1; }
-    sleep 15
-  done
-
-  confirm "Schedule the reconcile janitor (every 15 min, parks sends stuck >1h)?"
-  prod_sql "create extension if not exists pg_cron"
-  prod_sql "select cron.schedule('reconcile-message-outbox', '*/15 * * * *',
-            \$\$select public.reconcile_message_outbox(3600)\$\$)" \
-    || echo "pg_cron scheduling failed — use Supabase Dashboard -> Database -> Cron Jobs (SQL: select public.reconcile_message_outbox(3600))"
-
-  cat <<'EOF'
-
-Last step (manual, with a phone you control): the 7-step smoke test in
-docs/agent-runbook.md ("Real-credential smoke test"). The step that
-matters most is #4 — replaying a send with the SAME Idempotency-Key must
-NOT deliver a second SMS.
-EOF
-}
-
 case "${1:-all}" in
   deploy) stage_deploy ;;
   agent)  stage_agent ;;
-  twilio) stage_twilio ;;
-  all)    stage_deploy; stage_agent; stage_twilio ;;
-  *) echo "usage: bash scripts/deploy-agent-api.sh [deploy|agent|twilio|all]"; exit 2 ;;
+  all)    stage_deploy; stage_agent ;;
+  *) echo "usage: bash scripts/deploy-agent-api.sh [deploy|agent|all]"; exit 2 ;;
 esac

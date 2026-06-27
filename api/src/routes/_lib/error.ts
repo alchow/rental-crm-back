@@ -66,8 +66,8 @@ export type ErrorCode =
   | 'not_found'
   | 'conflict'
   // idempotency-middleware codes (distinct from domain 409s like
-  // send_state_unknown / invalid_correction_target because they demand the
-  // OPPOSITE client behavior). idempotency_conflict: the same Idempotency-Key
+  // invalid_correction_target because they demand the OPPOSITE client
+  // behavior). idempotency_conflict: the same Idempotency-Key
   // was replayed with a DIFFERENT request body -- the client's key derivation
   // is wrong; do NOT blind-retry. idempotency_in_flight: the original request
   // for this key is still running -- retry shortly with the SAME key+body.
@@ -81,13 +81,7 @@ export type ErrorCode =
   // agent-principal firewall codes (Workstream D)
   | 'agent_forbidden'           // agent attempted a forbidden operation (correction/retraction)
   | 'agent_entry_type_forbidden' // agent attempted to append a communication directly
-  | 'agent_only'                // landlord attempted an agent-only field or kind
-  // messaging codes (Workstream E)
-  | 'messaging_unconfigured'    // Twilio env vars absent; send endpoint returns 503
-  | 'no_sms_destination'        // recipient has no usable E.164 phone number
-  | 'sms_opted_out'             // recipient's phone is in sms_opt_outs
-  | 'send_failed'               // provider definitively rejected the send (Twilio 4xx)
-  | 'send_state_unknown';       // provider call timed out / 5xx; outbox stays 'sending'
+  | 'agent_only';               // landlord attempted an agent-only field or kind
 
 export class ApiError extends Error {
   constructor(

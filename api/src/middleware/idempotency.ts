@@ -116,8 +116,8 @@ export function requireIdempotency(): MiddlewareHandler {
       if (!claim.fingerprint_matches) {
         // Same key, different body: the caller's key derivation is wrong.
         // Distinct code so clients do NOT blind-retry (a retry repeats the
-        // conflict); contrast send_state_unknown, where the client SHOULD
-        // poll + re-send with a NEW key.
+        // conflict); contrast a domain 409 like invalid_correction_target,
+        // which is about the resource state, not the key.
         throw new ApiError(
           409,
           'idempotency_conflict',

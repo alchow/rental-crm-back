@@ -26,8 +26,6 @@
     "test:agent-grants": "tsx test/agent-grants.test.ts",
     "test:agent-tokens": "tsx test/agent-tokens.test.ts",
     "test:agent-membership-divergence": "tsx test/agent-membership-divergence.test.ts",
-    "test:messaging": "tsx test/messaging.test.ts",
-    "test:twilio-webhooks": "tsx test/twilio-webhooks.test.ts",
     "test:imports-live": "tsx test/imports-live.test.ts",
     "bench:import": "tsx test/bench-import.ts",
     "test:unit": "vitest run"

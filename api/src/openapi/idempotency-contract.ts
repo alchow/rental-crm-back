@@ -69,7 +69,7 @@ const replayHeader = {
 // account-scoped operation:
 //   - the required `Idempotency-Key` request header,
 //   - a 409 response (ErrorEnvelope): idempotency_conflict / _in_flight, plus
-//     the domain 409s (send_state_unknown, invalid_correction_target, ...),
+//     the domain 409s (invalid_correction_target, ...),
 //   - an `Idempotency-Replay` response header on each 2xx (set to 'true' when
 //     the response was served from the idempotency cache).
 // Idempotent: re-running it on an already-injected doc is a no-op.

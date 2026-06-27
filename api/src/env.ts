@@ -46,16 +46,6 @@ const RawEnvSchema = z.object({
   // each entry is either an exact origin (https://app.example.com) or a
   // wildcard subdomain pattern (*.example.com).
   CORS_ALLOWED_ORIGINS: z.string().optional(),
-
-  // Messaging (Twilio). All four are optional so the app still boots and
-  // non-messaging tests still run without them. Absent → the send endpoints
-  // return 503 messaging_unconfigured. See api/src/messaging/twilio.ts.
-  TWILIO_ACCOUNT_SID: z.string().min(8).optional(),
-  TWILIO_AUTH_TOKEN: z.string().min(8).optional(),
-  TWILIO_MESSAGING_SERVICE_SID: z.string().min(8).optional(),
-  // Used as the base for Twilio status-callback URLs (?outbox_id=<uuid>).
-  // When absent, status callbacks are not registered with the provider.
-  PUBLIC_BASE_URL: z.string().url().optional(),
 });
 
 export interface Env {
@@ -71,13 +61,6 @@ export interface Env {
   SUPABASE_JWT_AUDIENCE: string;
   CORS_ALLOWED_ORIGINS: string[];
   ANTHROPIC_API_KEY: string | null;
-  /** Twilio credentials for outbound SMS. All four are null when unset;
-   *  send endpoints return 503 messaging_unconfigured in that case. */
-  TWILIO_ACCOUNT_SID: string | null;
-  TWILIO_AUTH_TOKEN: string | null;
-  TWILIO_MESSAGING_SERVICE_SID: string | null;
-  /** Base URL for Twilio status-callback registration. Null = no callback URL. */
-  PUBLIC_BASE_URL: string | null;
 }
 
 let cached: Env | null = null;
@@ -108,10 +91,6 @@ export function loadEnv(): Env {
       ? raw.CORS_ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
       : [],
     ANTHROPIC_API_KEY: raw.ANTHROPIC_API_KEY ?? null,
-    TWILIO_ACCOUNT_SID: raw.TWILIO_ACCOUNT_SID ?? null,
-    TWILIO_AUTH_TOKEN: raw.TWILIO_AUTH_TOKEN ?? null,
-    TWILIO_MESSAGING_SERVICE_SID: raw.TWILIO_MESSAGING_SERVICE_SID ?? null,
-    PUBLIC_BASE_URL: raw.PUBLIC_BASE_URL ?? null,
   };
   return cached;
 }

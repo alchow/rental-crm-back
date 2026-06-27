@@ -20,11 +20,8 @@ import { intakeTokensApp } from './routes/intake-tokens';
 import { agentGrantsApp } from './routes/agent-grants';
 import { maintenanceRequestsApp } from './routes/maintenance-requests';
 import { interactionsApp } from './routes/interactions';
-import { messagesApp } from './routes/messages';
 import { intakeApp } from './admin/intake';
-import { twilioWebhooksApp } from './admin/twilio-webhooks';
 import { agentTokensApp } from './admin/agent-tokens';
-import { messagingCapability } from './admin/messaging-health';
 import { attachmentsApp } from './routes/attachments';
 import { documentAccessApp, documentsApp } from './routes/documents';
 import { evidenceExportsApp } from './routes/evidence-exports';
@@ -137,10 +134,6 @@ export function buildApp(): OpenAPIHono {
         // live probe). Reported here so a monitor catches a misconfigured env
         // instead of the user hitting a 502 on first preview.
         import: await importCapability(),
-        // Twilio inbound/status webhooks. configured=false when TWILIO_AUTH_TOKEN
-        // or PUBLIC_BASE_URL is absent; unmatched_inbound is the ops "needs
-        // human" counter (null when unconfigured or DB unreachable).
-        messaging: await messagingCapability(),
       },
     });
   });
@@ -207,7 +200,6 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', agentGrantsApp);
   app.route('/v1', maintenanceRequestsApp);
   app.route('/v1', interactionsApp);
-  app.route('/v1', messagesApp);
   app.route('/v1', attachmentsApp);
   app.route('/v1', documentsApp);
   app.route('/v1', inspectionTemplatesApp);
@@ -231,13 +223,6 @@ export function buildApp(): OpenAPIHono {
   // so, like intakeApp, it is mounted OUTSIDE the v1 account stack
   // (/v1/agent/* never matches /v1/accounts/:accountId/*).
   app.route('/v1', agentTokensApp);
-
-  // PUBLIC, UNAUTHENTICATED Twilio webhooks. Lives in src/admin/ because
-  // it uses the service-role client (no user JWT from Twilio; RLS would
-  // refuse the writes). Signature validation via HMAC-SHA1 replaces JWT auth.
-  // Mounted OUTSIDE the v1-level auth/idempotency stack for the same reason
-  // as intakeApp.
-  app.route('/', twilioWebhooksApp);
 
   // Emitted OpenAPI document, served at runtime for clients that fetch the
   // spec live (e.g. to regenerate a typed client). Post-processed through the

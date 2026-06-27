@@ -99,7 +99,7 @@ export const Interaction = z
     approval_ref: z.string().nullable(),
     /** Agent exhaust vocabulary; set exactly on kind='agent_event' rows. */
     entry_type: EntryType.nullable(),
-    /** Provider-side message id (e.g. Twilio MessageSid) on send-pipeline rows. */
+    /** Provider-side message id on send-pipeline rows. */
     external_ref: z.string().nullable(),
     /** Set on a correcting entry: the id of the entry this row supersedes. */
     corrects_id: z.string().uuid().nullable(),
@@ -120,13 +120,6 @@ export const Interaction = z
     created_at: z.string(),
     updated_at: z.string(),
     deleted_at: z.string().nullable(),
-    /** Derived from the linked message_outbox row via the view join.
-     *  Null on entries that were not produced by the send pipeline
-     *  (e.g. direct journal notes, logged phone calls). */
-    delivery_status: z
-      .enum(['sending', 'sent', 'delivered', 'failed', 'undeliverable', 'needs_reconcile'])
-      .nullable(),
-    delivered_at: z.string().nullable(),
   })
   .openapi('Interaction');
 
@@ -708,15 +701,12 @@ interactionsApp.openapi(create, async (c) => {
     throw dbError(error);
   }
   // Derived fields, true by construction for a row that did not exist a
-  // moment ago: nothing can reference it yet, and there is no outbox row for
-  // a directly-logged entry.
+  // moment ago: nothing can reference it yet.
   return c.json(
     withResolvedAuthorship({
       ...data,
       superseded_by_id: null,
       is_head: true,
-      delivery_status: null,
-      delivered_at: null,
     }) as z.infer<typeof Interaction>,
     201,
   );

@@ -237,6 +237,8 @@ paths. Landlord-user writes hit none of this code.
 
 ## 6. Workstream E — outbound messaging via Twilio (Req 6 + Req 4)
 
+> **Superseded (2026-06-27):** the Twilio integration described in this workstream was removed; see migration `20260627000001_drop_messaging`.
+
 Ordering decision and crash matrix: **ADR-0007** (outbox-first; journal entry
 only on confirmed send). Channel seam: `api/src/messaging/provider.ts`
 (`MessagingProvider.sendSms(...)`), Twilio impl `twilio.ts`, injected fake in

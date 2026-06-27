@@ -76,8 +76,6 @@ EXCLUDES=(
   #     uses the admin client only to set up/verify an unreachable fixture state.
   ':!api/test/agent-membership-divergence.test.ts'
   ':!api/test/events-feed.test.ts'
-  ':!api/test/messaging.test.ts'
-  ':!api/test/twilio-webhooks.test.ts'
   ':!api/test/imports.test.ts'
   ':!api/test/imports-live.test.ts'
   # api/test/ledger.test.ts / bench-import.ts: same shape as

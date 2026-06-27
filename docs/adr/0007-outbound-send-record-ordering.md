@@ -1,5 +1,7 @@
 # ADR-0007: Outbound send/record ordering — outbox-first, journal on confirmed send
 
+> **Status: Superseded** — the Twilio outbound integration was removed on 2026-06-27 (migration `20260627000001_drop_messaging`). This ADR is retained as the historical record of the send-ordering decision while it was in force.
+
 - **Status:** accepted, 2026-06-12
 - **Context owner:** agent-facing API plan (docs/agent-api-plan.md, Workstream E)
 

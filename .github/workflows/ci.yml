@@ -292,20 +292,6 @@ jobs:
         # permanent 404 loop the incident hit.
         run: pnpm --filter ./api test:agent-membership-divergence
 
-      - name: Run outbound messaging checks (ADR-0007 / Workstream E)
-        # Landlord and agent send paths, approval_ref enforcement, opt-out
-        # handling, idempotency, provider error mapping, phone normalization,
-        # and the messaging-unconfigured 503 guard. Twilio creds are fakes
-        # injected by the test; no live Twilio network calls are made.
-        run: pnpm --filter ./api test:messaging
-
-      - name: Run Twilio webhook integration checks (Phase 5)
-        # Inbound SMS matching, signature verification, dedup, opt-out/opt-in
-        # via STOP/START, vendor inbound, status callbacks, crash-window
-        # recovery, and the stale-sending reconcile janitor. Twilio creds
-        # are fakes injected by the test; signature is computed locally.
-        run: pnpm --filter ./api test:twilio-webhooks
-
       - name: Run interactions evidentiary-journal checks
         # Append-only correction/retraction chains: amend, retract, linear-
         # chain guards (no correcting a superseded entry), immutability (no

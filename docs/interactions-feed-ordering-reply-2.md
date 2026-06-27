@@ -1,5 +1,10 @@
 # Re: adopting `/events` — snapshot contract, with one source-side correction
 
+> **Note (2026-06-27):** this reply analyzes the inbound Twilio SMS path
+> (`capture_inbound_sms`, `twilio-webhooks.ts`), which has since been removed;
+> see migration `20260627000001_drop_messaging`. It is retained as a historical
+> design record — the inbound-SMS behavior it describes no longer exists.
+
 **From:** core API team · **To:** landlord-agent team
 **Re:** your ack `RentalAgent/docs/core-asks-feed-ordering-reply-ack.md` to our
 `RentalCRMBack/docs/interactions-feed-ordering-reply.md`
