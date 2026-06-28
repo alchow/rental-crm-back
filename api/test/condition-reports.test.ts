@@ -351,6 +351,21 @@ async function main(): Promise<void> {
     if (b.status !== 'voided') throw new Error(`status=${b.status}`);
   });
 
+  await check('evidence-export bundle includes condition-report data', async () => {
+    const { loadExportData } = await import('../src/admin/export-pdf');
+    const data = await loadExportData({
+      accountId: A.accountId, tenancyId: A.tenancyId, areaId: null,
+      fromDate: null, toDate: null, exporter: null,
+    });
+    const insp = data.inspections.find((i) => i.id === checkinId);
+    if (!insp) throw new Error('completed check-in not in export scope');
+    if (insp.kind !== 'move_in') throw new Error('export inspection missing kind');
+    if (!data.inspectionChecks.some((c) => c.inspection_id === checkinId)) throw new Error('export missing inspection checks');
+    if (!data.inspectionItems.some((it) => it.inspection_id === checkinId)) throw new Error('export missing inspection items');
+    if (!data.attachments.some((a) => a.entity_type === 'inspection_items' && a.derived_from === null)) throw new Error('export missing item photos');
+    if (!data.attachments.some((a) => a.entity_type === 'inspection_report' && a.entity_id === checkinId)) throw new Error('export missing rendered report attachment');
+  });
+
   console.info('');
   if (failures.length > 0) {
     console.error(`${failures.length} FAILURE(S):`);
