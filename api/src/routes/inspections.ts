@@ -4,6 +4,16 @@ import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { generateAndStoreInspectionReport } from '../admin/pdf';
+import {
+  generateCaptureSecret,
+  hashCaptureSecret,
+  DEFAULT_CAPTURE_TTL_MIN,
+  MAX_CAPTURE_TTL_MIN,
+} from '../admin/inspection-capture';
+import {
+  listInspectionTemplateCatalog,
+  getInspectionTemplateCatalog,
+} from '../admin/inspection-template-catalog';
 
 // ============================================================================
 // inspection_templates / inspections / inspection_items + completion.
@@ -24,6 +34,8 @@ const InspectionTemplate = z
     id: z.string().uuid(),
     account_id: z.string().uuid(),
     name: z.string(),
+    jurisdiction: z.string().nullable(),
+    version: z.string().nullable(),
     schema: z.record(z.unknown()),
     created_at: z.string(),
     updated_at: z.string(),
@@ -58,11 +70,31 @@ const Inspection = z
     performed_at: z.string().nullable(),
     completed_at: z.string().nullable(),
     notes: z.string().nullable(),
+    kind: z.string(),
+    tenancy_id: z.string().uuid().nullable(),
+    baseline_inspection_id: z.string().uuid().nullable(),
+    status: z.string(),
+    capture_mode: z.string(),
+    supersedes_inspection_id: z.string().uuid().nullable(),
+    voided_at: z.string().nullable(),
+    void_reason: z.string().nullable(),
+    template_snapshot: z.record(z.unknown()).nullable(),
+    subject_snapshot: z.record(z.unknown()).nullable(),
     created_at: z.string(),
     updated_at: z.string(),
     deleted_at: z.string().nullable(),
   })
   .openapi('Inspection');
+
+const InspectionKind = z.enum(['move_in', 'move_out', 'periodic', 'general']);
+const CaptureMode = z.enum(['landlord', 'tenant', 'collaborative']);
+const ChangeType = z.enum([
+  'unchanged',
+  'normal_wear',
+  'damage',
+  'not_present_at_baseline',
+  'new_at_checkout',
+]);
 
 const CreateInspectionBody = z
   .object({
@@ -70,6 +102,10 @@ const CreateInspectionBody = z
     template_id: z.string().uuid().optional(),
     performed_at: z.string().datetime().optional(),
     notes: z.string().max(20000).optional(),
+    kind: InspectionKind.optional(),
+    tenancy_id: z.string().uuid().optional(),
+    baseline_inspection_id: z.string().uuid().optional(),
+    capture_mode: CaptureMode.optional(),
   })
   .openapi('CreateInspectionBody');
 
@@ -92,6 +128,10 @@ const InspectionItem = z
     label: z.string(),
     condition: z.string().nullable(),
     notes: z.string().nullable(),
+    item_key: z.string().nullable(),
+    group_label: z.string().nullable(),
+    change_type: z.string().nullable(),
+    sort_order: z.number().int().nullable(),
     created_at: z.string(),
     updated_at: z.string(),
     deleted_at: z.string().nullable(),
@@ -103,6 +143,10 @@ const CreateItemBody = z
     label: z.string().min(1).max(200),
     condition: z.string().max(200).optional(),
     notes: z.string().max(5000).optional(),
+    item_key: z.string().min(1).max(200).optional(),
+    group_label: z.string().min(1).max(200).optional(),
+    change_type: ChangeType.optional(),
+    sort_order: z.number().int().optional(),
   })
   .openapi('CreateInspectionItemBody');
 
@@ -111,9 +155,125 @@ const PatchItemBody = z
     label: z.string().min(1).max(200).optional(),
     condition: z.string().nullable().optional(),
     notes: z.string().nullable().optional(),
+    item_key: z.string().min(1).max(200).nullable().optional(),
+    group_label: z.string().min(1).max(200).nullable().optional(),
+    change_type: ChangeType.nullable().optional(),
+    sort_order: z.number().int().nullable().optional(),
   })
   .refine((b) => Object.keys(b).length > 0, { message: 'at least one field is required' })
   .openapi('PatchInspectionItemBody');
+
+// --- inspection_checks (typed yes/no, scalar, count fields) -----------------
+
+const InspectionCheck = z
+  .object({
+    id: z.string().uuid(),
+    account_id: z.string().uuid(),
+    inspection_id: z.string().uuid(),
+    field_key: z.string(),
+    label: z.string(),
+    group_label: z.string().nullable(),
+    value: z.unknown(),
+    sort_order: z.number().int().nullable(),
+    answered_by: z.string().uuid().nullable(),
+    answered_at: z.string().nullable(),
+    created_at: z.string(),
+    updated_at: z.string(),
+    deleted_at: z.string().nullable(),
+  })
+  .openapi('InspectionCheck');
+
+const UpsertChecksBody = z
+  .object({
+    checks: z
+      .array(
+        z.object({
+          field_key: z.string().min(1).max(200),
+          label: z.string().min(1).max(200).optional(),
+          group_label: z.string().min(1).max(200).optional(),
+          value: z.unknown().optional(),
+          sort_order: z.number().int().optional(),
+        }),
+      )
+      .min(1)
+      .max(1000),
+  })
+  .openapi('UpsertInspectionChecksBody');
+
+const BatchItemsBody = z
+  .object({
+    items: z
+      .array(
+        z.object({
+          item_key: z.string().min(1).max(200),
+          label: z.string().min(1).max(200).optional(),
+          condition: z.string().max(200).optional(),
+          notes: z.string().max(5000).optional(),
+          group_label: z.string().min(1).max(200).optional(),
+          change_type: ChangeType.optional(),
+          sort_order: z.number().int().optional(),
+        }),
+      )
+      .min(1)
+      .max(1000),
+  })
+  .openapi('BatchInspectionItemsBody');
+
+const SeedFromTemplateBody = z
+  .object({ template_id: z.string().uuid().optional() })
+  .openapi('SeedInspectionFromTemplateBody');
+
+const StartCheckoutBody = z
+  .object({
+    performed_at: z.string().datetime().optional(),
+    template_id: z.string().uuid().optional(),
+    notes: z.string().max(20000).optional(),
+  })
+  .openapi('StartCheckoutBody');
+
+const VoidInspectionBody = z
+  .object({ reason: z.string().min(1).max(2000) })
+  .openapi('VoidInspectionBody');
+
+const SeededRows = z
+  .object({ items: z.array(InspectionItem), checks: z.array(InspectionCheck) })
+  .openapi('SeededInspectionRows');
+
+const CheckListResponse = z
+  .object({ data: z.array(InspectionCheck) })
+  .openapi('InspectionCheckListResponse');
+
+const DiffRow = z
+  .object({
+    row_type: z.string(),
+    key: z.string().nullable(),
+    group_label: z.string().nullable(),
+    label: z.string().nullable(),
+    baseline_id: z.string().uuid().nullable(),
+    checkout_id: z.string().uuid().nullable(),
+    baseline_value: z.string().nullable(),
+    checkout_value: z.string().nullable(),
+    change_type: z.string().nullable(),
+    status: z.string(),
+    baseline_photo_count: z.number().int(),
+    checkout_photo_count: z.number().int(),
+  })
+  .openapi('InspectionCheckoutDiffRow');
+
+const DiffResponse = z
+  .object({ data: z.array(DiffRow) })
+  .openapi('InspectionCheckoutDiffResponse');
+
+// Maps a SECURITY INVOKER RPC's pg error to the HTTP envelope. RLS denials
+// (42501) surface as 404 so we never leak existence to a non-member.
+function rpcError(error: { code?: string; message: string }): ApiError {
+  if (error.code === 'P0002') return new ApiError(404, 'not_found', error.message);
+  if (error.code === '23503') return new ApiError(404, 'not_found', error.message);
+  if (error.code === '42501') return new ApiError(404, 'not_found', 'not found');
+  if (error.code === '23514') return new ApiError(409, 'conflict', error.message);
+  if (error.code === '23505') return new ApiError(409, 'conflict', error.message);
+  return new ApiError(500, 'database_error', error.message);
+}
 
 // --- params ------------------------------------------------------------------
 
@@ -159,6 +319,9 @@ const CompleteResponse = z
       content_hash: z.string(),
       size_bytes: z.number().int(),
     }),
+    // present only for move_in/move_out (which emit a tenant-facing document).
+    document: z.record(z.unknown()).nullable(),
+    document_version: z.record(z.unknown()).nullable(),
   })
   .openapi('InspectionCompleteResponse');
 
@@ -285,6 +448,77 @@ inspectionTemplatesApp.openapi(tplRemove, async (c) => {
   return c.body(null, 204);
 });
 
+// ----- bundled starter template catalog -------------------------------------
+
+const CatalogItem = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    jurisdiction: z.string().nullable(),
+    version: z.string(),
+    section_count: z.number().int(),
+  })
+  .openapi('InspectionTemplateCatalogItem');
+const CatalogListResponse = z
+  .object({ data: z.array(CatalogItem) })
+  .openapi('InspectionTemplateCatalogList');
+const FromCatalogBody = z
+  .object({
+    catalog_id: z.string().min(1).max(100),
+    name: z.string().min(1).max(200).optional(),
+  })
+  .openapi('CreateInspectionTemplateFromCatalogBody');
+
+const catalogListRoute = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/inspection-template-catalog',
+  tags: ['inspection_templates'],
+  summary: 'List bundled starter inspection templates',
+  request: { params: AccountParam },
+  responses: {
+    200: { description: 'catalog', content: { 'application/json': { schema: CatalogListResponse } } },
+    ...errorResponses,
+  },
+});
+inspectionTemplatesApp.openapi(catalogListRoute, async (c) => {
+  return c.json({ data: listInspectionTemplateCatalog() }, 200);
+});
+
+const fromCatalogRoute = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/inspection-templates/from-catalog',
+  tags: ['inspection_templates'],
+  summary: 'Clone a bundled starter template into this account',
+  request: {
+    params: AccountParam,
+    body: { content: { 'application/json': { schema: FromCatalogBody } }, required: true },
+  },
+  responses: {
+    201: { description: 'created', content: { 'application/json': { schema: InspectionTemplate } } },
+    ...errorResponses,
+  },
+});
+inspectionTemplatesApp.openapi(fromCatalogRoute, async (c) => {
+  const { accountId } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const tpl = getInspectionTemplateCatalog(body.catalog_id);
+  if (!tpl) throw new ApiError(404, 'not_found', 'catalog template not found');
+  const sb = getSb(c);
+  const { data, error } = await sb
+    .from('inspection_templates')
+    .insert({
+      account_id: accountId,
+      name: body.name ?? tpl.name,
+      jurisdiction: tpl.jurisdiction,
+      version: tpl.version,
+      schema: tpl.schema,
+    })
+    .select('*')
+    .single();
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  return c.json(data as z.infer<typeof InspectionTemplate>, 201);
+});
+
 // ============================================================================
 // inspections app
 // ============================================================================
@@ -379,12 +613,18 @@ inspectionsApp.openapi(inspCreate, async (c) => {
     account_id: accountId,
     area_id: body.area_id,
     template_id: body.template_id ?? null,
+    kind: body.kind ?? 'general',
+    tenancy_id: body.tenancy_id ?? null,
+    baseline_inspection_id: body.baseline_inspection_id ?? null,
+    capture_mode: body.capture_mode ?? 'landlord',
     performed_by: auth.userId,
     performed_at: body.performed_at ?? null,
     notes: body.notes ?? null,
   }).select('*').single();
   if (error) {
-    if (error.code === '23503') throw new ApiError(404, 'not_found', 'area_id or template_id does not belong to this account');
+    // coherence trigger (kind/tenancy/area/baseline mismatch) raises check_violation.
+    if (error.code === '23514') throw new ApiError(400, 'invalid_request', error.message);
+    if (error.code === '23503') throw new ApiError(404, 'not_found', 'area_id, template_id, tenancy_id or baseline_inspection_id does not belong to this account');
     throw new ApiError(500, 'database_error', error.message);
   }
   return c.json(data as z.infer<typeof Inspection>, 201);
@@ -415,33 +655,344 @@ inspectionsApp.openapi(inspComplete, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const sb = getSb(c);
 
-  // Step 1: set completed_at via the user-client (RLS-scoped). This is the
-  // last UPDATE that's allowed -- subsequent PATCHes trip the trigger.
+  // Build the frozen snapshots BEFORE the lock: the completion-lock trigger
+  // forbids changing template_snapshot/subject_snapshot afterward, so they must
+  // land atomically with completed_at. Only needed on the FIRST completion (a
+  // retry finds completed_at already set and skips the lock update entirely).
+  let templateSnapshot: Record<string, unknown> | null = null;
+  let subjectSnapshot: Record<string, unknown> | null = null;
+  const { data: pre, error: preErr } = await sb.from('inspections')
+    .select('area_id, template_id, tenancy_id')
+    .eq('account_id', accountId).eq('id', id)
+    .is('deleted_at', null).is('completed_at', null)
+    .maybeSingle();
+  if (preErr) throw new ApiError(500, 'database_error', preErr.message);
+  if (pre) {
+    const p = pre as { area_id: string; template_id: string | null; tenancy_id: string | null };
+    if (p.template_id) {
+      const tpl = await sb.from('inspection_templates')
+        .select('id, name, jurisdiction, version, schema')
+        .eq('account_id', accountId).eq('id', p.template_id).maybeSingle();
+      templateSnapshot = (tpl.data as Record<string, unknown> | null) ?? null;
+    }
+    const area = await sb.from('areas')
+      .select('id, name, kind, property_id, properties(name, address)')
+      .eq('account_id', accountId).eq('id', p.area_id).maybeSingle();
+    subjectSnapshot = { area: (area.data as unknown) ?? null, tenancy: null as unknown };
+    if (p.tenancy_id) {
+      const ten = await sb.from('tenancies')
+        .select('id, start_date, end_date, status')
+        .eq('account_id', accountId).eq('id', p.tenancy_id).maybeSingle();
+      subjectSnapshot.tenancy = (ten.data as unknown) ?? null;
+    }
+  }
+
+  // Step 1: set completed_at + status + snapshots via the user-client
+  // (RLS-scoped). This is the last report-data-relevant UPDATE the trigger allows.
   const completedAt = new Date().toISOString();
   const { data: locked, error: lockErr } = await sb.from('inspections')
-    .update({ completed_at: completedAt, updated_at: completedAt })
+    .update({
+      completed_at: completedAt,
+      status: 'completed',
+      updated_at: completedAt,
+      template_snapshot: templateSnapshot,
+      subject_snapshot: subjectSnapshot,
+    })
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)
-    .is('completed_at', null)   // idempotent: a second complete is a no-op match-zero -> 404
+    .is('completed_at', null)
+    .neq('status', 'voided')
     .select('*')
     .maybeSingle();
   if (lockErr) throw new ApiError(500, 'database_error', lockErr.message);
-  if (!locked) throw new ApiError(404, 'not_found', 'inspection not found or already completed');
 
-  // Step 2: render + store the report via the admin helper. The function
-  // reads inspection / area / items / photos directly and writes one
-  // attachment of entity_type='inspection_report'. The PDF is byte-
-  // deterministic so re-running produces the SAME content hash.
-  const report = await generateAndStoreInspectionReport({
-    accountId,
-    inspectionId: id,
+  // Retry-safe: if we didn't win the lock the inspection may ALREADY be
+  // completed (a prior call crashed after the lock but before emitting the
+  // document). Re-fetch and continue idempotently rather than 404 the retry --
+  // report-gen and document-emission are both idempotent.
+  let inspection = locked as z.infer<typeof Inspection> | null;
+  if (!inspection) {
+    const { data: existing, error: exErr } = await sb.from('inspections')
+      .select('*').eq('account_id', accountId).eq('id', id).is('deleted_at', null).maybeSingle();
+    if (exErr) throw new ApiError(500, 'database_error', exErr.message);
+    const ex = existing as z.infer<typeof Inspection> | null;
+    if (!ex || !ex.completed_at || ex.status === 'voided') {
+      throw new ApiError(404, 'not_found', 'inspection not found or not completable');
+    }
+    inspection = ex;
+  }
+
+  // Step 2: render + store the report (idempotent on content hash).
+  const report = await generateAndStoreInspectionReport({ accountId, inspectionId: id });
+
+  // Step 3: move-in/out reports become tenant-facing documents so the existing
+  // magic-link review + acknowledge flow is the tenant sign-off surface.
+  let document: Record<string, unknown> | null = null;
+  let documentVersion: Record<string, unknown> | null = null;
+  if (inspection.kind === 'move_in' || inspection.kind === 'move_out') {
+    const title = inspection.kind === 'move_in' ? 'Move-in condition report' : 'Move-out condition report';
+    const { data: emitted, error: emitErr } = await sb.rpc('emit_inspection_report_document', {
+      p_account_id: accountId,
+      p_inspection_id: id,
+      p_attachment_id: report.attachment_id,
+      p_content_hash: report.content_hash,
+      p_size_bytes: report.size_bytes,
+      p_title: title,
+      p_requires_ack: true,
+    });
+    if (emitErr) throw rpcError(emitErr);
+    const row = (Array.isArray(emitted) ? emitted[0] : emitted) as
+      | { document: Record<string, unknown>; version: Record<string, unknown> }
+      | null;
+    document = row?.document ?? null;
+    documentVersion = row?.version ?? null;
+  }
+
+  return c.json({ inspection, report, document, document_version: documentVersion }, 200);
+});
+
+// ----- condition-report actions (on inspectionsApp) -------------------------
+
+const seedRoute = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/inspections/{id}/seed-from-template',
+  tags: ['inspections'],
+  summary: 'Instantiate items + checks from the inspection (or given) template',
+  request: {
+    params: AccountAndIdParam,
+    body: { content: { 'application/json': { schema: SeedFromTemplateBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'seeded', content: { 'application/json': { schema: SeededRows } } },
+    ...errorResponses,
+  },
+});
+inspectionsApp.openapi(seedRoute, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  const { data, error } = await sb.rpc('seed_inspection_items_from_template', {
+    p_account_id: accountId,
+    p_inspection_id: id,
+    p_template_id: body.template_id ?? null,
   });
+  if (error) throw rpcError(error);
+  return c.json((data ?? { items: [], checks: [] }) as z.infer<typeof SeededRows>, 200);
+});
 
-  return c.json({
-    inspection: locked as z.infer<typeof Inspection>,
-    report,
-  }, 200);
+const startCheckoutRoute = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/inspections/{id}/start-checkout',
+  tags: ['inspections'],
+  summary: 'Start a move-out inspection pre-keyed from this completed check-in',
+  request: {
+    params: AccountAndIdParam,
+    body: { content: { 'application/json': { schema: StartCheckoutBody } }, required: true },
+  },
+  responses: {
+    201: { description: 'created', content: { 'application/json': { schema: Inspection } } },
+    ...errorResponses,
+  },
+});
+inspectionsApp.openapi(startCheckoutRoute, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  const { data, error } = await sb.rpc('start_checkout_from_checkin', {
+    p_account_id: accountId,
+    p_baseline_inspection_id: id,
+    p_performed_at: body.performed_at ?? null,
+    p_template_id: body.template_id ?? null,
+    p_notes: body.notes ?? null,
+  });
+  if (error) throw rpcError(error);
+  const row = (Array.isArray(data) ? data[0] : data) as z.infer<typeof Inspection> | null;
+  if (!row) throw new ApiError(500, 'database_error', 'no inspection returned');
+  return c.json(row, 201);
+});
+
+const diffRoute = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/inspections/{id}/checkout-diff',
+  tags: ['inspections'],
+  summary: 'Item + check diff of a move-out vs its baseline check-in',
+  request: { params: AccountAndIdParam },
+  responses: {
+    200: { description: 'diff', content: { 'application/json': { schema: DiffResponse } } },
+    ...errorResponses,
+  },
+});
+inspectionsApp.openapi(diffRoute, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const sb = getSb(c);
+  const { data, error } = await sb.rpc('inspection_checkout_diff', {
+    p_account_id: accountId,
+    p_checkout_inspection_id: id,
+  });
+  if (error) throw rpcError(error);
+  return c.json({ data: (data ?? []) as z.infer<typeof DiffRow>[] }, 200);
+});
+
+const reviewRoute = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/inspections/{id}/review',
+  tags: ['inspections'],
+  summary: 'Mark a tenant-submitted inspection as landlord-reviewed',
+  request: { params: AccountAndIdParam },
+  responses: {
+    200: { description: 'reviewed', content: { 'application/json': { schema: Inspection } } },
+    ...errorResponses,
+  },
+});
+inspectionsApp.openapi(reviewRoute, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const sb = getSb(c);
+  const { data, error } = await sb.from('inspections')
+    .update({ status: 'landlord_reviewed', updated_at: new Date().toISOString() })
+    .eq('account_id', accountId).eq('id', id).is('deleted_at', null).is('completed_at', null)
+    .in('status', ['draft', 'tenant_submitted'])
+    .select('*').maybeSingle();
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  if (!data) throw new ApiError(404, 'not_found', 'inspection not found or not reviewable');
+  return c.json(data as z.infer<typeof Inspection>, 200);
+});
+
+const voidRoute = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/inspections/{id}/void',
+  tags: ['inspections'],
+  summary: 'Void an inspection (correction path; never deletes evidence)',
+  request: {
+    params: AccountAndIdParam,
+    body: { content: { 'application/json': { schema: VoidInspectionBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'voided', content: { 'application/json': { schema: Inspection } } },
+    ...errorResponses,
+  },
+});
+inspectionsApp.openapi(voidRoute, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  const { data, error } = await sb.rpc('void_inspection', {
+    p_account_id: accountId,
+    p_inspection_id: id,
+    p_reason: body.reason,
+  });
+  if (error) throw rpcError(error);
+  const row = (Array.isArray(data) ? data[0] : data) as z.infer<typeof Inspection> | null;
+  if (!row) throw new ApiError(404, 'not_found', 'inspection not found');
+  return c.json(row, 200);
+});
+
+const checksListRoute = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/inspections/{id}/checks',
+  tags: ['inspection_checks'],
+  request: { params: AccountAndIdParam },
+  responses: {
+    200: { description: 'checks', content: { 'application/json': { schema: CheckListResponse } } },
+    ...errorResponses,
+  },
+});
+inspectionsApp.openapi(checksListRoute, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const sb = getSb(c);
+  const { data, error } = await sb.from('inspection_checks').select('*')
+    .eq('account_id', accountId).eq('inspection_id', id).is('deleted_at', null)
+    .order('sort_order', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: true });
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  return c.json({ data: (data ?? []) as z.infer<typeof InspectionCheck>[] }, 200);
+});
+
+const checksUpsertRoute = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/inspections/{id}/checks',
+  tags: ['inspection_checks'],
+  summary: 'Batch upsert typed checks by field_key',
+  request: {
+    params: AccountAndIdParam,
+    body: { content: { 'application/json': { schema: UpsertChecksBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'upserted', content: { 'application/json': { schema: CheckListResponse } } },
+    ...errorResponses,
+  },
+});
+inspectionsApp.openapi(checksUpsertRoute, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  const { data, error } = await sb.rpc('upsert_inspection_checks', {
+    p_account_id: accountId,
+    p_inspection_id: id,
+    p_checks: body.checks,
+  });
+  if (error) throw rpcError(error);
+  return c.json({ data: (data ?? []) as z.infer<typeof InspectionCheck>[] }, 200);
+});
+
+// Mint a tenant capture magic link for this inspection (landlord-authenticated).
+// The raw secret is returned ONCE to the caller to share; only its hash is
+// stored. Re-call to issue a fresh link (e.g. to satisfy a renewal request).
+const CaptureLinkBody = z
+  .object({
+    tenant_id: z.string().uuid().optional(),
+    expires_in_minutes: z.coerce.number().int().positive().max(MAX_CAPTURE_TTL_MIN).default(DEFAULT_CAPTURE_TTL_MIN),
+  })
+  .openapi('CreateCaptureLinkBody');
+const MintedCaptureLink = z
+  .object({
+    id: z.string().uuid(),
+    secret: z.string(),
+    account_id: z.string().uuid(),
+    inspection_id: z.string().uuid(),
+    tenant_id: z.string().uuid().nullable(),
+    expires_at: z.string(),
+    created_at: z.string(),
+  })
+  .openapi('MintedCaptureLink');
+const captureLinkRoute = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/inspections/{id}/capture-links',
+  tags: ['inspections'],
+  summary: 'Mint a tenant capture magic link for this inspection',
+  request: {
+    params: AccountAndIdParam,
+    body: { content: { 'application/json': { schema: CaptureLinkBody } }, required: true },
+  },
+  responses: {
+    201: { description: 'minted', content: { 'application/json': { schema: MintedCaptureLink } } },
+    ...errorResponses,
+  },
+});
+inspectionsApp.openapi(captureLinkRoute, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  const auth = c.get('auth');
+  const secret = generateCaptureSecret();
+  const expiresAt = new Date(Date.now() + body.expires_in_minutes * 60 * 1000).toISOString();
+  const { data, error } = await sb
+    .from('inspection_capture_tokens')
+    .insert({
+      account_id: accountId,
+      inspection_id: id,
+      tenant_id: body.tenant_id ?? null,
+      secret_hash: '\\x' + hashCaptureSecret(secret).toString('hex'),
+      expires_at: expiresAt,
+      created_by: auth.userId,
+    })
+    .select('id, account_id, inspection_id, tenant_id, expires_at, created_at')
+    .single();
+  if (error) {
+    if (error.code === '23503') throw new ApiError(404, 'not_found', 'inspection or tenant not found in this account');
+    throw new ApiError(500, 'database_error', error.message);
+  }
+  return c.json({ ...(data as object), secret } as z.infer<typeof MintedCaptureLink>, 201);
 });
 
 // ============================================================================
@@ -521,11 +1072,16 @@ inspectionItemsApp.openapi(itemCreate, async (c) => {
     label: body.label,
     condition: body.condition ?? null,
     notes: body.notes ?? null,
+    item_key: body.item_key ?? null,
+    group_label: body.group_label ?? null,
+    change_type: body.change_type ?? null,
+    sort_order: body.sort_order ?? null,
   }).select('*').single();
   if (error) {
     if (/parent inspection .* is completed/i.test(error.message)) {
       throw new ApiError(409, 'conflict', 'parent inspection is completed; items are immutable');
     }
+    if (error.code === '23505') throw new ApiError(409, 'conflict', 'an item with this item_key already exists for this inspection');
     if (error.code === '23503') throw new ApiError(404, 'not_found', 'inspection not found in this account');
     throw new ApiError(500, 'database_error', error.message);
   }
@@ -540,6 +1096,10 @@ inspectionItemsApp.openapi(itemPatch, async (c) => {
   if (body.label !== undefined) update.label = body.label;
   if (body.condition !== undefined) update.condition = body.condition;
   if (body.notes !== undefined) update.notes = body.notes;
+  if (body.item_key !== undefined) update.item_key = body.item_key;
+  if (body.group_label !== undefined) update.group_label = body.group_label;
+  if (body.change_type !== undefined) update.change_type = body.change_type;
+  if (body.sort_order !== undefined) update.sort_order = body.sort_order;
   const { data, error } = await sb.from('inspection_items').update(update)
     .eq('account_id', accountId)
     .eq('inspection_id', inspectionId)
@@ -550,6 +1110,7 @@ inspectionItemsApp.openapi(itemPatch, async (c) => {
     if (/parent inspection .* is completed/i.test(error.message)) {
       throw new ApiError(409, 'conflict', 'parent inspection is completed; items are immutable');
     }
+    if (error.code === '23505') throw new ApiError(409, 'conflict', 'an item with this item_key already exists for this inspection');
     throw new ApiError(500, 'database_error', error.message);
   }
   if (!data) throw new ApiError(404, 'not_found', 'not found');
@@ -575,4 +1136,33 @@ inspectionItemsApp.openapi(itemRemove, async (c) => {
   }
   if (!data) throw new ApiError(404, 'not_found', 'not found');
   return c.body(null, 204);
+});
+
+// Batch upsert items by item_key (offline / field re-sync). Convergent on
+// item_key so a retried sync doesn't double-insert.
+const itemsBatchRoute = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/inspections/{inspectionId}/items/batch',
+  tags: ['inspection_items'],
+  summary: 'Batch upsert inspection items by item_key',
+  request: {
+    params: InspectionParam,
+    body: { content: { 'application/json': { schema: BatchItemsBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'upserted', content: { 'application/json': { schema: ItemListResponse } } },
+    ...errorResponses,
+  },
+});
+inspectionItemsApp.openapi(itemsBatchRoute, async (c) => {
+  const { accountId, inspectionId } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  const { data, error } = await sb.rpc('upsert_inspection_items', {
+    p_account_id: accountId,
+    p_inspection_id: inspectionId,
+    p_items: body.items,
+  });
+  if (error) throw rpcError(error);
+  return c.json({ data: (data ?? []) as z.infer<typeof InspectionItem>[] }, 200);
 });

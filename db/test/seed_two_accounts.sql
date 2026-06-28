@@ -157,6 +157,13 @@ begin
     (v_item_a, v_acc_a, v_insp_a, 'Kitchen faucet', 'ok'),
     (v_item_b, v_acc_b, v_insp_b, 'Kitchen faucet', 'ok');
 
+  -- Condition-report typed checks (Phase 27): one per account.
+  insert into public.inspection_checks (
+    account_id, inspection_id, field_key, label, value
+  ) values
+    (v_acc_a, v_insp_a, 'keys/door_keys', 'Door keys', '2'::jsonb),
+    (v_acc_b, v_insp_b, 'keys/door_keys', 'Door keys', '2'::jsonb);
+
   -- Attachments & interactions
   v_att_a := gen_random_uuid(); v_att_b := gen_random_uuid();
   insert into public.attachments (

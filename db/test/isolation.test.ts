@@ -87,6 +87,10 @@ const NO_SEED_REQUIRED = new Set([
   'document_versions',
   'document_access_tokens',
   'document_access_events',
+  // Phase 27 condition reports: capture tokens are minted on demand by the
+  // capture-link API (sibling of document_access_tokens); nothing to seed in a
+  // static fixture. Still gets the cross-tenant == 0 isolation check.
+  'inspection_capture_tokens',
 ]);
 
 interface ColumnInfo {

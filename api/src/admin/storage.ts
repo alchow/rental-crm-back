@@ -61,6 +61,7 @@ export const ALLOWED_MIME_TYPES = new Set<string>([
 export const ALLOWED_ENTITY_TYPES = new Set<string>([
   'maintenance_requests',
   'inspections',
+  'inspection_items',
   'inspection_report',
   'interactions',
   'document_versions',
@@ -277,6 +278,11 @@ export async function uploadAttachment(input: UploadInput): Promise<UploadResult
     }
     if (insErr?.code === '23503') {
       throw new ApiError(404, 'not_found', 'referenced entity not found in this account');
+    }
+    // Post-completion attachment lock (Phase 27): the parent inspection/item is
+    // frozen, so a new photo is rejected by the BEFORE INSERT trigger.
+    if (insErr?.code === '23514' && /completed/i.test(insErr.message)) {
+      throw new ApiError(409, 'conflict', 'parent inspection is completed; attachments are immutable');
     }
     throw new ApiError(500, 'database_error', insErr?.message ?? 'no row returned');
   }
