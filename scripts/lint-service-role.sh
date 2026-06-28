@@ -65,6 +65,11 @@ EXCLUDES=(
   ':!api/test/search.test.ts'
   ':!api/test/attachments.test.ts'
   ':!api/test/documents.test.ts'
+  #   - api/test/condition-reports.test.ts: Phase 27 integration test; assigns
+  #     process.env from supabase status (same shape as documents.test.ts) and
+  #     uses the admin client only to clear the per-IP rate bucket between runs.
+  #     TEST code, never a shipped client constructor.
+  ':!api/test/condition-reports.test.ts'
   ':!api/test/intake.test.ts'
   ':!api/test/phase9.test.ts'
   ':!api/test/phase10.test.ts'

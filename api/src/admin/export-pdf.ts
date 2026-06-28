@@ -320,6 +320,7 @@ interface ExportData {
   workOrders: Array<Record<string, unknown>>;
   inspections: Array<Record<string, unknown>>;
   inspectionItems: Array<Record<string, unknown>>;
+  inspectionChecks: Array<Record<string, unknown>>;
   notices: Array<Record<string, unknown>>;
   attachments: AttachmentRow[];
   events: Array<Record<string, unknown>>;
@@ -496,6 +497,7 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   let workOrders: Record<string, unknown>[] = [];
   let inspections: Record<string, unknown>[] = [];
   let inspectionItems: Record<string, unknown>[] = [];
+  let inspectionChecks: Record<string, unknown>[] = [];
   let notices: Record<string, unknown>[] = [];
 
   if (tenancyId || areaId) {
@@ -526,11 +528,12 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     }
     if (inspections.length > 0) {
       const ids = inspections.map((r) => r.id as string);
-      const items = await admin
-        .from('inspection_items').select('*')
-        .eq('account_id', scope.accountId)
-        .in('inspection_id', ids);
+      const [items, checks] = await Promise.all([
+        admin.from('inspection_items').select('*').eq('account_id', scope.accountId).in('inspection_id', ids),
+        admin.from('inspection_checks').select('*').eq('account_id', scope.accountId).in('inspection_id', ids),
+      ]);
       inspectionItems = (items.data as Record<string, unknown>[]) ?? [];
+      inspectionChecks = (checks.data as Record<string, unknown>[]) ?? [];
     }
   }
   if (tenancyId) {
@@ -543,15 +546,37 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   for (const r of maintenanceRequests) entityIds.push(r.id as string);
   for (const r of inspections) entityIds.push(r.id as string);
   for (const r of interactions) entityIds.push(r.id as string);
+  const ATTACHMENT_COLS =
+    'id, entity_type, entity_id, storage_path, content_hash, mime_type, size_bytes, uploaded_by, derived_from, received_at';
   let attachments: AttachmentRow[] = [];
   if (entityIds.length > 0) {
     const a = await admin
       .from('attachments')
-      .select('id, entity_type, entity_id, storage_path, content_hash, mime_type, size_bytes, uploaded_by, derived_from, received_at')
+      .select(ATTACHMENT_COLS)
       .eq('account_id', scope.accountId)
       .in('entity_id', entityIds)
       .is('deleted_at', null);
     attachments = (a.data as AttachmentRow[]) ?? [];
+  }
+  // Condition-report item photos attach at entity_type='inspection_items' keyed
+  // by item id. Fetch them separately + CHUNKED -- a full move-in form can have
+  // 100+ items, and folding all item ids into the shared id list above would
+  // blow the IN() query (and the events scope). Each item's chain-of-custody
+  // then renders in the Photos section like any other source photo.
+  if (inspectionItems.length > 0) {
+    const itemIds = inspectionItems.map((r) => r.id as string);
+    const CHUNK = 100;
+    for (let i = 0; i < itemIds.length; i += CHUNK) {
+      const ip = await admin
+        .from('attachments')
+        .select(ATTACHMENT_COLS)
+        .eq('account_id', scope.accountId)
+        .eq('entity_type', 'inspection_items')
+        .in('entity_id', itemIds.slice(i, i + CHUNK))
+        .is('deleted_at', null);
+      if (ip.error) throw new Error(`item-photo load failed: ${ip.error.message}`);
+      attachments.push(...((ip.data as AttachmentRow[]) ?? []));
+    }
   }
 
   // Audit events for everything in scope.
@@ -641,6 +666,7 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     workOrders,
     inspections,
     inspectionItems,
+    inspectionChecks,
     notices,
     attachments,
     events,
@@ -1062,16 +1088,44 @@ async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
     italicNote(doc, '(no inspections in scope)');
   } else {
     for (const insp of data.inspections) {
+      const kind = (insp.kind as string) ?? 'general';
+      const stateLabel = insp.completed_at
+        ? `COMPLETED ${insp.completed_at as string}`
+        : `in progress (${(insp.status as string) ?? 'draft'})`;
       doc.fontSize(10).text(
-        `• ${insp.performed_at as string ?? insp.created_at as string}  ` +
-        (insp.completed_at ? `[COMPLETED ${insp.completed_at as string}]` : '[in progress]'),
+        `• ${kind}  ${insp.performed_at as string ?? insp.created_at as string}  [${stateLabel}]` +
+        (insp.status === 'voided' ? '  [VOIDED]' : '') +
+        (insp.baseline_inspection_id
+          ? `  (checkout; baseline ${(insp.baseline_inspection_id as string).slice(0, 8)}…)`
+          : ''),
       );
+      // The frozen, content-hashed report PDF (chain of custody to the bytes
+      // the tenant acknowledged). Shown here rather than in Photos.
+      const report = data.attachments.find(
+        (a) => a.entity_type === 'inspection_report' && a.entity_id === insp.id && a.derived_from === null,
+      );
+      if (report) {
+        doc.fontSize(8).fillColor('#555').text(`    report sha256: ${report.content_hash}`).fillColor('#000');
+      }
       const items = data.inspectionItems.filter((it) => it.inspection_id === insp.id);
       for (const it of items) {
         doc.fontSize(9).fillColor('#333').text(
-          `    ${it.label as string}` +
+          `    ${it.group_label ? `${it.group_label as string} / ` : ''}${it.label as string}` +
           (it.condition ? `  condition=${it.condition as string}` : '') +
+          (it.change_type ? `  change=${it.change_type as string}` : '') +
           (it.notes ? `  notes=${String(it.notes).slice(0, 200)}` : ''),
+        ).fillColor('#000');
+      }
+      const checks = data.inspectionChecks.filter((ck) => ck.inspection_id === insp.id);
+      for (const ck of checks) {
+        const v =
+          ck.value === null || ck.value === undefined
+            ? ''
+            : typeof ck.value === 'string'
+              ? ck.value
+              : JSON.stringify(ck.value);
+        doc.fontSize(9).fillColor('#333').text(
+          `    [check] ${ck.group_label ? `${ck.group_label as string} / ` : ''}${ck.label as string}: ${v}`,
         ).fillColor('#000');
       }
     }
@@ -1091,7 +1145,11 @@ async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
   }
 
   // ----- Photos (chain of custody + embedded preview) ----------------------
-  const photoOriginals = data.attachments.filter((a) => a.derived_from === null);
+  // Source photos only: exclude the rendered inspection_report PDFs (derived
+  // artifacts; their hash is shown under each inspection above).
+  const photoOriginals = data.attachments.filter(
+    (a) => a.derived_from === null && a.entity_type !== 'inspection_report',
+  );
   if (photoOriginals.length > 0) {
     doc.addPage({ size: 'LETTER', margin: 54 });
     doc.fontSize(14).text('Photos', { underline: true });

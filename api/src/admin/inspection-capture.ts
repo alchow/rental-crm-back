@@ -1,0 +1,270 @@
+import { randomBytes, createHash } from 'node:crypto';
+import { ApiError } from '../routes/_lib/error';
+import { getAdminClient } from './supabase-admin';
+import { getMailer } from './mailer';
+
+// ============================================================================
+// Tenant capture magic-link helpers (service-role).
+// ============================================================================
+//
+// A capture token is a WRITE-scoped magic link bound to ONE inspection (vs the
+// READ-only document_access tokens). The raw secret is never stored -- only its
+// sha256. Mirrors the document-access security model; writes go through the
+// SECURITY DEFINER tenant_* RPCs (which stamp the audit actor as tenant:<token>).
+
+export const DEFAULT_CAPTURE_TTL_MIN = 7 * 24 * 60; // 7 days: filling a form takes time
+export const MAX_CAPTURE_TTL_MIN = 30 * 24 * 60; // 30 days
+
+const CAPTURE_IP_SCOPE = 'capture_access';
+const CAPTURE_IP_WINDOW_S = 10 * 60;
+const CAPTURE_IP_LIMIT = 120;
+const TOKEN_TOUCH_MIN_INTERVAL_MS = 60 * 1000;
+
+export function generateCaptureSecret(): string {
+  return randomBytes(32).toString('base64url');
+}
+
+export function hashCaptureSecret(secret: string): Buffer {
+  return createHash('sha256').update(secret, 'utf8').digest();
+}
+
+function captureBaseUrl(): string {
+  // Frontend capture page base. Stub-friendly default; set APP_BASE_URL in prod.
+  return process.env.APP_BASE_URL ?? 'https://app.example';
+}
+
+export interface CaptureTokenRow {
+  id: string;
+  account_id: string;
+  inspection_id: string;
+  tenant_id: string | null;
+  expires_at: string;
+}
+
+/**
+ * Per-IP sliding window for the public capture endpoints. Fails OPEN: the
+ * token is the real auth, this is just an abuse backstop (same posture as the
+ * document-access limiter).
+ */
+export async function bumpCaptureIpRate(ip: string): Promise<{ ok: boolean }> {
+  const admin = getAdminClient();
+  const { data, error } = await admin.rpc('bump_ip_rate_bucket', {
+    p_ip: ip.slice(0, 64),
+    p_scope: CAPTURE_IP_SCOPE,
+    p_window_sec: CAPTURE_IP_WINDOW_S,
+  });
+  if (error) return { ok: true };
+  const count = typeof data === 'number' ? data : Number(data);
+  if (!Number.isFinite(count)) return { ok: true };
+  return { ok: count <= CAPTURE_IP_LIMIT };
+}
+
+/** Verify a live (non-expired, non-revoked) token; throttle the last_used bump. */
+export async function lookupCaptureToken(secret: string): Promise<CaptureTokenRow> {
+  const admin = getAdminClient();
+  const hash = hashCaptureSecret(secret);
+  const { data, error } = await admin
+    .from('inspection_capture_tokens')
+    .select('id, account_id, inspection_id, tenant_id, expires_at, revoked_at, deleted_at, last_used_at')
+    .eq('secret_hash', '\\x' + hash.toString('hex'))
+    .maybeSingle();
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  if (!data || data.revoked_at || data.deleted_at) {
+    throw new ApiError(404, 'not_found', 'invalid token');
+  }
+  if (new Date(data.expires_at as string).getTime() <= Date.now()) {
+    throw new ApiError(404, 'not_found', 'expired token');
+  }
+  const lastUsedMs = data.last_used_at ? new Date(data.last_used_at as string).getTime() : 0;
+  if (Date.now() - lastUsedMs > TOKEN_TOUCH_MIN_INTERVAL_MS) {
+    const nowIso = new Date().toISOString();
+    await admin.from('inspection_capture_tokens')
+      .update({ last_used_at: nowIso, updated_at: nowIso })
+      .eq('id', data.id);
+  }
+  return {
+    id: data.id as string,
+    account_id: data.account_id as string,
+    inspection_id: data.inspection_id as string,
+    tenant_id: (data.tenant_id as string | null) ?? null,
+    expires_at: data.expires_at as string,
+  };
+}
+
+/** Insert a fresh capture token via the admin client (used by renewal). */
+async function mintCaptureTokenAdmin(opts: {
+  accountId: string;
+  inspectionId: string;
+  tenantId: string | null;
+  ttlMinutes: number;
+}): Promise<{ id: string; secret: string; expires_at: string }> {
+  const admin = getAdminClient();
+  const secret = generateCaptureSecret();
+  const expiresAt = new Date(Date.now() + opts.ttlMinutes * 60 * 1000).toISOString();
+  const { data, error } = await admin
+    .from('inspection_capture_tokens')
+    .insert({
+      account_id: opts.accountId,
+      inspection_id: opts.inspectionId,
+      tenant_id: opts.tenantId,
+      secret_hash: '\\x' + hashCaptureSecret(secret).toString('hex'),
+      expires_at: expiresAt,
+    })
+    .select('id, expires_at')
+    .single();
+  if (error || !data) throw new ApiError(500, 'database_error', error?.message ?? 'token insert failed');
+  return { id: data.id as string, secret, expires_at: data.expires_at as string };
+}
+
+/** The form a tenant fills: inspection subset + items + checks, token-scoped. */
+export async function loadCaptureForm(token: CaptureTokenRow): Promise<{
+  token: { id: string; expires_at: string };
+  inspection: Record<string, unknown>;
+  items: Record<string, unknown>[];
+  checks: Record<string, unknown>[];
+}> {
+  const admin = getAdminClient();
+  const insp = await admin
+    .from('inspections')
+    .select('id, kind, status, capture_mode, area_id, performed_at, completed_at, notes')
+    .eq('account_id', token.account_id)
+    .eq('id', token.inspection_id)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (insp.error) throw new ApiError(500, 'database_error', insp.error.message);
+  if (!insp.data) throw new ApiError(404, 'not_found', 'inspection not found');
+
+  const items = await admin
+    .from('inspection_items')
+    .select('id, label, condition, notes, item_key, group_label, sort_order')
+    .eq('account_id', token.account_id)
+    .eq('inspection_id', token.inspection_id)
+    .is('deleted_at', null)
+    .order('sort_order', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: true });
+  if (items.error) throw new ApiError(500, 'database_error', items.error.message);
+
+  const checks = await admin
+    .from('inspection_checks')
+    .select('id, field_key, label, group_label, value, sort_order')
+    .eq('account_id', token.account_id)
+    .eq('inspection_id', token.inspection_id)
+    .is('deleted_at', null)
+    .order('sort_order', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: true });
+  if (checks.error) throw new ApiError(500, 'database_error', checks.error.message);
+
+  return {
+    token: { id: token.id, expires_at: token.expires_at },
+    inspection: insp.data as Record<string, unknown>,
+    items: (items.data ?? []) as Record<string, unknown>[],
+    checks: (checks.data ?? []) as Record<string, unknown>[],
+  };
+}
+
+/**
+ * Self-service renewal. Uniform behaviour regardless of outcome
+ * (anti-enumeration): always resolves. Finds the token even if EXPIRED (so a
+ * tenant holding only the dead link can renew), mints a fresh one, and sends
+ * it ONLY to the tenant's on-file email -- never to a requester-supplied
+ * address. Send is via the Mailer (a logging stub until a provider is wired).
+ */
+export async function requestCaptureRenewal(args: { secret: string }): Promise<void> {
+  const admin = getAdminClient();
+  const hash = hashCaptureSecret(args.secret);
+  const { data: tok } = await admin
+    .from('inspection_capture_tokens')
+    .select('id, account_id, inspection_id, tenant_id, revoked_at, deleted_at')
+    .eq('secret_hash', '\\x' + hash.toString('hex'))
+    .maybeSingle();
+  if (!tok || tok.revoked_at || tok.deleted_at) return;
+
+  // Resolve the on-file email for the token's tenant. No tenant / no email ->
+  // nothing to send (still uniform: caller can't tell the difference).
+  if (!tok.tenant_id) return;
+  const { data: tenant } = await admin
+    .from('tenants')
+    .select('emails')
+    .eq('account_id', tok.account_id)
+    .eq('id', tok.tenant_id)
+    .is('deleted_at', null)
+    .maybeSingle();
+  const emails = (tenant?.emails as string[] | null) ?? [];
+  const email = emails[0];
+  if (!email) return;
+
+  const minted = await mintCaptureTokenAdmin({
+    accountId: tok.account_id as string,
+    inspectionId: tok.inspection_id as string,
+    tenantId: tok.tenant_id as string,
+    ttlMinutes: DEFAULT_CAPTURE_TTL_MIN,
+  });
+  const link = `${captureBaseUrl()}/capture/${minted.secret}`;
+  await getMailer().send({
+    to: email,
+    subject: 'Your condition form link',
+    text:
+      `Here is a fresh link to complete your move-in/move-out condition form:\n\n${link}\n\n` +
+      `It expires in ${Math.round(DEFAULT_CAPTURE_TTL_MIN / 60 / 24)} days.`,
+  });
+}
+
+// --- tenant write helpers (call the SECURITY DEFINER tenant_* RPCs) ----------
+// Kept here (not in the route) so the service-role client stays quarantined in
+// admin/. The DEFINER RPCs stamp the audit actor as tenant:<token>.
+
+function rpcError(error: { code?: string; message: string }): ApiError {
+  if (error.code === 'P0002') return new ApiError(404, 'not_found', error.message);
+  if (error.code === '23514') return new ApiError(409, 'conflict', error.message);
+  if (error.code === '23503') return new ApiError(404, 'not_found', error.message);
+  return new ApiError(500, 'database_error', error.message);
+}
+
+export async function tenantUpdateItem(
+  token: CaptureTokenRow,
+  itemId: string,
+  condition: string | null,
+  notes: string | null,
+): Promise<Record<string, unknown>> {
+  const admin = getAdminClient();
+  const { data, error } = await admin.rpc('tenant_update_inspection_item', {
+    p_account_id: token.account_id,
+    p_token_id: token.id,
+    p_inspection_id: token.inspection_id,
+    p_item_id: itemId,
+    p_condition: condition,
+    p_notes: notes,
+  });
+  if (error) throw rpcError(error);
+  const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
+  if (!row) throw new ApiError(404, 'not_found', 'item not found');
+  return row;
+}
+
+export async function tenantUpsertChecks(
+  token: CaptureTokenRow,
+  checks: unknown[],
+): Promise<Record<string, unknown>[]> {
+  const admin = getAdminClient();
+  const { data, error } = await admin.rpc('tenant_upsert_inspection_checks', {
+    p_account_id: token.account_id,
+    p_token_id: token.id,
+    p_inspection_id: token.inspection_id,
+    p_checks: checks,
+  });
+  if (error) throw rpcError(error);
+  return (data ?? []) as Record<string, unknown>[];
+}
+
+export async function tenantSubmit(token: CaptureTokenRow): Promise<Record<string, unknown>> {
+  const admin = getAdminClient();
+  const { data, error } = await admin.rpc('tenant_submit_inspection', {
+    p_account_id: token.account_id,
+    p_token_id: token.id,
+    p_inspection_id: token.inspection_id,
+  });
+  if (error) throw rpcError(error);
+  const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
+  if (!row) throw new ApiError(404, 'not_found', 'inspection not found');
+  return row;
+}
