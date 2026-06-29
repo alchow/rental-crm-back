@@ -9,7 +9,16 @@ import {
   tenantUpdateItem,
   tenantUpsertChecks,
   tenantSubmit,
+  tenantAttachItemPhoto,
+  tenantUpsertItems,
+  lookupCaptureAttachment,
 } from '../admin/inspection-capture';
+import {
+  processAndStoreBytes,
+  downloadAttachment,
+  ALLOWED_MIME_TYPES,
+  MAX_BYTES,
+} from '../admin/storage';
 
 // ============================================================================
 // PUBLIC tenant capture magic-link endpoints.
@@ -203,4 +212,136 @@ inspectionCaptureApp.openapi(renewalRoute, async (c) => {
   // (anti-enumeration). Delivery is to the on-file contact only, never echoed.
   await requestCaptureRenewal({ secret: body.secret });
   return c.json({ status: 'accepted' }, 202);
+});
+
+// ============================================================================
+// New endpoints: photo upload, attachment download proxy, batch item edit
+// ============================================================================
+
+const PhotoUploadBody = z
+  .object({ file: z.any().describe('binary photo file (multipart/form-data)') })
+  .openapi('CapturePhotoUploadBody');
+
+const PhotoUploadResponse = z
+  .object({
+    attachment_id: z.string().uuid(),
+    derivative_id: z.string().uuid().nullable(),
+  })
+  .openapi('CapturePhotoUploadResponse');
+
+const BatchItemsBody = z
+  .object({
+    items: z
+      .array(
+        z.object({
+          item_key: z.string().min(1).max(200),
+          condition: z.string().max(200).nullable().optional(),
+          notes: z.string().max(5000).nullable().optional(),
+        }),
+      )
+      .min(1)
+      .max(1000),
+  })
+  .openapi('CaptureItemsBatchBody');
+
+const ItemListResponse = z
+  .object({ data: z.array(z.record(z.unknown())) })
+  .openapi('CaptureItemList');
+
+// --- POST photo for an item ---------------------------------------------------
+const uploadPhotoRoute = createRoute({
+  method: 'post',
+  path: '/inspection-capture/{secret}/items/{itemId}/photos',
+  tags: ['inspection-capture'],
+  summary: 'Tenant uploads a photo for an inspection item',
+  request: {
+    params: SecretItemParam,
+    body: { content: { 'multipart/form-data': { schema: PhotoUploadBody } }, required: true },
+  },
+  responses: {
+    201: { description: 'uploaded', content: { 'application/json': { schema: PhotoUploadResponse } } },
+    ...errorResponses,
+    ...rateLimitedResponse,
+  },
+});
+inspectionCaptureApp.openapi(uploadPhotoRoute, async (c) => {
+  await guard(c);
+  const { secret, itemId } = c.req.valid('param');
+  const token = await lookupCaptureToken(secret);
+
+  type BodyVal = string | File | undefined;
+  const form = (await c.req.parseBody()) as Record<string, BodyVal>;
+  const maybeFile = form.file;
+  if (!maybeFile || typeof maybeFile === 'string' || !('arrayBuffer' in maybeFile)) {
+    throw new ApiError(400, 'invalid_request', 'file part missing');
+  }
+  const file = maybeFile as File;
+  const mime = file.type || 'application/octet-stream';
+  if (!ALLOWED_MIME_TYPES.has(mime)) {
+    throw new ApiError(400, 'invalid_request', `unsupported mime_type ${mime}`);
+  }
+  const size = file.size;
+  if (size <= 0 || size > MAX_BYTES) {
+    throw new ApiError(400, 'invalid_request', `file size out of range (${size})`);
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const put = await processAndStoreBytes(token.account_id, bytes, mime);
+  const result = await tenantAttachItemPhoto(token, itemId, put);
+  return c.json({ attachment_id: result.attachment_id, derivative_id: result.derivative_id }, 201);
+});
+
+// --- GET attachment download (binary proxy, NOT openapi) ----------------------
+// Mirror of attachments.ts download: forced Content-Disposition, nosniff, CSP,
+// no-store, x-content-sha256. Scope is restricted to items in the token's inspection.
+inspectionCaptureApp.get('/inspection-capture/:secret/attachments/:attachmentId/download', async (c) => {
+  await guard(c);
+  const secret = c.req.param('secret') ?? '';
+  const attachmentId = c.req.param('attachmentId') ?? '';
+  // Validate the id shape up front: this is a plain (non-openapi) route, so a
+  // malformed id would otherwise reach Postgres as a 22P02 and leak the raw
+  // error in a 500. A non-uuid is simply not found.
+  if (!/^[0-9a-f-]{36}$/i.test(attachmentId)) {
+    throw new ApiError(404, 'not_found', 'attachment not found');
+  }
+  const token = await lookupCaptureToken(secret);
+  const hit = await lookupCaptureAttachment(token, attachmentId);
+  if (!hit) throw new ApiError(404, 'not_found', 'attachment not found');
+  const dl = await downloadAttachment(token.account_id, attachmentId);
+  return new Response(dl.bytes, {
+    status: 200,
+    headers: {
+      'content-type': dl.mimeType,
+      'content-disposition': `attachment; filename="${dl.filename}"`,
+      'content-length': String(dl.bytes.byteLength),
+      'cache-control': 'private, no-store',
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; sandbox",
+      'x-content-sha256': dl.contentHash,
+    },
+  });
+});
+
+// --- POST batch item edit -----------------------------------------------------
+const batchItemsRoute = createRoute({
+  method: 'post',
+  path: '/inspection-capture/{secret}/items/batch',
+  tags: ['inspection-capture'],
+  summary: 'Tenant batch-edits multiple inspection items by item_key (UPDATE-only; unknown keys are ignored)',
+  request: {
+    params: SecretParam,
+    body: { content: { 'application/json': { schema: BatchItemsBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'updated', content: { 'application/json': { schema: ItemListResponse } } },
+    ...errorResponses,
+    ...rateLimitedResponse,
+  },
+});
+inspectionCaptureApp.openapi(batchItemsRoute, async (c) => {
+  await guard(c);
+  const { secret } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const token = await lookupCaptureToken(secret);
+  const data = await tenantUpsertItems(token, body.items);
+  return c.json({ data }, 200);
 });
