@@ -2,6 +2,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { ApiError } from '../routes/_lib/error';
 import { getAdminClient } from './supabase-admin';
 import { getMailer } from './mailer';
+import { removeOrphanStoredObject, type StoragePutResult } from './storage';
 
 // ============================================================================
 // Tenant capture magic-link helpers (service-role).
@@ -154,10 +155,46 @@ export async function loadCaptureForm(token: CaptureTokenRow): Promise<{
     .order('created_at', { ascending: true });
   if (checks.error) throw new ApiError(500, 'database_error', checks.error.message);
 
+  // Attach photos (attachments with entity_type='inspection_items') to each item.
+  const itemIds = (items.data ?? []).map((i) => i.id as string);
+  type PhotoEntry = {
+    id: string;
+    mime_type: string | null;
+    size_bytes: number | null;
+    derived_from: string | null;
+    content_hash: string;
+  };
+  const photosMap: Record<string, PhotoEntry[]> = {};
+  if (itemIds.length > 0) {
+    const photosRes = await admin
+      .from('attachments')
+      .select('id, entity_id, mime_type, size_bytes, derived_from, content_hash')
+      .eq('account_id', token.account_id)
+      .eq('entity_type', 'inspection_items')
+      .in('entity_id', itemIds)
+      .is('deleted_at', null);
+    if (photosRes.error) throw new ApiError(500, 'database_error', photosRes.error.message);
+    for (const p of (photosRes.data ?? [])) {
+      const eid = p.entity_id as string;
+      if (!photosMap[eid]) photosMap[eid] = [];
+      photosMap[eid].push({
+        id: p.id as string,
+        mime_type: p.mime_type as string | null,
+        size_bytes: p.size_bytes as number | null,
+        derived_from: p.derived_from as string | null,
+        content_hash: p.content_hash as string,
+      });
+    }
+  }
+  const itemsWithPhotos = (items.data ?? []).map((item) => ({
+    ...item,
+    photos: photosMap[item.id as string] ?? [],
+  }));
+
   return {
     token: { id: token.id, expires_at: token.expires_at },
     inspection: insp.data as Record<string, unknown>,
-    items: (items.data ?? []) as Record<string, unknown>[],
+    items: itemsWithPhotos as Record<string, unknown>[],
     checks: (checks.data ?? []) as Record<string, unknown>[],
   };
 }
@@ -267,4 +304,99 @@ export async function tenantSubmit(token: CaptureTokenRow): Promise<Record<strin
   const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
   if (!row) throw new ApiError(404, 'not_found', 'inspection not found');
   return row;
+}
+
+/**
+ * Registers a tenant-uploaded photo on an inspection item via the
+ * SECURITY DEFINER tenant_attach_inspection_item_photo RPC.
+ * On RPC failure, best-effort removes the already-stored bytes to avoid
+ * orphaning storage objects, then re-throws.
+ */
+export async function tenantAttachItemPhoto(
+  token: CaptureTokenRow,
+  itemId: string,
+  put: StoragePutResult,
+): Promise<{ attachment_id: string; derivative_id: string | null }> {
+  const admin = getAdminClient();
+  const { data, error } = await admin.rpc('tenant_attach_inspection_item_photo', {
+    p_account_id: token.account_id,
+    p_token_id: token.id,
+    p_inspection_id: token.inspection_id,
+    p_item_id: itemId,
+    p_attachment_hash: put.primary.hash,
+    p_attachment_mime: put.primary.mimeType,
+    p_attachment_size: put.primary.sizeBytes,
+    p_attachment_path: put.primary.storagePath,
+    p_derivative_hash: put.derivative?.hash ?? null,
+    p_derivative_mime: put.derivative?.mimeType ?? null,
+    p_derivative_size: put.derivative?.sizeBytes ?? null,
+    p_derivative_path: put.derivative?.storagePath ?? null,
+  });
+  if (error) {
+    await removeOrphanStoredObject(token.account_id, put.primary.storagePath).catch(() => {});
+    if (put.derivative) {
+      await removeOrphanStoredObject(token.account_id, put.derivative.storagePath).catch(() => {});
+    }
+    throw rpcError(error);
+  }
+  const row = (Array.isArray(data) ? data[0] : data) as {
+    attachment_id: string;
+    derivative_id: string | null;
+  } | null;
+  if (!row) throw new ApiError(404, 'not_found', 'item not found');
+  return { attachment_id: row.attachment_id, derivative_id: row.derivative_id ?? null };
+}
+
+/**
+ * Batch UPDATE-ONLY of inspection items by item_key via the
+ * SECURITY DEFINER tenant_upsert_inspection_items RPC.
+ * Tenant cannot create new line items; unknown item_keys are silently ignored.
+ */
+export async function tenantUpsertItems(
+  token: CaptureTokenRow,
+  items: unknown[],
+): Promise<Record<string, unknown>[]> {
+  const admin = getAdminClient();
+  const { data, error } = await admin.rpc('tenant_upsert_inspection_items', {
+    p_account_id: token.account_id,
+    p_token_id: token.id,
+    p_inspection_id: token.inspection_id,
+    p_items: items,
+  });
+  if (error) throw rpcError(error);
+  return (data ?? []) as Record<string, unknown>[];
+}
+
+/**
+ * Scope-check for the tenant download proxy: returns the attachment row only
+ * when the attachment belongs to an item in the token's inspection.
+ * Returns null if out of scope (caller raises 404).
+ */
+export async function lookupCaptureAttachment(
+  token: CaptureTokenRow,
+  attachmentId: string,
+): Promise<{ id: string } | null> {
+  const admin = getAdminClient();
+  // Resolve which item ids belong to this token's inspection.
+  const { data: itemRows, error: itemErr } = await admin
+    .from('inspection_items')
+    .select('id')
+    .eq('account_id', token.account_id)
+    .eq('inspection_id', token.inspection_id)
+    .is('deleted_at', null);
+  if (itemErr) throw new ApiError(500, 'database_error', itemErr.message);
+  const itemIds = (itemRows ?? []).map((r) => r.id as string);
+  if (itemIds.length === 0) return null;
+
+  const { data, error } = await admin
+    .from('attachments')
+    .select('id')
+    .eq('id', attachmentId)
+    .eq('account_id', token.account_id)
+    .eq('entity_type', 'inspection_items')
+    .in('entity_id', itemIds)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  return data as { id: string } | null;
 }

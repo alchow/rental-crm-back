@@ -366,6 +366,228 @@ async function main(): Promise<void> {
     if (!data.attachments.some((a) => a.entity_type === 'inspection_report' && a.entity_id === checkinId)) throw new Error('export missing rendered report attachment');
   });
 
+  // ============================================================================
+  // Tenant capture: photo upload + attachment download proxy + batch item edit
+  // ============================================================================
+
+  let photoInspId = '';
+  let photoItemId = '';
+  let photoItemKeys: string[] = [];
+  let photoSecret = '';
+  let uploadedAttId = '';
+
+  await check('tenant-photo setup: draft inspection, seed items, mint capture link', async () => {
+    // Fresh property/area/tenancy so there are no unique-constraint conflicts
+    // with the already-completed checkinId flow above.
+    const prop = await api('POST', `/v1/accounts/${A.accountId}/properties`, {
+      token: A.accessToken, body: { name: 'photo-test prop' },
+    });
+    const pId = (assertStatus(prop, 201, 'prop') as { id: string }).id;
+    const area = await api('POST', `/v1/accounts/${A.accountId}/areas`, {
+      token: A.accessToken, body: { property_id: pId, kind: 'unit', name: 'photo-test unit' },
+    });
+    const aId = (assertStatus(area, 201, 'area') as { id: string }).id;
+    const ten = await api('POST', `/v1/accounts/${A.accountId}/tenancies`, {
+      token: A.accessToken, body: { area_id: aId, start_date: '2026-02-01', status: 'active' },
+    });
+    const tId = (assertStatus(ten, 201, 'tenancy') as { id: string }).id;
+    const t3 = await api('POST', `/v1/accounts/${A.accountId}/tenants`, {
+      token: A.accessToken, body: { full_name: 'photo tenant', emails: [`photo-${rnd()}@example.test`] },
+    });
+    const t3Id = (assertStatus(t3, 201, 'tenant3') as { id: string }).id;
+    const insp = await api('POST', `/v1/accounts/${A.accountId}/inspections`, {
+      token: A.accessToken,
+      body: { area_id: aId, tenancy_id: tId, template_id: templateId, kind: 'move_in', capture_mode: 'collaborative' },
+    });
+    const ib = assertStatus(insp, 201, 'photo insp') as { id: string };
+    photoInspId = ib.id;
+    const seed = await api('POST', `/v1/accounts/${A.accountId}/inspections/${photoInspId}/seed-from-template`, {
+      token: A.accessToken, body: {},
+    });
+    const sb = assertStatus(seed, 200, 'photo seed') as { items: { id: string; item_key: string }[] };
+    if (sb.items.length < 2) throw new Error(`expected >=2 seeded items, got ${sb.items.length}`);
+    photoItemId = sb.items[0]!.id;
+    photoItemKeys = sb.items.slice(0, 3).map((i) => i.item_key);
+    const link = await api('POST', `/v1/accounts/${A.accountId}/inspections/${photoInspId}/capture-links`, {
+      token: A.accessToken, body: { tenant_id: t3Id },
+    });
+    const lb = assertStatus(link, 201, 'photo link') as { secret: string };
+    if (!lb.secret) throw new Error('no secret returned');
+    photoSecret = lb.secret;
+  });
+
+  await check('tenant uploads a photo to a draft item via capture route -> 201 with attachment_id', async () => {
+    const fd = new FormData();
+    fd.set('file', pngFile());
+    const r = await api('POST', `/v1/inspection-capture/${photoSecret}/items/${photoItemId}/photos`, { multipart: fd });
+    const b = assertStatus(r, 201, 'photo upload') as { attachment_id: string; derivative_id: unknown };
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(b.attachment_id)) {
+      throw new Error(`invalid attachment_id uuid: ${b.attachment_id}`);
+    }
+    uploadedAttId = b.attachment_id;
+  });
+
+  await check('uploaded capture photo appears in capture form photos[] for that item', async () => {
+    const r = await api('GET', `/v1/inspection-capture/${photoSecret}`);
+    const fb = assertStatus(r, 200, 'form') as { items: { id: string; photos: { id: string }[] }[] };
+    const item = fb.items.find((i) => i.id === photoItemId);
+    if (!item) throw new Error('target item not found in form');
+    if (!Array.isArray(item.photos)) throw new Error('photos field is not an array');
+    if (!item.photos.some((p) => p.id === uploadedAttId)) {
+      throw new Error(`uploaded photo ${uploadedAttId} not found in item.photos[]`);
+    }
+  });
+
+  await check('capture download proxy: bytes match + forced content-disposition and nosniff', async () => {
+    // Use app.fetch directly — api() consumes body as text which would corrupt binary bytes.
+    const res = await app.fetch(
+      new Request(`http://test/v1/inspection-capture/${photoSecret}/attachments/${uploadedAttId}/download`),
+    );
+    if (res.status !== 200) {
+      const txt = await res.text();
+      throw new Error(`expected 200, got ${res.status}: ${txt}`);
+    }
+    const cd = res.headers.get('content-disposition') ?? '';
+    if (!cd.startsWith('attachment')) throw new Error(`content-disposition not forced to "attachment": "${cd}"`);
+    const nosniff = res.headers.get('x-content-type-options') ?? '';
+    if (nosniff !== 'nosniff') throw new Error(`x-content-type-options not "nosniff": "${nosniff}"`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.byteLength !== PNG_1x1.byteLength) {
+      throw new Error(`size mismatch: downloaded ${buf.byteLength} bytes, expected ${PNG_1x1.byteLength}`);
+    }
+    if (!buf.equals(PNG_1x1)) throw new Error('downloaded bytes do not match the uploaded PNG bytes');
+  });
+
+  await check('capture photo upload is idempotent: identical bytes return the same attachment_id', async () => {
+    const fd = new FormData();
+    fd.set('file', pngFile());
+    const r = await api('POST', `/v1/inspection-capture/${photoSecret}/items/${photoItemId}/photos`, { multipart: fd });
+    const b = assertStatus(r, 201, 'idempotent upload') as { attachment_id: string };
+    if (b.attachment_id !== uploadedAttId) {
+      throw new Error(`idempotency broken: got ${b.attachment_id}, expected same id ${uploadedAttId}`);
+    }
+  });
+
+  await check('tenant batch edit marks items Good; unknown item_key is a silent no-op', async () => {
+    const unknownKey = 'definitely/does_not_exist_xyz';
+    const r = await api('POST', `/v1/inspection-capture/${photoSecret}/items/batch`, {
+      body: { items: [...photoItemKeys.map((k) => ({ item_key: k, condition: 'Good' })), { item_key: unknownKey, condition: 'Good' }] },
+    });
+    const b = assertStatus(r, 200, 'batch') as { data: { item_key: string; condition: string }[] };
+    if (b.data.some((d) => d.item_key === unknownKey)) throw new Error('unknown item_key must be silently ignored (not created)');
+    for (const k of photoItemKeys) {
+      const found = b.data.find((d) => d.item_key === k);
+      if (!found) throw new Error(`item_key ${k} not returned in batch response`);
+      if (found.condition !== 'Good') throw new Error(`item ${k}: expected condition=Good, got "${found.condition}"`);
+    }
+    // Verify persisted via GET form
+    const form = await api('GET', `/v1/inspection-capture/${photoSecret}`);
+    const fItems = (assertStatus(form, 200, 'form after batch') as { items: { item_key: string; condition: string }[] }).items;
+    for (const k of photoItemKeys) {
+      const fi = fItems.find((i) => i.item_key === k);
+      if (!fi || fi.condition !== 'Good') throw new Error(`form item ${k}: expected Good, got "${fi?.condition}"`);
+    }
+  });
+
+  await check('photo upload + batch both rejected after tenant submit (409)', async () => {
+    // Submit the photo-test inspection so it moves out of draft.
+    const sub = await api('POST', `/v1/inspection-capture/${photoSecret}/submit`);
+    assertStatus(sub, 200, 'submit photo inspection');
+    // Photo upload must now 409.
+    const fd = new FormData();
+    fd.set('file', pngFile());
+    const up = await api('POST', `/v1/inspection-capture/${photoSecret}/items/${photoItemId}/photos`, { multipart: fd });
+    if (up.status !== 409) throw new Error(`photo upload after submit: expected 409, got ${up.status} ${JSON.stringify(up.body)}`);
+    // Batch must also 409.
+    const batch = await api('POST', `/v1/inspection-capture/${photoSecret}/items/batch`, {
+      body: { items: [{ item_key: photoItemKeys[0]!, condition: 'Bad' }] },
+    });
+    if (batch.status !== 409) throw new Error(`batch after submit: expected 409, got ${batch.status} ${JSON.stringify(batch.body)}`);
+  });
+
+  await check('capture photo upload rejected on a completed inspection (409)', async () => {
+    // captureSecret + livingItemId belong to the already-completed checkinId from the main flow.
+    const fd = new FormData();
+    fd.set('file', pngFile());
+    const up = await api(
+      'POST',
+      `/v1/inspection-capture/${captureSecret}/items/${livingItemId}/photos`,
+      { multipart: fd },
+    );
+    if (up.status !== 409) {
+      throw new Error(`expected 409 on completed inspection, got ${up.status} ${JSON.stringify(up.body)}`);
+    }
+  });
+
+  await check('cross-token isolation: B token cannot download A attachment or modify A items', async () => {
+    // Set up a fresh draft inspection in B with its own capture link.
+    const bProp = await api('POST', `/v1/accounts/${B.accountId}/properties`, {
+      token: B.accessToken, body: { name: 'b-iso prop' },
+    });
+    const bPId = (assertStatus(bProp, 201, 'b prop') as { id: string }).id;
+    const bArea = await api('POST', `/v1/accounts/${B.accountId}/areas`, {
+      token: B.accessToken, body: { property_id: bPId, kind: 'unit', name: 'b-iso unit' },
+    });
+    const bAId = (assertStatus(bArea, 201, 'b area') as { id: string }).id;
+    const bTen = await api('POST', `/v1/accounts/${B.accountId}/tenancies`, {
+      token: B.accessToken, body: { area_id: bAId, start_date: '2026-02-01', status: 'active' },
+    });
+    const bTId = (assertStatus(bTen, 201, 'b tenancy') as { id: string }).id;
+    const bCatR = await api('GET', `/v1/accounts/${B.accountId}/inspection-template-catalog`, { token: B.accessToken });
+    const bCatItems = (assertStatus(bCatR, 200, 'b catalog') as { data: { id: string }[] }).data;
+    const bTmplR = await api('POST', `/v1/accounts/${B.accountId}/inspection-templates/from-catalog`, {
+      token: B.accessToken, body: { catalog_id: bCatItems[0]!.id },
+    });
+    const bTmplId = (assertStatus(bTmplR, 201, 'b template') as { id: string }).id;
+    const bInspR = await api('POST', `/v1/accounts/${B.accountId}/inspections`, {
+      token: B.accessToken,
+      body: { area_id: bAId, tenancy_id: bTId, template_id: bTmplId, kind: 'move_in', capture_mode: 'tenant' },
+    });
+    const bInspId = (assertStatus(bInspR, 201, 'b insp') as { id: string }).id;
+    await api('POST', `/v1/accounts/${B.accountId}/inspections/${bInspId}/seed-from-template`, {
+      token: B.accessToken, body: {},
+    });
+    const bTenantR = await api('POST', `/v1/accounts/${B.accountId}/tenants`, {
+      token: B.accessToken, body: { full_name: 'b iso tenant', emails: [`b-iso-${rnd()}@example.test`] },
+    });
+    const bTenantId = (assertStatus(bTenantR, 201, 'b tenant') as { id: string }).id;
+    const bLinkR = await api('POST', `/v1/accounts/${B.accountId}/inspections/${bInspId}/capture-links`, {
+      token: B.accessToken, body: { tenant_id: bTenantId },
+    });
+    const bSecret = (assertStatus(bLinkR, 201, 'b link') as { secret: string }).secret;
+
+    // B's secret cannot download A's attachment (item is not in B's inspection scope).
+    const dlRes = await app.fetch(
+      new Request(`http://test/v1/inspection-capture/${bSecret}/attachments/${uploadedAttId}/download`),
+    );
+    if (dlRes.status !== 404) throw new Error(`cross-token download: expected 404, got ${dlRes.status}`);
+
+    // Snapshot A's item conditions before the isolation attempt.
+    const aItemsBefore = await api('GET', `/v1/accounts/${A.accountId}/inspections/${photoInspId}/items`, { token: A.accessToken });
+    const aIb = assertStatus(aItemsBefore, 200, 'a items before') as { data: { item_key: string; condition: string | null }[] };
+
+    // B's capture secret batches using A's item_keys. The RPC scopes by B's
+    // inspection_id, so A's rows are never touched; only B's own rows (if any
+    // happen to share the same item_keys from the same template) are affected.
+    const bBatch = await api('POST', `/v1/inspection-capture/${bSecret}/items/batch`, {
+      body: { items: photoItemKeys.map((k) => ({ item_key: k, condition: 'tampered' })) },
+    });
+    if (bBatch.status !== 200 && bBatch.status !== 404 && bBatch.status !== 403) {
+      throw new Error(`cross-token batch: unexpected status ${bBatch.status} ${JSON.stringify(bBatch.body)}`);
+    }
+
+    // Verify A's items are unchanged.
+    const aItemsAfter = await api('GET', `/v1/accounts/${A.accountId}/inspections/${photoInspId}/items`, { token: A.accessToken });
+    const aIa = assertStatus(aItemsAfter, 200, 'a items after') as { data: { item_key: string; condition: string | null }[] };
+    for (const k of photoItemKeys) {
+      const before = aIb.data.find((i) => i.item_key === k);
+      const after = aIa.data.find((i) => i.item_key === k);
+      if (before?.condition !== after?.condition) {
+        throw new Error(`cross-token: A item "${k}" was modified: "${before?.condition}" -> "${after?.condition}"`);
+      }
+    }
+  });
+
   console.info('');
   if (failures.length > 0) {
     console.error(`${failures.length} FAILURE(S):`);

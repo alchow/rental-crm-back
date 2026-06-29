@@ -113,7 +113,7 @@ export function buildApp(): OpenAPIHono {
     );
   const defaultBodyLimit = bodyLimit({ maxSize: 1 * 1024 * 1024, onError: payloadTooLarge });
   const uploadBodyLimit = bodyLimit({ maxSize: 25 * 1024 * 1024, onError: payloadTooLarge });
-  const UPLOAD_PATH_RE = /^\/v1\/(?:intake\/[^/]+|accounts\/[^/]+\/imports)\/?$/;
+  const UPLOAD_PATH_RE = /^\/v1\/(?:intake\/[^/]+|accounts\/[^/]+\/imports|inspection-capture\/[^/]+\/items\/[^/]+\/photos)\/?$/;
   app.use('*', (c, next) =>
     (UPLOAD_PATH_RE.test(c.req.path) ? uploadBodyLimit : defaultBodyLimit)(c, next),
   );
