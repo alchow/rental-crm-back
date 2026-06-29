@@ -148,7 +148,7 @@ await authedFetch(`/v1/accounts/${accountId}/properties`, {
 // A retry with the SAME key + DIFFERENT body → 409 idempotency_key_reuse.
 ```
 
-Keys are stored 24 hours for in-flight or completed requests; in-flight keys older than 7 days are never freed (safety invariant: a key that may have committed is never recycled).
+Completed keys are retained 30 days (the replay window). An *abandoned* in-flight key — one whose original timed out or whose completion write was lost — is reclaimed ~90 seconds later (just past the server's request budget), so a same-key retry **re-executes** instead of wedging on `409 idempotency_in_flight`. Because reclaim re-executes, reuse a key only for operations that tolerate a redo if the first attempt committed. For file uploads, prefer a **fresh key per attempt** and rely on content-dedup: identical bytes are collapsed server-side (the re-upload returns the existing record with `200` + `deduped: true`), so retries can't create duplicates.
 
 ### Pagination
 
@@ -187,8 +187,11 @@ async function* listAll<T>(path: string): AsyncGenerator<T> {
 | 422 | `allocation_exceeds_payment`, `cross_tenancy_allocation`, `currency_mismatch` | Money-integrity rejections. |
 | 429 | `rate_limited` | Public intake throttle (per-token or per-IP). |
 | 500 | `internal_error`, `database_error` | Server fault. |
+| 503 | `service_unavailable` | Transient: a dependency was briefly unavailable (incl. a cold start) or the request exceeded the server time budget. **Retryable** — back off, honoring the `Retry-After` header. |
 
 > `404` on a resource you expect to exist means "not in this account/tenancy," not necessarily "deleted."
+
+**Retrying.** Safe to retry: any `503 service_unavailable` (honor `Retry-After`) and any idempotent `GET`. For mutations, retry with the *same* `Idempotency-Key` — you'll get the original response replayed, or `409 idempotency_in_flight` while the original is still running (back off ~250/500/1000 ms; an abandoned original is reclaimed after ~90s so the retry then re-executes). Today's clients also retry once on `401` (refresh the token first).
 
 ---
 

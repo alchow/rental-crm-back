@@ -2,6 +2,8 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
+import { keysetPage } from './_lib/cursor';
+import { paginated } from './_lib/list-response';
 
 // Sub-resource of tenancies: the people occupying a tenancy, with a role.
 // One tenant can hold multiple roles in the same tenancy (the unique key is
@@ -40,9 +42,12 @@ const PatchMemberBody = z
   .object({ role: MemberRole })
   .openapi('PatchTenancyMemberBody');
 
-const ListResponse = z
-  .object({ data: z.array(TenancyMember) })
-  .openapi('TenancyMemberListResponse');
+const ListResponse = paginated(TenancyMember).openapi('TenancyMemberListResponse');
+
+const ListQuery = z.object({
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(100).default(50),
+});
 
 const TenancyParam = z.object({
   accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
@@ -59,7 +64,7 @@ const list = createRoute({
   path: '/accounts/{accountId}/tenancies/{tenancyId}/members',
   tags: ['tenancy-members'],
   summary: 'List members of a tenancy',
-  request: { params: TenancyParam },
+  request: { params: TenancyParam, query: ListQuery },
   responses: {
     200: { description: 'members', content: { 'application/json': { schema: ListResponse } } },
     ...errorResponses,
@@ -109,16 +114,17 @@ export const tenancyMembersApp = newApiApp();
 
 tenancyMembersApp.openapi(list, async (c) => {
   const { accountId, tenancyId } = c.req.valid('param');
+  const { cursor, limit } = c.req.valid('query');
   const sb = getSb(c);
-  const { data, error } = await sb
+  const q = sb
     .from('tenancy_tenants')
     .select('*')
     .eq('account_id', accountId)
     .eq('tenancy_id', tenancyId)
-    .is('deleted_at', null)
-    .order('created_at', { ascending: true });
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  return c.json({ data: data ?? [] } as z.infer<typeof ListResponse>, 200);
+    .is('deleted_at', null);
+  // Oldest-first, keyset-paginated on created_at.
+  const { items, next_cursor } = await keysetPage<z.infer<typeof TenancyMember>>(q, { cursor, limit });
+  return c.json({ data: items, next_cursor }, 200);
 });
 
 tenancyMembersApp.openapi(add, async (c) => {

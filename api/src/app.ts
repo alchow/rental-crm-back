@@ -35,7 +35,7 @@ import {
   inspectionsApp,
   inspectionItemsApp,
 } from './routes/inspections';
-import { ApiError } from './routes/_lib/error';
+import { ApiError, classifyTransient } from './routes/_lib/error';
 import { bodyLimit } from 'hono/body-limit';
 import { requestId } from 'hono/request-id';
 import type { Context } from 'hono';
@@ -46,11 +46,16 @@ import { requireAuth } from './middleware/auth';
 import { requireAccountMembership } from './middleware/account-context';
 import { resolvePrincipal } from './middleware/principal';
 import { requireIdempotency } from './middleware/idempotency';
+import { requestTimeout } from './middleware/timeout';
 import { requireImmediateParent } from './middleware/immediate-parent';
 import { assertImageStackAtBoot, heicSupported } from './admin/heic-probe';
 import { recoverOrphanedEvidenceExports } from './admin/export-pdf';
 import { importCapability, recoverOrphanedImportSessions } from './admin/import-health';
-import { OPENAPI_DOC_CONFIG, injectIdempotencyContract } from './openapi/idempotency-contract';
+import {
+  OPENAPI_DOC_CONFIG,
+  injectIdempotencyContract,
+  injectServiceUnavailable,
+} from './openapi/idempotency-contract';
 
 // The Hono app, configured but NOT listening. index.ts mounts it on a
 // node-server port; tests call app.fetch(request) directly without binding
@@ -99,6 +104,15 @@ export function buildApp(): OpenAPIHono {
   // (OPTIONS) requests are answered -- and Access-Control-Allow-Origin is
   // set on actual responses -- for every endpoint, authenticated or not.
   app.use('*', corsMiddleware());
+
+  // Bound total in-app time below Render's ~30s edge timeout so a slow request
+  // becomes a typed, retryable 503 from the APP (carrying the error envelope)
+  // instead of a bodyless 503 synthesised by the edge. Mounted high -- below
+  // requestId/requestLog (so the 503 is logged with its `ms`) and cors, above
+  // the account stack -- so it covers every leg (auth, idempotency, downloads).
+  // It bounds server compute + the storage fetch, NOT client transfer time
+  // (see middleware/timeout.ts), so large mobile downloads are unaffected.
+  app.use('*', requestTimeout(25_000));
 
   // Body-size guard, mounted on EVERYTHING (including the unauthenticated
   // auth + intake legs -- those are exactly where an unbounded body is a
@@ -240,7 +254,9 @@ export function buildApp(): OpenAPIHono {
   let openApiDocument: ReturnType<typeof app.getOpenAPI31Document> | undefined;
   app.get('/openapi.json', (c) => {
     if (!openApiDocument) {
-      openApiDocument = injectIdempotencyContract(app.getOpenAPI31Document(OPENAPI_DOC_CONFIG));
+      openApiDocument = injectServiceUnavailable(
+        injectIdempotencyContract(app.getOpenAPI31Document(OPENAPI_DOC_CONFIG)),
+      );
     }
     return c.json(openApiDocument);
   });
@@ -254,9 +270,24 @@ export function buildApp(): OpenAPIHono {
       // Expected, route-thrown errors. Handlers throw these in lieu of
       // returning typed error responses (which fight zod-openapi's response
       // inference) so this is the single place error envelopes are formatted.
+      // A 503 is retryable -- tell the client when to come back. (5s is a
+      // conservative default; the header's presence matters more than the value.)
+      if (err.status === 503) c.header('Retry-After', '5');
       return c.json(
         { error: { code: err.code, message: err.message, details: err.details } },
         err.status,
+      );
+    }
+    // A raw throw that reached here unwrapped (an undici socket error, a pg pool
+    // failure) is usually a transient dependency blip, not a code bug. Classify
+    // it as a retryable 503 so cold-start / brief-outage windows are recoverable
+    // by the client rather than surfacing as a hard 500.
+    const transient = classifyTransient(err);
+    if (transient) {
+      c.header('Retry-After', '5');
+      return c.json(
+        { error: { code: transient.code, message: transient.message } },
+        transient.status,
       );
     }
     getLogger().error(

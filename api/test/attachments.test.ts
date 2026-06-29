@@ -238,6 +238,44 @@ async function main(): Promise<void> {
   });
 
   // -----------------------------------------------------------------------
+  // (1b) Content idempotency: re-uploading identical bytes to the SAME entity
+  // returns the existing row (HTTP 200 + deduped:true), not a duplicate -- even
+  // with a fresh Idempotency-Key. Identical bytes on a DIFFERENT entity still
+  // create a new row (201, deduped:false).
+  // -----------------------------------------------------------------------
+  await check('upload: identical bytes to the same entity dedupe (200 + deduped, same id)', async () => {
+    const fd = new FormData();
+    fd.set('entity_type', 'maintenance_requests');
+    fd.set('entity_id', A.maintenanceRequestId);
+    fd.set('file', pngFile());
+    const r = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
+      token: A.accessToken, multipart: fd, idempotencyKey: `dedupe-${rnd()}`,
+    });
+    const body = assertStatus(r, 200, 're-upload') as { attachment: { id: string }; deduped: boolean };
+    if (!body.deduped) throw new Error('expected deduped=true on identical re-upload');
+    if (body.attachment.id !== attachmentA) {
+      throw new Error(`expected the existing id ${attachmentA}, got ${body.attachment.id}`);
+    }
+  });
+
+  await check('upload: identical bytes to a DIFFERENT entity create a new row (201)', async () => {
+    const req2 = await api('POST', `/v1/accounts/${A.accountId}/maintenance-requests`, {
+      token: A.accessToken, body: { area_id: A.unitAreaId, title: 'leak 2', severity: 'routine' },
+    });
+    const reqId = (assertStatus(req2, 201, 'create req2') as { id: string }).id;
+    const fd = new FormData();
+    fd.set('entity_type', 'maintenance_requests');
+    fd.set('entity_id', reqId);
+    fd.set('file', pngFile());
+    const r = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
+      token: A.accessToken, multipart: fd, idempotencyKey: `new-${rnd()}`,
+    });
+    const body = assertStatus(r, 201, 'new-entity upload') as { attachment: { id: string }; deduped: boolean };
+    if (body.deduped) throw new Error('expected deduped=false for a new entity');
+    if (body.attachment.id === attachmentA) throw new Error('expected a fresh attachment id');
+  });
+
+  // -----------------------------------------------------------------------
   // (2) Cross-account read denied. A's attachment ID cannot be fetched by B.
   // -----------------------------------------------------------------------
   await check("download: A's attachment is 404 when B asks for it", async () => {

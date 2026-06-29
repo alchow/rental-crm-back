@@ -75,6 +75,14 @@ export interface KeysetPageOpts {
   limit: number;
   /** Keyset column (default 'created_at'); interactions page on occurred_at. */
   column?: string;
+  /**
+   * Page newest-first (col DESC, id DESC) instead of the default oldest-first.
+   * The opaque cursor + slice logic are direction-agnostic; only the keyset
+   * comparison operator and ORDER BY flip. The existing ascending
+   * (col, id) indexes serve a descending scan via a backward btree walk, so no
+   * descending-specific index is needed.
+   */
+  descending?: boolean;
 }
 
 export interface Page<T> {
@@ -95,16 +103,18 @@ export async function keysetPage<T extends Record<string, unknown>>(
   opts: KeysetPageOpts,
 ): Promise<Page<T>> {
   const col = opts.column ?? 'created_at';
+  const asc = !opts.descending;
+  const op = asc ? 'gt' : 'lt';
   let q = query;
   if (opts.cursor !== undefined) {
     const cur = decodeCursor(opts.cursor);
     if (!cur) throw new ApiError(400, 'invalid_request', 'invalid cursor');
-    // Keyset: col > X OR (col = X AND id > Y).
-    q = q.or(`${col}.gt.${cur.created_at},and(${col}.eq.${cur.created_at},id.gt.${cur.id})`);
+    // Keyset: forward = col > X OR (col = X AND id > Y); descending flips to <.
+    q = q.or(`${col}.${op}.${cur.created_at},and(${col}.eq.${cur.created_at},id.${op}.${cur.id})`);
   }
   const { data, error } = await q
-    .order(col, { ascending: true })
-    .order('id', { ascending: true })
+    .order(col, { ascending: asc })
+    .order('id', { ascending: asc })
     .limit(opts.limit + 1);
   if (error) throw new ApiError(500, 'database_error', error.message);
 

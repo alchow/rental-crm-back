@@ -39,6 +39,9 @@ import { getLogger } from '../log';
 
 const KEY_RE = /^[A-Za-z0-9_-]{8,200}$/;
 const MUTATING = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
+// Cap how long the best-effort completion write may gate the (already-decided)
+// response flush. Well under the 25s app request budget.
+const COMPLETE_TIMEOUT_MS = 2500;
 
 export function requireIdempotency(): MiddlewareHandler {
   return async (c, next) => {
@@ -195,17 +198,38 @@ export function requireIdempotency(): MiddlewareHandler {
       }
     }
 
-    const { error: completeErr } = await sb.rpc('complete_idempotency_key', {
-      p_account_id: accountId,
-      p_key: key,
-      p_status: status,
-      p_body: cachedBody,
+    // Persist the outcome so future replays hit the cache -- but BOUND it. An
+    // unbounded await here lets a slow/hung completion gate an already-decided
+    // 2xx, which is exactly how a committed write becomes a client-visible edge
+    // 503. Status+body are final; caching them is best-effort. On timeout we
+    // flush the response now and let the write settle in the background; if it
+    // never lands, claim_idempotency_key reclaims the stale in-flight row after
+    // ~90s so a same-key retry recovers (rather than wedging for the prune TTL).
+    const completion: Promise<void> = (async () => {
+      try {
+        const { error } = await sb.rpc('complete_idempotency_key', {
+          p_account_id: accountId,
+          p_key: key,
+          p_status: status,
+          p_body: cachedBody,
+        });
+        if (error) getLogger().error({ err: error, key }, 'idempotency completion failed');
+      } catch (err) {
+        getLogger().error({ err, key }, 'idempotency completion threw');
+      }
+    })();
+
+    let completeTimer: ReturnType<typeof setTimeout> | undefined;
+    const capped = new Promise<'timeout'>((resolve) => {
+      completeTimer = setTimeout(() => resolve('timeout'), COMPLETE_TIMEOUT_MS);
     });
-    if (completeErr) {
-      // The response is already committed to the client; a failed completion
-      // just means the placeholder stays in-flight until the janitor frees
-      // it. Log, don't fail the request.
-      getLogger().error({ err: completeErr, key }, 'idempotency completion failed');
+    const outcome = await Promise.race([completion.then(() => 'done' as const), capped]);
+    if (completeTimer) clearTimeout(completeTimer);
+    if (outcome === 'timeout') {
+      getLogger().warn(
+        { key },
+        'idempotency completion slow; flushing response, in-flight key reclaimed ~90s if abandoned',
+      );
     }
   };
 }

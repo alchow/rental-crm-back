@@ -2,6 +2,8 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
+import { keysetPage } from './_lib/cursor';
+import { paginated } from './_lib/list-response';
 import { buildEvidenceExport } from '../admin/export-pdf';
 import { enqueue } from '../admin/job-runner';
 import { downloadAttachment } from '../admin/storage';
@@ -68,7 +70,12 @@ const ExportRow = z
   })
   .openapi('EvidenceExport');
 
-const ListResponse = z.object({ data: z.array(ExportRow) }).openapi('EvidenceExportList');
+const ListResponse = paginated(ExportRow).openapi('EvidenceExportList');
+
+const ListQuery = z.object({
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(100).default(50),
+});
 
 const AccountParam = z.object({
   accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
@@ -98,7 +105,7 @@ const list = createRoute({
   method: 'get',
   path: '/accounts/{accountId}/evidence-exports',
   tags: ['evidence-exports'],
-  request: { params: AccountParam },
+  request: { params: AccountParam, query: ListQuery },
   responses: {
     200: { description: 'list', content: { 'application/json': { schema: ListResponse } } },
     ...errorResponses,
@@ -179,15 +186,21 @@ evidenceExportsApp.openapi(create, async (c) => {
 
 evidenceExportsApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
+  const { cursor, limit } = c.req.valid('query');
   const sb = getSb(c);
-  const { data, error } = await sb
+  const q = sb
     .from('evidence_exports')
     .select('*')
     .eq('account_id', accountId)
-    .is('deleted_at', null)
-    .order('generated_at', { ascending: false });
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  return c.json({ data: (data ?? []) as z.infer<typeof ExportRow>[] }, 200);
+    .is('deleted_at', null);
+  // Newest-first, keyset-paginated on generated_at.
+  const { items, next_cursor } = await keysetPage<z.infer<typeof ExportRow>>(q, {
+    cursor,
+    limit,
+    column: 'generated_at',
+    descending: true,
+  });
+  return c.json({ data: items, next_cursor }, 200);
 });
 
 evidenceExportsApp.openapi(getOne, async (c) => {

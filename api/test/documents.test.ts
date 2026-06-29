@@ -185,6 +185,36 @@ async function main(): Promise<void> {
     if (!body.latest_version.attachment_id) throw new Error('uploaded document missing attachment id');
   });
 
+  await check('document upload: identical PDF for same tenancy + type dedupes (200, same id)', async () => {
+    const fd = new FormData();
+    fd.set('tenancy_id', A.tenancyId);
+    fd.set('document_type', 'lease');
+    fd.set('title', 'Signed Lease (re-upload)');
+    fd.set('file', pdfFile());
+    const r = await api('POST', `/v1/accounts/${A.accountId}/documents`, {
+      token: A.accessToken,
+      multipart: fd,
+    });
+    const body = assertStatus(r, 200, 're-upload document') as { id: string };
+    if (body.id !== uploadedDocId) {
+      throw new Error(`expected the existing doc ${uploadedDocId}, got ${body.id}`);
+    }
+  });
+
+  await check('document upload: same bytes as a DIFFERENT type creates a new doc (type-scoped)', async () => {
+    const fd = new FormData();
+    fd.set('tenancy_id', A.tenancyId);
+    fd.set('document_type', 'other');
+    fd.set('title', 'Same bytes, different type');
+    fd.set('file', pdfFile());
+    const r = await api('POST', `/v1/accounts/${A.accountId}/documents`, {
+      token: A.accessToken,
+      multipart: fd,
+    });
+    const body = assertStatus(r, 201, 'different-type upload') as { id: string };
+    if (body.id === uploadedDocId) throw new Error('must not merge identical bytes across document_type');
+  });
+
   await check('landlord creates bundled lead-paint document from template', async () => {
     const templates = await api('GET', `/v1/accounts/${A.accountId}/document-templates`, { token: A.accessToken });
     const tb = assertStatus(templates, 200, 'templates') as { data: { id: string; content_hash: string }[] };
@@ -203,6 +233,68 @@ async function main(): Promise<void> {
     if (body.document_type !== 'lead_paint') throw new Error(`wrong type: ${body.document_type}`);
     if (body.latest_version.source !== 'bundled_static') throw new Error('template doc should be static');
     if (body.latest_version.content_hash !== lead.content_hash) throw new Error('template hash mismatch');
+  });
+
+  await check('document list paginates (limit + next_cursor, no overlap)', async () => {
+    const p1 = await api(
+      'GET',
+      `/v1/accounts/${A.accountId}/documents?tenancy_id=${A.tenancyId}&limit=2`,
+      { token: A.accessToken },
+    );
+    const b1 = assertStatus(p1, 200, 'docs page 1') as { data: { id: string }[]; next_cursor: string | null };
+    if (b1.data.length !== 2) throw new Error(`expected 2 docs on page 1, got ${b1.data.length}`);
+    if (!b1.next_cursor) throw new Error('expected a next_cursor when more docs remain');
+    const p2 = await api(
+      'GET',
+      `/v1/accounts/${A.accountId}/documents?tenancy_id=${A.tenancyId}&limit=2&cursor=${encodeURIComponent(b1.next_cursor)}`,
+      { token: A.accessToken },
+    );
+    const b2 = assertStatus(p2, 200, 'docs page 2') as { data: { id: string }[]; next_cursor: string | null };
+    const all = [...b1.data, ...b2.data];
+    const ids = new Set(all.map((d) => d.id));
+    if (ids.size !== all.length) throw new Error('pages overlap');
+    if (ids.size < 3) throw new Error(`expected >=3 docs across pages, got ${ids.size}`);
+  });
+
+  // 1f: an abandoned in-flight idempotency key is reclaimed once it ages past
+  // the request budget so a same-key retry re-executes, instead of wedging on
+  // 409 for the multi-day prune TTL. (Placed here because this file already has
+  // a service-role `admin` client to seed the in-flight rows.)
+  await check('idempotency 1f: stale in-flight key is reclaimed; a fresh one still 409s', async () => {
+    const fp = 'a'.repeat(64); // any sha256-shaped fingerprint
+    // (a) FRESH in-flight placeholder -> a same-key request is rejected (409).
+    const freshKey = `inflight-fresh-${crypto.randomUUID()}`;
+    const ins1 = await admin.from('idempotency_keys').insert({
+      account_id: A.accountId,
+      key: freshKey,
+      request_fingerprint: fp,
+      completed_at: null,
+    });
+    if (ins1.error) throw new Error(`seed fresh in-flight failed: ${ins1.error.message}`);
+    const r409 = await api('POST', `/v1/accounts/${A.accountId}/properties`, {
+      token: A.accessToken,
+      idempotencyKey: freshKey,
+      body: { name: 'Inflight Fresh' },
+    });
+    assertStatus(r409, 409, 'fresh in-flight is not reclaimed');
+
+    // (b) STALE in-flight placeholder (older than the ~90s budget) -> reclaimed,
+    // so the request re-executes and creates the resource (201).
+    const staleKey = `inflight-stale-${crypto.randomUUID()}`;
+    const ins2 = await admin.from('idempotency_keys').insert({
+      account_id: A.accountId,
+      key: staleKey,
+      request_fingerprint: fp,
+      created_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+      completed_at: null,
+    });
+    if (ins2.error) throw new Error(`seed stale in-flight failed: ${ins2.error.message}`);
+    const r201 = await api('POST', `/v1/accounts/${A.accountId}/properties`, {
+      token: A.accessToken,
+      idempotencyKey: staleKey,
+      body: { name: 'Inflight Stale Reclaimed' },
+    });
+    assertStatus(r201, 201, 'stale in-flight is reclaimed and re-executes');
   });
 
   await check('tenant magic link lists only published docs for scoped tenancy', async () => {

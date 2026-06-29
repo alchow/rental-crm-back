@@ -2,6 +2,8 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
+import { keysetPage } from './_lib/cursor';
+import { paginated } from './_lib/list-response';
 import {
   uploadAttachment,
   downloadAttachment,
@@ -57,12 +59,13 @@ const UploadResponse = z
     // Set iff the upload was HEIC and the server produced a renderable
     // JPEG derivative; null otherwise. Both rows are already persisted.
     derivative: Attachment.nullable(),
+    // true when identical bytes were already attached to this entity and the
+    // existing row was returned (HTTP 200) rather than a new one (HTTP 201).
+    deduped: z.boolean(),
   })
   .openapi('AttachmentUploadResponse');
 
-const ListResponse = z
-  .object({ data: z.array(Attachment) })
-  .openapi('AttachmentListResponse');
+const ListResponse = paginated(Attachment).openapi('AttachmentListResponse');
 
 const AccountParam = z.object({
   accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
@@ -75,6 +78,8 @@ const AccountAndIdParam = z.object({
 const ListQuery = z.object({
   entity_type: z.string().optional(),
   entity_id: z.string().uuid().optional(),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(100).default(50),
 });
 
 // Upload uses multipart/form-data, so we describe it in the OpenAPI spec as
@@ -98,6 +103,10 @@ const upload = createRoute({
     body: { content: { 'multipart/form-data': { schema: MultipartBody } }, required: true },
   },
   responses: {
+    200: {
+      description: 'identical bytes already attached to this entity; existing row returned',
+      content: { 'application/json': { schema: UploadResponse } },
+    },
     201: { description: 'created', content: { 'application/json': { schema: UploadResponse } } },
     ...errorResponses,
   },
@@ -207,22 +216,24 @@ attachmentsApp.openapi(upload, async (c) => {
     {
       attachment: result.primary as unknown as z.infer<typeof Attachment>,
       derivative: result.derivative as unknown as z.infer<typeof Attachment> | null,
+      deduped: result.deduped,
     },
-    201,
+    result.deduped ? 200 : 201,
   );
 });
 
 // ---- list / metadata --------------------------------------------------------
 attachmentsApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
-  const { entity_type, entity_id } = c.req.valid('query');
+  const { entity_type, entity_id, cursor, limit } = c.req.valid('query');
   const sb = getSb(c);
   let q = sb.from('attachments').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (entity_type) q = q.eq('entity_type', entity_type);
   if (entity_id)   q = q.eq('entity_id', entity_id);
-  const { data, error } = await q.order('created_at', { ascending: true });
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  return c.json({ data: (data ?? []) as z.infer<typeof Attachment>[] }, 200);
+  // Oldest-first (ascending), keyset-paginated: an entity's attachments
+  // (inspection photos, etc.) can accumulate without bound.
+  const { items, next_cursor } = await keysetPage<z.infer<typeof Attachment>>(q, { cursor, limit });
+  return c.json({ data: items, next_cursor }, 200);
 });
 
 attachmentsApp.openapi(getMeta, async (c) => {

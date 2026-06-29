@@ -2,6 +2,8 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
+import { keysetPage } from './_lib/cursor';
+import { paginated } from './_lib/list-response';
 import {
   enableAgentForAccount,
   revokeAgentGrant,
@@ -26,9 +28,12 @@ const AgentGrantRow = z
   })
   .openapi('AgentGrantRow');
 
-const ListResponse = z
-  .object({ data: z.array(AgentGrantRow) })
-  .openapi('AgentGrantListResponse');
+const ListResponse = paginated(AgentGrantRow).openapi('AgentGrantListResponse');
+
+const ListQuery = z.object({
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(100).default(50),
+});
 
 const RevokeResponse = z
   .object({ id: z.string().uuid(), revoked_at: z.string() })
@@ -47,7 +52,7 @@ const list = createRoute({
   path: '/accounts/{accountId}/agent-grants',
   tags: ['agent-grants'],
   summary: "List an account's agent grants (active and revoked)",
-  request: { params: AccountParam },
+  request: { params: AccountParam, query: ListQuery },
   responses: {
     200: { description: 'list', content: { 'application/json': { schema: ListResponse } } },
     ...errorResponses,
@@ -82,16 +87,22 @@ export const agentGrantsApp = newApiApp();
 
 agentGrantsApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
+  const { cursor, limit } = c.req.valid('query');
   const sb = getSb(c);
-  const { data, error } = await sb
+  const q = sb
     .from('agent_grants')
     .select(
       'id, account_id, agent_principal_id, agent_user_id, scopes, granted_by, granted_at, revoked_at, revoked_by',
     )
-    .eq('account_id', accountId)
-    .order('granted_at', { ascending: false });
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  return c.json({ data: (data ?? []) as z.infer<typeof AgentGrantRow>[] }, 200);
+    .eq('account_id', accountId);
+  // Newest-grant-first, keyset-paginated on granted_at.
+  const { items, next_cursor } = await keysetPage<z.infer<typeof AgentGrantRow>>(q, {
+    cursor,
+    limit,
+    column: 'granted_at',
+    descending: true,
+  });
+  return c.json({ data: items, next_cursor }, 200);
 });
 
 agentGrantsApp.openapi(enable, async (c) => {
