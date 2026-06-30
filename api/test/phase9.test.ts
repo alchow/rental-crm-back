@@ -445,9 +445,16 @@ async function main(): Promise<void> {
 
   let aAttachmentPath = '';
   await check('setup: upload a JPEG under A and capture its storage_path', async () => {
+    // Fresh maintenance request so this is a clean 201: per-entity content
+    // idempotency (20260629000001) would otherwise dedupe these PNG_1X1 bytes
+    // onto the section-B HEIC row already on A.maintenanceRequestId (200).
+    const mr = await api('POST', `/v1/accounts/${A.accountId}/maintenance-requests`, {
+      token: A.accessToken, body: { area_id: A.unitAreaId, title: 'storage-rls', severity: 'routine' },
+    });
+    const mrId = (assertStatus(mr, 201, 'mr for storage-rls') as { id: string }).id;
     const fd = new FormData();
     fd.set('entity_type', 'maintenance_requests');
-    fd.set('entity_id', A.maintenanceRequestId);
+    fd.set('entity_id', mrId);
     fd.set('file', new File([new Uint8Array(PNG_1X1)], 'a.png', { type: 'image/png' }));
     const r = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
       token: A.accessToken, multipart: fd,
@@ -575,12 +582,24 @@ async function main(): Promise<void> {
   // bytes are NEVER removed on soft-delete; only the row flips deleted_at.
 
   await check('content-addressed sharing: soft-delete one row, sibling still downloads', async () => {
-    // Upload the SAME PNG twice. Server-computed hash is identical, so the
-    // storage object collides and dedupes via upsert. Two attachment rows
-    // INSERTed, both pointing at the same storage_path.
+    // Upload the SAME PNG to TWO DIFFERENT entities. Server-computed hash is
+    // identical, so the storage object collides and dedupes via upsert: two
+    // attachment rows pointing at the same content-addressed storage_path.
+    // (Per-entity content idempotency (20260629000001) would collapse two
+    // uploads to the SAME entity into one row, so the shared-blob invariant is
+    // exercised across distinct entities.)
+    const mkReq = async (title: string): Promise<string> => {
+      const mr = await api('POST', `/v1/accounts/${A.accountId}/maintenance-requests`, {
+        token: A.accessToken, body: { area_id: A.unitAreaId, title, severity: 'routine' },
+      });
+      return (assertStatus(mr, 201, `mr ${title}`) as { id: string }).id;
+    };
+    const e1 = await mkReq('shared-blob-1');
+    const e2 = await mkReq('shared-blob-2');
+
     const fd1 = new FormData();
     fd1.set('entity_type', 'maintenance_requests');
-    fd1.set('entity_id', A.maintenanceRequestId);
+    fd1.set('entity_id', e1);
     fd1.set('file', new File([new Uint8Array(PNG_1X1)], 'a.png', { type: 'image/png' }));
     const r1 = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
       token: A.accessToken, multipart: fd1,
@@ -591,7 +610,7 @@ async function main(): Promise<void> {
 
     const fd2 = new FormData();
     fd2.set('entity_type', 'maintenance_requests');
-    fd2.set('entity_id', A.maintenanceRequestId);
+    fd2.set('entity_id', e2);
     fd2.set('file', new File([new Uint8Array(PNG_1X1)], 'b.png', { type: 'image/png' }));
     const r2 = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
       token: A.accessToken, multipart: fd2,

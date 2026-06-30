@@ -489,9 +489,17 @@ async function main(): Promise<void> {
     // export AFTER a HEIC upload produces a larger PDF than one without
     // photos (size grows), AND the attachment rows have the
     // original-and-derivative shape Phase 9 specified.
+    // Fresh in-scope maintenance request (same area -> still bundled in the
+    // tenancy export) so the HEIC upload is a clean 201: per-entity content
+    // idempotency (20260629000001) would otherwise dedupe these PNG_1X1 bytes
+    // onto the leak.png row already on mreq.
+    const heicReq = await api('POST', `/v1/accounts/${A.accountId}/maintenance-requests`, {
+      token: A.accessToken, body: { area_id: A.unitAreaId, title: 'heic-export', severity: 'routine' },
+    });
+    const heicReqId = (assertStatus(heicReq, 201, 'mr for heic export') as { id: string }).id;
     const fd2 = new FormData();
     fd2.set('entity_type', 'maintenance_requests');
-    fd2.set('entity_id', mreq.id);
+    fd2.set('entity_id', heicReqId);
     fd2.set('file', new File([new Uint8Array(PNG_1X1)], 'test.heic', { type: 'image/heic' }));
     const r = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
       token: A.accessToken, multipart: fd2,
