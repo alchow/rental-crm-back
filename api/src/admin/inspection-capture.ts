@@ -205,7 +205,8 @@ export async function loadCaptureForm(token: CaptureTokenRow): Promise<{
  * (anti-enumeration): always resolves. Finds the token even if EXPIRED (so a
  * tenant holding only the dead link can renew), mints a fresh one, and sends
  * it ONLY to the tenant's on-file email -- never to a requester-supplied
- * address. Send is via the Mailer (a logging stub until a provider is wired).
+ * address. The Mailer send is best-effort and is NOT awaited, so neither a
+ * provider failure nor its latency can change the uniform 202 response.
  */
 export async function requestCaptureRenewal(args: { secret: string }): Promise<void> {
   const admin = getAdminClient();
@@ -231,27 +232,38 @@ export async function requestCaptureRenewal(args: { secret: string }): Promise<v
   const email = emails[0];
   if (!email) return;
 
-  const minted = await mintCaptureTokenAdmin({
-    accountId: tok.account_id as string,
-    inspectionId: tok.inspection_id as string,
-    tenantId: tok.tenant_id as string,
-    ttlMinutes: DEFAULT_CAPTURE_TTL_MIN,
-  });
-  const link = `${captureBaseUrl()}/capture/${minted.secret}`;
-  // Anti-enumeration: this path must resolve uniformly (the route always 202s).
-  // A real Mailer throws on send failure, so swallow it here -- never let a
-  // provider outage turn into a 500 that signals "valid token + deliverable
-  // contact". Log for diagnosis; the tenant can retry the renewal request.
+  // Anti-enumeration: the route always 202s, so the whole valid-path tail must
+  // resolve like every early-return above -- never as a 500, and never with a
+  // latency that depends on validity. Two hazards, both handled here:
+  //   1. mintCaptureTokenAdmin throws ApiError(500) on a DB failure; left
+  //      uncaught it would surface as a 500 that signals "valid token +
+  //      deliverable contact". Wrap it so the response stays a uniform 202.
+  //   2. Awaiting the Mailer (a real provider makes a remote HTTP round-trip)
+  //      would turn the 202's latency into a timing oracle for that same fact.
+  //      Fire the send without awaiting so response time is independent of
+  //      outcome. Render runs a persistent process, so the send still completes.
+  // Both failures are logged for diagnosis; the tenant can retry the renewal.
   try {
-    await getMailer().send({
-      to: email,
-      subject: 'Your condition form link',
-      text:
-        `Here is a fresh link to complete your move-in/move-out condition form:\n\n${link}\n\n` +
-        `It expires in ${Math.round(DEFAULT_CAPTURE_TTL_MIN / 60 / 24)} days.`,
+    const minted = await mintCaptureTokenAdmin({
+      accountId: tok.account_id as string,
+      inspectionId: tok.inspection_id as string,
+      tenantId: tok.tenant_id as string,
+      ttlMinutes: DEFAULT_CAPTURE_TTL_MIN,
     });
+    const link = `${captureBaseUrl()}/capture/${minted.secret}`;
+    void getMailer()
+      .send({
+        to: email,
+        subject: 'Your condition form link',
+        text:
+          `Here is a fresh link to complete your move-in/move-out condition form:\n\n${link}\n\n` +
+          `It expires in ${Math.round(DEFAULT_CAPTURE_TTL_MIN / 60 / 24)} days.`,
+      })
+      .catch((err) => {
+        getLogger().error(`[capture-renewal] email send failed: ${String(err)}`);
+      });
   } catch (err) {
-    getLogger().error(`[capture-renewal] email send failed: ${String(err)}`);
+    getLogger().error(`[capture-renewal] renewal failed: ${String(err)}`);
   }
 }
 
