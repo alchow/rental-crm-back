@@ -8,9 +8,26 @@ const env = loadEnv();
 const log = getLogger();
 const app = buildApp();
 
-const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
-  log.info({ port: info.port }, 'api listening');
-});
+// Connection-hygiene backstops, sized ABOVE the app-level requestTimeout
+// (25s, app.ts) but below Render's ~30s edge timeout. The TYPED 503 envelope
+// comes from the app middleware; Node's own requestTimeout only emits a
+// bodyless 408, so these are last-resort socket guards that should rarely fire.
+// keepAliveTimeout sits above a typical LB idle so we don't reset pooled
+// connections mid-keepalive.
+const server = serve(
+  {
+    fetch: app.fetch,
+    port: env.PORT,
+    serverOptions: {
+      requestTimeout: 30_000,
+      headersTimeout: 26_000,
+      keepAliveTimeout: 61_000,
+    },
+  },
+  (info) => {
+    log.info({ port: info.port }, 'api listening');
+  },
+);
 
 // Render (and any supervisor) sends SIGTERM on every deploy. Stop accepting
 // new connections, let in-flight requests finish, drain the import pg pool,

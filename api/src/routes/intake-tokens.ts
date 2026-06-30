@@ -1,7 +1,9 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
-import { ApiError, errorResponses } from './_lib/error';
+import { errorResponses } from './_lib/error';
+import { keysetPage } from './_lib/cursor';
+import { paginated } from './_lib/list-response';
 import {
   mintIntakeToken,
   revokeIntakeToken,
@@ -37,9 +39,12 @@ const MintedIntakeToken = z
   })
   .openapi('MintedIntakeToken');
 
-const ListResponse = z
-  .object({ data: z.array(IntakeTokenRow) })
-  .openapi('IntakeTokenListResponse');
+const ListResponse = paginated(IntakeTokenRow).openapi('IntakeTokenListResponse');
+
+const ListQuery = z.object({
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(100).default(50),
+});
 
 const TenancyParam = z.object({
   accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
@@ -56,7 +61,7 @@ const list = createRoute({
   path: '/accounts/{accountId}/tenancies/{tenancyId}/intake-tokens',
   tags: ['intake-tokens'],
   summary: "List a tenancy's intake tokens (current and revoked; never the secret)",
-  request: { params: TenancyParam },
+  request: { params: TenancyParam, query: ListQuery },
   responses: {
     200: { description: 'list', content: { 'application/json': { schema: ListResponse } } },
     ...errorResponses,
@@ -92,15 +97,20 @@ export const intakeTokensApp = newApiApp();
 
 intakeTokensApp.openapi(list, async (c) => {
   const { accountId, tenancyId } = c.req.valid('param');
+  const { cursor, limit } = c.req.valid('query');
   const sb = getSb(c);
-  const { data, error } = await sb
+  const q = sb
     .from('intake_tokens')
     .select('id, account_id, property_id, tenancy_id, created_at, revoked_at, last_used_at, use_count')
     .eq('account_id', accountId)
-    .eq('tenancy_id', tenancyId)
-    .order('created_at', { ascending: false });
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  return c.json({ data: (data ?? []) as z.infer<typeof IntakeTokenRow>[] }, 200);
+    .eq('tenancy_id', tenancyId);
+  // Newest-first, keyset-paginated on created_at.
+  const { items, next_cursor } = await keysetPage<z.infer<typeof IntakeTokenRow>>(q, {
+    cursor,
+    limit,
+    descending: true,
+  });
+  return c.json({ data: items, next_cursor }, 200);
 });
 
 intakeTokensApp.openapi(mint, async (c) => {

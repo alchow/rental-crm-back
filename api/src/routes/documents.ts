@@ -3,6 +3,8 @@ import { randomBytes, createHash } from 'node:crypto';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
+import { keysetPage } from './_lib/cursor';
+import { paginated } from './_lib/list-response';
 import { processAndStoreBytes, removeOrphanStoredObject } from '../admin/storage';
 import {
   documentTemplates,
@@ -134,9 +136,7 @@ const AccessDocument = z
   })
   .openapi('TenantAccessDocument');
 
-const DocumentListResponse = z
-  .object({ data: z.array(DocumentRow) })
-  .openapi('DocumentListResponse');
+const DocumentListResponse = paginated(DocumentRow).openapi('DocumentListResponse');
 
 const DocumentTemplateListResponse = z
   .object({ data: z.array(DocumentTemplate) })
@@ -163,6 +163,8 @@ const AccessDocumentParam = AccessParam.extend({
 const ListQuery = z.object({
   tenancy_id: z.string().uuid().optional(),
   document_type: DocumentType.optional(),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(100).default(50),
 });
 
 const UploadBody = z
@@ -304,7 +306,7 @@ async function createTenancyDocument(
     p_static_template_id?: string | null;
     p_static_asset_path?: string | null;
   },
-): Promise<z.infer<typeof DocumentRow>> {
+): Promise<{ document: z.infer<typeof DocumentRow>; deduped: boolean }> {
   const { data, error } = await sb.rpc('create_tenancy_document', params);
   if (error) {
     if (error.code === 'P0002' || /tenancy_not_found/.test(error.message)) {
@@ -312,9 +314,13 @@ async function createTenancyDocument(
     }
     throw new ApiError(500, 'database_error', error.message);
   }
-  const result = data as { document: object; version: object } | null;
+  const result = data as { document: object; version: object; deduped?: boolean } | null;
   if (!result) throw new ApiError(500, 'database_error', 'document creation returned no row');
-  return { ...(result.document as object), latest_version: result.version } as z.infer<typeof DocumentRow>;
+  const document = {
+    ...(result.document as object),
+    latest_version: result.version,
+  } as z.infer<typeof DocumentRow>;
+  return { document, deduped: result.deduped ?? false };
 }
 
 // ----- authenticated landlord routes ---------------------------------------
@@ -365,6 +371,10 @@ const uploadRoute = createRoute({
     body: { content: { 'multipart/form-data': { schema: UploadBody } }, required: true },
   },
   responses: {
+    200: {
+      description: 'identical document already filed for this tenancy + type; existing returned',
+      content: { 'application/json': { schema: DocumentRow } },
+    },
     201: { description: 'created', content: { 'application/json': { schema: DocumentRow } } },
     ...errorResponses,
   },
@@ -380,6 +390,10 @@ const fromTemplateRoute = createRoute({
     body: { content: { 'application/json': { schema: FromTemplateBody } }, required: true },
   },
   responses: {
+    200: {
+      description: 'identical document already filed for this tenancy + type; existing returned',
+      content: { 'application/json': { schema: DocumentRow } },
+    },
     201: { description: 'created', content: { 'application/json': { schema: DocumentRow } } },
     ...errorResponses,
   },
@@ -447,7 +461,7 @@ documentsApp.openapi(listTemplatesRoute, async (c) => {
 
 documentsApp.openapi(listRoute, async (c) => {
   const { accountId } = c.req.valid('param');
-  const { tenancy_id, document_type } = c.req.valid('query');
+  const { tenancy_id, document_type, cursor, limit } = c.req.valid('query');
   const sb = getSb(c);
   let q = sb
     .from('documents')
@@ -456,14 +470,14 @@ documentsApp.openapi(listRoute, async (c) => {
     .is('deleted_at', null);
   if (tenancy_id) q = q.eq('tenancy_id', tenancy_id);
   if (document_type) q = q.eq('document_type', document_type);
-  const { data, error } = await q.order('created_at', { ascending: false });
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  const docs = await withLatestVersions(
-    sb,
-    accountId,
-    (data ?? []) as Array<Omit<z.infer<typeof DocumentRow>, 'latest_version'>>,
-  );
-  return c.json({ data: docs }, 200);
+  // Newest-first, keyset-paginated: a tenancy accumulates documents over its
+  // whole life (lease v1..vN, move-in/out, renewals, disclosures), so an
+  // unbounded single-page list is a latent cliff.
+  const { items, next_cursor } = await keysetPage<
+    Omit<z.infer<typeof DocumentRow>, 'latest_version'>
+  >(q, { cursor, limit, descending: true });
+  const docs = await withLatestVersions(sb, accountId, items);
+  return c.json({ data: docs, next_cursor }, 200);
 });
 
 documentsApp.openapi(getRoute, async (c) => {
@@ -530,9 +544,9 @@ documentsApp.openapi(uploadRoute, async (c) => {
   // tenant PDF isn't leaked -- never a half-written document.
   const bytes = new Uint8Array(await (file as File).arrayBuffer());
   const stored = await processAndStoreBytes(accountId, bytes, 'application/pdf');
-  let document: z.infer<typeof DocumentRow>;
+  let created: { document: z.infer<typeof DocumentRow>; deduped: boolean };
   try {
-    document = await createTenancyDocument(sb, {
+    created = await createTenancyDocument(sb, {
       p_account_id: accountId,
       p_tenancy_id: parsed.data.tenancy_id,
       p_document_type: parsed.data.document_type,
@@ -551,7 +565,9 @@ documentsApp.openapi(uploadRoute, async (c) => {
     await removeOrphanStoredObject(accountId, stored.primary.storagePath);
     throw e;
   }
-  return c.json(document, 201);
+  // 200 (existing doc) when identical bytes were already filed for this
+  // tenancy + document_type; 201 on a fresh create.
+  return c.json(created.document, created.deduped ? 200 : 201);
 });
 
 documentsApp.openapi(fromTemplateRoute, async (c) => {
@@ -561,7 +577,7 @@ documentsApp.openapi(fromTemplateRoute, async (c) => {
   if (!template) throw new ApiError(404, 'not_found', 'document template not found');
   const sb = getSb(c);
   const asset = await readStaticDocumentAsset(template.asset_path);
-  const document = await createTenancyDocument(sb, {
+  const { document, deduped } = await createTenancyDocument(sb, {
     p_account_id: accountId,
     p_tenancy_id: body.tenancy_id,
     p_document_type: template.document_type,
@@ -574,7 +590,7 @@ documentsApp.openapi(fromTemplateRoute, async (c) => {
     p_static_template_id: template.id,
     p_static_asset_path: template.asset_path,
   });
-  return c.json(document, 201);
+  return c.json(document, deduped ? 200 : 201);
 });
 
 documentsApp.openapi(downloadRoute, async (c) => {

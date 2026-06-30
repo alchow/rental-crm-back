@@ -63,6 +63,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -133,6 +144,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -215,6 +237,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -283,6 +316,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -359,6 +403,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         put?: never;
@@ -422,6 +477,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         put?: never;
@@ -473,6 +539,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -535,6 +612,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -610,6 +698,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -668,6 +767,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -733,6 +843,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -810,6 +931,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         trace?: never;
@@ -866,6 +998,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -941,6 +1084,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -999,6 +1153,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -1064,6 +1229,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -1141,6 +1317,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         trace?: never;
@@ -1197,6 +1384,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -1272,6 +1470,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -1330,6 +1539,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -1395,6 +1615,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -1472,6 +1703,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         trace?: never;
@@ -1530,6 +1772,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -1605,6 +1858,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -1663,6 +1927,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -1728,6 +2003,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -1805,6 +2091,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         trace?: never;
@@ -1859,6 +2156,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -1934,6 +2242,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         post?: never;
@@ -1997,6 +2316,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -2072,6 +2402,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -2130,6 +2471,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -2195,6 +2547,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -2272,6 +2635,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         trace?: never;
@@ -2286,7 +2660,10 @@ export interface paths {
         /** List members of a tenancy */
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                };
                 header?: never;
                 path: {
                     accountId: string;
@@ -2326,6 +2703,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -2396,6 +2784,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -2482,6 +2881,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         options?: never;
@@ -2554,6 +2964,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         trace?: never;
@@ -2612,6 +3033,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -2687,6 +3119,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -2745,6 +3188,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -2810,6 +3264,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -2887,6 +3352,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         trace?: never;
@@ -2944,6 +3420,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -3019,6 +3506,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -3077,6 +3575,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -3142,6 +3651,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -3219,6 +3739,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         trace?: never;
@@ -3275,6 +3806,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -3349,6 +3891,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -3406,6 +3959,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -3498,6 +4062,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -3559,6 +4134,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -3633,6 +4219,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -3690,6 +4287,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -3782,6 +4390,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -3842,6 +4461,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -3917,6 +4547,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -3974,6 +4615,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -4066,6 +4718,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -4150,6 +4813,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -4213,6 +4887,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -4285,6 +4970,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -4364,6 +5060,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         put?: never;
@@ -4384,7 +5091,10 @@ export interface paths {
         /** List a tenancy's intake tokens (current and revoked; never the secret) */
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                };
                 header?: never;
                 path: {
                     accountId: string;
@@ -4424,6 +5134,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -4490,6 +5211,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -4581,6 +5313,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -4599,7 +5342,10 @@ export interface paths {
         /** List an account's agent grants (active and revoked) */
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                };
                 header?: never;
                 path: {
                     accountId: string;
@@ -4638,6 +5384,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -4703,6 +5460,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -4789,6 +5557,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -4850,6 +5629,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -4924,6 +5714,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -4981,6 +5782,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -5061,6 +5873,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         trace?: never;
@@ -5119,6 +5942,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -5194,6 +6028,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -5251,6 +6096,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -5342,6 +6198,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -5362,6 +6229,8 @@ export interface paths {
                 query?: {
                     entity_type?: string;
                     entity_id?: string;
+                    cursor?: string;
+                    limit?: number;
                 };
                 header?: never;
                 path: {
@@ -5407,6 +6276,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         put?: never;
@@ -5429,6 +6309,17 @@ export interface paths {
                 };
             };
             responses: {
+                /** @description identical bytes already attached to this entity; existing row returned */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AttachmentUploadResponse"];
+                    };
+                };
                 /** @description created */
                 201: {
                     headers: {
@@ -5470,6 +6361,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -5533,6 +6435,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -5604,6 +6517,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         options?: never;
@@ -5666,6 +6590,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         put?: never;
@@ -5689,6 +6624,8 @@ export interface paths {
                 query?: {
                     tenancy_id?: string;
                     document_type?: "lease" | "move_in" | "move_out" | "lead_paint" | "disclosure" | "other";
+                    cursor?: string;
+                    limit?: number;
                 };
                 header?: never;
                 path: {
@@ -5734,6 +6671,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         put?: never;
@@ -5756,6 +6704,17 @@ export interface paths {
                 };
             };
             responses: {
+                /** @description identical document already filed for this tenancy + type; existing returned */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Document"];
+                    };
+                };
                 /** @description created */
                 201: {
                     headers: {
@@ -5797,6 +6756,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -5861,6 +6831,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -5932,6 +6913,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         options?: never;
@@ -5967,6 +6959,17 @@ export interface paths {
                 };
             };
             responses: {
+                /** @description identical document already filed for this tenancy + type; existing returned */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Document"];
+                    };
+                };
                 /** @description created */
                 201: {
                     headers: {
@@ -6008,6 +7011,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -6070,6 +7084,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -6162,6 +7187,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -6221,6 +7257,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -6295,6 +7342,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -6352,6 +7410,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -6417,6 +7486,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -6493,6 +7573,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         trace?: never;
@@ -6546,6 +7637,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -6637,6 +7739,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -6697,6 +7810,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -6771,6 +7895,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -6828,6 +7963,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -6908,6 +8054,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         trace?: never;
@@ -6978,6 +8135,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -7068,6 +8236,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -7152,6 +8331,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -7210,6 +8400,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -7292,6 +8493,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -7382,6 +8594,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -7439,6 +8662,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -7509,6 +8743,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -7599,6 +8844,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -7656,6 +8912,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -7725,6 +8992,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -7811,6 +9089,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         options?: never;
@@ -7876,6 +9165,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -7962,6 +9262,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -7979,7 +9290,10 @@ export interface paths {
         };
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                };
                 header?: never;
                 path: {
                     accountId: string;
@@ -8018,6 +9332,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -8093,6 +9418,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -8150,6 +9486,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -8218,6 +9565,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -8293,6 +9651,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -8351,6 +9720,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -8416,6 +9796,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -8509,6 +9900,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         trace?: never;
@@ -8587,6 +9989,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -8673,6 +10086,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -8734,6 +10158,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -8814,6 +10249,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         trace?: never;
@@ -8884,6 +10330,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -8970,6 +10427,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -9038,6 +10506,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -9116,6 +10595,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         put?: never;
@@ -9183,6 +10673,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -9266,6 +10767,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -9332,6 +10844,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -9423,6 +10946,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         trace?: never;
@@ -9491,6 +11025,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -9571,6 +11116,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -9641,6 +11197,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -9726,6 +11293,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -9804,6 +11382,17 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -9862,6 +11451,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -9934,6 +11534,17 @@ export interface paths {
                 /** @description server error */
                 500: {
                     headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -10240,6 +11851,7 @@ export interface components {
         };
         TenancyMemberListResponse: {
             data: components["schemas"]["TenancyMember"][];
+            next_cursor: string | null;
         };
         AddTenancyMemberBody: {
             /** Format: uuid */
@@ -10640,6 +12252,7 @@ export interface components {
         };
         IntakeTokenListResponse: {
             data: components["schemas"]["IntakeTokenRow"][];
+            next_cursor: string | null;
         };
         MintedIntakeToken: {
             /** Format: uuid */
@@ -10672,6 +12285,7 @@ export interface components {
         };
         AgentGrantListResponse: {
             data: components["schemas"]["AgentGrantRow"][];
+            next_cursor: string | null;
         };
         AgentGrantRevokeResponse: {
             /** Format: uuid */
@@ -10853,6 +12467,7 @@ export interface components {
         AttachmentUploadResponse: {
             attachment: components["schemas"]["Attachment"];
             derivative: components["schemas"]["Attachment"] & (Record<string, never> | null);
+            deduped: boolean;
         };
         AttachmentUploadBody: {
             entity_type: string;
@@ -10863,6 +12478,7 @@ export interface components {
         };
         AttachmentListResponse: {
             data: components["schemas"]["Attachment"][];
+            next_cursor: string | null;
         };
         DocumentTemplate: {
             id: string;
@@ -10923,6 +12539,7 @@ export interface components {
         };
         DocumentListResponse: {
             data: components["schemas"]["Document"][];
+            next_cursor: string | null;
         };
         DocumentUploadBody: {
             /** Format: uuid */
@@ -11259,6 +12876,7 @@ export interface components {
         };
         EvidenceExportList: {
             data: components["schemas"]["EvidenceExport"][];
+            next_cursor: string | null;
         };
         ImportRegionMeta: {
             sheet: string;

@@ -41,6 +41,7 @@ interface ResponseObject {
 }
 
 const MUTATING = new Set(['post', 'patch', 'put', 'delete']);
+const HTTP_METHODS = new Set(['get', 'put', 'post', 'delete', 'patch', 'options', 'head', 'trace']);
 const ACCOUNT_SCOPED = /^\/v1\/accounts\/\{accountId\}\//;
 const ERROR_REF = { $ref: '#/components/schemas/ErrorEnvelope' };
 
@@ -63,6 +64,11 @@ const replayHeader = {
     "Present and 'true' when this response was replayed from the idempotency " +
     'cache (the original request was not re-executed). Absent on first execution.',
   schema: { type: 'string', enum: ['true'] },
+};
+
+const retryAfterHeader = {
+  description: 'Seconds to wait before retrying. Present on 503 service_unavailable responses.',
+  schema: { type: 'integer', minimum: 0 },
 };
 
 // Mutates `doc` in place (and returns it) to declare, for every mutating
@@ -99,6 +105,33 @@ export function injectIdempotencyContract<T extends { paths?: unknown }>(doc: T)
         resp.headers ??= {};
         resp.headers['Idempotency-Replay'] ??= replayHeader;
       }
+    }
+  }
+  return doc;
+}
+
+// Mutates `doc` in place to declare a 503 `service_unavailable` response on
+// EVERY operation. A 503 is produced by the app OUTSIDE any single route's
+// definition -- the global request-time-budget timeout and the transient-
+// dependency classifier (cold starts, DB/upstream blips) -- so, like the
+// idempotency contract, it is injected centrally rather than repeated per route.
+// Carries a Retry-After header; the body is the standard ErrorEnvelope.
+// Idempotent: re-running it on an already-injected doc is a no-op.
+export function injectServiceUnavailable<T extends { paths?: unknown }>(doc: T): T {
+  const paths = (doc.paths ?? {}) as Record<string, Record<string, OperationObject>>;
+  for (const item of Object.values(paths)) {
+    for (const [method, op] of Object.entries(item)) {
+      if (!HTTP_METHODS.has(method)) continue;
+      op.responses ??= {};
+      op.responses['503'] ??= {
+        description:
+          'service_unavailable: a dependency was temporarily unavailable (incl. a cold ' +
+          'start) or the request exceeded the server time budget. Retryable -- back off ' +
+          'and retry honouring Retry-After. Idempotent GETs are always safe to retry; for ' +
+          'mutations reuse the same Idempotency-Key.',
+        headers: { 'Retry-After': retryAfterHeader },
+        content: { 'application/json': { schema: ERROR_REF } },
+      };
     }
   }
   return doc;

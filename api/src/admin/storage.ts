@@ -238,6 +238,48 @@ export interface UploadResult {
   primary: AttachmentRow;
   /** Set iff the primary was HEIC and a JPEG derivative was created. */
   derivative: AttachmentRow | null;
+  /**
+   * true when identical bytes were already attached to this entity and the
+   * existing row was returned instead of inserting a duplicate (the caller
+   * surfaces this as HTTP 200 vs 201).
+   */
+  deduped: boolean;
+}
+
+// Look up a LIVE attachment whose bytes (content_hash) are already attached to
+// this exact entity -- the basis for content-addressed upload idempotency. The
+// order + limit(1) is deterministic even before the unique index exists (i.e.
+// if historical duplicates remain), preferring the earliest row.
+async function findLiveAttachmentByContent(
+  admin: ReturnType<typeof getAdminClient>,
+  input: UploadInput,
+  contentHash: string,
+): Promise<{ primary: AttachmentRow; derivative: AttachmentRow | null } | null> {
+  const { data: primary } = await admin
+    .from('attachments')
+    .select('*')
+    .eq('account_id', input.accountId)
+    .eq('entity_type', input.entityType)
+    .eq('entity_id', input.entityId)
+    .eq('content_hash', contentHash)
+    .is('deleted_at', null)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (!primary) return null;
+  const { data: derivative } = await admin
+    .from('attachments')
+    .select('*')
+    .eq('account_id', input.accountId)
+    .eq('derived_from', (primary as AttachmentRow).id)
+    .is('deleted_at', null)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  return {
+    primary: primary as AttachmentRow,
+    derivative: (derivative as AttachmentRow | null) ?? null,
+  };
 }
 
 /**
@@ -257,6 +299,13 @@ export async function uploadAttachment(input: UploadInput): Promise<UploadResult
   const stored = await processAndStoreBytes(input.accountId, input.bytes, input.mimeType);
 
   const admin = getAdminClient();
+
+  // Content idempotency: if this exact blob is already attached (live) to this
+  // exact entity, return that row instead of inserting a duplicate. The bytes
+  // were already (idempotently) stored above, so re-storing them was a no-op.
+  const existing = await findLiveAttachmentByContent(admin, input, stored.primary.hash);
+  if (existing) return { ...existing, deduped: true };
+
   const { data: primaryRow, error: insErr } = await admin
     .from('attachments')
     .insert({
@@ -272,6 +321,12 @@ export async function uploadAttachment(input: UploadInput): Promise<UploadResult
     .select('*')
     .single();
   if (insErr || !primaryRow) {
+    // Race: a concurrent identical upload won the unique index. Its row owns the
+    // (shared, content-addressed) bytes -- return it WITHOUT removing them.
+    if (insErr?.code === '23505') {
+      const won = await findLiveAttachmentByContent(admin, input, stored.primary.hash);
+      if (won) return { ...won, deduped: true };
+    }
     await admin.storage.from(BUCKET).remove([stored.primary.storagePath]).catch(() => {});
     if (stored.derivative) {
       await admin.storage.from(BUCKET).remove([stored.derivative.storagePath]).catch(() => {});
@@ -314,7 +369,7 @@ export async function uploadAttachment(input: UploadInput): Promise<UploadResult
   }
 
   void safeFilename(input.filename, input.mimeType);
-  return { primary: primaryRow as AttachmentRow, derivative: derivativeRow };
+  return { primary: primaryRow as AttachmentRow, derivative: derivativeRow, deduped: false };
 }
 
 export interface DownloadResult {
