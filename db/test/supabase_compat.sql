@@ -63,6 +63,22 @@ grant usage on schema auth   to anon, authenticated;
 alter default privileges in schema public grant select, insert, update, delete on tables to authenticated;
 alter default privileges in schema public grant usage, select on sequences to authenticated;
 
+-- Replicate Supabase's default function-execute ACL.
+--
+-- On real Supabase, pg_default_acl entries (owned by postgres/supabase_admin)
+-- EXPLICITLY grant EXECUTE on every newly-created public function to anon,
+-- authenticated, and service_role -- which is why `revoke execute ... from public`
+-- is a no-op in prod (it only touches the PUBLIC pseudo-role, not the per-role
+-- grants that Supabase's default ACL already laid down).
+--
+-- Without this line, the CI test DB does NOT replicate that behaviour: functions
+-- land with no execute grant for those roles, so the SECURITY DEFINER grant guard
+-- (db/test/check_definer_grants.sql) would vacuously pass even if migration 009
+-- never ran, making the guard meaningless. Adding the same default ACL here ensures
+-- that CI and prod are in the same state before migrations apply, and that any
+-- DEFINER function whose revoke was accidentally omitted is caught red.
+alter default privileges in schema public grant execute on functions to anon, authenticated, service_role;
+
 -- Existing tables are out of band (none yet at this point), but be explicit.
 grant select, insert, update, delete on all tables in schema public to authenticated;
 grant usage, select on all sequences in schema public to authenticated;

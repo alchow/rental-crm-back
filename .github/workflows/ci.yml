@@ -146,6 +146,9 @@ jobs:
             psql -v ON_ERROR_STOP=1 -f "$f"
           done
 
+      - name: Check SECURITY DEFINER grants (no anon/authenticated-executable DEFINER fns)
+        run: psql -v ON_ERROR_STOP=1 -f db/test/check_definer_grants.sql
+
       - name: Seed two-account fixture
         run: psql -v ON_ERROR_STOP=1 -f db/test/seed_two_accounts.sql
 
