@@ -29,3 +29,9 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
+      # Resend transactional email. Both unset -> mailer falls back to a stub
+      # that logs instead of sending. Set both to enable real delivery.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        sync: false

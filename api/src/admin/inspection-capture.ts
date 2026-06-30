@@ -1,5 +1,6 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { ApiError } from '../routes/_lib/error';
+import { getLogger } from '../log';
 import { getAdminClient } from './supabase-admin';
 import { getMailer } from './mailer';
 import { removeOrphanStoredObject, type StoragePutResult } from './storage';
@@ -237,13 +238,21 @@ export async function requestCaptureRenewal(args: { secret: string }): Promise<v
     ttlMinutes: DEFAULT_CAPTURE_TTL_MIN,
   });
   const link = `${captureBaseUrl()}/capture/${minted.secret}`;
-  await getMailer().send({
-    to: email,
-    subject: 'Your condition form link',
-    text:
-      `Here is a fresh link to complete your move-in/move-out condition form:\n\n${link}\n\n` +
-      `It expires in ${Math.round(DEFAULT_CAPTURE_TTL_MIN / 60 / 24)} days.`,
-  });
+  // Anti-enumeration: this path must resolve uniformly (the route always 202s).
+  // A real Mailer throws on send failure, so swallow it here -- never let a
+  // provider outage turn into a 500 that signals "valid token + deliverable
+  // contact". Log for diagnosis; the tenant can retry the renewal request.
+  try {
+    await getMailer().send({
+      to: email,
+      subject: 'Your condition form link',
+      text:
+        `Here is a fresh link to complete your move-in/move-out condition form:\n\n${link}\n\n` +
+        `It expires in ${Math.round(DEFAULT_CAPTURE_TTL_MIN / 60 / 24)} days.`,
+    });
+  } catch (err) {
+    getLogger().error(`[capture-renewal] email send failed: ${String(err)}`);
+  }
 }
 
 // --- tenant write helpers (call the SECURITY DEFINER tenant_* RPCs) ----------
