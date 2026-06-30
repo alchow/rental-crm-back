@@ -316,7 +316,9 @@ async function main(): Promise<void> {
   await check('repeated magic-link loads do not multiply viewed events', async () => {
     // One load already happened in the previous check; load twice more. The
     // once-per-(token,document) dedupe must keep the viewed count at one row
-    // per published document rather than growing with each refresh.
+    // per published document rather than growing with each refresh. This
+    // tenancy has three published docs (lease, the same-bytes/other-type doc,
+    // and the lead-paint template), so the deduped total is 3 -- not 3x loads.
     for (let i = 0; i < 2; i++) {
       const r = await api('GET', `/v1/document-access/${linkSecret}`);
       assertStatus(r, 200, `repeat list ${i}`);
@@ -326,8 +328,8 @@ async function main(): Promise<void> {
       .select('id')
       .eq('token_id', linkId)
       .eq('event_type', 'viewed');
-    if (!data || data.length !== 2) {
-      throw new Error(`expected 2 viewed events after repeated loads, got ${data?.length ?? 0}`);
+    if (!data || data.length !== 3) {
+      throw new Error(`expected 3 viewed events after repeated loads, got ${data?.length ?? 0}`);
     }
   });
 
