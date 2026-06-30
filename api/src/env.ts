@@ -41,6 +41,14 @@ const RawEnvSchema = z.object({
   // its presence at call time and 502s cleanly if it's unset.
   ANTHROPIC_API_KEY: z.string().min(20).optional(),
 
+  // Resend transactional-email credentials (api/src/admin/mailer.ts). Both are
+  // optional so the app still boots without them: getMailer() falls back to a
+  // stub that logs sends instead of delivering. Set BOTH to enable real
+  // delivery. MAIL_FROM accepts a bare address or the named-sender form
+  // ("Acme <noreply@acme.com>"), so it is a plain string, not .email().
+  RESEND_API_KEY: z.string().min(1).optional(),
+  MAIL_FROM: z.string().min(1).optional(),
+
   // Extra browser origins allowed to call the API via CORS, beyond the
   // built-in Lovable defaults (see middleware/cors.ts). Comma-separated;
   // each entry is either an exact origin (https://app.example.com) or a
@@ -61,6 +69,8 @@ export interface Env {
   SUPABASE_JWT_AUDIENCE: string;
   CORS_ALLOWED_ORIGINS: string[];
   ANTHROPIC_API_KEY: string | null;
+  RESEND_API_KEY: string | null;
+  MAIL_FROM: string | null;
 }
 
 let cached: Env | null = null;
@@ -91,6 +101,8 @@ export function loadEnv(): Env {
       ? raw.CORS_ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
       : [],
     ANTHROPIC_API_KEY: raw.ANTHROPIC_API_KEY ?? null,
+    RESEND_API_KEY: raw.RESEND_API_KEY ?? null,
+    MAIL_FROM: raw.MAIL_FROM ?? null,
   };
   return cached;
 }
