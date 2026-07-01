@@ -124,6 +124,7 @@ export async function loadCaptureForm(token: CaptureTokenRow): Promise<{
   inspection: Record<string, unknown>;
   items: Record<string, unknown>[];
   checks: Record<string, unknown>[];
+  confirmed_rooms: (string | null)[]; // null entry = the ungrouped ("General") bucket
 }> {
   const admin = getAdminClient();
   const insp = await admin
@@ -155,6 +156,18 @@ export async function loadCaptureForm(token: CaptureTokenRow): Promise<{
     .order('sort_order', { ascending: true, nullsFirst: false })
     .order('created_at', { ascending: true });
   if (checks.error) throw new ApiError(500, 'database_error', checks.error.message);
+
+  // Rooms the tenant has already marked "confirmed good" (funnel telemetry).
+  const confirmations = await admin
+    .from('inspection_room_confirmations')
+    .select('group_label')
+    .eq('account_id', token.account_id)
+    .eq('inspection_id', token.inspection_id)
+    .is('deleted_at', null);
+  if (confirmations.error) throw new ApiError(500, 'database_error', confirmations.error.message);
+  const confirmedRooms = Array.from(
+    new Set((confirmations.data ?? []).map((r) => (r.group_label as string | null) ?? null)),
+  );
 
   // Attach photos (attachments with entity_type='inspection_items') to each item.
   const itemIds = (items.data ?? []).map((i) => i.id as string);
@@ -197,6 +210,7 @@ export async function loadCaptureForm(token: CaptureTokenRow): Promise<{
     inspection: insp.data as Record<string, unknown>,
     items: itemsWithPhotos as Record<string, unknown>[],
     checks: (checks.data ?? []) as Record<string, unknown>[],
+    confirmed_rooms: confirmedRooms,
   };
 }
 
@@ -386,6 +400,48 @@ export async function tenantUpsertItems(
   });
   if (error) throw rpcError(error);
   return (data ?? []) as Record<string, unknown>[];
+}
+
+/**
+ * Stamp form_opened_at the first time the tenant loads the form (set-once,
+ * GET-only). Called from the capture-form GET handler after the token is
+ * verified; the DEFINER RPC no-ops if already stamped or the inspection is
+ * completed.
+ *
+ * BEST-EFFORT: this is funnel telemetry, and the form GET was side-effect-free
+ * before it. A stamp failure must NEVER block the tenant from viewing the form,
+ * so we log and swallow rather than throw. (Caveat: because it fires on the raw
+ * GET, email link-scanners / SafeLinks prefetch can stamp "opened" before the
+ * human clicks -- an inherent limit of GET-based open tracking; a future
+ * render-time beacon from the FE would be needed for click-accurate opens.)
+ */
+export async function tenantMarkFormOpened(token: CaptureTokenRow): Promise<void> {
+  const admin = getAdminClient();
+  const { error } = await admin.rpc('tenant_mark_form_opened', {
+    p_account_id: token.account_id,
+    p_token_id: token.id,
+    p_inspection_id: token.inspection_id,
+  });
+  if (error) getLogger().warn(`[capture] form_opened stamp failed (non-fatal): ${error.message}`);
+}
+
+/**
+ * Tenant marks one section "confirmed good" (funnel telemetry -> rooms_done).
+ * Confirm-only + idempotent (RPC on-conflict-do-nothing); also counts as a
+ * tenant write, so it stamps form_started_at.
+ */
+export async function tenantConfirmRoom(
+  token: CaptureTokenRow,
+  groupLabel: string | null,
+): Promise<void> {
+  const admin = getAdminClient();
+  const { error } = await admin.rpc('tenant_confirm_inspection_room', {
+    p_account_id: token.account_id,
+    p_token_id: token.id,
+    p_inspection_id: token.inspection_id,
+    p_group_label: groupLabel, // null => the ungrouped ("General") bucket
+  });
+  if (error) throw rpcError(error);
 }
 
 /**

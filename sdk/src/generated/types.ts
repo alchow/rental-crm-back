@@ -7939,7 +7939,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Inspection"];
+                        "application/json": components["schemas"]["InspectionDetail"];
                     };
                 };
                 /** @description invalid request */
@@ -11050,6 +11050,95 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/inspection-capture/{secret}/rooms/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Tenant marks a section confirmed-good (funnel progress) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    secret: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CaptureRoomConfirmBody"];
+                };
+            };
+            responses: {
+                /** @description confirmed */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CaptureRoomConfirmResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description rate limited */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/inspection-capture/{secret}/submit": {
         parameters: {
             query?: never;
@@ -12653,6 +12742,10 @@ export interface components {
             subject_snapshot: {
                 [key: string]: unknown;
             } | null;
+            link_delivered_at: string | null;
+            form_opened_at: string | null;
+            form_started_at: string | null;
+            submitted_at: string | null;
             created_at: string;
             updated_at: string;
             deleted_at: string | null;
@@ -12660,6 +12753,17 @@ export interface components {
         InspectionListResponse: {
             data: components["schemas"]["Inspection"][];
             next_cursor: string | null;
+        };
+        InspectionEngagement: {
+            link_delivered_at: string | null;
+            form_opened_at: string | null;
+            form_started_at: string | null;
+            submitted_at: string | null;
+            rooms_done: number;
+            rooms_total: number;
+        };
+        InspectionDetail: components["schemas"]["Inspection"] & {
+            engagement: components["schemas"]["InspectionEngagement"];
         };
         CreateInspectionBody: {
             /** Format: uuid */
@@ -13137,6 +13241,7 @@ export interface components {
             checks: {
                 [key: string]: unknown;
             }[];
+            confirmed_rooms: (string | null)[];
         };
         CaptureItemResponse: {
             item: {
@@ -13160,6 +13265,12 @@ export interface components {
                 value?: unknown;
                 sort_order?: number;
             }[];
+        };
+        CaptureRoomConfirmResponse: {
+            confirmed: boolean;
+        };
+        CaptureRoomConfirmBody: {
+            group_label?: string | null;
         };
         CaptureSubmitResponse: {
             inspection: {

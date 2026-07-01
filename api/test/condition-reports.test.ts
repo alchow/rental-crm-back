@@ -255,6 +255,165 @@ async function main(): Promise<void> {
     if (pi.status !== 409) throw new Error(`expected 409, got ${pi.status}`);
   });
 
+  // --------------------------------------------------------------------------
+  // Engagement funnel: link -> opened -> started -> submitted + room progress.
+  // Self-contained on its own capture_mode='tenant' inspection so no landlord
+  // pre-fill perturbs the assertions.
+  // --------------------------------------------------------------------------
+  interface Engagement {
+    link_delivered_at: string | null;
+    form_opened_at: string | null;
+    form_started_at: string | null;
+    submitted_at: string | null;
+    rooms_done: number;
+    rooms_total: number;
+  }
+  const getEngagement = async (inspId: string): Promise<Engagement> => {
+    const r = await api('GET', `/v1/accounts/${A.accountId}/inspections/${inspId}`, { token: A.accessToken });
+    const b = assertStatus(r, 200, 'inspection detail') as { engagement?: Engagement };
+    if (!b.engagement) throw new Error('engagement object missing on detail response');
+    return b.engagement;
+  };
+  let engInspId = '';
+  let engSecret = '';
+  let engRoom1 = '';
+  let engRoom2 = '';
+
+  await check('engagement: fresh inspection -> all-null timestamps, zero rooms_done', async () => {
+    const insp = await api('POST', `/v1/accounts/${A.accountId}/inspections`, {
+      token: A.accessToken,
+      body: { area_id: A.unitAreaId, tenancy_id: A.tenancyId, template_id: templateId, kind: 'move_in', capture_mode: 'tenant' },
+    });
+    engInspId = (assertStatus(insp, 201, 'eng create') as { id: string }).id;
+    const seed = await api('POST', `/v1/accounts/${A.accountId}/inspections/${engInspId}/seed-from-template`, {
+      token: A.accessToken, body: {},
+    });
+    assertStatus(seed, 200, 'eng seed');
+    const e = await getEngagement(engInspId);
+    if (e.link_delivered_at || e.form_opened_at || e.form_started_at || e.submitted_at) {
+      throw new Error(`fresh funnel not all-null: ${JSON.stringify(e)}`);
+    }
+    if (e.rooms_done !== 0) throw new Error(`fresh rooms_done=${e.rooms_done}`);
+    if (e.rooms_total < 2) throw new Error(`expected >=2 rooms, got rooms_total=${e.rooms_total}`);
+  });
+
+  await check('engagement: mint link -> link_delivered_at set, rest null', async () => {
+    const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/${engInspId}/capture-links`, {
+      token: A.accessToken, body: { tenant_id: A.tenantId },
+    });
+    engSecret = (assertStatus(r, 201, 'eng capture link') as { secret: string }).secret;
+    const e = await getEngagement(engInspId);
+    if (!e.link_delivered_at) throw new Error('link_delivered_at not set after mint');
+    if (e.form_opened_at || e.form_started_at || e.submitted_at) throw new Error(`only link_delivered_at should be set: ${JSON.stringify(e)}`);
+  });
+
+  await check('engagement: tenant GETs form -> form_opened_at set, form_started_at null', async () => {
+    const form = await api('GET', `/v1/inspection-capture/${engSecret}`);
+    const fb = assertStatus(form, 200, 'eng form') as {
+      items: { id: string; group_label: string | null }[];
+      confirmed_rooms: string[];
+    };
+    if (!Array.isArray(fb.confirmed_rooms) || fb.confirmed_rooms.length !== 0) throw new Error('confirmed_rooms should start empty');
+    const rooms = [...new Set(fb.items.map((i) => i.group_label).filter((g): g is string => !!g))];
+    if (rooms.length < 2) throw new Error(`need >=2 distinct group_labels, got ${rooms.length}`);
+    engRoom1 = rooms[0]!;
+    engRoom2 = rooms[1]!;
+    const e = await getEngagement(engInspId);
+    if (!e.form_opened_at) throw new Error('form_opened_at not set after GET form');
+    if (e.form_started_at) throw new Error('form_started_at should still be null (no writes yet)');
+    if (e.rooms_done !== 0) throw new Error(`rooms_done should still be 0, got ${e.rooms_done}`);
+  });
+
+  await check('engagement: first tenant write -> form_started_at set once; room counts done', async () => {
+    const form = await api('GET', `/v1/inspection-capture/${engSecret}`);
+    const fb = form.body as { items: { id: string; group_label: string | null }[] };
+    const itemInRoom1 = fb.items.find((i) => i.group_label === engRoom1)!;
+    const pi = await api('PATCH', `/v1/inspection-capture/${engSecret}/items/${itemInRoom1.id}`, {
+      body: { condition: 'good' },
+    });
+    assertStatus(pi, 200, 'eng tenant patch');
+    const e1 = await getEngagement(engInspId);
+    if (!e1.form_started_at) throw new Error('form_started_at not set after first write');
+    if (e1.rooms_done < 1) throw new Error(`rooms_done should be >=1 after editing a room, got ${e1.rooms_done}`);
+    // Second write must NOT move form_started_at (set-once).
+    const pi2 = await api('PATCH', `/v1/inspection-capture/${engSecret}/items/${itemInRoom1.id}`, {
+      body: { condition: 'fair' },
+    });
+    assertStatus(pi2, 200, 'eng tenant patch 2');
+    const e2 = await getEngagement(engInspId);
+    if (e2.form_started_at !== e1.form_started_at) throw new Error('form_started_at moved on second write (not set-once)');
+  });
+
+  await check('engagement: confirm a room -> rooms_done increments; re-confirm idempotent', async () => {
+    const before = await getEngagement(engInspId);
+    const rc = await api('POST', `/v1/inspection-capture/${engSecret}/rooms/confirm`, {
+      body: { group_label: engRoom2 },
+    });
+    const rb = assertStatus(rc, 200, 'eng room confirm') as { confirmed: boolean };
+    if (rb.confirmed !== true) throw new Error('confirm did not return confirmed:true');
+    const after = await getEngagement(engInspId);
+    if (after.rooms_done !== before.rooms_done + 1) throw new Error(`rooms_done ${before.rooms_done} -> ${after.rooms_done}, expected +1`);
+    if (after.rooms_done > after.rooms_total) throw new Error('rooms_done exceeded rooms_total');
+    // Re-confirm the same room: idempotent no-op (200), count unchanged.
+    const rc2 = await api('POST', `/v1/inspection-capture/${engSecret}/rooms/confirm`, {
+      body: { group_label: engRoom2 },
+    });
+    assertStatus(rc2, 200, 'eng room re-confirm');
+    const again = await getEngagement(engInspId);
+    if (again.rooms_done !== after.rooms_done) throw new Error('re-confirm changed rooms_done (not idempotent)');
+    // confirmed_rooms surfaces on the tenant form.
+    const form = await api('GET', `/v1/inspection-capture/${engSecret}`);
+    const fb = form.body as { confirmed_rooms: string[] };
+    if (!fb.confirmed_rooms.includes(engRoom2)) throw new Error('confirmed room not surfaced in confirmed_rooms');
+  });
+
+  await check('engagement: ungrouped items form a bucket, confirmable via omitted group_label', async () => {
+    // Landlord adds a loose item with NO group_label -> the ungrouped bucket.
+    const it = await api('POST', `/v1/accounts/${A.accountId}/inspections/${engInspId}/items`, {
+      token: A.accessToken, body: { label: 'loose smoke detector' },
+    });
+    assertStatus(it, 201, 'ungrouped item create');
+    const before = await getEngagement(engInspId); // ungrouped bucket now in rooms_total, not yet done
+    // Confirm the ungrouped bucket by OMITTING group_label (null == ungrouped).
+    const rc = await api('POST', `/v1/inspection-capture/${engSecret}/rooms/confirm`, { body: {} });
+    assertStatus(rc, 200, 'confirm ungrouped (omitted)');
+    const after = await getEngagement(engInspId);
+    if (after.rooms_total !== before.rooms_total) throw new Error(`rooms_total shifted unexpectedly: ${before.rooms_total}->${after.rooms_total}`);
+    if (after.rooms_done !== before.rooms_done + 1) throw new Error(`ungrouped confirm should +1 rooms_done: ${before.rooms_done}->${after.rooms_done}`);
+    if (after.rooms_done > after.rooms_total) throw new Error('rooms_done exceeded rooms_total');
+    // Re-confirm ungrouped via explicit null: idempotent no-op (dedupes despite null key).
+    const rc2 = await api('POST', `/v1/inspection-capture/${engSecret}/rooms/confirm`, { body: { group_label: null } });
+    assertStatus(rc2, 200, 're-confirm ungrouped (null)');
+    const again = await getEngagement(engInspId);
+    if (again.rooms_done !== after.rooms_done) throw new Error('re-confirm ungrouped changed rooms_done (null not deduped)');
+    // Surfaces in confirmed_rooms as a null entry.
+    const form = await api('GET', `/v1/inspection-capture/${engSecret}`);
+    const fb = form.body as { confirmed_rooms: (string | null)[] };
+    if (!fb.confirmed_rooms.includes(null)) throw new Error('ungrouped confirmation not surfaced as null in confirmed_rooms');
+  });
+
+  await check('engagement: submit -> submitted_at set; re-open/re-submit does not move timestamps', async () => {
+    const sub = await api('POST', `/v1/inspection-capture/${engSecret}/submit`);
+    assertStatus(sub, 200, 'eng submit');
+    const e = await getEngagement(engInspId);
+    if (!e.submitted_at) throw new Error('submitted_at not set after submit');
+    // Idempotent re-submit + re-open: no timestamp moves.
+    const sub2 = await api('POST', `/v1/inspection-capture/${engSecret}/submit`);
+    assertStatus(sub2, 200, 'eng re-submit');
+    const e2 = await getEngagement(engInspId);
+    if (e2.submitted_at !== e.submitted_at) throw new Error('submitted_at moved on re-submit');
+    if (e2.link_delivered_at !== e.link_delivered_at || e2.form_opened_at !== e.form_opened_at || e2.form_started_at !== e.form_started_at) {
+      throw new Error('a set-once timestamp moved on re-open/re-submit');
+    }
+  });
+
+  await check('engagement: rooms/confirm with an invalid secret -> 404', async () => {
+    const r = await api('POST', `/v1/inspection-capture/not-a-real-secret-value/rooms/confirm`, {
+      body: { group_label: 'anything' },
+    });
+    if (r.status !== 404) throw new Error(`expected 404, got ${r.status}`);
+  });
+
   await check('landlord reviews then completes; emits move-in document + snapshots', async () => {
     const rev = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/review`, { token: A.accessToken });
     const rb = assertStatus(rev, 200, 'review') as { status: string };
