@@ -4380,6 +4380,30 @@
             ],
             "additionalProperties": {}
           },
+          "link_delivered_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "form_opened_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "form_started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "submitted_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "created_at": {
             "type": "string"
           },
@@ -4412,6 +4436,10 @@
           "void_reason",
           "template_snapshot",
           "subject_snapshot",
+          "link_delivered_at",
+          "form_opened_at",
+          "form_started_at",
+          "submitted_at",
           "created_at",
           "updated_at",
           "deleted_at"
@@ -4436,6 +4464,67 @@
         "required": [
           "data",
           "next_cursor"
+        ]
+      },
+      "InspectionEngagement": {
+        "type": "object",
+        "properties": {
+          "link_delivered_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "form_opened_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "form_started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "submitted_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rooms_done": {
+            "type": "integer"
+          },
+          "rooms_total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "link_delivered_at",
+          "form_opened_at",
+          "form_started_at",
+          "submitted_at",
+          "rooms_done",
+          "rooms_total"
+        ]
+      },
+      "InspectionDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Inspection"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "engagement": {
+                "$ref": "#/components/schemas/InspectionEngagement"
+              }
+            },
+            "required": [
+              "engagement"
+            ]
+          }
         ]
       },
       "CreateInspectionBody": {
@@ -6396,13 +6485,20 @@
               "type": "object",
               "additionalProperties": {}
             }
+          },
+          "confirmed_rooms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
           "token",
           "inspection",
           "items",
-          "checks"
+          "checks",
+          "confirmed_rooms"
         ]
       },
       "CaptureItemResponse": {
@@ -6489,6 +6585,30 @@
         },
         "required": [
           "checks"
+        ]
+      },
+      "CaptureRoomConfirmResponse": {
+        "type": "object",
+        "properties": {
+          "confirmed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "confirmed"
+        ]
+      },
+      "CaptureRoomConfirmBody": {
+        "type": "object",
+        "properties": {
+          "group_label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "group_label"
         ]
       },
       "CaptureSubmitResponse": {
@@ -17753,7 +17873,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Inspection"
+                  "$ref": "#/components/schemas/InspectionDetail"
                 }
               }
             }
@@ -21848,6 +21968,107 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CaptureCheckList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inspection-capture/{secret}/rooms/confirm": {
+      "post": {
+        "tags": [
+          "inspection-capture"
+        ],
+        "summary": "Tenant marks a section confirmed-good (funnel progress)",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "secret",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptureRoomConfirmBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "confirmed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureRoomConfirmResponse"
                 }
               }
             }

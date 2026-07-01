@@ -11,6 +11,8 @@ import {
   tenantSubmit,
   tenantAttachItemPhoto,
   tenantUpsertItems,
+  tenantMarkFormOpened,
+  tenantConfirmRoom,
   lookupCaptureAttachment,
 } from '../admin/inspection-capture';
 import {
@@ -64,6 +66,7 @@ const CaptureForm = z
     inspection: z.record(z.unknown()),
     items: z.array(z.record(z.unknown())),
     checks: z.array(z.record(z.unknown())),
+    confirmed_rooms: z.array(z.string()),
   })
   .openapi('TenantCaptureForm');
 
@@ -93,6 +96,11 @@ const UpsertChecksBody = z
 
 const RenewalBody = z.object({ secret: z.string().min(8).max(200) }).openapi('CaptureRenewalBody');
 
+const RoomConfirmBody = z
+  .object({ group_label: z.string().min(1).max(200) })
+  .openapi('CaptureRoomConfirmBody');
+const RoomConfirmResponse = z.object({ confirmed: z.boolean() }).openapi('CaptureRoomConfirmResponse');
+
 const ItemResponse = z.object({ item: z.record(z.unknown()) }).openapi('CaptureItemResponse');
 const CheckListResponse = z.object({ data: z.array(z.record(z.unknown())) }).openapi('CaptureCheckList');
 const SubmitResponse = z.object({ inspection: z.record(z.unknown()) }).openapi('CaptureSubmitResponse');
@@ -117,6 +125,9 @@ inspectionCaptureApp.openapi(getFormRoute, async (c) => {
   await guard(c);
   const { secret } = c.req.valid('param');
   const token = await lookupCaptureToken(secret);
+  // Stamp form_opened_at on the FIRST load (set-once, GET-only) -- this is what
+  // distinguishes "opened" from "used" (the write paths also verify the token).
+  await tenantMarkFormOpened(token);
   const payload = await loadCaptureForm(token);
   return c.json(payload as z.infer<typeof CaptureForm>, 200);
 });
@@ -169,6 +180,31 @@ inspectionCaptureApp.openapi(upsertChecksRoute, async (c) => {
   const token = await lookupCaptureToken(secret);
   const data = await tenantUpsertChecks(token, body.checks);
   return c.json({ data }, 200);
+});
+
+// --- POST confirm a room ("everything looks good / finish room") ------------
+const confirmRoomRoute = createRoute({
+  method: 'post',
+  path: '/inspection-capture/{secret}/rooms/confirm',
+  tags: ['inspection-capture'],
+  summary: 'Tenant marks a section confirmed-good (funnel progress)',
+  request: {
+    params: SecretParam,
+    body: { content: { 'application/json': { schema: RoomConfirmBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'confirmed', content: { 'application/json': { schema: RoomConfirmResponse } } },
+    ...errorResponses,
+    ...rateLimitedResponse,
+  },
+});
+inspectionCaptureApp.openapi(confirmRoomRoute, async (c) => {
+  await guard(c);
+  const { secret } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const token = await lookupCaptureToken(secret);
+  await tenantConfirmRoom(token, body.group_label);
+  return c.json({ confirmed: true }, 200);
 });
 
 // --- POST submit (tenant attestation) ---------------------------------------

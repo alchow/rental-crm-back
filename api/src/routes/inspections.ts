@@ -80,11 +80,40 @@ const Inspection = z
     void_reason: z.string().nullable(),
     template_snapshot: z.record(z.unknown()).nullable(),
     subject_snapshot: z.record(z.unknown()).nullable(),
+    // Engagement-funnel timestamps (real columns; nested under `engagement` on
+    // the detail response too -- see InspectionDetail).
+    link_delivered_at: z.string().nullable(),
+    form_opened_at: z.string().nullable(),
+    form_started_at: z.string().nullable(),
+    submitted_at: z.string().nullable(),
     created_at: z.string(),
     updated_at: z.string(),
     deleted_at: z.string().nullable(),
   })
   .openapi('Inspection');
+
+// Tenant-engagement funnel, surfaced on the inspection DETAIL read only. The
+// four timestamps mirror the columns above; rooms_done / rooms_total are DERIVED
+// (see the detail handler) so they can't drift. Always present (never null),
+// so the FE never null-guards the object -- only individual timestamps are null
+// before the corresponding step happens.
+const InspectionEngagement = z
+  .object({
+    link_delivered_at: z.string().nullable(),
+    form_opened_at: z.string().nullable(),
+    form_started_at: z.string().nullable(),
+    submitted_at: z.string().nullable(),
+    rooms_done: z.number().int(),
+    rooms_total: z.number().int(),
+  })
+  .openapi('InspectionEngagement');
+
+// Strict superset of Inspection: because Inspection is a registered schema,
+// zod-to-openapi emits this as `allOf: [Inspection, { engagement }]`, so the two
+// can never drift and every existing GET /inspections/{id} consumer stays valid.
+const InspectionDetail = Inspection.extend({
+  engagement: InspectionEngagement,
+}).openapi('InspectionDetail');
 
 const InspectionKind = z.enum(['move_in', 'move_out', 'periodic', 'general']);
 const CaptureMode = z.enum(['landlord', 'tenant', 'collaborative']);
@@ -539,7 +568,7 @@ const inspGet = createRoute({
   tags: ['inspections'],
   request: { params: AccountAndIdParam },
   responses: {
-    200: { description: 'inspection', content: { 'application/json': { schema: Inspection } } },
+    200: { description: 'inspection', content: { 'application/json': { schema: InspectionDetail } } },
     ...errorResponses,
   },
 });
@@ -601,7 +630,51 @@ inspectionsApp.openapi(inspGet, async (c) => {
     .eq('account_id', accountId).eq('id', id).is('deleted_at', null).maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
   if (!data) throw new ApiError(404, 'not_found', 'not found');
-  return c.json(data as z.infer<typeof Inspection>, 200);
+
+  // Room progress is DERIVED (never stored) so it can't drift. rooms_total =
+  // distinct non-null group_label among live items; a room counts toward
+  // rooms_done when the tenant did SOMETHING in it -- >=1 item with a condition,
+  // OR a "confirmed good" row. Iterating the item group_labels bounds
+  // rooms_done <= rooms_total (a stray confirmation for a room with no items
+  // can't inflate it). Two small, inspection-scoped queries on this low-QPS read.
+  const [itemsRes, confirmsRes] = await Promise.all([
+    sb.from('inspection_items').select('group_label, condition')
+      .eq('account_id', accountId).eq('inspection_id', id).is('deleted_at', null),
+    sb.from('inspection_room_confirmations').select('group_label')
+      .eq('account_id', accountId).eq('inspection_id', id).is('deleted_at', null),
+  ]);
+  if (itemsRes.error) throw new ApiError(500, 'database_error', itemsRes.error.message);
+  if (confirmsRes.error) throw new ApiError(500, 'database_error', confirmsRes.error.message);
+
+  const roomsTotal = new Set<string>();
+  const roomsWithContent = new Set<string>();
+  for (const it of itemsRes.data ?? []) {
+    const g = it.group_label as string | null;
+    if (g == null || g === '') continue;
+    roomsTotal.add(g);
+    if (it.condition != null) roomsWithContent.add(g);
+  }
+  const confirmed = new Set(
+    (confirmsRes.data ?? []).map((r) => r.group_label as string),
+  );
+  let roomsDone = 0;
+  for (const g of roomsTotal) {
+    if (roomsWithContent.has(g) || confirmed.has(g)) roomsDone += 1;
+  }
+
+  const row = data as Record<string, unknown>;
+  const detail = {
+    ...row,
+    engagement: {
+      link_delivered_at: (row.link_delivered_at as string | null) ?? null,
+      form_opened_at: (row.form_opened_at as string | null) ?? null,
+      form_started_at: (row.form_started_at as string | null) ?? null,
+      submitted_at: (row.submitted_at as string | null) ?? null,
+      rooms_done: roomsDone,
+      rooms_total: roomsTotal.size,
+    },
+  };
+  return c.json(detail as z.infer<typeof InspectionDetail>, 200);
 });
 
 inspectionsApp.openapi(inspCreate, async (c) => {
