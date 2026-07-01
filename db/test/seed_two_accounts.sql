@@ -164,6 +164,14 @@ begin
     (v_acc_a, v_insp_a, 'keys/door_keys', 'Door keys', '2'::jsonb),
     (v_acc_b, v_insp_b, 'keys/door_keys', 'Door keys', '2'::jsonb);
 
+  -- Room confirmations (Phase 28 engagement funnel): one per account, so the
+  -- isolation suite exercises this RLS table's cross-account isolation.
+  insert into public.inspection_room_confirmations (
+    account_id, inspection_id, group_label
+  ) values
+    (v_acc_a, v_insp_a, 'Kitchen'),
+    (v_acc_b, v_insp_b, 'Kitchen');
+
   -- Attachments & interactions
   v_att_a := gen_random_uuid(); v_att_b := gen_random_uuid();
   insert into public.attachments (
