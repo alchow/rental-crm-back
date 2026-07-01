@@ -6489,7 +6489,10 @@
           "confirmed_rooms": {
             "type": "array",
             "items": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         },
@@ -6602,14 +6605,14 @@
         "type": "object",
         "properties": {
           "group_label": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "minLength": 1,
             "maxLength": 200
           }
-        },
-        "required": [
-          "group_label"
-        ]
+        }
       },
       "CaptureSubmitResponse": {
         "type": "object",

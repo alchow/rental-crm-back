@@ -124,7 +124,7 @@ export async function loadCaptureForm(token: CaptureTokenRow): Promise<{
   inspection: Record<string, unknown>;
   items: Record<string, unknown>[];
   checks: Record<string, unknown>[];
-  confirmed_rooms: string[];
+  confirmed_rooms: (string | null)[]; // null entry = the ungrouped ("General") bucket
 }> {
   const admin = getAdminClient();
   const insp = await admin
@@ -166,7 +166,7 @@ export async function loadCaptureForm(token: CaptureTokenRow): Promise<{
     .is('deleted_at', null);
   if (confirmations.error) throw new ApiError(500, 'database_error', confirmations.error.message);
   const confirmedRooms = Array.from(
-    new Set((confirmations.data ?? []).map((r) => r.group_label as string)),
+    new Set((confirmations.data ?? []).map((r) => (r.group_label as string | null) ?? null)),
   );
 
   // Attach photos (attachments with entity_type='inspection_items') to each item.
@@ -430,13 +430,16 @@ export async function tenantMarkFormOpened(token: CaptureTokenRow): Promise<void
  * Confirm-only + idempotent (RPC on-conflict-do-nothing); also counts as a
  * tenant write, so it stamps form_started_at.
  */
-export async function tenantConfirmRoom(token: CaptureTokenRow, groupLabel: string): Promise<void> {
+export async function tenantConfirmRoom(
+  token: CaptureTokenRow,
+  groupLabel: string | null,
+): Promise<void> {
   const admin = getAdminClient();
   const { error } = await admin.rpc('tenant_confirm_inspection_room', {
     p_account_id: token.account_id,
     p_token_id: token.id,
     p_inspection_id: token.inspection_id,
-    p_group_label: groupLabel,
+    p_group_label: groupLabel, // null => the ungrouped ("General") bucket
   });
   if (error) throw rpcError(error);
 }

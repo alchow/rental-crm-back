@@ -13241,7 +13241,7 @@ export interface components {
             checks: {
                 [key: string]: unknown;
             }[];
-            confirmed_rooms: string[];
+            confirmed_rooms: (string | null)[];
         };
         CaptureItemResponse: {
             item: {
@@ -13270,7 +13270,7 @@ export interface components {
             confirmed: boolean;
         };
         CaptureRoomConfirmBody: {
-            group_label: string;
+            group_label?: string | null;
         };
         CaptureSubmitResponse: {
             inspection: {

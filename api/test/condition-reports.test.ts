@@ -367,6 +367,31 @@ async function main(): Promise<void> {
     if (!fb.confirmed_rooms.includes(engRoom2)) throw new Error('confirmed room not surfaced in confirmed_rooms');
   });
 
+  await check('engagement: ungrouped items form a bucket, confirmable via omitted group_label', async () => {
+    // Landlord adds a loose item with NO group_label -> the ungrouped bucket.
+    const it = await api('POST', `/v1/accounts/${A.accountId}/inspections/${engInspId}/items`, {
+      token: A.accessToken, body: { label: 'loose smoke detector' },
+    });
+    assertStatus(it, 201, 'ungrouped item create');
+    const before = await getEngagement(engInspId); // ungrouped bucket now in rooms_total, not yet done
+    // Confirm the ungrouped bucket by OMITTING group_label (null == ungrouped).
+    const rc = await api('POST', `/v1/inspection-capture/${engSecret}/rooms/confirm`, { body: {} });
+    assertStatus(rc, 200, 'confirm ungrouped (omitted)');
+    const after = await getEngagement(engInspId);
+    if (after.rooms_total !== before.rooms_total) throw new Error(`rooms_total shifted unexpectedly: ${before.rooms_total}->${after.rooms_total}`);
+    if (after.rooms_done !== before.rooms_done + 1) throw new Error(`ungrouped confirm should +1 rooms_done: ${before.rooms_done}->${after.rooms_done}`);
+    if (after.rooms_done > after.rooms_total) throw new Error('rooms_done exceeded rooms_total');
+    // Re-confirm ungrouped via explicit null: idempotent no-op (dedupes despite null key).
+    const rc2 = await api('POST', `/v1/inspection-capture/${engSecret}/rooms/confirm`, { body: { group_label: null } });
+    assertStatus(rc2, 200, 're-confirm ungrouped (null)');
+    const again = await getEngagement(engInspId);
+    if (again.rooms_done !== after.rooms_done) throw new Error('re-confirm ungrouped changed rooms_done (null not deduped)');
+    // Surfaces in confirmed_rooms as a null entry.
+    const form = await api('GET', `/v1/inspection-capture/${engSecret}`);
+    const fb = form.body as { confirmed_rooms: (string | null)[] };
+    if (!fb.confirmed_rooms.includes(null)) throw new Error('ungrouped confirmation not surfaced as null in confirmed_rooms');
+  });
+
   await check('engagement: submit -> submitted_at set; re-open/re-submit does not move timestamps', async () => {
     const sub = await api('POST', `/v1/inspection-capture/${engSecret}/submit`);
     assertStatus(sub, 200, 'eng submit');

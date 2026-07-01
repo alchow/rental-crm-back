@@ -47,7 +47,10 @@ create table public.inspection_room_confirmations (
   id            uuid primary key default gen_random_uuid(),
   account_id    uuid not null,
   inspection_id uuid not null,
-  group_label   text not null check (length(group_label) between 1 and 200),
+  -- null = the "ungrouped" bucket (items whose server group_label is null; the
+  -- FE renders these as "General"). Keyed on SQL null, NOT the display string,
+  -- so it can't collide with a real section a template happens to label "General".
+  group_label   text check (group_label is null or length(group_label) between 1 and 200),
   confirmed_at  timestamptz not null default now(),
   confirmed_by  uuid references auth.users(id) on delete set null, -- null for tenant confirms
   created_at    timestamptz not null default now(),
@@ -58,9 +61,12 @@ create table public.inspection_room_confirmations (
 );
 create index inspection_room_confirmations_account_id_idx    on public.inspection_room_confirmations (account_id);
 create index inspection_room_confirmations_inspection_id_idx on public.inspection_room_confirmations (inspection_id);
--- One live confirmation per room -> makes the confirm upsert idempotent.
+-- One live confirmation per room -> makes the confirm idempotent. NULLS NOT
+-- DISTINCT so the ungrouped bucket (group_label IS NULL) also dedupes to one
+-- row (Postgres treats nulls as distinct in a unique index by default).
 create unique index inspection_room_confirmations_inspection_group_uniq
   on public.inspection_room_confirmations (inspection_id, group_label)
+  nulls not distinct
   where deleted_at is null;
 
 -- RLS: ADR-0003 form B (initplan IN-subquery), copied from inspection_checks --
@@ -161,6 +167,8 @@ $$;
 -- Confirm-only + idempotent (on-conflict-do-nothing => re-confirm is a no-op,
 -- not an error). Same draft-editable guard + tenant audit actor as the other
 -- tenant_* RPCs, and it counts as a tenant write so it stamps form_started_at.
+-- p_group_label null/empty/whitespace => the ungrouped ("General") bucket,
+-- stored as SQL null (see the table comment on why null, not the display string).
 create or replace function public.tenant_confirm_inspection_room(
   p_account_id    uuid,
   p_token_id      uuid,
@@ -176,6 +184,7 @@ declare
   v_status       text;
   v_capture_mode text;
   v_completed    timestamptz;
+  v_label        text := nullif(btrim(p_group_label), '');
 begin
   perform set_config('audit.actor', 'tenant:' || p_token_id::text, true);
 
@@ -190,13 +199,10 @@ begin
      or v_capture_mode not in ('tenant', 'collaborative') then
     raise exception 'not_editable_by_tenant' using errcode = 'check_violation';
   end if;
-  if coalesce(btrim(p_group_label), '') = '' then
-    raise exception 'group_label_required' using errcode = 'check_violation';
-  end if;
 
   insert into public.inspection_room_confirmations
     (account_id, inspection_id, group_label)
-  values (p_account_id, p_inspection_id, p_group_label)
+  values (p_account_id, p_inspection_id, v_label)
   on conflict (inspection_id, group_label) where deleted_at is null
   do nothing;
 

@@ -631,12 +631,18 @@ inspectionsApp.openapi(inspGet, async (c) => {
   if (error) throw new ApiError(500, 'database_error', error.message);
   if (!data) throw new ApiError(404, 'not_found', 'not found');
 
-  // Room progress is DERIVED (never stored) so it can't drift. rooms_total =
-  // distinct non-null group_label among live items; a room counts toward
-  // rooms_done when the tenant did SOMETHING in it -- >=1 item with a condition,
-  // OR a "confirmed good" row. Iterating the item group_labels bounds
-  // rooms_done <= rooms_total (a stray confirmation for a room with no items
-  // can't inflate it). Two small, inspection-scoped queries on this low-QPS read.
+  // Room progress is DERIVED (never stored) so it can't drift. Each distinct
+  // item group_label is a room; items with a null/empty group_label fold into a
+  // single "ungrouped" bucket (the FE shows it as "General"), keyed by a Symbol
+  // so it can't collide with a real label. A room counts toward rooms_done when
+  // the tenant did SOMETHING in it -- >=1 item with a condition, OR a matching
+  // "confirmed good" row (a null-group confirmation targets the ungrouped
+  // bucket). Iterating the room set bounds rooms_done <= rooms_total, so a stray
+  // confirmation for a room with no items can't inflate it. Two small,
+  // inspection-scoped queries on this low-QPS read.
+  const UNGROUPED: unique symbol = Symbol('ungrouped');
+  type RoomKey = string | typeof UNGROUPED;
+  const roomKey = (g: string | null): RoomKey => (g == null || g === '' ? UNGROUPED : g);
   const [itemsRes, confirmsRes] = await Promise.all([
     sb.from('inspection_items').select('group_label, condition')
       .eq('account_id', accountId).eq('inspection_id', id).is('deleted_at', null),
@@ -646,20 +652,19 @@ inspectionsApp.openapi(inspGet, async (c) => {
   if (itemsRes.error) throw new ApiError(500, 'database_error', itemsRes.error.message);
   if (confirmsRes.error) throw new ApiError(500, 'database_error', confirmsRes.error.message);
 
-  const roomsTotal = new Set<string>();
-  const roomsWithContent = new Set<string>();
+  const roomsTotal = new Set<RoomKey>();
+  const roomsWithContent = new Set<RoomKey>();
   for (const it of itemsRes.data ?? []) {
-    const g = it.group_label as string | null;
-    if (g == null || g === '') continue;
-    roomsTotal.add(g);
-    if (it.condition != null) roomsWithContent.add(g);
+    const key = roomKey(it.group_label as string | null);
+    roomsTotal.add(key);
+    if (it.condition != null) roomsWithContent.add(key);
   }
-  const confirmed = new Set(
-    (confirmsRes.data ?? []).map((r) => r.group_label as string),
+  const confirmed = new Set<RoomKey>(
+    (confirmsRes.data ?? []).map((r) => roomKey(r.group_label as string | null)),
   );
   let roomsDone = 0;
-  for (const g of roomsTotal) {
-    if (roomsWithContent.has(g) || confirmed.has(g)) roomsDone += 1;
+  for (const key of roomsTotal) {
+    if (roomsWithContent.has(key) || confirmed.has(key)) roomsDone += 1;
   }
 
   const row = data as Record<string, unknown>;

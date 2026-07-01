@@ -66,7 +66,8 @@ const CaptureForm = z
     inspection: z.record(z.unknown()),
     items: z.array(z.record(z.unknown())),
     checks: z.array(z.record(z.unknown())),
-    confirmed_rooms: z.array(z.string()),
+    // null entry = the ungrouped ("General") bucket has been confirmed.
+    confirmed_rooms: z.array(z.string().nullable()),
   })
   .openapi('TenantCaptureForm');
 
@@ -97,7 +98,11 @@ const UpsertChecksBody = z
 const RenewalBody = z.object({ secret: z.string().min(8).max(200) }).openapi('CaptureRenewalBody');
 
 const RoomConfirmBody = z
-  .object({ group_label: z.string().min(1).max(200) })
+  .object({
+    // Omit or send null to confirm the ungrouped ("General") bucket -- items
+    // whose server group_label is null. Do NOT send the literal "General".
+    group_label: z.string().min(1).max(200).nullish(),
+  })
   .openapi('CaptureRoomConfirmBody');
 const RoomConfirmResponse = z.object({ confirmed: z.boolean() }).openapi('CaptureRoomConfirmResponse');
 
@@ -203,7 +208,7 @@ inspectionCaptureApp.openapi(confirmRoomRoute, async (c) => {
   const { secret } = c.req.valid('param');
   const body = c.req.valid('json');
   const token = await lookupCaptureToken(secret);
-  await tenantConfirmRoom(token, body.group_label);
+  await tenantConfirmRoom(token, body.group_label ?? null);
   return c.json({ confirmed: true }, 200);
 });
 
