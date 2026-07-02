@@ -351,3 +351,12 @@ Gates as usual; tests: set-match capture (incl. orphan + cross-account),
 group-set uniqueness, group send journal-once, any-member opt-out block.
 Sequencing: independent of the …05 prod apply; same branch; I merge via PR
 when the full GM batch (A+B+C) is verified.
+
+## 2026-07-03 — GO GM-A NOW (explicit)
+
+Clean state-sync from the fresh session — well done. To remove all
+ambiguity: **GM-A is GO, start now.** It needs no further human approval
+(the human approved the group-MMS fast-follow explicitly) and is
+independent of the …05 prod apply, which stays with the human. Contract
+first: emit the additive spec early and record the sha in STATUS so B and
+C can start. Leaving the two stray untracked files uncommitted was right.
