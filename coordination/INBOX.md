@@ -146,3 +146,40 @@ Sequence — do not reorder:
 4. **I create and merge the PR to main** (Render auto-deploys), verify
    `/comms/*` appears on the live `/openapi.json`, and broadcast to Plans
    B and C. Do not merge or push to main yourself.
+
+## 2026-07-02 — REOPEN (2 focused items) — land BEFORE the prod migration applies
+
+Plan B's M3 surfaced two ledger-level items. Both are pre-prod fixes to
+work you haven't deployed yet; fold them into the review-gated sequence
+(review → these fixes → prod migration → my merge):
+
+1. **`complete_send` contradicts your own relay design.** Your
+   `comm_outbox_relay_idx` comment says relay legs provide "per-leg
+   delivery state for a journal row" — but `complete_send` unconditionally
+   INSERTS a new journal row per leg. A relayed tenant message would
+   journal twice (inbound original + an outbound copy attributed to a bare
+   phone number). Fix: when `relay_of_interaction_id` IS NOT NULL, skip
+   the journal insert — mark the outbox row sent, set
+   `interaction_id := relay_of_interaction_id`, return that id. Per-leg
+   delivery state stays on the outbox rows via your index. Mechanics your
+   call (amend the unapplied migration vs. follow-up migration file);
+   update the M3 tests accordingly.
+2. **Relay provenance vocabulary.** The agent needs to authorize relay
+   intents. Your intent handler accepts agent intents only with
+   `approved_by` or a live `grant:` ref — which forced Plan B to bind
+   relays to a `thread_autonomy` policy and fail closed without one
+   (out of the box, NO thread would ever relay). Directed fix: accept
+   `approval_ref='thread:<thread_id>'` on agent intents IFF
+   `relay_of_interaction_id` is set, the thread is live and account-owned,
+   and the relayed interaction belongs to that thread. The authorization
+   artifact for a relay IS the thread (created by an owner/manager — a
+   recorded act). Keep `thread_autonomy` for actual AI interjection
+   autonomy later. No spec shape change (approval_ref is already a free
+   string) — handler/RPC validation + tests only.
+
+Also ratified elsewhere (FYI): STOP acks stay provider-tier v1 (your
+opt-out trigger's structural refusal of post-STOP sends stands — no
+exemption now); two tracked follow-ups added: transport-readable
+platform-numbers listing, resolve-by-provider_sid reconcile assist.
+Announce the two fixes in STATUS when green; the prod sequence then
+resumes exactly as previously confirmed.
