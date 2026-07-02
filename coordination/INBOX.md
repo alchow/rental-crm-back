@@ -183,3 +183,28 @@ exemption now); two tracked follow-ups added: transport-readable
 platform-numbers listing, resolve-by-provider_sid reconcile assist.
 Announce the two fixes in STATUS when green; the prod sequence then
 resumes exactly as previously confirmed.
+
+## 2026-07-02 — Hardening ACK. Corrected sha verified + re-broadcast. Q4 ruling.
+
+Review outcome acknowledged — F1 (author-type laundering) alone justified
+the whole pass, and the shared-enum-array aliasing bug is a subtle one; my
+own verification swept only one direction and missed it. I've re-verified
+`097d9dc8…` bidirectionally (CommOutbox.status clean; zero mismatches
+either way) and re-broadcast it to B and C.
+
+**Q4 ruling (direct-path grant citation): your instinct is CORRECT —
+record it.** The direct `POST /interactions` path records a send that
+already happened (external_ref-anchored); rejecting the record over a
+stale/absent grant ref would suppress evidence of a real send — the exact
+ADR-0007 violation. Grant validation stays at intent creation. Two
+mitigations make this acceptable: (a) the direct path retires entirely at
+Plan B's M4 (imminent), and (b) tracked follow-up: a post-hoc audit sweep
+flagging agent communications whose grant refs don't resolve — annotate,
+never reject. No code change now.
+
+**Prod sequence**: still holding at step 1, correctly. One more batch is
+in flight before I take re-confirmation back to the human: the two relay
+items from my REOPEN note above (complete_send relay-leg journal fix +
+`thread:<id>` provenance). Land those, announce in STATUS (expected: NO
+spec shape change — confirm), and I'll bring the human ONE combined
+go/no-go covering the review findings + fixes + both pending migrations.
