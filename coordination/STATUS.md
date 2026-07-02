@@ -1,5 +1,14 @@
 # STATUS — worker-owned. Update + push after every milestone, blocker, or question.
 
+## 🔧 FOLLOW-UP: perf + retention migration `…05` (NOT yet on prod; contract-neutral)
+Post-deploy optimization from a scalability/performance review (user-requested). Migration `20260701000005_comms_perf_and_retention.sql` — **DB-only, no endpoint/schema change, no new sha, zero B/C impact.** Not applied to prod yet (a 4th `migrate:up` when you/the human are ready; expand-only, safe anytime).
+- **(A)** partial index on `comm_outbox (channel, to_address) WHERE status='queued'` — `record_opt_out`'s parking UPDATE filters those two columns with no `account_id` (compliance is global), so it was seq-scanning the whole outbox on every STOP; now a point lookup.
+- **(B)** reordered `comm_outbox_pending_idx` to `(account_id, status, created_at, id)` so the transport dispatch scan is index-ordered (keyset pagination stopped sorting every page); `not_before` is a cheap recheck, reconcile keeps its `(account_id, status='sending')` prefix.
+- **(C)** dropped 4 standalone `(account_id)` indexes (comm_outbox, platform_numbers, comm_threads, comm_policies) — each redundant with the table's `unique(account_id, id)`; trims write cost on the hot path.
+- **(D)** `prune_inbound_raw(interval default 90d)` — service-role-only janitor pruning the unaudited `inbound_raw` JSONB bloat past a dedupe horizon. Schedule operationally (`cron.schedule('prune-inbound-raw', …)`), NOT in-migration. **Deliberately did NOT prune `comm_outbox`**: it's audit-attached, so a DELETE emits a `hard_deleted` event carrying the full before-image (bigger than the row) — pruning would grow the events chain more than it shrinks the outbox. With (A)/(B) the terminal rows no longer cost the hot queries anything. Bounding events/comm_outbox is a separate partitioning design (tracked follow-up).
+
+Gates: migration applies clean across the full chain; DEFINER-grant guard passes (janitor is service_role-only, un-allowlisted); new `test:comms-retention` (5 checks) wired into CI; comms API suite (37) still green post index-swap; typecheck/lint/drift green.
+
 ## ✅ PROD MIGRATION APPLIED — 2026-07-02T22:30:55Z
 The human ran `pnpm --filter ./db migrate:up` against prod (my env's classifier blocked the prod creds, as expected, so the human ran the one command). `supabase db push` applied all THREE, in order, and reported **"Finished supabase db push"** with no errors:
 - `20260701000002_comms_ledger.sql` ✅
@@ -97,6 +106,7 @@ Considered and NOT changed (with reasons):
 
 ## Log
 (newest first; one line per push: date, milestone, summary)
+- 2026-07-02 PERF+RETENTION: migration `…05` (opt-out-park index, dispatch-scan reorder, drop 4 redundant account_id indexes, `prune_inbound_raw` janitor) + `test:comms-retention`. DB-only, contract-neutral, no sha change. NOT yet on prod (needs a follow-up `migrate:up`). All gates green.
 - 2026-07-02T22:30:55Z **PROD MIGRATION APPLIED**: human ran `migrate:up`; `…02`+`…03`+`…04` all applied clean ("Finished supabase db push"). Over to coordinator for PR-to-main + `/openapi.json` verify + broadcast.
 - 2026-07-02T18:18Z PROD MIGRATION BLOCKED: GO received; attempted `migrate:up` → classifier denied prod creds (expected). Handed the one command to the human; prod untouched; awaiting human to apply + confirm.
 - 2026-07-02 REOPEN batch ✅: migration `…04` (relay no-double-journal + `thread:` provenance + tenancy/mreq context) + spec item-3 additive fields. NEW sha `7143b97f…` — needs verify + re-broadcast. All gates green (comms 37). THREE migrations now pending. Still holding prod at your combined go/no-go.

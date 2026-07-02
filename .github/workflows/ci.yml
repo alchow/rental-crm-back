@@ -193,6 +193,11 @@ jobs:
         # future-dated tenancies untouched; audit-attributed to system:cron:tenancy.
         run: pnpm --filter ./db test:tenancy-status
 
+      - name: Run inbound_raw retention janitor checks
+        # prune_inbound_raw drops rows past the TTL horizon, keeps recent ones,
+        # is idempotent, and honours the interval parameter (service-role-only).
+        run: pnpm --filter ./db test:comms-retention
+
   integration:
     # Higher-fidelity tier: real GoTrue token issuance + real PostgREST claim
     # handling. This is the test that catches drift between our hand-minted
