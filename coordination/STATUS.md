@@ -28,6 +28,11 @@ M2 — real handlers (starting)
 2. `GET /comms/outbox/{id}` added beyond the PLAN list (transport recovery read). Say the word and I'll drop it before B/C consume.
 3. Heads-up for the M1 announcement: once the capacity trigger lands I plan to ALSO require `external_ref` app-side in the firewall for agent communications (clean 400 instead of a DB check_violation surfacing as 500). Additive tightening, no schema change; will note in STATUS when it lands.
 
+## Events-feed entity_type strings (per INBOX ask — for the FE poller map)
+`_emit_event` uses TG_TABLE_NAME verbatim, so the new audited tables emit exactly:
+`comm_outbox`, `comm_threads`, `comm_thread_participants`, `channel_identities`, `platform_numbers`, `thread_channel_bindings`, `comm_policies`.
+(`comm_opt_outs` and `inbound_raw` are deliberately NOT audited — no account_id; integrity via PK/UNIQUE. Delivery-state transitions arrive as `comm_outbox` `updated` events; journal appends as `interactions` `inserted` events, as today.)
+
 ## M1 design notes (for B/C awareness — no contract change in this push)
 - The dispatch claim (queued→sending before dialing) rides `update_delivery` with `status='sending'`. The M0 `CommDeliveryBody` enum lacks 'sending'; M2's re-emit will widen it to `['sending','sent','delivered','failed','undeliverable']` — ADDITIVE input widening, announced here per protocol. Transport flow: scan → POST delivery `{status:'sending'}` → dial → POST complete.
 - Opt-out enforcement is a BEFORE-INSERT trigger on comm_outbox (SQLSTATE P0004 → API 422): refused sends leave no journal trace and no oracle-grade RPC is exposed to members.
