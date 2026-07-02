@@ -24,8 +24,17 @@
 --   * set_owner_phone_verified        -- account_members + auth.uid()
 --   * is_approver_member              -- result AND-ed with is_account_member(auth.uid());
 --                                        called by the authenticated interactions route
--- (Migration 009 also revokes anon from all four, so authenticated is the only
---  non-service_role grantee that remains on any public SECURITY DEFINER function.)
+--   Comms ledger (20260701000002) — each asserts live membership in the
+--   account it acts on BEFORE any read/write (raising 42501 otherwise):
+--   * complete_send                   -- member of the outbox row's account
+--   * capture_inbound                 -- agent-role member of p_account_id
+--   * record_opt_out                  -- agent-role member of p_account_id
+--   * list_account_opt_outs           -- member of p_account_id; result is
+--                                        intersected with the account's own
+--                                        channel_identities (no address oracle)
+-- (Migration 009 also revokes anon from the first four — the comms migration
+--  does the same for its own — so authenticated is the only non-service_role
+--  grantee that remains on any public SECURITY DEFINER function.)
 --
 -- Any SECURITY DEFINER function NOT in this list must be service_role-only.
 -- ----------------------------------------------------------------------------
@@ -40,7 +49,12 @@ DECLARE
     'create_account_for_new_user',
     'create_payment_with_allocations',
     'set_owner_phone_verified',
-    'is_approver_member'
+    'is_approver_member',
+    -- comms ledger (20260701000002): self-defending membership asserts inside
+    'complete_send',
+    'capture_inbound',
+    'record_opt_out',
+    'list_account_opt_outs'
   ];
 BEGIN
 

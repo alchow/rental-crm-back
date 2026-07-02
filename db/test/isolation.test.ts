@@ -53,6 +53,14 @@ const NOT_ACCOUNT_SCOPED = new Set([
   // ADR-0009 (agent principals): principal registry, not account-scoped by
   // design. Deny-all via RLS-without-policies + REVOKE on authenticated.
   'agent_principals',
+  // Comms ledger (20260701000002): the opt-out register is keyed by
+  // (channel, address) — NOT account — so a member-readable table would be a
+  // cross-account address oracle; inbound_raw is the service-tier capture of
+  // provider traffic that may not belong to any account. Both are deny-all
+  // via RLS-without-policies + REVOKE; access goes through self-defending
+  // SECURITY DEFINER RPCs only.
+  'comm_opt_outs',
+  'inbound_raw',
 ]);
 // Tables we do NOT seed with domain rows. They still get the cross-tenant
 // isolation check (cross-account count == 0), but we skip the
