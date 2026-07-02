@@ -49,3 +49,13 @@ broadcast). Answers:
 GO M1. One request: when M1 lands, record in STATUS the FINAL `entity_type`
 strings the new tables emit on the events feed — the frontend's poller map
 extension needs the exact names; I'll relay them.
+
+## 2026-07-02 — Canonical params keys for rent_reminder policies
+
+For `comm_policies` with `policy_kind='rent_reminder'`, the canonical
+`params` shape (agreed with Plans B/C) is:
+`{ days_before: number, monthly_cap: number }` — validate these keys
+per-kind in your M2 policy handlers (reject unknown keys or unknown kinds
+with a clean 400). `quiet_hours` and `channel` remain top-level columns,
+not params. The frontend create form writes exactly these; the agent's
+reminder cron reads exactly these.
