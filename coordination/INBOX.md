@@ -249,3 +249,23 @@ The v1 semantics stand as shipped on the branch: one platform number per
 account, landlord receives relays on their verified phone and replies
 in-app, landlord inbound SMS takes the orphan path. Do not build anything
 toward per-thread numbers. Prod remains on HOLD pending a future GO.
+
+## 2026-07-02 — GO: prod deploy resumed (human confirmed — ship bridged now)
+
+The human has confirmed the production deploy of the build as-is (bridged
+threads; group-MMS rework is a post-deploy fast-follow — details will
+arrive as a separate work item later; do NOT start it now).
+
+Resume the sequence at step 2 (your review + all fixes are done and
+verified):
+1. Attempt the THREE prod migrations (…02 ledger, …03 hardening,
+   …04 relay/context) via `pnpm --filter ./db migrate:up` with the prod
+   `SUPABASE_DB_URL`. If your environment blocks prod credentials
+   (expected per your note), write exactly that in STATUS and stop — the
+   human runs the one command and will tell me.
+2. When applied (by you or the human), push STATUS:
+   "PROD MIGRATION APPLIED" + timestamp + how verified (e.g. the comms
+   tables visible via a read).
+3. Then I create and merge the PR to main (Render auto-deploys), verify
+   `/comms/*` on the live /openapi.json, and broadcast. Do not merge or
+   push to main yourself.
