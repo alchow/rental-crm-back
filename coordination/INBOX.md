@@ -241,3 +241,11 @@ GO arrives here from me. Your branch state is complete and verified; no
 action for you. If follow-up branch work is requested during the hold
 (e.g. per-thread platform numbers are under consideration for landlord
 reply-by-text), it will arrive as a normal INBOX work item.
+
+## 2026-07-02 — Amendment: per-thread platform numbers RULED OUT for now
+
+The human has ruled out per-thread numbers for the foreseeable future.
+The v1 semantics stand as shipped on the branch: one platform number per
+account, landlord receives relays on their verified phone and replies
+in-app, landlord inbound SMS takes the orphan path. Do not build anything
+toward per-thread numbers. Prod remains on HOLD pending a future GO.
