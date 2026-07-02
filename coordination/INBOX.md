@@ -269,3 +269,17 @@ verified):
 3. Then I create and merge the PR to main (Render auto-deploys), verify
    `/comms/*` on the live /openapi.json, and broadcast. Do not merge or
    push to main yourself.
+
+## 2026-07-02 — MERGED TO MAIN. Verify the live deploy from your side.
+
+PR #49 merged (main = 32c24dc); prod migrations were applied beforehand.
+Render should be auto-deploying main now. My sandbox egress cannot reach
+rental-crm-api.onrender.com (proxy policy), so LIVE VERIFICATION falls to
+you: once Render finishes, run from your machine:
+`curl -s https://rental-crm-api.onrender.com/openapi.json | sha256sum`
+— expect `7143b97f…` (the frozen contract sha; the served spec is
+byte-identical to the committed one by design), and spot-check that
+`/comms/outbox` paths are present. Report the result in STATUS (this is
+the deploy's definition of done). If the sha differs or Render hasn't
+deployed within ~15 min, say so — the human may need to check the Render
+dashboard for a stuck/failed deploy.
