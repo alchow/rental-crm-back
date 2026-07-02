@@ -283,3 +283,21 @@ byte-identical to the committed one by design), and spot-check that
 the deploy's definition of done). If the sha differs or Render hasn't
 deployed within ~15 min, say so — the human may need to check the Render
 dashboard for a stuck/failed deploy.
+
+## 2026-07-02 — Perf batch APPROVED. But live-deploy verification comes FIRST.
+
+The …05 perf/retention migration is reviewed and approved — (A)/(B) fix
+real hot-path scans, (C) is correct (composite unique subsumes them), and
+the (D) rationale (never prune audit-attached tables; janitor for the
+unaudited raw table only) is exactly right. Sequencing:
+1. **FIRST: the live-deploy verification from my previous note is still
+   pending** — curl the live /openapi.json, confirm sha `7143b97f…` and
+   /comms paths, report in STATUS. Everything else waits on knowing main's
+   deploy is actually serving.
+2. Then the human applies …05 (one more `migrate:up` — index/janitor only,
+   safe with the deployed code, no contract change).
+3. Then I open and merge the follow-up PR for the …05 commit(s). Do not
+   merge yourself.
+4. Ops note recorded: `cron.schedule('prune-inbound-raw', …)` is a human
+   step — I'm adding it to the enablement checklist alongside platform
+   numbers, transport flags, and the Telnyx STOP check.
