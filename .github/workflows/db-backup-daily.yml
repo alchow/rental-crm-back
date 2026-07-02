@@ -1,0 +1,256 @@
+# Off-platform DB backup, daily tier (RPO <= ~24 hours for the promoted copy).
+# Companion to db-backup-15min.yml: that workflow keeps 48 hours of 15-minute
+# snapshots in pg/15min/; this one promotes one of them per day into a 30-day
+# tier (pg/daily/), mirrors Supabase Storage files, and -- on demand -- proves
+# the newest dump actually restores. Restore procedure + one-time setup:
+# docs/backup-recovery-runbook.md.
+name: db-backup-daily
+
+on:
+  schedule:
+    # 09:23 UTC daily. Odd minute on purpose: the top-of-hour cron slots are the
+    # most contended on GitHub's shared scheduler, and we want this to fire well
+    # after a 15-min tick has landed a fresh snapshot to promote.
+    - cron: '23 9 * * *'
+  workflow_dispatch:
+    inputs:
+      verify_restore:
+        description: 'Also restore the newest dump into a scratch postgres:17 container and sanity-check'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Never overlap two promotion runs (a slow promote + the next tick would race
+# the daily-tier prune, same hazard as the 15-min workflow).
+concurrency:
+  group: db-backup-daily
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+      S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+      # aws-cli >= 2.23 sends CRC-based integrity checksums by default, which
+      # some S3-compatible endpoints (R2 included, historically) reject.
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+    steps:
+      - name: Promote newest 15-min dump to the daily tier
+        # Server-side copy (no download): pick the newest db-*.dump in pg/15min/
+        # and copy it into pg/daily/ under the same name. Keys are UTC and
+        # fixed-width, so lexical sort == chronological sort and tail -1 is
+        # newest. If pg/15min/ has no db-*.dump the 15-min workflow is broken
+        # (nothing to promote), so fail LOUDLY rather than silently no-op --
+        # a green daily run must never mask a dead 15-min tier.
+        run: |
+          newest="$(aws s3 ls "s3://$S3_BUCKET/pg/15min/" --endpoint-url "$S3_ENDPOINT" \
+            | awk '{print $4}' \
+            | { grep -E '^db-[0-9]{8}T[0-9]{6}Z\.dump$' || true; } \
+            | sort | tail -1)"
+          if [ -z "$newest" ]; then
+            echo "FAIL: no db-*.dump in s3://$S3_BUCKET/pg/15min/ -- the 15-min backup workflow is broken (nothing to promote). See the runbook." >&2
+            exit 1
+          fi
+          echo "promoting $newest"
+          aws s3 cp "s3://$S3_BUCKET/pg/15min/$newest" "s3://$S3_BUCKET/pg/daily/$newest" \
+            --endpoint-url "$S3_ENDPOINT" --only-show-errors
+
+          # Derive the shared stamp and promote the matching auth-<stamp>.dump if
+          # the 15-min run managed to write one. Best-effort: the auth dump is
+          # allowed to be absent (backup role may lack the auth schema; see the
+          # runbook), so a miss is a note, not a failure.
+          stamp="${newest#db-}"; stamp="${stamp%.dump}"
+          if aws s3 cp "s3://$S3_BUCKET/pg/15min/auth-$stamp.dump" "s3://$S3_BUCKET/pg/daily/auth-$stamp.dump" \
+               --endpoint-url "$S3_ENDPOINT" --only-show-errors; then
+            echo "promoted auth-$stamp.dump"
+          else
+            echo "::notice::no matching auth-$stamp.dump to promote (auth schema unreadable to the backup role, or none written); see runbook"
+          fi
+
+      - name: Prune daily tier (keep 30 days)
+        # Same technique as the 15-min prune: key timestamps are UTC and
+        # fixed-width, so plain string comparison against the cutoff is a
+        # correct time comparison.
+        run: |
+          cutoff="$(date -u -d '30 days ago' +%Y%m%dT%H%M%SZ)"
+          aws s3 ls "s3://$S3_BUCKET/pg/daily/" --endpoint-url "$S3_ENDPOINT" \
+            | awk '{print $4}' \
+            | { grep -E '^(db|auth)-[0-9]{8}T[0-9]{6}Z\.dump$' || true; } \
+            | while read -r key; do
+                ts="${key#*-}"; ts="${ts%.dump}"
+                if [ "$ts" \< "$cutoff" ]; then
+                  aws s3 rm "s3://$S3_BUCKET/pg/daily/$key" \
+                    --endpoint-url "$S3_ENDPOINT" --only-show-errors
+                  echo "pruned $key"
+                fi
+              done
+
+  storage-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+      S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+      # rclone remotes are configured entirely through RCLONE_CONFIG_<NAME>_<KEY>
+      # env vars below -- nothing is written to disk, so no secret ever lands in
+      # an rclone.conf. Names are UPPERCASE by rclone's env-var convention.
+      #
+      # SRC = Supabase Storage's S3-compatible gateway (path-style, "Other"
+      # provider). Endpoint/keys/region come from the storage S3 credentials in
+      # Dashboard -> Settings -> Storage.
+      RCLONE_CONFIG_SRC_TYPE: s3
+      RCLONE_CONFIG_SRC_PROVIDER: Other
+      RCLONE_CONFIG_SRC_ENDPOINT: ${{ secrets.SUPABASE_STORAGE_S3_ENDPOINT }}
+      RCLONE_CONFIG_SRC_ACCESS_KEY_ID: ${{ secrets.SUPABASE_STORAGE_S3_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_SRC_SECRET_ACCESS_KEY: ${{ secrets.SUPABASE_STORAGE_S3_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_SRC_REGION: ${{ secrets.SUPABASE_STORAGE_S3_REGION }}
+      # Supabase's S3 gateway is path-style (bucket in the path, not the host).
+      RCLONE_CONFIG_SRC_FORCE_PATH_STYLE: 'true'
+      # DST = the off-platform backup bucket (same creds as the DB tiers).
+      # provider Cloudflare == R2; change to AWS or Other if you move the
+      # backup bucket off R2.
+      RCLONE_CONFIG_DST_TYPE: s3
+      RCLONE_CONFIG_DST_PROVIDER: Cloudflare
+      RCLONE_CONFIG_DST_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+      RCLONE_CONFIG_DST_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_DST_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Install rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Sync Supabase Storage to the backup bucket
+        # The app keeps document/inspection attachments in the `attachments`
+        # bucket. Sync from the S3 ROOT (src:) rather than a single bucket so
+        # every current and future Storage bucket is covered automatically --
+        # today that's just `attachments`, tomorrow it may be more.
+        #
+        # This runs once a day, so Storage files have a ~24-hour RPO: a file
+        # uploaded and then lost within the same day is not recoverable from
+        # here. That is the deliberate, runbook-documented trade-off -- the DB
+        # (business-of-record) gets a 15-minute RPO; bulky attachments do not
+        # warrant 96x the egress. --checksum compares content, not mtime, so
+        # unchanged files are skipped cheaply.
+        run: |
+          rclone sync src: "dst:$S3_BUCKET/storage" \
+            --checksum --fast-list --transfers 8 --stats-one-line -v
+
+  verify-restore:
+    # Opt-in only: this restores the newest dump into a throwaway container to
+    # prove it is actually loadable end-to-end. It is deliberately NOT on the
+    # daily schedule -- pulling postgres:17-alpine and replaying a full restore
+    # every day is wasteful, and a restore drill is something you run when you
+    # want the evidence (before a migration, after touching the backup role,
+    # or on a cadence you choose). Tick the box on manual dispatch to run it.
+    if: ${{ inputs.verify_restore }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+      S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+    steps:
+      - name: Install postgresql-client-17 (PGDG)
+        # ubuntu-latest ships client 16; the server is PG 17 (db/supabase/
+        # config.toml major_version) and pg_restore's major must be >= the
+        # server's. Bump this together with config.toml.
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends postgresql-client-17
+          pg_restore --version
+
+      - name: Download newest 15-min dump
+        # Same newest-key selection as the promote job (UTC fixed-width keys ->
+        # lexical sort is chronological). Fail loudly if the tier is empty.
+        run: |
+          newest="$(aws s3 ls "s3://$S3_BUCKET/pg/15min/" --endpoint-url "$S3_ENDPOINT" \
+            | awk '{print $4}' \
+            | { grep -E '^db-[0-9]{8}T[0-9]{6}Z\.dump$' || true; } \
+            | sort | tail -1)"
+          if [ -z "$newest" ]; then
+            echo "FAIL: no db-*.dump in s3://$S3_BUCKET/pg/15min/ -- nothing to verify. The 15-min workflow is broken; see the runbook." >&2
+            exit 1
+          fi
+          echo "DUMP=$newest" >> "$GITHUB_ENV"
+          aws s3 cp "s3://$S3_BUCKET/pg/15min/$newest" "$newest" \
+            --endpoint-url "$S3_ENDPOINT" --only-show-errors
+          ls -lh "$newest"
+
+      - name: Start scratch postgres:17 container
+        run: |
+          docker run -d --name pgv \
+            -e POSTGRES_PASSWORD=postgres \
+            -p 5433:5432 \
+            postgres:17-alpine
+
+      - name: Wait for postgres readiness
+        # Up to 30s of pg_isready polling; the alpine image usually accepts
+        # connections in a couple of seconds on a warm runner.
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5433 -U postgres; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "FAIL: scratch postgres did not become ready in 30s" >&2
+          docker logs pgv || true
+          exit 1
+
+      - name: Restore the dump
+        # --exit-on-error: any restore error fails the drill immediately, which
+        # is the whole point -- a dump that only "mostly" restores is not a
+        # backup we can trust. --no-owner/--no-privileges mirrors how a real
+        # recovery into a fresh project would replay it.
+        #
+        # Drop the pre-existing public schema first: the dump was taken with
+        # --schema=public, so it carries its own CREATE SCHEMA public, and
+        # restoring over the default one fails under --exit-on-error.
+        run: |
+          psql postgres://postgres:postgres@127.0.0.1:5433/postgres \
+            -c "drop schema public cascade;"
+          pg_restore --no-owner --no-privileges --exit-on-error \
+            -d postgres://postgres:postgres@127.0.0.1:5433/postgres \
+            "$DUMP"
+
+      - name: Sanity-check the restored schema
+        # A dump can restore cleanly yet be empty/truncated. Assert the public
+        # schema actually has a plausible number of tables (>= 10 -- the app's
+        # public schema has well over that; the threshold just catches a
+        # near-empty dump). Fail loudly with the observed count otherwise.
+        run: |
+          count="$(psql postgres://postgres:postgres@127.0.0.1:5433/postgres \
+            -tAc "select count(*) from information_schema.tables where table_schema='public'")"
+          echo "public tables restored: $count"
+          if [ "$count" -lt 10 ]; then
+            echo "FAIL: only $count tables in public after restore (expected >= 10) -- the dump looks empty or truncated. See the runbook." >&2
+            exit 1
+          fi
+          echo "verify-restore PASS: dump restores and public schema looks intact"
+
+      - name: Tear down scratch container
+        if: always()
+        run: docker rm -f pgv || true
