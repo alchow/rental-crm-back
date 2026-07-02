@@ -4,7 +4,9 @@
 // Covers:
 //   (a) agent POST agent_event proposal_created → 201, author_type='agent',
 //       entry_type persisted, chain event payload confirms author_type='agent'.
-//   (b) agent kind='communication' → 403 agent_entry_type_forbidden.
+//   (b) agent kind='communication' is provenance-gated: bare/non-grant refs
+//       → 403 agent_entry_type_forbidden; grant:-ref or approved_by+ref → 201
+//       with provenance persisted (comms build M0).
 //   (c) agent correction (corrects_id) → 403 agent_forbidden.
 //   (d) agent note without approvals → 400; agent note with approved_by+ref → 201.
 //   (e) agent note with approved_by=agent's own id → 400 (non-agent member rule).
@@ -248,9 +250,11 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
-  // (b) agent kind='communication' → 403 agent_entry_type_forbidden
+  // (b) agent kind='communication': provenance-gated (comms build M0).
+  //     Without approval_ref → 403; with a non-grant ref and no approved_by
+  //     → 403; with grant:-ref or approved_by+ref → 201, provenance persisted.
   // =========================================================================
-  await check('(b) agent communication → 403 agent_entry_type_forbidden', async () => {
+  await check('(b) agent communication without provenance → 403 agent_entry_type_forbidden', async () => {
     const r = await agentPost({
       kind: 'communication',
       channel: 'phone',
@@ -262,8 +266,8 @@ async function main(): Promise<void> {
     if (errCode(r) !== 'agent_entry_type_forbidden') throw new Error(`code: ${errCode(r)}`);
   });
 
-  // Also test that default kind='communication' is blocked.
-  await check('(b) agent default kind communication → 403', async () => {
+  // Default kind='communication' takes the same provenance gate.
+  await check('(b) agent default kind communication without provenance → 403', async () => {
     const r = await agentPost({
       channel: 'phone',
       direction: 'outbound',
@@ -272,6 +276,54 @@ async function main(): Promise<void> {
     });
     assertStatus(r, 403, 'agent default communication');
     if (errCode(r) !== 'agent_entry_type_forbidden') throw new Error(`code: ${errCode(r)}`);
+  });
+
+  await check('(b) agent communication with non-grant ref, no approved_by → 403', async () => {
+    const r = await agentPost({
+      kind: 'communication',
+      channel: 'sms',
+      direction: 'outbound',
+      party_type: 'tenant',
+      occurred_at: now(),
+      approval_ref: 'proposal:no-human-approved',
+      external_ref: `SM-${rnd()}`,
+    });
+    assertStatus(r, 403, 'agent communication non-grant ref');
+    if (errCode(r) !== 'agent_entry_type_forbidden') throw new Error(`code: ${errCode(r)}`);
+  });
+
+  await check('(b) agent communication under a grant ref → 201, approved_by null (honest)', async () => {
+    const externalRef = `SM-${rnd()}`;
+    const r = await agentPost({
+      kind: 'communication',
+      channel: 'sms',
+      direction: 'outbound',
+      party_type: 'tenant',
+      occurred_at: now(),
+      approval_ref: 'grant:policy-1',
+      external_ref: externalRef,
+    });
+    const row = assertStatus(r, 201, 'agent grant communication') as Record<string, unknown>;
+    if (row.author_type !== 'agent') throw new Error(`author_type: ${row.author_type}`);
+    if (row.approval_ref !== 'grant:policy-1') throw new Error(`approval_ref: ${row.approval_ref}`);
+    if (row.approved_by !== null) throw new Error(`approved_by must stay null under a grant: ${row.approved_by}`);
+    if (row.external_ref !== externalRef) throw new Error(`external_ref: ${row.external_ref}`);
+  });
+
+  await check('(b) agent communication proposal-approved → 201, approved_by persisted', async () => {
+    const r = await agentPost({
+      kind: 'communication',
+      channel: 'sms',
+      direction: 'outbound',
+      party_type: 'tenant',
+      occurred_at: now(),
+      approval_ref: 'proposal:42',
+      approved_by: landlord.userId,
+      external_ref: `SM-${rnd()}`,
+    });
+    const row = assertStatus(r, 201, 'agent approved communication') as Record<string, unknown>;
+    if (row.approval_ref !== 'proposal:42') throw new Error(`approval_ref: ${row.approval_ref}`);
+    if (row.approved_by !== landlord.userId) throw new Error(`approved_by: ${row.approved_by}`);
   });
 
   // =========================================================================

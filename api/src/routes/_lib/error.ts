@@ -87,12 +87,16 @@ export type ErrorCode =
   | 'invalid_phone'
   // agent-principal firewall codes (Workstream D)
   | 'agent_forbidden'           // agent attempted a forbidden operation (correction/retraction)
-  | 'agent_entry_type_forbidden' // agent attempted to append a communication directly
-  | 'agent_only';               // landlord attempted an agent-only field or kind
+  | 'agent_entry_type_forbidden' // agent attempted a communication append without provenance
+  | 'agent_only'                // landlord attempted an agent-only field or kind
+  // contract-first stub: the route is defined (and its schemas are final)
+  // but the handler has not shipped yet. Clients should treat this as
+  // "come back after the next deploy", never as a permanent failure.
+  | 'not_implemented';
 
 export class ApiError extends Error {
   constructor(
-    public readonly status: 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500 | 502 | 503,
+    public readonly status: 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500 | 501 | 502 | 503,
     public readonly code: ErrorCode,
     message: string,
     public readonly details?: unknown,

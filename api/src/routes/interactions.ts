@@ -113,6 +113,11 @@ export const Interaction = z
     area_id: z.string().uuid().nullable(),
     work_order_id: z.string().uuid().nullable(),
     vendor_id: z.string().uuid().nullable(),
+    /** Comms thread this journal row belongs to (server-set by the comms
+     *  write paths; never client-supplied). Declared contract-first: the
+     *  column lands with the comms ledger migrations, so rows read null /
+     *  absent until then. */
+    thread_id: z.string().uuid().nullable().optional(),
     /** The prior interaction / journal entry this entry references — e.g. a
      *  step_executed agent_event anchored to the proposal it acts on. Null
      *  when unset. */
@@ -169,6 +174,11 @@ export const CreateInteractionBody = z
     approved_by: z.string().uuid().optional(),
     /** Opaque agent-side approval/proposal reference. */
     approval_ref: z.string().min(1).max(200).optional(),
+    /** Agent principal, kind='communication' only: verifiable provider/
+     *  agent-side message id for the sent message. The comms ledger's DB
+     *  backstop requires it on agent-authored communications, so the agent
+     *  cannot fabricate an unverifiable contact. */
+    external_ref: z.string().min(1).max(200).optional(),
     /** Optional same-account reference to a prior interaction / journal entry
      *  this entry follows from. Primarily used by step_executed agent_events to
      *  anchor to the entry they act on (and satisfies the firewall's
@@ -191,6 +201,16 @@ export const CreateInteractionBody = z
     // entry_type is stamped from the original).
     if (b.corrects_id !== undefined && b.entry_type !== undefined) {
       issue('entry_type', 'entry_type is inherited from the corrected entry and cannot be supplied on a correction');
+    }
+
+    // external_ref attests a real outbound send: it is valid only on a fresh
+    // communication (a correction's external_ref stays with the original row
+    // it attests to; notes and agent_events never carry one).
+    if (
+      b.external_ref !== undefined &&
+      (b.corrects_id !== undefined || (b.kind ?? 'communication') !== 'communication')
+    ) {
+      issue('external_ref', "external_ref is only valid on a new kind='communication' entry");
     }
 
     if (b.corrects_id !== undefined) {
@@ -657,10 +677,13 @@ interactionsApp.openapi(create, async (c) => {
       account_id: accountId,
       actor,
       author_type: authorType,
-      approved_by: null,
-      approval_ref: null,
+      // Agent communications carry their authorization provenance (the
+      // firewall has already required approval_ref + approved_by-or-grant);
+      // landlord communications never carry approval fields.
+      approved_by: principal.type === 'agent' ? (body.approved_by ?? null) : null,
+      approval_ref: principal.type === 'agent' ? (body.approval_ref ?? null) : null,
       entry_type: null,
-      external_ref: null,
+      external_ref: principal.type === 'agent' ? (body.external_ref ?? null) : null,
       kind: 'communication',
       party_type: body.party_type,
       party_id: body.party_id ?? null,
