@@ -51,6 +51,10 @@ Paid upgrade paths, if a hard guarantee is ever required:
    ```sql
    create role backup_reader login password '<strong-random>';
    grant pg_read_all_data to backup_reader;
+   -- pg_dump runs with row_security=off and aborts on RLS-enabled tables
+   -- ("query would be affected by row-level security policy") unless the role
+   -- bypasses RLS. pg_read_all_data grants SELECT but NOT RLS bypass, so:
+   alter role backup_reader bypassrls;
    ```
    Then verify it can read `auth.users` / `auth.identities`:
    ```sql

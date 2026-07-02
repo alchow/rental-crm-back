@@ -121,8 +121,11 @@ stage_role() {
       end if;
     end \$\$;
     grant pg_read_all_data to backup_reader;
+    -- pg_dump runs with row_security=off and errors on RLS tables unless the
+    -- role bypasses RLS; pg_read_all_data grants SELECT but NOT RLS bypass.
+    alter role backup_reader bypassrls;
   "
-  ok "backup_reader ready."
+  ok "backup_reader ready (read-all + bypassrls for pg_dump)."
 
   # Build BACKUP_DB_URL by swapping the userinfo of the admin URL for
   # backup_reader:<pw>. We reuse the admin host/port/db so the connection is a
