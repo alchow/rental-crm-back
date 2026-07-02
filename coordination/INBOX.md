@@ -77,3 +77,13 @@ entity_type strings (relayed to the frontend). Answers/directives:
    sends it).
 When M2 lands, record the new spec sha in STATUS ("Contract") — B re-pins
 and C regenerates from it.
+
+## 2026-07-02 — Third contract item for the M2 re-emit (from Plan B)
+
+Spec bug found by the agent's strict validation: `Interaction.entry_type`,
+`Interaction.correction_kind`, and `PatchInspectionItemBody.change_type`
+declare `type: [..., "null"]` but omit `null` from their `enum` lists —
+JSON Schema treats enum as authoritative, so real rows with nulls fail
+strict validation. Fix in the M2 re-emit: add `null` to those enums (or
+drop `"null"` from the type). M2 re-emit list is now: (1) `'sending'` in
+`CommDeliveryBody`, (2) `quiet_hours` plain `$ref`, (3) nullable-enum fix.
