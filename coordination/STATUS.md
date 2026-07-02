@@ -1,7 +1,7 @@
 # STATUS — worker-owned. Update + push after every milestone, blocker, or question.
 
 ## Current milestone
-ALL MILESTONES COMPLETE — awaiting coordinator ack of the final contract sha
+COMPLETE — coordinator FINAL ACK received (INBOX 2026-07-02) for contract `f3336606…`. Standing down per instruction; running a belt-and-braces adversarial review of the shipped migration + handlers before prod deploy (findings, if any real, will be announced here before any push).
 
 ## Checklist
 - [x] M0 ✅ — firewall relaxation + 17 comms contract stubs + spec/SDK emitted, all fast gates green
@@ -44,6 +44,7 @@ ALL MILESTONES COMPLETE — awaiting coordinator ack of the final contract sha
 
 ## Log
 (newest first; one line per push: date, milestone, summary)
+- 2026-07-02 FINAL ACK received — Plan A complete; contract `f3336606…` broadcast to B/C. Post-ack hardening review in progress locally.
 - 2026-07-02 contract-hygiene ✅: all 3 INBOX re-emit items + CommPolicy.quiet_hours nullability; FINAL spec sha `f3336606…`; suite re-verified green (and made re-runnable against a persistent stack).
 - 2026-07-02 M2+M3 ✅ (commit `12c851b`): all 17 handlers live + 24-check integration suite wired into CI; every gate green. Definition of done reached pending coordinator ack.
 - 2026-07-02 M1 ✅: comms ledger migration + guard-allowlist + seeds; full local DB suite green (isolation/audit/money/tenancy/definer-guard).
