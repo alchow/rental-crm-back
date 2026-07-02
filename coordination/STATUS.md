@@ -3,6 +3,13 @@
 ## Current milestone
 COMPLETE + HARDENED. Post-ACK adversarial review (independent DB + API passes, every finding re-verified against source by me) found real issues — all fixed in migration `20260701000003_comms_ledger_hardening.sql` + handler patches. **One is a CONTRACT change and needs your re-broadcast** (see ⚠️ CONTRACT below): the FINAL sha `f3336606…` you ACKed carried a spec CORRUPTION my own hygiene pass introduced. New sha `097d9dc8…`. Details in "Hardening review" section.
 
+## 🛑 PROD DEPLOY — HOLDING AT STEP 1 (per your review-gated sequence)
+Your INBOX deploy sequence step 1: "If [the review] found anything real, STOP; fixes go through the normal announce-then-push protocol and the human re-confirms after." **It DID find real issues** (F1 evidence-honesty + F2–F5 cross-account + the contract-corruption in the broadcast sha). All fixed and announced here + pushed (commit on branch). **I have NOT touched prod.** Awaiting: (a) the human's RE-CONFIRMATION now that the review outcome + fixes are known, and (b) your RE-BROADCAST of the corrected sha `097d9dc8…` to B/C.
+
+Two notes for when the go is given:
+- There are now **TWO** pending migrations, not one: `20260701000002` (ledger) **and** `20260701000003` (hardening). `pnpm --filter ./db migrate:up` applies both, in order. Both are safe ahead of the code deploy — every comms table is brand-new (no deployed code references them); the only shared touch is the nullable `interactions.thread_id` + the `interactions_with_chain` view rebuild (backward-compatible) and the agent-capacity trigger (only constrains agent-role writers).
+- Per [[prod-reads-policy]], direct prod-DB connections with prod creds are classifier-denied in my environment, so I almost certainly **cannot run `migrate:up` against prod myself** — expect to hand step 2 to the human (one command). I'll confirm availability when you green-light, and record the outcome per step 3.
+
 ## ⚠️ CONTRACT — action needed (re-broadcast)
 My `injectSchemaHygiene` pass (the M2 fix for the nullable-enum items) had a reference-aliasing bug: zod-openapi shares ONE enum-array object across every field that reuses a `z.enum`, and my in-place `.push(null)` on the one nullable use (`CommThreadMessage.delivery_status`) leaked `null` into the NON-nullable `CommOutbox.status`, `CommRelayLeg.status`, and the outbox-scan `status` query param. So in the broadcast `f3336606…`, `CommOutbox.status` wrongly emitted `enum:[…,null]` and the SDK typed it `… | null` — a value the API never sends. **B/C consuming `f3336606…` got `CommOutbox.status` as nullable; it is not.** Fixed (replace-don't-mutate + a 9-case unit spec `api/test/schema-hygiene.spec.ts` locking the shared-array case) and re-emitted. **New FINAL sha `097d9dc8a2a79a5fdeaf34c1bcd63a33fc7ab3a94c3c1dba2eef5397d2320797`** — please re-broadcast to B and C. Delta is strictly a NARROWING (status fields lose a spurious `| null`); no field/endpoint added or removed. Doc-wide sweep confirms zero remaining nullable-enum mismatches.
 
@@ -72,6 +79,7 @@ Considered and NOT changed (with reasons):
 
 ## Log
 (newest first; one line per push: date, milestone, summary)
+- 2026-07-02 DEPLOY HOLD: review found real issues → holding at deploy-sequence step 1; prod untouched; awaiting human re-confirm + your re-broadcast of `097d9dc8…`. TWO migrations now pending (`…02` + `…03`).
 - 2026-07-02 HARDENING ✅: adversarial review → migration `…03` (F1 evidence-honesty + F2/F5 cross-account + F3/F4 opt-out leak) + 7 API fixes incl. the `injectSchemaHygiene` corruption that broke `CommOutbox.status` in the broadcast sha. New FINAL sha `097d9dc8…` — **needs re-broadcast**. All gates green (comms 34 checks + full DB suite + unit 67 + drift×2). Finding 1 deferred to coordinator (Q4).
 - 2026-07-02 FINAL ACK received — Plan A complete; contract `f3336606…` broadcast to B/C. Post-ack hardening review in progress locally.
 - 2026-07-02 contract-hygiene ✅: all 3 INBOX re-emit items + CommPolicy.quiet_hours nullability; FINAL spec sha `f3336606…`; suite re-verified green (and made re-runnable against a persistent stack).
