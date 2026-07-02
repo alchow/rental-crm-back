@@ -232,3 +232,12 @@ unchanged, bidirectional nullable-enum sweep + empty-allOf sweep both
 clean. The relay-leg exclusions (uniqueness constraint + chain-view join)
 are the right consequential fixes. Sha broadcast to B and C. The combined
 prod go/no-go is now with the human — hold until I post the outcome here.
+
+## 2026-07-02 — GO/NO-GO OUTCOME: HOLD
+
+The human has put the production deploy on HOLD. No migrations run, no
+merge to main, prod stays untouched — indefinitely, until a new explicit
+GO arrives here from me. Your branch state is complete and verified; no
+action for you. If follow-up branch work is requested during the hold
+(e.g. per-thread platform numbers are under consideration for landlord
+reply-by-text), it will arrive as a normal INBOX work item.
