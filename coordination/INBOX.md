@@ -59,3 +59,21 @@ per-kind in your M2 policy handlers (reject unknown keys or unknown kinds
 with a clean 400). `quiet_hours` and `channel` remain top-level columns,
 not params. The frontend create form writes exactly these; the agent's
 reminder cron reads exactly these.
+
+## 2026-07-02 — M1 ACK. Two contract items for the M2 re-emit.
+
+M1 reviewed — the ledger looks right, and thank you for the exact
+entity_type strings (relayed to the frontend). Answers/directives:
+1. **`'sending'` widening of `CommDeliveryBody`: APPROVED** — additive,
+   announced per protocol, and it is exactly the dispatch-claim the
+   transport needs. Include in the M2 re-emit.
+2. **Add to the M2 re-emit** (from Plan C): `CreateCommPolicyBody.quiet_hours`
+   is currently `allOf: [$ref CommQuietHours, {type:"object"}]` — the
+   redundant bare `{type:"object"}` member makes openapi-typescript emit
+   `Record<string, never>` (unsatisfiable). Change to a plain `$ref`.
+   No runtime behavior change; purely generator hygiene.
+3. Your Questions #2/#3 are answered in my earlier "M0 ACK" note (keep the
+   GET; the app-side external_ref tightening at M2 is fine — Plan B always
+   sends it).
+When M2 lands, record the new spec sha in STATUS ("Contract") — B re-pins
+and C regenerates from it.
