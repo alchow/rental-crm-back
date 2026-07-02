@@ -49,6 +49,9 @@ declare
   v_rs_a uuid; v_rs_b uuid;
   v_charge_a uuid; v_charge_b uuid;
   v_pay_a uuid; v_pay_b uuid;
+  -- Comms ledger (20260701000002)
+  v_thread_a uuid; v_thread_b uuid;
+  v_part_a uuid; v_part_b uuid;
 begin
   -- Identity
   insert into auth.users (id, email) values
@@ -242,6 +245,52 @@ begin
   ) values
     (v_acc_a, v_pay_a, v_charge_a, 70000),
     (v_acc_b, v_pay_b, v_charge_b, 50000);
+
+  -- Comms ledger (20260701000002): one row of every account-scoped comms
+  -- table per account. (comm_opt_outs / inbound_raw are service-tier — no
+  -- account_id — and are covered by their own deny-all assertions instead.)
+  insert into public.platform_numbers (account_id, number, provider) values
+    (v_acc_a, '+15550000001', 'twilio'),
+    (v_acc_b, '+15550000002', 'twilio');
+
+  insert into public.channel_identities (
+    account_id, party_type, party_id, channel, address
+  ) values
+    (v_acc_a, 'tenant', v_tenant_a, 'sms', '+15550001001'),
+    (v_acc_b, 'tenant', v_tenant_b, 'sms', '+15550002001');
+
+  v_thread_a := gen_random_uuid(); v_thread_b := gen_random_uuid();
+  insert into public.comm_threads (id, account_id, kind, tenancy_id) values
+    (v_thread_a, v_acc_a, 'bridged_tenant', v_tenancy_a),
+    (v_thread_b, v_acc_b, 'bridged_tenant', v_tenancy_b);
+
+  v_part_a := gen_random_uuid(); v_part_b := gen_random_uuid();
+  insert into public.comm_thread_participants (
+    id, account_id, thread_id, party_type, party_id
+  ) values
+    (v_part_a, v_acc_a, v_thread_a, 'tenant', v_tenant_a),
+    (v_part_b, v_acc_b, v_thread_b, 'tenant', v_tenant_b);
+
+  insert into public.thread_channel_bindings (
+    account_id, thread_id, participant_id, platform_number, participant_address
+  ) values
+    (v_acc_a, v_thread_a, v_part_a, '+15550000001', '+15550001001'),
+    (v_acc_b, v_thread_b, v_part_b, '+15550000002', '+15550002001');
+
+  insert into public.comm_outbox (
+    account_id, channel, to_address, thread_id, participant_id, body,
+    approval_ref, approved_by, author_type
+  ) values
+    (v_acc_a, 'sms', '+15550001001', v_thread_a, v_part_a, 'Seed reminder A',
+       'self:' || v_user_a::text, v_user_a, 'landlord'),
+    (v_acc_b, 'sms', '+15550002001', v_thread_b, v_part_b, 'Seed reminder B',
+       'self:' || v_user_b::text, v_user_b, 'landlord');
+
+  insert into public.comm_policies (
+    account_id, policy_kind, channel, params, approved_by
+  ) values
+    (v_acc_a, 'rent_reminder', 'sms', '{"days_before": 3}'::jsonb, v_user_a),
+    (v_acc_b, 'rent_reminder', 'sms', '{"days_before": 3}'::jsonb, v_user_b);
 end $$;
 
 -- Phase 3 (ADR-0002): establish a chain watermark per account so the

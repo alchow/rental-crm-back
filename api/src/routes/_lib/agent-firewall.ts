@@ -5,9 +5,13 @@
 // them):
 //   - The agent cannot correct or retract any journal entry (only landlords
 //     supersede history).
-//   - The agent cannot append kind='communication' directly: a direct append
-//     could fabricate a contact that never happened. Communications enter the
-//     journal only through a verified provider-backed path, never agent free-text.
+//   - Agent communications require authorization provenance: approval_ref plus
+//     either approved_by (a human approved this exact message —
+//     approval_ref='proposal:<id>') or a 'grant:'-prefixed approval_ref (sent
+//     under a standing landlord-approved policy; no human read this specific
+//     message). Free-text without provenance stays forbidden: a direct append
+//     could fabricate a contact that never happened. (Rationale:
+//     landlord-agent/docs/agent-sends-core-records.md in the sibling repo.)
 //   - Agent notes require explicit landlord approval (approved_by + approval_ref).
 //   - agent_events carry structured metadata and are vocabulary-constrained.
 //   - Landlord users cannot supply agent-only fields (entry_type, approval_ref,
@@ -25,6 +29,7 @@ export interface AgentFirewallBody {
   entry_type?: string;
   approved_by?: string;
   approval_ref?: string;
+  external_ref?: string;
   body?: string;
   // entity refs for step_executed validation
   work_order_id?: string;
@@ -52,15 +57,41 @@ export function assertAgentJournalWrite(
       );
     }
 
-    // Communications enter the journal only through a verified provider-backed
-    // path, never as agent free-text. A direct append would let the agent claim
-    // a contact that never happened.
+    // Communications enter the journal only with authorization provenance,
+    // never as bare agent free-text (a bare append would let the agent claim
+    // a contact that never happened). Two provenance shapes are accepted,
+    // mirroring the cross-repo convention:
+    //   approval_ref='proposal:<id>' + approved_by  -> a human approved this
+    //     exact message.
+    //   approval_ref='grant:<id>'   (no approved_by) -> sent under a standing
+    //     landlord-approved policy; the journal stays honest that no human
+    //     read this specific message.
     if (kind === 'communication') {
-      throw new ApiError(
-        403,
-        'agent_entry_type_forbidden',
-        'the agent may not append communications directly',
-      );
+      if (body.approval_ref === undefined) {
+        throw new ApiError(
+          403,
+          'agent_entry_type_forbidden',
+          'the agent may not append communications without authorization provenance (approval_ref)',
+        );
+      }
+      if (body.approved_by === undefined && !body.approval_ref.startsWith('grant:')) {
+        throw new ApiError(
+          403,
+          'agent_entry_type_forbidden',
+          "agent communications require approved_by (proposal-approved) or a 'grant:'-prefixed approval_ref (policy-authorized)",
+        );
+      }
+      // The DB capacity trigger requires a verifiable message id on every
+      // agent-authored communication; check here too so the API answers a
+      // clean 400 instead of surfacing the trigger as a database error.
+      if (body.external_ref === undefined) {
+        throw new ApiError(
+          400,
+          'invalid_request',
+          'agent communications require external_ref (verifiable provider/agent-side message id)',
+          { fieldErrors: { external_ref: ['external_ref is required for agent-authored communications'] } },
+        );
+      }
     }
 
     if (kind === 'note') {
@@ -152,6 +183,16 @@ export function assertAgentJournalWrite(
             ...(body.approval_ref !== undefined ? { approval_ref: ['reserved for agent-authored entries'] } : {}),
           },
         },
+      );
+    }
+    // external_ref attests a provider-confirmed send; a landlord logging a
+    // contact by hand has no such reference and must not fabricate one.
+    if (body.external_ref !== undefined) {
+      throw new ApiError(
+        400,
+        'invalid_request',
+        'external_ref is reserved for agent-authored communications',
+        { fieldErrors: { external_ref: ['reserved for agent-authored communications'] } },
       );
     }
   }

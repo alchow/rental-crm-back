@@ -21,6 +21,7 @@ import { intakeTokensApp } from './routes/intake-tokens';
 import { agentGrantsApp } from './routes/agent-grants';
 import { maintenanceRequestsApp } from './routes/maintenance-requests';
 import { interactionsApp } from './routes/interactions';
+import { commsApp } from './routes/comms';
 import { ownerPhoneApp } from './routes/owner-phone';
 import { intakeApp } from './admin/intake';
 import { agentTokensApp } from './admin/agent-tokens';
@@ -54,6 +55,7 @@ import { importCapability, recoverOrphanedImportSessions } from './admin/import-
 import {
   OPENAPI_DOC_CONFIG,
   injectIdempotencyContract,
+  injectSchemaHygiene,
   injectServiceUnavailable,
 } from './openapi/idempotency-contract';
 
@@ -219,6 +221,10 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', agentGrantsApp);
   app.route('/v1', maintenanceRequestsApp);
   app.route('/v1', interactionsApp);
+  // Communications ledger (threads, outbox, opt-outs, policies). Core owns
+  // the STATE only: the provider-calling transport lives in the agent repo
+  // and drives these endpoints; no provider SDK or webhook exists here.
+  app.route('/v1', commsApp);
   app.route('/v1', ownerPhoneApp);
   app.route('/v1', attachmentsApp);
   app.route('/v1', documentsApp);
@@ -254,8 +260,10 @@ export function buildApp(): OpenAPIHono {
   let openApiDocument: ReturnType<typeof app.getOpenAPI31Document> | undefined;
   app.get('/openapi.json', (c) => {
     if (!openApiDocument) {
-      openApiDocument = injectServiceUnavailable(
-        injectIdempotencyContract(app.getOpenAPI31Document(OPENAPI_DOC_CONFIG)),
+      openApiDocument = injectSchemaHygiene(
+        injectServiceUnavailable(
+          injectIdempotencyContract(app.getOpenAPI31Document(OPENAPI_DOC_CONFIG)),
+        ),
       );
     }
     return c.json(openApiDocument);

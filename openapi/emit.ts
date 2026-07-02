@@ -20,13 +20,12 @@ process.env.SUPABASE_SERVICE_ROLE_KEY =
 const { buildApp } = await import('../api/src/app');
 // The doc config + the Idempotency-Key injection live in api/src so the runtime
 // `/openapi.json` handler (app.ts) and this emitter produce the SAME document.
-const { OPENAPI_DOC_CONFIG, injectIdempotencyContract, injectServiceUnavailable } = await import(
-  '../api/src/openapi/idempotency-contract'
-);
+const { OPENAPI_DOC_CONFIG, injectIdempotencyContract, injectSchemaHygiene, injectServiceUnavailable } =
+  await import('../api/src/openapi/idempotency-contract');
 
 const app = buildApp();
-const doc = injectServiceUnavailable(
-  injectIdempotencyContract(app.getOpenAPI31Document(OPENAPI_DOC_CONFIG)),
+const doc = injectSchemaHygiene(
+  injectServiceUnavailable(injectIdempotencyContract(app.getOpenAPI31Document(OPENAPI_DOC_CONFIG))),
 );
 
 const outPath = resolve(import.meta.dirname, 'openapi.json');

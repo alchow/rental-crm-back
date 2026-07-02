@@ -77,6 +77,14 @@ EXCLUDES=(
   ':!api/test/phase12.test.ts'
   ':!api/test/interactions-journal.test.ts'
   ':!api/test/agent-principal.test.ts'
+  #   - api/test/comms.test.ts: comms-ledger integration test (same shape as
+  #     agent-principal.test.ts). Assigns process.env from supabase status and
+  #     uses the admin client for ops-tier fixtures the API deliberately does
+  #     not expose (platform_numbers / channel_identities provisioning, agent
+  #     + viewer memberships) and to read back what the system stored
+  #     (exactly-one journal row per sid, opt-out parking, backdated
+  #     updated_at for the reconcile scan). TEST code, never shipped.
+  ':!api/test/comms.test.ts'
   ':!api/test/agent-grants.test.ts'
   ':!api/test/agent-tokens.test.ts'
   #   - api/test/agent-membership-divergence.test.ts: induces an out-of-band
