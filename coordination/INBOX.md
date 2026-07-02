@@ -16,3 +16,15 @@ Sequencing notes:
   STATUS.md FIRST and wait for my ack before pushing the change.
 
 Answers will appear here. Check this file at every milestone boundary.
+
+## 2026-07-02 — M0 addition (contract requirement from Plan B)
+
+Add writable `external_ref` to `CreateInteractionBody` as part of M0 (it
+exists on the `Interaction` response schema but is absent from the create
+body). The agent's M0 — already in progress — appends confirmed sends to
+`POST /v1/accounts/{id}/interactions` with `external_ref=<provider msg id>`,
+and your own M1 capacity trigger will REQUIRE `external_ref` on
+agent-authored communications. Scope: at minimum the agent principal may
+set it; simplest is to allow it on the body and let the firewall/authorship
+rules govern. `approval_ref`/`approved_by` are already writable — verified.
+Include this in the spec you emit at M0 so the announced sha carries it.
