@@ -1,0 +1,113 @@
+# Off-platform DB backup, 15-minute tier (RPO <= ~15 min).
+# pg_dump of the public schema -> S3-compatible bucket (Cloudflare R2).
+# Retention: 48 hours of 15-minute snapshots; db-backup-daily.yml promotes
+# one snapshot per day to a 30-day tier and syncs Storage files.
+# Restore procedure + one-time setup: docs/backup-recovery-runbook.md.
+name: db-backup-15min
+
+on:
+  schedule:
+    # GitHub cron can drift several minutes under load, so the worst-case
+    # recovery gap is occasionally ~20-30 min rather than a hard 15 (see the
+    # runbook's RPO table for the paid upgrade paths if that ever matters).
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never overlap two dumps (a slow run + the next tick would race the prune).
+concurrency:
+  group: db-backup-15min
+  cancel-in-progress: false
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+      S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+      # aws-cli >= 2.23 sends CRC-based integrity checksums by default, which
+      # some S3-compatible endpoints (R2 included, historically) reject.
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+    steps:
+      - name: Install postgresql-client-17 (PGDG)
+        # ubuntu-latest ships client 16; the server is PG 17 (db/supabase/
+        # config.toml major_version) and pg_dump's major must be >= the
+        # server's. Bump this together with config.toml.
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends postgresql-client-17
+          pg_dump --version
+
+      - name: Dump public schema
+        # public only: the supabase-managed auth/storage/realtime schemas are
+        # partly unreadable to non-superusers and conflict on restore into a
+        # fresh project; public DDL is reproducible from db/supabase/migrations.
+        # BACKUP_DB_URL must be a direct (5432) or session-pooler connection --
+        # pg_dump fails on the transaction pooler (6543). See the runbook.
+        env:
+          BACKUP_DB_URL: ${{ secrets.BACKUP_DB_URL }}
+        run: |
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          echo "STAMP=$stamp" >> "$GITHUB_ENV"
+          pg_dump "$BACKUP_DB_URL" \
+            --format=custom --compress=zstd:6 \
+            --no-owner --no-privileges \
+            --schema=public \
+            --file="db-$stamp.dump"
+          ls -lh "db-$stamp.dump"
+
+      - name: Dump auth identities (best-effort)
+        # Login identities live in the supabase-managed auth schema. The
+        # backup role may lack read there; if so, warn but keep the run green
+        # -- the gap and its implications are documented in the runbook.
+        env:
+          BACKUP_DB_URL: ${{ secrets.BACKUP_DB_URL }}
+        run: |
+          if pg_dump "$BACKUP_DB_URL" \
+               --format=custom --compress=zstd:6 \
+               --data-only --no-owner --no-privileges \
+               --table='auth.users' --table='auth.identities' \
+               --file="auth-$STAMP.dump"; then
+            ls -lh "auth-$STAMP.dump"
+          else
+            rm -f "auth-$STAMP.dump"
+            echo "::warning::auth.users/auth.identities dump failed (backup role cannot read the auth schema); see runbook gotchas"
+          fi
+
+      - name: Upload to bucket
+        run: |
+          aws s3 cp "db-$STAMP.dump" "s3://$S3_BUCKET/pg/15min/db-$STAMP.dump" \
+            --endpoint-url "$S3_ENDPOINT" --only-show-errors
+          if [ -f "auth-$STAMP.dump" ]; then
+            aws s3 cp "auth-$STAMP.dump" "s3://$S3_BUCKET/pg/15min/auth-$STAMP.dump" \
+              --endpoint-url "$S3_ENDPOINT" --only-show-errors
+          fi
+
+      - name: Prune 15-min tier (keep 48 hours)
+        # Key timestamps are UTC and fixed-width, so plain string comparison
+        # against the cutoff is a correct time comparison.
+        run: |
+          cutoff="$(date -u -d '48 hours ago' +%Y%m%dT%H%M%SZ)"
+          aws s3 ls "s3://$S3_BUCKET/pg/15min/" --endpoint-url "$S3_ENDPOINT" \
+            | awk '{print $4}' \
+            | { grep -E '^(db|auth)-[0-9]{8}T[0-9]{6}Z\.dump$' || true; } \
+            | while read -r key; do
+                ts="${key#*-}"; ts="${ts%.dump}"
+                if [ "$ts" \< "$cutoff" ]; then
+                  aws s3 rm "s3://$S3_BUCKET/pg/15min/$key" \
+                    --endpoint-url "$S3_ENDPOINT" --only-show-errors
+                  echo "pruned $key"
+                fi
+              done
