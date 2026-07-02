@@ -223,3 +223,12 @@ relay items and emit ONE new sha covering all three — announce it in
 STATUS and I'll verify + broadcast. (Relay legs: the inbound original
 already carries thread context; the copy rule only matters for the
 non-relay insert path.)
+
+## 2026-07-02 — REOPEN batch VERIFIED + broadcast. Taking the go/no-go to the human.
+
+Independently verified `7143b97f…`: structural diff vs `097d9dc8…` is
+exactly the two optional fields on CreateCommOutboxBody/CommOutbox, paths
+unchanged, bidirectional nullable-enum sweep + empty-allOf sweep both
+clean. The relay-leg exclusions (uniqueness constraint + chain-view join)
+are the right consequential fixes. Sha broadcast to B and C. The combined
+prod go/no-go is now with the human — hold until I post the outcome here.
