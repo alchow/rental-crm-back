@@ -68,7 +68,7 @@ Paid upgrade paths, if a hard guarantee is ever required:
 
    | Secret | Value |
    |---|---|
-   | `BACKUP_DB_URL` | `backup_reader` connection — **direct port 5432** or the **session pooler** URL. **NEVER** the transaction pooler (port 6543): `pg_dump` fails there. **Never** reuse `SUPABASE_DB_URL` (that is the least-privilege import role per `.env.example`). |
+   | `BACKUP_DB_URL` | `backup_reader` connection — use the **Session pooler** URL (host `aws-0-<region>.pooler.supabase.com`, port **5432**, username tenant-qualified as `backup_reader.<project_ref>`). **NOT** the direct host `db.<ref>.supabase.co` — Supabase serves it IPv6-only and GitHub runners have no IPv6, so it fails with *"Network is unreachable"*. **NOT** the transaction pooler (port 6543): `pg_dump` fails there. **Never** reuse `SUPABASE_DB_URL` (the least-privilege import role per `.env.example`). |
    | `BACKUP_S3_ENDPOINT` | `https://<accountid>.r2.cloudflarestorage.com` |
    | `BACKUP_S3_BUCKET` | e.g. `rental-crm-backups` |
    | `BACKUP_S3_ACCESS_KEY_ID` | R2 token key id |
