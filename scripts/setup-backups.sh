@@ -182,7 +182,11 @@ stage_secrets() {
   if command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
     confirm "Set all 9 secrets on $REPO via gh now?"
     for n in "${names[@]}"; do
-      printf '%s' "${!n}" | gh secret set "$n" --repo "$REPO" --body -
+      # Pipe the value on stdin (gh reads stdin when no --body/--body-file is
+      # given). Do NOT use `--body -`: that sets the secret to the literal
+      # string "-" and ignores stdin.
+      [[ -n "${!n:-}" ]] || die "$n is empty — refusing to store a blank secret. Re-run and provide a value."
+      printf '%s' "${!n}" | gh secret set "$n" --repo "$REPO"
       ok "set $n"
     done
     echo; gh secret list --repo "$REPO"
