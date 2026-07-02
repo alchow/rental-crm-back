@@ -1,16 +1,25 @@
 # STATUS — worker-owned. Update + push after every milestone, blocker, or question.
 
-## ✅ LIVE DEPLOY VERIFIED — 2026-07-02T23:10:44Z (deploy DoD met)
+## Current state (2026-07-02, newest facts up top)
+- **Bridged comms is LIVE in prod but DORMANT** — coordinator ACCEPTED my live-deploy verification (deploy DoD met). All 17 `/comms/*` ops serve; contract == frozen `7143b97f…` (served minified as `7a4b764a…`). Activation waits on the enablement checklist (platform numbers, transport flags, Telnyx STOP check, `prune-inbound-raw` cron) — human/ops steps, not code.
+- **Perf/retention `…05` — APPROVED, not yet on prod.** Coordinator reviewed + approved (A/B/C/D all sound). Pending: human runs one `migrate:up` (index/janitor only, safe with deployed code, no contract change), then coordinator opens+merges the follow-up PR (I don't merge). `cron.schedule('prune-inbound-raw', …)` is on the human enablement checklist.
+- **NEW WORK ITEM GM-A (native group-MMS threads) — RECEIVED, NOT STARTED.** Human-approved fast-follow; contract-first (additive `comm_threads.mode`, group-set binding uniqueness, `cc[]` set-match capture, one-outbox group send, any-member STOP block). Independent of `…05`; same branch; coordinator merges the full GM batch via PR when verified. Queued behind explicit go-ahead — see "GM-A" below.
+- **Working tree clean**; nothing of mine uncommitted. (Two untracked pre-session files — `twilio_tables_backup_20260626.sql`, `.agents/` — are stray local cruft, deliberately NOT committed.)
+
+## ✅ LIVE DEPLOY VERIFIED — 2026-07-02T23:10:44Z (deploy DoD met — coordinator ACCEPTED)
 Ran the live check from my machine (public endpoint, no creds — my env allows this even though prod-DB creds are blocked). `GET https://rental-crm-api.onrender.com/openapi.json` → HTTP 200, 406,695 bytes. Render has deployed main (`32c24dc` / PR #49).
 - **All 17 `/comms/*` operations are LIVE** (13 path templates): outbox create/scan/get/complete/fail/delivery, inbound, opt-outs GET+POST, threads GET+POST + `{id}` + `{id}/messages`, policies GET+POST + revoke, reconcile.
 - **Contract is byte-identical to the committed spec** — semantic (order-insensitive) equality against `openapi/openapi.json` = **True**. Spot-checks: `CreateCommOutboxBody.tenancy_id` present (item-3 additive field deployed); `CommOutbox.status` enum has NO null (the corruption fix is live).
 
 **⚠️ sha nuance — READ before you curl-compare:** the live raw `sha256sum` is **`7a4b764a0f1d5cbd…`**, NOT `7143b97f…`. This is NOT a mismatch. `7143b97f` is the sha of the committed *pretty-printed* file (`JSON.stringify(doc, null, 2) + "\n"`); the runtime serves via Hono `c.json()`, which is *minified* (`JSON.stringify(doc)`, no indent/newline). I verified `sha256(JSON.stringify(committed_doc)) == 7a4b764a` == the live sha, and that the parsed contract is identical. So the served contract is exactly the frozen one — the two shas just reflect pretty-vs-minified formatting of the same document. (If you want a curl-able target, `7a4b764a0f1d5cbd3283510ebf6cbaef04efc6226608edd6a38e7a1c4739e5b6` is the live raw sha.)
 
-**Deploy DoD: MET.** Bridged comms is live in prod.
+**Deploy DoD: MET** (coordinator ACCEPTED the pretty-vs-minified analysis + recorded the raw live sha). Bridged comms is live in prod, **dormant pending the enablement checklist** (platform numbers, transport flags, Telnyx STOP check, prune cron).
 
-## 🔧 FOLLOW-UP: perf + retention migration `…05` (NOT yet on prod; contract-neutral)
-Post-deploy optimization from a scalability/performance review (user-requested). Migration `20260701000005_comms_perf_and_retention.sql` — **DB-only, no endpoint/schema change, no new sha, zero B/C impact.** Not applied to prod yet (a 4th `migrate:up` when you/the human are ready; expand-only, safe anytime).
+## GM-A — native group-MMS threads (RECEIVED 2026-07-02, NOT STARTED)
+Coordinator work item (human-approved fast-follow). Contract-first, additive-only, six parts: `comm_threads.mode 'bridged'|'group'` (default bridged) + `CreateCommThreadBody.mode`/`CommThread` response; group-set binding uniqueness (per-participant rows kept; the active `(platform_number, participant_address)` partial-unique stays bridged-only, group threads enforce per-number group-SET uniqueness in the create path); `capture_inbound` gains optional `cc text[]` with participant-set match; group outbound = ONE outbox row (no relay legs, `provider_sid`=group_message_id, `to_address` nullable); any-member STOP blocks ALL group sends (422 + park queued); emit spec + announce sha; tests (set-match capture incl. orphan+cross-account, group-set uniqueness, group send journal-once, any-member opt-out). Independent of the `…05` prod apply; coordinator merges the full GM batch (A+B+C) via PR when verified. **Not started this session** — awaiting a go-ahead to implement.
+
+## 🔧 FOLLOW-UP: perf + retention migration `…05` — APPROVED; pending human apply + coordinator PR
+Post-deploy optimization from a scalability/performance review (user-requested). Migration `20260701000005_comms_perf_and_retention.sql` — **DB-only, no endpoint/schema change, no new sha, zero B/C impact.** Coordinator APPROVED (A/B/C/D all confirmed sound). **Not applied to prod yet**: sequence is human runs one `migrate:up` (safe with deployed code), then coordinator opens+merges the follow-up PR (I do NOT merge).
 - **(A)** partial index on `comm_outbox (channel, to_address) WHERE status='queued'` — `record_opt_out`'s parking UPDATE filters those two columns with no `account_id` (compliance is global), so it was seq-scanning the whole outbox on every STOP; now a point lookup.
 - **(B)** reordered `comm_outbox_pending_idx` to `(account_id, status, created_at, id)` so the transport dispatch scan is index-ordered (keyset pagination stopped sorting every page); `not_before` is a cheap recheck, reconcile keeps its `(account_id, status='sending')` prefix.
 - **(C)** dropped 4 standalone `(account_id)` indexes (comm_outbox, platform_numbers, comm_threads, comm_policies) — each redundant with the table's `unique(account_id, id)`; trims write cost on the hot path.
@@ -29,7 +38,7 @@ The human ran `pnpm --filter ./db migrate:up` against prod (my env's classifier 
 **Over to you (coordinator) for the remaining steps** — per your sequence, YOU create + merge the PR to main (Render auto-deploys), verify `/comms/*` on the live `/openapi.json`, and broadcast the final sha `7143b97f…` to B/C. I will NOT merge or push to main myself. Nothing further from me unless pinged.
 
 ## Current milestone
-COMPLETE + HARDENED. Post-ACK adversarial review (independent DB + API passes, every finding re-verified against source by me) found real issues — all fixed in migration `20260701000003_comms_ledger_hardening.sql` + handler patches. **One is a CONTRACT change and needs your re-broadcast** (see ⚠️ CONTRACT below): the FINAL sha `f3336606…` you ACKed carried a spec CORRUPTION my own hygiene pass introduced. New sha `097d9dc8…`. Details in "Hardening review" section.
+See **"Current state"** at the top of this file for live status. In short: M0–M3 + hardening + relay/context + perf batch all SHIPPED and VERIFIED; bridged comms LIVE in prod (dormant pending enablement); `…05` approved & pending human apply; GM-A (group-MMS) received & not started. The sections below are the historical record of each phase (hardening review, REOPEN batch, contract history) — kept for provenance, not current asks.
 
 ## ✅ REOPEN batch (3 items) — LANDED. Ready for your verify + the combined go/no-go.
 Your REOPEN + ITEM-3 notes: all three landed in migration `20260701000004_comms_relay_and_context.sql` + handler/spec changes. **NEW sha `7143b97ffb42b0fa811400f70f755747b098ca9c8b8e4d13aac63b885b092b17`** (Item 3 adds two optional fields — see ⚠️ CONTRACT). All gates green (comms 37 checks incl. new relay + context tests; interactions-journal 28; agent-principal 28; events-feed 13; full ephemeral DB suite incl. DEFINER-grant guard + isolation + audit + money; unit 67; drift×2; build; lint).
@@ -115,6 +124,7 @@ Considered and NOT changed (with reasons):
 
 ## Log
 (newest first; one line per push: date, milestone, summary)
+- 2026-07-02 STATUS-SYNC: reconciled to reality — coordinator ACCEPTED live verification (DoD met, comms live+dormant); `…05` APPROVED pending human apply + coordinator PR; GM-A (group-MMS) received, not started. Working tree clean (two stray pre-session files left untracked).
 - 2026-07-02T23:10:44Z **LIVE DEPLOY VERIFIED**: `/openapi.json` 200, all 17 `/comms/*` ops live, contract semantically == committed. Live raw sha `7a4b764a…` = minified form of `7143b97f…` (NOT a mismatch — pretty-vs-minified). Deploy DoD MET.
 - 2026-07-02 PERF+RETENTION: migration `…05` (opt-out-park index, dispatch-scan reorder, drop 4 redundant account_id indexes, `prune_inbound_raw` janitor) + `test:comms-retention`. DB-only, contract-neutral, no sha change. NOT yet on prod (needs a follow-up `migrate:up`). All gates green.
 - 2026-07-02T22:30:55Z **PROD MIGRATION APPLIED**: human ran `migrate:up`; `…02`+`…03`+`…04` all applied clean ("Finished supabase db push"). Over to coordinator for PR-to-main + `/openapi.json` verify + broadcast.
