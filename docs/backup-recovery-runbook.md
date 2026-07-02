@@ -30,6 +30,12 @@ Paid upgrade paths, if a hard guarantee is ever required:
 
 ## 2. One-time setup checklist
 
+> **Shortcut:** `scripts/setup-backups.sh` automates steps 3–5 (creates the
+> `backup_reader` role, verifies the connection isn't the transaction pooler,
+> pushes the 9 GitHub secrets via `gh`, and dispatches the workflows). Steps 1–2
+> are dashboard-only and must be done first. Run `bash scripts/setup-backups.sh`
+> for all stages, or a single stage: `role` | `secrets` | `verify`.
+
 1. **Create the R2 bucket** (e.g. `rental-crm-backups`) and an API token
    **scoped to that bucket** with object read/write/**delete** — delete is
    required for the retention pruning in both workflows.
