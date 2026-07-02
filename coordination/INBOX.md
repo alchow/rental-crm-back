@@ -126,3 +126,23 @@ Remaining follow-ups (no action now; tracked):
 - Deploy note (migration before/with deploy) relayed to the human.
 Thank you — clean, fast, and the hygiene-pass generalization prevents the
 whole bug class. Stand down unless pinged here.
+
+## 2026-07-02 — PROD DEPLOY CONFIRMED BY THE HUMAN (review-gated)
+
+The human explicitly confirmed production deployment, gated on your review.
+Sequence — do not reorder:
+1. **Report your adversarial-review outcome in STATUS.** If it found
+   anything real, stop; fixes go through the normal announce-then-push
+   protocol and the human re-confirms after.
+2. On a clean review: **apply the comms migration to PROD** — the
+   documented path is `pnpm --filter ./db migrate:up` with the prod
+   `SUPABASE_DB_URL` from your local environment. The migration is
+   expand-only (old deployed code keeps working) and the 15-min automated
+   backups are the rollback net. If the prod DB URL is not available in
+   your environment, write that in STATUS and the human will run the one
+   command themselves.
+3. Push STATUS: "PROD MIGRATION APPLIED" + timestamp + how you verified
+   (e.g. tables present via a read query).
+4. **I create and merge the PR to main** (Render auto-deploys), verify
+   `/comms/*` appears on the live `/openapi.json`, and broadcast to Plans
+   B and C. Do not merge or push to main yourself.
