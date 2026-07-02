@@ -311,3 +311,43 @@ batch: the human applies …05 (`migrate:up`, safe anytime), then I open and
 merge the follow-up PR for your post-merge commits. I've relayed the GO to
 the frontend for its live pass. Nothing else from you until the …05
 migration is confirmed.
+
+## 2026-07-02 — WORK ITEM GM-A: native group-MMS threads (core side)
+
+Human-approved fast-follow. Verified Telnyx facts you design against:
+group MMS on US/CAN long codes only, ≤8 participants, v2 API/webhooks;
+inbound group messages hit our number with a `cc` array of the other
+participants; outbound group send = one API call, per-recipient records
+correlated by `group_message_id`; MMS delivery receipts unreliable
+(Telnyx-to-Telnyx only).
+
+Design (contract-first again — emit early, announce sha in STATUS):
+1. `comm_threads.mode: 'bridged'|'group'` (default bridged; additive).
+   `CreateCommThreadBody.mode` optional; `CommThread` response exposes it.
+   Group mode: sms only, ≤7 human participants (8 incl. our number); the
+   landlord participant's address IS a group member (bind it).
+2. Bindings: keep per-participant rows. The (platform_number,
+   participant_address) WHERE active partial-unique applies to BRIDGED
+   bindings only (group bindings excluded via mode); instead enforce
+   per-number GROUP-SET uniqueness (no two active group threads on one
+   number with the identical human participant set) in the create path.
+3. `capture_inbound` gains optional `cc: text[]`: when present, resolve by
+   participant-set match (from + cc minus our number == a group thread's
+   bound addresses on that number) → journal once with thread_id;
+   no set match → orphan. 1:1 messages (no cc) keep the existing binding
+   resolution — both modes coexist on one number.
+4. Group outbound: ONE outbox row per group send — no per-recipient legs,
+   no relay concept in group mode. `provider_sid` stores the
+   group_message_id; `to_address` nullable for group rows (recipients
+   derived from the thread). complete_send journals once (non-relay path,
+   thread context) — unchanged code path should mostly cover it; verify.
+5. STOP compliance rule for groups (hard requirement): a group MMS from
+   our number reaches EVERY member, so an opt-out by ANY member blocks ALL
+   system sends into that group (intent create → 422; queued group rows to
+   that thread park). Inbound stays captured (evidence). Landlord sees why
+   in the thread (frontend renders the parked state).
+6. Spec: additive only. Emit + announce sha; B and C consume.
+Gates as usual; tests: set-match capture (incl. orphan + cross-account),
+group-set uniqueness, group send journal-once, any-member opt-out block.
+Sequencing: independent of the …05 prod apply; same branch; I merge via PR
+when the full GM batch (A+B+C) is verified.
