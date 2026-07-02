@@ -131,8 +131,13 @@ async function login(email: string, password: string): Promise<string> {
 
 // --- fixture ------------------------------------------------------------------
 
-const PLATFORM_NUMBER = '+15550009999';
-const TENANT_ADDR = '+15551230001';
+// Randomized per run: platform numbers are globally unique and the opt-out
+// register is global, so fixed values would make the suite single-shot
+// against a persistent local stack.
+const SUFFIX = String(Math.floor(Math.random() * 10_000_000)).padStart(7, '0');
+const PLATFORM_NUMBER = `+1202${SUFFIX}`;
+const TENANT_ADDR = `+1303${SUFFIX}`;
+const OTHER_ADDR = `+1404${SUFFIX}`;
 
 interface Fixture {
   accountId: string;
@@ -521,7 +526,7 @@ async function main(): Promise<void> {
   await check('inbound from an unbound address is an orphan (raw only)', async () => {
     const r = await A({
       provider: 'test', provider_msg_id: `IN-${rnd()}`, to_number: PLATFORM_NUMBER,
-      from_address: '+15559998888', channel: 'sms', body: 'who dis',
+      from_address: `+1505${SUFFIX}`, channel: 'sms', body: 'who dis',
       received_at: new Date().toISOString(),
     }, '/inbound');
     const res = assertStatus(r, 200, 'orphan capture') as {
@@ -642,7 +647,7 @@ async function main(): Promise<void> {
     const p2 = (assertStatus(p, 201, 'policy2') as { id: string }).id;
     // NOTE: TENANT_ADDR is opted out by now; use a second identity-free address.
     const intent = await A({
-      channel: 'sms', to_address: '+15551230002', body: 'reminder under p2',
+      channel: 'sms', to_address: OTHER_ADDR, body: 'reminder under p2',
       approval_ref: `grant:${p2}`,
     }, '/outbox');
     const intentId = (assertStatus(intent, 201, 'intent under p2') as { id: string }).id;
@@ -657,7 +662,7 @@ async function main(): Promise<void> {
       `parked: ${JSON.stringify(parked)}`);
 
     const after = await A({
-      channel: 'sms', to_address: '+15551230002', body: 'x', approval_ref: `grant:${p2}`,
+      channel: 'sms', to_address: OTHER_ADDR, body: 'x', approval_ref: `grant:${p2}`,
     }, '/outbox');
     assertStatus(after, 403, 'send under revoked grant');
 
@@ -671,7 +676,7 @@ async function main(): Promise<void> {
   // =========================================================================
   await check('reconcile surfaces stale sending rows', async () => {
     const r = await A({
-      channel: 'sms', to_address: '+15551230002', body: 'stale',
+      channel: 'sms', to_address: OTHER_ADDR, body: 'stale',
       approval_ref: 'proposal:88', approved_by: fx.landlordId,
     }, '/outbox');
     const id = (assertStatus(r, 201, 'intent') as { id: string }).id;

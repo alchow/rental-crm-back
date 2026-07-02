@@ -3277,7 +3277,8 @@
               "proposal_failed",
               "proposal_blocked",
               "resume_target_dead",
-              "proposal_superseded"
+              "proposal_superseded",
+              null
             ]
           },
           "external_ref": {
@@ -3301,7 +3302,8 @@
             "enum": [
               "amend",
               "retract",
-              "classify"
+              "classify",
+              null
             ]
           },
           "superseded_by_id": {
@@ -3502,7 +3504,8 @@
             "enum": [
               "amend",
               "retract",
-              "classify"
+              "classify",
+              null
             ]
           },
           "tenancy_id": {
@@ -3535,7 +3538,8 @@
               "proposal_failed",
               "proposal_blocked",
               "resume_target_dead",
-              "proposal_superseded"
+              "proposal_superseded",
+              null
             ]
           },
           "approved_by": {
@@ -3629,7 +3633,8 @@
               "delivered",
               "failed",
               "undeliverable",
-              "needs_reconcile"
+              "needs_reconcile",
+              null
             ]
           },
           "error_code": {
@@ -4202,14 +4207,7 @@
               "participants": {
                 "type": "array",
                 "items": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/CommThreadParticipant"
-                    },
-                    {
-                      "type": "object"
-                    }
-                  ]
+                  "$ref": "#/components/schemas/CommThreadParticipant"
                 }
               }
             },
@@ -4303,7 +4301,8 @@
               "delivered",
               "failed",
               "undeliverable",
-              "needs_reconcile"
+              "needs_reconcile",
+              null
             ]
           },
           "interaction_id": {
@@ -4349,7 +4348,8 @@
                   "delivered",
                   "failed",
                   "undeliverable",
-                  "needs_reconcile"
+                  "needs_reconcile",
+                  null
                 ]
               },
               "delivered_at": {
@@ -4512,10 +4512,7 @@
         ]
       },
       "CommQuietHours": {
-        "type": [
-          "object",
-          "null"
-        ],
+        "type": "object",
         "properties": {
           "start": {
             "type": "string",
@@ -4578,7 +4575,14 @@
             "additionalProperties": {}
           },
           "quiet_hours": {
-            "$ref": "#/components/schemas/CommQuietHours"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CommQuietHours"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "status": {
             "type": "string",
@@ -4682,14 +4686,7 @@
             "default": {}
           },
           "quiet_hours": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/CommQuietHours"
-              },
-              {
-                "type": "object"
-              }
-            ]
+            "$ref": "#/components/schemas/CommQuietHours"
           }
         },
         "required": [
@@ -4839,15 +4836,12 @@
             "$ref": "#/components/schemas/Attachment"
           },
           "derivative": {
-            "allOf": [
+            "anyOf": [
               {
                 "$ref": "#/components/schemas/Attachment"
               },
               {
-                "type": [
-                  "object",
-                  "null"
-                ]
+                "type": "null"
               }
             ]
           },
@@ -6284,7 +6278,8 @@
               "normal_wear",
               "damage",
               "not_present_at_baseline",
-              "new_at_checkout"
+              "new_at_checkout",
+              null
             ]
           },
           "sort_order": {
@@ -6341,7 +6336,8 @@
               "normal_wear",
               "damage",
               "not_present_at_baseline",
-              "new_at_checkout"
+              "new_at_checkout",
+              null
             ]
           },
           "sort_order": {
@@ -6390,7 +6386,8 @@
                     "normal_wear",
                     "damage",
                     "not_present_at_baseline",
-                    "new_at_checkout"
+                    "new_at_checkout",
+                    null
                   ]
                 },
                 "sort_order": {
@@ -7422,14 +7419,7 @@
         "type": "object",
         "properties": {
           "result": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/ImportExecutionResult"
-              },
-              {
-                "type": "object"
-              }
-            ]
+            "$ref": "#/components/schemas/ImportExecutionResult"
           },
           "session": {
             "$ref": "#/components/schemas/ImportSession"
@@ -7511,14 +7501,7 @@
             ]
           },
           "latest_version": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/DocumentVersion"
-              },
-              {
-                "type": "object"
-              }
-            ]
+            "$ref": "#/components/schemas/DocumentVersion"
           }
         },
         "required": [
@@ -16710,7 +16693,8 @@
                 "delivered",
                 "failed",
                 "undeliverable",
-                "needs_reconcile"
+                "needs_reconcile",
+                null
               ]
             },
             "required": false,

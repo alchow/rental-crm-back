@@ -136,3 +136,82 @@ export function injectServiceUnavailable<T extends { paths?: unknown }>(doc: T):
   }
   return doc;
 }
+
+// Mutates `doc` in place to repair three zod-to-openapi emission artifacts
+// that break strict downstream consumers (found by the agent transport's
+// strict validation and the frontend's openapi-typescript generation):
+//
+//   1. Nullable enums: `.nullable()` on a z.enum emits `type: [..., "null"]`
+//      but leaves `enum` without null. JSON Schema treats enum as
+//      authoritative, so real null values fail strict validation. Fix: add
+//      null to the enum.
+//   2. Junk allOf wrappers: a registered ($ref) schema wrapped by a zod
+//      modifier can emit `allOf: [$ref, {type:"object"}]` -- the bare
+//      `{type:"object"}` member makes openapi-typescript intersect with
+//      `Record<string, never>` (unsatisfiable). Fix: collapse to the $ref
+//      (or `anyOf: [$ref, null]` when the junk member declared nullability).
+//   3. Duplicate `{type:"null"}` members inside anyOf (a union-with-null
+//      dedupe miss). Fix: keep one.
+//
+// Purely generator hygiene: runtime behavior is unchanged. Idempotent.
+export function injectSchemaHygiene<T>(doc: T): T {
+  const isNullType = (v: unknown): boolean =>
+    typeof v === 'object' && v !== null &&
+    Object.keys(v).length === 1 && (v as { type?: unknown }).type === 'null';
+
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    if (typeof node !== 'object' || node === null) return;
+    const obj = node as Record<string, unknown>;
+
+    // (1) enum missing its declared null.
+    if (
+      Array.isArray(obj.type) && obj.type.includes('null') &&
+      Array.isArray(obj.enum) && !obj.enum.includes(null)
+    ) {
+      (obj.enum as unknown[]).push(null);
+    }
+
+    // (2) allOf of exactly one $ref plus only-bare-type junk members.
+    if (Array.isArray(obj.allOf)) {
+      const members = obj.allOf as Record<string, unknown>[];
+      const refs = members.filter((m) => typeof m.$ref === 'string');
+      const junk = members.filter(
+        (m) =>
+          m !== refs[0] &&
+          Object.keys(m).length === 1 &&
+          (m.type === 'object' ||
+            (Array.isArray(m.type) && (m.type as unknown[]).every((t) => t === 'object' || t === 'null'))),
+      );
+      if (refs.length === 1 && junk.length === members.length - 1) {
+        const nullable = junk.some((m) => Array.isArray(m.type) && (m.type as unknown[]).includes('null'));
+        delete obj.allOf;
+        if (nullable) {
+          obj.anyOf = [refs[0], { type: 'null' }];
+        } else {
+          obj.$ref = refs[0]!.$ref;
+        }
+      }
+    }
+
+    // (3) duplicate {type:"null"} members in anyOf.
+    if (Array.isArray(obj.anyOf)) {
+      const anyOf = obj.anyOf as unknown[];
+      let seenNull = false;
+      obj.anyOf = anyOf.filter((m) => {
+        if (!isNullType(m)) return true;
+        if (seenNull) return false;
+        seenNull = true;
+        return true;
+      });
+    }
+
+    for (const value of Object.values(obj)) walk(value);
+  };
+
+  walk(doc);
+  return doc;
+}

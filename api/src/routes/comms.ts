@@ -387,7 +387,9 @@ const CommPolicy = z
     channel: CommChannel,
     template_id: z.string().nullable(),
     params: z.record(z.unknown()),
-    quiet_hours: CommQuietHours.nullable(),
+    // union-with-null (not .nullable()): the generator drops nullability
+    // from a wrapped registered schema; the union form emits anyOf correctly.
+    quiet_hours: z.union([CommQuietHours, z.null()]),
     status: CommPolicyStatus,
     approved_by: z.string().uuid(),
     approved_at: z.string(),

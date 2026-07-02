@@ -6136,7 +6136,7 @@ export interface paths {
                 query?: {
                     cursor?: string;
                     limit?: number;
-                    status?: "queued" | "sending" | "sent" | "delivered" | "failed" | "undeliverable" | "needs_reconcile";
+                    status?: "queued" | "sending" | "sent" | "delivered" | "failed" | "undeliverable" | "needs_reconcile" | null;
                     eligible_at?: string;
                 };
                 header?: never;
@@ -13937,7 +13937,7 @@ export interface components {
             /** Format: uuid */
             corrects_id?: string;
             /** @enum {string} */
-            correction_kind?: "amend" | "retract" | "classify";
+            correction_kind?: "amend" | "retract" | "classify" | null;
             /** Format: uuid */
             tenancy_id?: string;
             /** Format: uuid */
@@ -13949,7 +13949,7 @@ export interface components {
             /** Format: uuid */
             vendor_id?: string;
             /** @enum {string} */
-            entry_type?: "proposal_created" | "proposal_approved" | "proposal_rejected" | "step_executed" | "proposal_failed" | "proposal_blocked" | "resume_target_dead" | "proposal_superseded";
+            entry_type?: "proposal_created" | "proposal_approved" | "proposal_rejected" | "step_executed" | "proposal_failed" | "proposal_blocked" | "resume_target_dead" | "proposal_superseded" | null;
             /** Format: uuid */
             approved_by?: string;
             approval_ref?: string;
@@ -13978,7 +13978,7 @@ export interface components {
             /** Format: uuid */
             relay_of_interaction_id: string | null;
             /** @enum {string} */
-            status: "queued" | "sending" | "sent" | "delivered" | "failed" | "undeliverable" | "needs_reconcile";
+            status: "queued" | "sending" | "sent" | "delivered" | "failed" | "undeliverable" | "needs_reconcile" | null;
             error_code: string | null;
             error_message: string | null;
             provider: string | null;
@@ -14111,7 +14111,7 @@ export interface components {
             updated_at: string;
         };
         CommThreadWithParticipants: components["schemas"]["CommThread"] & {
-            participants: (components["schemas"]["CommThreadParticipant"] & Record<string, never>)[];
+            participants: components["schemas"]["CommThreadParticipant"][];
         };
         CommThreadListResponse: {
             data: components["schemas"]["CommThreadWithParticipants"][];
@@ -14135,7 +14135,7 @@ export interface components {
             participant_id: string | null;
             to_address: string | null;
             /** @enum {string} */
-            status: "queued" | "sending" | "sent" | "delivered" | "failed" | "undeliverable" | "needs_reconcile";
+            status: "queued" | "sending" | "sent" | "delivered" | "failed" | "undeliverable" | "needs_reconcile" | null;
             /** Format: uuid */
             interaction_id: string | null;
             delivered_at: string | null;
@@ -14188,7 +14188,7 @@ export interface components {
             end: string;
             /** @example America/Los_Angeles */
             timezone: string;
-        } | null;
+        };
         CommPolicy: {
             /** Format: uuid */
             id: string;
@@ -14202,7 +14202,7 @@ export interface components {
             params: {
                 [key: string]: unknown;
             };
-            quiet_hours: components["schemas"]["CommQuietHours"];
+            quiet_hours: components["schemas"]["CommQuietHours"] | null;
             /** @enum {string} */
             status: "active" | "revoked";
             /** Format: uuid */
@@ -14228,7 +14228,7 @@ export interface components {
             params: {
                 [key: string]: unknown;
             };
-            quiet_hours?: components["schemas"]["CommQuietHours"] & Record<string, never>;
+            quiet_hours?: components["schemas"]["CommQuietHours"];
         };
         CommReconcileResponse: {
             data: components["schemas"]["CommOutbox"][];
@@ -14267,7 +14267,7 @@ export interface components {
         };
         AttachmentUploadResponse: {
             attachment: components["schemas"]["Attachment"];
-            derivative: components["schemas"]["Attachment"] & (Record<string, never> | null);
+            derivative: components["schemas"]["Attachment"] | null;
             deduped: boolean;
         };
         AttachmentUploadBody: {
@@ -14631,7 +14631,7 @@ export interface components {
             item_key?: string;
             group_label?: string;
             /** @enum {string} */
-            change_type?: "unchanged" | "normal_wear" | "damage" | "not_present_at_baseline" | "new_at_checkout";
+            change_type?: "unchanged" | "normal_wear" | "damage" | "not_present_at_baseline" | "new_at_checkout" | null;
             sort_order?: number;
         };
         PatchInspectionItemBody: {
@@ -14652,7 +14652,7 @@ export interface components {
                 notes?: string;
                 group_label?: string;
                 /** @enum {string} */
-                change_type?: "unchanged" | "normal_wear" | "damage" | "not_present_at_baseline" | "new_at_checkout";
+                change_type?: "unchanged" | "normal_wear" | "damage" | "not_present_at_baseline" | "new_at_checkout" | null;
                 sort_order?: number;
             }[];
         };
@@ -14890,7 +14890,7 @@ export interface components {
             }[];
         };
         ImportRunResponse: {
-            result: components["schemas"]["ImportExecutionResult"] & Record<string, never>;
+            result: components["schemas"]["ImportExecutionResult"];
             session: components["schemas"]["ImportSession"];
         };
         IntakeResponse: {
@@ -14913,7 +14913,7 @@ export interface components {
             requires_ack: boolean;
             published_at: string;
             acknowledged_at: string | null;
-            latest_version: components["schemas"]["DocumentVersion"] & Record<string, never>;
+            latest_version: components["schemas"]["DocumentVersion"];
         };
         TenantDocumentAccessResponse: {
             token: {

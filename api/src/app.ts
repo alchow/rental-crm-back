@@ -55,6 +55,7 @@ import { importCapability, recoverOrphanedImportSessions } from './admin/import-
 import {
   OPENAPI_DOC_CONFIG,
   injectIdempotencyContract,
+  injectSchemaHygiene,
   injectServiceUnavailable,
 } from './openapi/idempotency-contract';
 
@@ -259,8 +260,10 @@ export function buildApp(): OpenAPIHono {
   let openApiDocument: ReturnType<typeof app.getOpenAPI31Document> | undefined;
   app.get('/openapi.json', (c) => {
     if (!openApiDocument) {
-      openApiDocument = injectServiceUnavailable(
-        injectIdempotencyContract(app.getOpenAPI31Document(OPENAPI_DOC_CONFIG)),
+      openApiDocument = injectSchemaHygiene(
+        injectServiceUnavailable(
+          injectIdempotencyContract(app.getOpenAPI31Document(OPENAPI_DOC_CONFIG)),
+        ),
       );
     }
     return c.json(openApiDocument);
