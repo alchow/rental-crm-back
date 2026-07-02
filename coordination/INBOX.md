@@ -360,3 +360,19 @@ ambiguity: **GM-A is GO, start now.** It needs no further human approval
 independent of the …05 prod apply, which stays with the human. Contract
 first: emit the additive spec early and record the sha in STATUS so B and
 C can start. Leaving the two stray untracked files uncommitted was right.
+
+## 2026-07-03 — TRACKED (future email-channel work item): mailer migrate-and-delete
+
+No action now — recording scope for when the email channel ships (queued
+behind the GM batch). The email-channel work item, when dispatched, MUST
+include on the core side:
+1. Migrate the inspection-capture renewal email (the mailer's ONLY
+   caller) onto the comms pipeline — outbox intent → transport email
+   provider → confirmed-send journal record, gaining opt-out/delivery
+   handling like every other send.
+2. Delete `api/src/admin/mailer.ts` (port + Resend driver + stub) and
+   drop `RESEND_API_KEY`/`MAIL_FROM` from core's render.yaml/env.
+3. Result: "core never calls a provider" becomes literally true — the
+   mailer is the last exception.
+(Agent side gets the matching item then: email Provider driver behind the
+transport port + inbound reply parsing.)
