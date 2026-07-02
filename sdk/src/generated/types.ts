@@ -13977,6 +13977,10 @@ export interface components {
             not_before: string | null;
             /** Format: uuid */
             relay_of_interaction_id: string | null;
+            /** Format: uuid */
+            tenancy_id: string | null;
+            /** Format: uuid */
+            maintenance_request_id: string | null;
             /** @enum {string} */
             status: "queued" | "sending" | "sent" | "delivered" | "failed" | "undeliverable" | "needs_reconcile";
             error_code: string | null;
@@ -14012,6 +14016,10 @@ export interface components {
             /** Format: uuid */
             relay_of_interaction_id?: string;
             template_id?: string;
+            /** Format: uuid */
+            tenancy_id?: string;
+            /** Format: uuid */
+            maintenance_request_id?: string;
         };
         CommOutboxListResponse: {
             data: components["schemas"]["CommOutbox"][];

@@ -3622,6 +3622,20 @@
             ],
             "format": "uuid"
           },
+          "tenancy_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "maintenance_request_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -3709,6 +3723,8 @@
           "template_id",
           "not_before",
           "relay_of_interaction_id",
+          "tenancy_id",
+          "maintenance_request_id",
           "status",
           "error_code",
           "error_message",
@@ -3774,6 +3790,14 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          },
+          "tenancy_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "maintenance_request_id": {
+            "type": "string",
+            "format": "uuid"
           }
         },
         "required": [

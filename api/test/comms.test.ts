@@ -530,6 +530,67 @@ async function main(): Promise<void> {
     assert(still.status === 'delivered', `regressed to: ${still.status}`);
   });
 
+  await check('context linkage: complete copies tenancy_id onto the journal (item 3)', async () => {
+    const r = await A({
+      channel: 'sms', to_address: `+1810${SUFFIX}`, body: 'about your tenancy',
+      approval_ref: `grant:${policyId}`, tenancy_id: fx.tenancyId,
+    }, '/outbox');
+    const row = assertStatus(r, 201, 'intent w/ context') as { id: string; tenancy_id: string | null };
+    assert(row.tenancy_id === fx.tenancyId, 'outbox carries tenancy_id');
+    const done = await A({ provider: 'test', provider_sid: `SM-${rnd()}` }, `/outbox/${row.id}/complete`);
+    const jid = (assertStatus(done, 200, 'complete') as { interaction_id: string }).interaction_id;
+    const g = await api('GET', `/v1/accounts/${fx.accountId}/interactions/${jid}`, { token: fx.landlordToken });
+    const j = assertStatus(g, 200, 'journal') as { tenancy_id: string | null };
+    assert(j.tenancy_id === fx.tenancyId, `journal tenancy_id: ${j.tenancy_id}`);
+  });
+
+  await check('relay: thread: provenance + no double-journal (items 1+2)', async () => {
+    // An inbound tenant message, journaled once in the thread.
+    const inMsgId = `IN-relay-${rnd()}`;
+    const cap = await A({
+      provider: 'test', provider_msg_id: inMsgId, to_number: PLATFORM_NUMBER,
+      from_address: TENANT_ADDR, channel: 'sms', body: 'relay me',
+      received_at: new Date().toISOString(),
+    }, '/inbound');
+    const capRes = assertStatus(cap, 200, 'inbound for relay') as { thread_id: string; interaction_id: string };
+    assert(capRes.thread_id === threadId, 'inbound landed in the thread');
+    const originalId = capRes.interaction_id;
+
+    // thread: provenance is relay-only: without relay_of_interaction_id → 403.
+    const noRelay = await A({
+      channel: 'sms', to_address: `+1808${SUFFIX}`, body: 'forward', approval_ref: `thread:${threadId}`,
+    }, '/outbox');
+    assertStatus(noRelay, 403, 'thread ref without relay');
+    // A relayed interaction not in the cited thread → 403.
+    const foreign = await A({
+      channel: 'sms', to_address: `+1808${SUFFIX}`, body: 'forward',
+      approval_ref: `thread:${crypto.randomUUID()}`, relay_of_interaction_id: originalId,
+    }, '/outbox');
+    assertStatus(foreign, 403, 'foreign thread ref');
+
+    // Valid relay intent under thread: provenance.
+    const relay = await A({
+      channel: 'sms', to_address: `+1808${SUFFIX}`, body: 'forward',
+      approval_ref: `thread:${threadId}`, relay_of_interaction_id: originalId,
+    }, '/outbox');
+    const relayId = (assertStatus(relay, 201, 'relay intent') as { id: string }).id;
+
+    // Completing a relay leg does NOT mint a second journal row; it links to
+    // the original and returns its id.
+    const before = await admin.from('interactions')
+      .select('*', { count: 'exact', head: true }).eq('account_id', fx.accountId).eq('thread_id', threadId);
+    const done = await A({ provider: 'test', provider_sid: `SM-relay-${rnd()}` }, `/outbox/${relayId}/complete`);
+    const doneBody = assertStatus(done, 200, 'relay complete') as {
+      interaction_id: string; outbox: { interaction_id: string; status: string };
+    };
+    assert(doneBody.interaction_id === originalId, 'relay completion returns the original interaction id');
+    assert(doneBody.outbox.interaction_id === originalId, 'relay outbox links to the original');
+    assert(doneBody.outbox.status === 'sent', 'relay leg marked sent');
+    const after = await admin.from('interactions')
+      .select('*', { count: 'exact', head: true }).eq('account_id', fx.accountId).eq('thread_id', threadId);
+    assert(before.count === after.count, `no new journal row on relay (before ${before.count}, after ${after.count})`);
+  });
+
   // =========================================================================
   // Inbound capture
   // =========================================================================

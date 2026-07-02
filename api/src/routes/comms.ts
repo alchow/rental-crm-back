@@ -87,6 +87,10 @@ const CommOutbox = z
     /** For relay legs of a bridged thread: the journal entry (inbound
      *  original) this send relays. */
     relay_of_interaction_id: z.string().uuid().nullable(),
+    /** Optional context refs copied onto the journal row on completion so the
+     *  send surfaces in the tenancy / maintenance-request activity feed. */
+    tenancy_id: z.string().uuid().nullable(),
+    maintenance_request_id: z.string().uuid().nullable(),
     status: CommOutboxStatus,
     error_code: z.string().nullable(),
     error_message: z.string().nullable(),
@@ -126,6 +130,11 @@ const CreateOutboxBody = z
     not_before: z.string().datetime().optional(),
     relay_of_interaction_id: z.string().uuid().optional(),
     template_id: z.string().min(1).max(200).optional(),
+    /** Optional context: links the send (and, on completion, its journal row)
+     *  to a tenancy / maintenance request so it appears in that entity's feed.
+     *  Composite-FK validated to the account. */
+    tenancy_id: z.string().uuid().optional(),
+    maintenance_request_id: z.string().uuid().optional(),
   })
   .openapi('CreateCommOutboxBody');
 
@@ -859,13 +868,20 @@ commsApp.openapi(createOutbox, async (c) => {
   }
 
   // Provenance (mirrors the journal firewall vocabulary; the DB CHECK and
-  // capacity trigger are the backstops).
+  // capacity trigger are the backstops). Three agent-authorized shapes:
+  //   approved_by            -> a human approved this exact message
+  //   grant:<policy_id>      -> a live standing policy of this account
+  //   thread:<thread_id>     -> a RELAY leg; the thread (an owner/manager
+  //                             creation) IS the authorization
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (principal.type === 'agent') {
-    if (body.approved_by === undefined && !body.approval_ref.startsWith('grant:')) {
+    const isGrant = body.approval_ref.startsWith('grant:');
+    const isThread = body.approval_ref.startsWith('thread:');
+    if (body.approved_by === undefined && !isGrant && !isThread) {
       throw new ApiError(
         403,
         'agent_entry_type_forbidden',
-        "agent send intents require approved_by (proposal-approved) or a 'grant:'-prefixed approval_ref (policy-authorized)",
+        "agent send intents require approved_by (proposal-approved), a 'grant:' approval_ref (policy-authorized), or a 'thread:' approval_ref (relay)",
       );
     }
     if (body.approved_by !== undefined) {
@@ -877,12 +893,12 @@ commsApp.openapi(createOutbox, async (c) => {
       if (!ok) {
         throw new ApiError(400, 'invalid_request', 'approved_by must be a non-agent member of this account');
       }
-    } else {
+    } else if (isGrant) {
       // A grant ref must name a live standing policy in THIS account, and the
       // policy's channel must match the send's channel — a standing grant for
       // sms does not authorize a voice/email send.
       const grantId = body.approval_ref.slice('grant:'.length);
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(grantId)) {
+      if (!UUID_RE.test(grantId)) {
         throw new ApiError(400, 'invalid_request', "a 'grant:' approval_ref must carry the comm_policies id");
       }
       const { data: policy, error: polErr } = await sb
@@ -897,6 +913,38 @@ commsApp.openapi(createOutbox, async (c) => {
       }
       if (policy.channel !== body.channel) {
         throw new ApiError(403, 'forbidden', `the referenced grant authorizes ${policy.channel}, not ${body.channel}`);
+      }
+    } else {
+      // thread:<id> — valid ONLY for a relay leg: relay_of_interaction_id must
+      // be set, the thread live + account-owned, and the relayed interaction
+      // must belong to that thread. The thread is the recorded authorizing act.
+      if (body.relay_of_interaction_id === undefined) {
+        throw new ApiError(403, 'forbidden', "a 'thread:' approval_ref is only valid on a relay (relay_of_interaction_id required)");
+      }
+      const threadRef = body.approval_ref.slice('thread:'.length);
+      if (!UUID_RE.test(threadRef)) {
+        throw new ApiError(400, 'invalid_request', "a 'thread:' approval_ref must carry the thread id");
+      }
+      const { data: thread, error: thErr } = await sb
+        .from('comm_threads')
+        .select('id, status')
+        .eq('account_id', accountId)
+        .eq('id', threadRef)
+        .maybeSingle();
+      if (thErr) throw commDbError(thErr);
+      if (!thread || thread.status !== 'active') {
+        throw new ApiError(403, 'forbidden', 'the referenced thread is not an active thread of this account');
+      }
+      // The relayed interaction must be a journal row IN that thread.
+      const { data: orig, error: origErr } = await sb
+        .from('interactions')
+        .select('id, thread_id')
+        .eq('account_id', accountId)
+        .eq('id', body.relay_of_interaction_id)
+        .maybeSingle();
+      if (origErr) throw commDbError(origErr);
+      if (!orig || orig.thread_id !== threadRef) {
+        throw new ApiError(403, 'forbidden', 'the relayed interaction does not belong to the referenced thread');
       }
     }
   } else {
@@ -1001,6 +1049,8 @@ commsApp.openapi(createOutbox, async (c) => {
       template_id: body.template_id ?? null,
       not_before: body.not_before ?? null,
       relay_of_interaction_id: body.relay_of_interaction_id ?? null,
+      tenancy_id: body.tenancy_id ?? null,
+      maintenance_request_id: body.maintenance_request_id ?? null,
       approval_ref: body.approval_ref,
       approved_by: principal.type === 'agent' ? (body.approved_by ?? null) : c.get('auth').userId,
       author_type: principal.type === 'agent' ? 'agent' : 'landlord',
@@ -1527,7 +1577,7 @@ commsApp.openapi(createThreadMessage, async (c) => {
 
   const { data: thread, error: thErr } = await sb
     .from('comm_threads')
-    .select('id, status')
+    .select('id, status, tenancy_id, maintenance_request_id')
     .eq('account_id', accountId)
     .eq('id', id)
     .maybeSingle();
@@ -1567,6 +1617,10 @@ commsApp.openapi(createThreadMessage, async (c) => {
         participant_id: t.participant_id,
         body: body.body,
         not_before: body.not_before ?? null,
+        // Inherit the thread's context so the message lands in the tenancy /
+        // maintenance-request feed on completion.
+        tenancy_id: thread.tenancy_id,
+        maintenance_request_id: thread.maintenance_request_id,
         approval_ref: `self:${userId}`,
         approved_by: userId,
         author_type: 'landlord',

@@ -574,11 +574,13 @@ A single account-scoped endpoint for finding entities by name or keyword. Result
 
 Core owns communications **state** — threads, the outbox/delivery ledger, opt-outs, and standing policies — and never calls a messaging provider. The provider-calling *transport* (the agent) drives this ledger: it records a send **intent** before dialing and confirms or fails it after, so the journal only ever contains sends that verifiably happened (ADR-0007). Endpoints marked *transport* require the agent principal; *landlord* endpoints require an `owner`/`manager` membership (viewers are read-only elsewhere and get 403 here).
 
-Authorization provenance rides on every send: `approval_ref='proposal:<id>'` + `approved_by` means a human approved the exact message; `approval_ref='grant:<id>'` (a live `comm_policies` id, `approved_by` null) means a standing policy authorized it; `approval_ref='self:<user_id>'` is a landlord-authored send (stamped server-side).
+Authorization provenance rides on every send: `approval_ref='proposal:<id>'` + `approved_by` means a human approved the exact message; `approval_ref='grant:<id>'` (a live `comm_policies` id whose `channel` matches the send, `approved_by` null) means a standing policy authorized it; `approval_ref='self:<user_id>'` is a landlord-authored send (stamped server-side); `approval_ref='thread:<thread_id>'` authorizes a **relay** leg — valid only when `relay_of_interaction_id` is set and the relayed interaction belongs to that live, account-owned thread (the thread, an owner/manager creation, *is* the authorization).
+
+A **relay** leg (`relay_of_interaction_id` set) does not mint a second journal row: the journal entry is the inbound original it forwards, so completing the leg links to that original and returns its id. Per-leg delivery state lives on the outbox rows. Optional `tenancy_id` / `maintenance_request_id` on a send intent are copied onto the journal row at completion so the message appears in that tenancy's / maintenance request's activity feed (a landlord thread message inherits its thread's context automatically).
 
 | Method | Path | Body / Notes |
 |---|---|---|
-| `POST` | `/comms/outbox` | Create a send intent (`queued`). Transport + landlord. `channel`, `body`, `approval_ref`, and either `to_address` or `thread_id`+`participant_ref`. 422 `opted_out` if the address opted out. |
+| `POST` | `/comms/outbox` | Create a send intent (`queued`). Transport + landlord. `channel`, `body`, `approval_ref`, and either `to_address` or `thread_id`+`participant_ref`; optional `tenancy_id` / `maintenance_request_id` context, `relay_of_interaction_id` for relays. 422 `opted_out` if the address opted out. |
 | `GET` | `/comms/outbox` | Dispatch scan (transport). Filters: `status`, `eligible_at` (honours `not_before`). Cursor-paginated. |
 | `GET` | `/comms/outbox/{id}` | Recovery read for a lost provider response. Transport + landlord. |
 | `POST` | `/comms/outbox/{id}/complete` | Confirm a send (transport): marks `sent` + appends the journal entry **atomically**; idempotent on `provider_sid` replay. |
