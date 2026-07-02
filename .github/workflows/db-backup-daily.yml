@@ -279,6 +279,36 @@ jobs:
           fi
           echo "verify-restore PASS: dump data restores onto the migration schema"
 
+      - name: Recovery evidence (row counts + audit-chain integrity)
+        # The strongest fidelity check we have: verify_chain() recomputes the
+        # audit-event hash chain per account. Passing on the RESTORED copy
+        # proves the evidence trail survived dump->restore byte-for-byte, not
+        # just that "some rows" loaded. Fails the drill on any broken chain.
+        run: |
+          url="postgres://postgres:postgres@127.0.0.1:5433/postgres"
+          echo "== restored row counts (top 20 tables) =="
+          psql "$url" -v ON_ERROR_STOP=1 -c "
+            select relname as table, n_live_tup as rows
+            from pg_stat_user_tables where schemaname='public'
+            order by n_live_tup desc, relname limit 20;"
+          echo "== audit-chain verification per account =="
+          psql "$url" -v ON_ERROR_STOP=1 -c "
+            do \$\$
+            declare r record; v record; n int := 0;
+            begin
+              for r in (select id from public.accounts) loop
+                select vc.ok, vc.broken_at, vc.broken_event_no, vc.reason
+                  into v from public.verify_chain(r.id) vc;
+                if not v.ok then
+                  raise exception 'audit chain BROKEN for account %: % (event_no %, at %)',
+                    r.id, v.reason, v.broken_event_no, v.broken_at;
+                end if;
+                n := n + 1;
+              end loop;
+              raise notice 'audit chain verified OK for % account(s)', n;
+            end \$\$;"
+          echo "recovery drill PASS: restored data is complete and chain-verified"
+
       - name: Tear down scratch container
         if: always()
         run: docker rm -f pgv || true

@@ -220,8 +220,11 @@ every bucket that was backed up.
 Run every quarter and log the outcome below.
 
 1. Actions → `db-backup-daily` → Run workflow with **`verify_restore: true`**.
-2. Confirm the run is green (the verify job restores the newest dump into a
-   scratch `postgres:17` container and asserts **≥10 public tables**).
+2. Confirm the run is green. The verify job rehearses the real recovery in a
+   scratch `postgres:17` container (migrations first, then data-only restore)
+   and asserts restored rows > 0 **and a clean `verify_chain()` for every
+   account** — so a green run means the evidence trail survived
+   dump→restore intact. Row counts are printed in the job log for eyeballing.
 3. Spot-check one attachment: pick a `public.attachments.storage_path` row and
    confirm the matching object exists under `storage/attachments/…` in the
    backup bucket.
