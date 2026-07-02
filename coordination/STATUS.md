@@ -1,5 +1,14 @@
 # STATUS — worker-owned. Update + push after every milestone, blocker, or question.
 
+## ✅ LIVE DEPLOY VERIFIED — 2026-07-02T23:10:44Z (deploy DoD met)
+Ran the live check from my machine (public endpoint, no creds — my env allows this even though prod-DB creds are blocked). `GET https://rental-crm-api.onrender.com/openapi.json` → HTTP 200, 406,695 bytes. Render has deployed main (`32c24dc` / PR #49).
+- **All 17 `/comms/*` operations are LIVE** (13 path templates): outbox create/scan/get/complete/fail/delivery, inbound, opt-outs GET+POST, threads GET+POST + `{id}` + `{id}/messages`, policies GET+POST + revoke, reconcile.
+- **Contract is byte-identical to the committed spec** — semantic (order-insensitive) equality against `openapi/openapi.json` = **True**. Spot-checks: `CreateCommOutboxBody.tenancy_id` present (item-3 additive field deployed); `CommOutbox.status` enum has NO null (the corruption fix is live).
+
+**⚠️ sha nuance — READ before you curl-compare:** the live raw `sha256sum` is **`7a4b764a0f1d5cbd…`**, NOT `7143b97f…`. This is NOT a mismatch. `7143b97f` is the sha of the committed *pretty-printed* file (`JSON.stringify(doc, null, 2) + "\n"`); the runtime serves via Hono `c.json()`, which is *minified* (`JSON.stringify(doc)`, no indent/newline). I verified `sha256(JSON.stringify(committed_doc)) == 7a4b764a` == the live sha, and that the parsed contract is identical. So the served contract is exactly the frozen one — the two shas just reflect pretty-vs-minified formatting of the same document. (If you want a curl-able target, `7a4b764a0f1d5cbd3283510ebf6cbaef04efc6226608edd6a38e7a1c4739e5b6` is the live raw sha.)
+
+**Deploy DoD: MET.** Bridged comms is live in prod.
+
 ## 🔧 FOLLOW-UP: perf + retention migration `…05` (NOT yet on prod; contract-neutral)
 Post-deploy optimization from a scalability/performance review (user-requested). Migration `20260701000005_comms_perf_and_retention.sql` — **DB-only, no endpoint/schema change, no new sha, zero B/C impact.** Not applied to prod yet (a 4th `migrate:up` when you/the human are ready; expand-only, safe anytime).
 - **(A)** partial index on `comm_outbox (channel, to_address) WHERE status='queued'` — `record_opt_out`'s parking UPDATE filters those two columns with no `account_id` (compliance is global), so it was seq-scanning the whole outbox on every STOP; now a point lookup.
@@ -106,6 +115,7 @@ Considered and NOT changed (with reasons):
 
 ## Log
 (newest first; one line per push: date, milestone, summary)
+- 2026-07-02T23:10:44Z **LIVE DEPLOY VERIFIED**: `/openapi.json` 200, all 17 `/comms/*` ops live, contract semantically == committed. Live raw sha `7a4b764a…` = minified form of `7143b97f…` (NOT a mismatch — pretty-vs-minified). Deploy DoD MET.
 - 2026-07-02 PERF+RETENTION: migration `…05` (opt-out-park index, dispatch-scan reorder, drop 4 redundant account_id indexes, `prune_inbound_raw` janitor) + `test:comms-retention`. DB-only, contract-neutral, no sha change. NOT yet on prod (needs a follow-up `migrate:up`). All gates green.
 - 2026-07-02T22:30:55Z **PROD MIGRATION APPLIED**: human ran `migrate:up`; `…02`+`…03`+`…04` all applied clean ("Finished supabase db push"). Over to coordinator for PR-to-main + `/openapi.json` verify + broadcast.
 - 2026-07-02T18:18Z PROD MIGRATION BLOCKED: GO received; attempted `migrate:up` → classifier denied prod creds (expected). Handed the one command to the human; prod untouched; awaiting human to apply + confirm.
