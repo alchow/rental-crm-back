@@ -22,6 +22,7 @@
     "test:imports": "tsx test/imports.test.ts",
     "test:ledger": "tsx test/ledger.test.ts",
     "test:interactions-journal": "tsx test/interactions-journal.test.ts",
+    "test:comms": "tsx test/comms.test.ts",
     "test:events-feed": "tsx test/events-feed.test.ts",
     "test:agent-principal": "tsx test/agent-principal.test.ts",
     "test:agent-grants": "tsx test/agent-grants.test.ts",

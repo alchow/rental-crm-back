@@ -81,6 +81,17 @@ export function assertAgentJournalWrite(
           "agent communications require approved_by (proposal-approved) or a 'grant:'-prefixed approval_ref (policy-authorized)",
         );
       }
+      // The DB capacity trigger requires a verifiable message id on every
+      // agent-authored communication; check here too so the API answers a
+      // clean 400 instead of surfacing the trigger as a database error.
+      if (body.external_ref === undefined) {
+        throw new ApiError(
+          400,
+          'invalid_request',
+          'agent communications require external_ref (verifiable provider/agent-side message id)',
+          { fieldErrors: { external_ref: ['external_ref is required for agent-authored communications'] } },
+        );
+      }
     }
 
     if (kind === 'note') {

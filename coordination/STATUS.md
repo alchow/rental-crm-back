@@ -1,7 +1,7 @@
 # STATUS — worker-owned. Update + push after every milestone, blocker, or question.
 
 ## Current milestone
-M2 — real handlers (starting)
+ALL MILESTONES COMPLETE — awaiting coordinator ack of the final contract sha
 
 ## Checklist
 - [x] M0 ✅ — firewall relaxation + 17 comms contract stubs + spec/SDK emitted, all fast gates green
@@ -9,11 +9,12 @@ M2 — real handlers (starting)
   - [x] All `/v1/accounts/{accountId}/comms/*` routes as typed zod-openapi stubs (501 `not_implemented` via standard envelope)
   - [x] Spec + SDK emitted; `check:drift`, `check:guide-drift`, lint, typecheck, unit tests, api build all green
 - [x] M1 ✅ — migration `20260701000002_comms_ledger.sql`: all 9 tables (force-RLS, ADR-0003 member policies, `_emit_event` audit attachment, composite `(account_id,id)` uniques), `interactions.thread_id` + rebuilt `interactions_with_chain` (delivery join), capacity trigger resurrected + provenance-extended, RPCs `complete_send`/`capture_inbound`/`record_opt_out`/`list_account_opt_outs` (DEFINER, self-defending, allowlisted) + `fail_send`/`update_delivery`/`reconcile_scan` (INVOKER), opt-out enforcement as BEFORE-INSERT trigger, outbox state-machine guard trigger. Local: full migration chain + isolation (incl. meaningfulness) + audit + money + tenancy-status + definer-grants guard ALL GREEN.
-- [ ] M2 🔄 — real handlers
-- [ ] M3 — tests + gates
+- [x] M2 ✅ — all 17 endpoints implemented (RPCs + RLS-scoped queries; transport = agent principal, landlord = owner|manager, viewers 403). Provenance enforced on intent create (grant refs must name a LIVE `comm_policies` row of the account; landlord refs stamped `self:<uid>`); destination resolution explicit-address → thread binding → channel identity; opt-out surfaces as 422 `opted_out`; canonical `rent_reminder` params validated per INBOX (`{days_before, monthly_cap}`, unknown keys 400). Spec + SDK re-emitted; api-guide §8e added; firewall now also requires `external_ref` on agent communications app-side (announced; Plan B unaffected — always sends it).
+- [x] M3 ✅ — `api/test/comms.test.ts` (24 checks, wired into CI integration job as `test:comms`): intent→claim→complete atomicity (journal appended EXACTLY once, only on confirmed send; replay idempotent), fail leaves NO journal row + terminal 409, needs_reconcile park/resolve, monotonic delivery (stale callbacks no-op), inbound matched/orphan/opted_out + provider_msg_id idempotency, opt-out parks queued intents + blocks new at the boundary + first-wins replay, thread detail w/ delivery state + message cursor paging, policy revoke parks grant sends + blocks new, reconcile scan, Idempotency-Key replay single-row, principal gating sweep, events-feed surfacing, cross-account 404s, binding partial-unique 409 + no-skeleton cleanup. Firewall unit spec (18 branches) + agent-principal suite updated. ALL local suites green: comms, agent-principal, interactions-journal, events-feed, api-isolation, db isolation/audit/money/tenancy/definer-guard, unit, build, lint, drift×2, service-role, admin-quarantine.
 
 ## Contract
-- **M0 spec committed**: commit `520ed50` (sha corrected after rebase onto the INBOX update); `openapi/openapi.json` sha256 `215ac1e26be4aef920f67c6752f63d61f0cecd6288e2053514ca945aba476139`. Broadcast to Plans B/C at will — schemas are final; handlers 501 until M2.
+- **FINAL (M2) spec**: `openapi/openapi.json` sha256 `b0817547afe1b4f0fd03ceb202ff83f2637f49780d29b25a57b12bc265d93f3f` (commit sha in Log after push). Delta vs the M0 broadcast (`215ac1e2…`): `CommDeliveryBody.status` gains `'sending'` (the transport's pre-dial claim — additive input widening announced in the M1 notes; everything else is byte-identical on the comms surface). Handlers are LIVE — no more 501s.
+- **M0 spec** (superseded): commit `520ed50`, sha256 `215ac1e26be4aef920f67c6752f63d61f0cecd6288e2053514ca945aba476139`.
 - **INBOX 2026-07-02 "M0 addition" — already satisfied in the sha above.** `CreateInteractionBody.external_ref` is writable exactly as requested: agent principal + fresh `kind='communication'` only (landlords 400 `invalid_request`; corrections/notes/agent_events 400 via shape validation). Firewall governs, per your "simplest" option.
 - Endpoints: the full PLAN.md M0 list, plus **`GET /comms/outbox/{id}`** (added: the ADR-0007 "send_state_unknown" resolution read the transport needs after a lost complete/fail response; flag if unwanted).
 - **`Interaction` gains `thread_id?: uuid|null`** (contract-first: column lands in M1; reads return null/absent until then).
@@ -24,22 +25,25 @@ M2 — real handlers (starting)
 (none — proceeding to M1)
 
 ## Questions for coordinator
-1. ~~`external_ref` on direct agent communications~~ — RESOLVED by INBOX "M0 addition" (requirement matched what shipped; nothing to change).
-2. `GET /comms/outbox/{id}` added beyond the PLAN list (transport recovery read). Say the word and I'll drop it before B/C consume.
-3. Heads-up for the M1 announcement: once the capacity trigger lands I plan to ALSO require `external_ref` app-side in the firewall for agent communications (clean 400 instead of a DB check_violation surfacing as 500). Additive tightening, no schema change; will note in STATUS when it lands.
+1. ~~`external_ref` on direct agent communications~~ — RESOLVED (INBOX ack; shipped in M0, firewall tightening landed with M2 as announced).
+2. ~~`GET /comms/outbox/{id}`~~ — RESOLVED (INBOX: keep).
+3. `thread_autonomy` / `voice_autonomy` policy `params` have no canonical shape yet — M2 passes them through unvalidated (only `rent_reminder` is strict per your INBOX note). Publish shapes when agreed and I'll tighten in a follow-up.
+4. Deploy sequencing reminder: migration `20260701000002_comms_ledger.sql` must be applied to prod BEFORE (or with) this branch's deploy — the M2 handlers and the rebuilt `interactions_with_chain` view depend on it. Also note the direct agent journal path stays enabled until you signal Plan B's M4, per your instruction.
 
 ## Events-feed entity_type strings (per INBOX ask — for the FE poller map)
 `_emit_event` uses TG_TABLE_NAME verbatim, so the new audited tables emit exactly:
 `comm_outbox`, `comm_threads`, `comm_thread_participants`, `channel_identities`, `platform_numbers`, `thread_channel_bindings`, `comm_policies`.
 (`comm_opt_outs` and `inbound_raw` are deliberately NOT audited — no account_id; integrity via PK/UNIQUE. Delivery-state transitions arrive as `comm_outbox` `updated` events; journal appends as `interactions` `inserted` events, as today.)
 
-## M1 design notes (for B/C awareness — no contract change in this push)
-- The dispatch claim (queued→sending before dialing) rides `update_delivery` with `status='sending'`. The M0 `CommDeliveryBody` enum lacks 'sending'; M2's re-emit will widen it to `['sending','sent','delivered','failed','undeliverable']` — ADDITIVE input widening, announced here per protocol. Transport flow: scan → POST delivery `{status:'sending'}` → dial → POST complete.
-- Opt-out enforcement is a BEFORE-INSERT trigger on comm_outbox (SQLSTATE P0004 → API 422): refused sends leave no journal trace and no oracle-grade RPC is exposed to members.
-- `record_opt_out` parks queued-but-unsent intents to that address as `undeliverable` (`error_code='opted_out'`) globally — compliance over tenancy; `sending` rows are left for the provider to refuse.
-- Firewall now also requires `external_ref` app-side for agent communications? NOT yet — deferred to M2 push (announced in Questions #3); DB trigger already enforces it.
+## Design notes for B/C (final behavior)
+- Transport flow: `GET /comms/outbox?status=queued&eligible_at=now` → `POST …/delivery {status:'sending'}` (claim) → dial provider → `POST …/complete {provider, provider_sid}` (or `…/fail`, `reconcile:true` when the outcome is unknown). Complete is idempotent on sid replay; complete works from `queued` directly too (claim recommended, not required).
+- Opt-out enforcement is a BEFORE-INSERT trigger on comm_outbox → API 422 `error.code='opted_out'`: refused sends leave no journal trace. `record_opt_out` parks queued intents to that address as `undeliverable` (`error_code='opted_out'`) globally; `sending` rows are left for the provider to refuse. First opt-out wins; replays return the original row.
+- Agent send intents under `approval_ref='grant:<id>'` are validated against a LIVE `comm_policies` row of that account (403 otherwise). Policy revoke parks its queued sends (`error_code='policy_revoked'`) and blocks new intents.
+- Inbound: `disposition='opted_out'` means the message WAS journaled (the contact happened) but the transport must not relay/reply. `orphan` = raw-captured only, nothing journaled (no binding).
+- Journal rows read via `/interactions*` and thread messages now expose derived `outbox_id` / `delivery_status` / `delivered_at` (chain-view join) and `thread_id`.
 
 ## Log
 (newest first; one line per push: date, milestone, summary)
+- 2026-07-02 M2+M3 ✅: all 17 handlers live + 24-check integration suite wired into CI; every gate green; FINAL spec sha `b0817547…`. Definition of done reached pending coordinator ack.
 - 2026-07-02 M1 ✅: comms ledger migration + guard-allowlist + seeds; full local DB suite green (isolation/audit/money/tenancy/definer-guard).
 - 2026-07-01 M0 ✅: firewall provenance gate + 17 comms stub endpoints + spec/SDK; gates green; contract commit `d77528f`.

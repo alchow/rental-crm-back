@@ -1,6 +1,11 @@
 import { createRoute, z } from '@hono/zod-openapi';
+import type { Context } from 'hono';
 import { newApiApp } from './_lib/app';
-import { ApiError, errorResponses } from './_lib/error';
+import { getSb } from '../supabase/request-client';
+import { ApiError, dbError, errorResponses } from './_lib/error';
+import { keysetPage } from './_lib/cursor';
+import { normalizePhone } from './_lib/phone';
+import { withResolvedAuthorship } from './_lib/authorship';
 import { Interaction } from './interactions';
 
 // ---------------------------------------------------------------------------
@@ -158,8 +163,9 @@ const DeliveryBody = z
   .object({
     /** Provider callback state, already mapped to ledger vocabulary. Only
      *  forward transitions apply (monotonic); late/duplicate callbacks are
-     *  ignored and return the unchanged row. */
-    status: z.enum(['sent', 'delivered', 'failed', 'undeliverable']),
+     *  ignored and return the unchanged row. 'sending' is the transport's
+     *  pre-dial claim on a queued row (the ADR-0007 crash-window marker). */
+    status: z.enum(['sending', 'sent', 'delivered', 'failed', 'undeliverable']),
     provider_ts: z.string().datetime(),
     error_code: z.string().max(100).optional(),
   })
@@ -731,31 +737,925 @@ const reconcileScan = createRoute({
 
 export const commsApp = newApiApp();
 
-// Contract-first stubs: the schemas above are FINAL; handlers land in M2.
-// Throwing (rather than returning a typed error) keeps zod-openapi's
-// response inference on the success path, same as every other route.
-const notImplemented = (): never => {
-  throw new ApiError(
-    501,
-    'not_implemented',
-    'this comms endpoint is a contract-first stub; the handler ships with the ledger milestones',
-  );
-};
+// ---------------------------------------------------------------------------
+// Handler helpers
+// ---------------------------------------------------------------------------
 
-commsApp.openapi(createOutbox, notImplemented);
-commsApp.openapi(listOutbox, notImplemented);
-commsApp.openapi(getOutbox, notImplemented);
-commsApp.openapi(completeSend, notImplemented);
-commsApp.openapi(failSend, notImplemented);
-commsApp.openapi(updateDelivery, notImplemented);
-commsApp.openapi(captureInbound, notImplemented);
-commsApp.openapi(createOptOut, notImplemented);
-commsApp.openapi(listOptOuts, notImplemented);
-commsApp.openapi(listThreads, notImplemented);
-commsApp.openapi(getThread, notImplemented);
-commsApp.openapi(createThread, notImplemented);
-commsApp.openapi(createThreadMessage, notImplemented);
-commsApp.openapi(listPolicies, notImplemented);
-commsApp.openapi(createPolicy, notImplemented);
-commsApp.openapi(revokePolicy, notImplemented);
-commsApp.openapi(reconcileScan, notImplemented);
+// Transport endpoints are driven by the agent principal (the provider-calling
+// module in the agent repo); everything else on it is 403.
+function requireTransport(c: Context): void {
+  if (c.get('principal').type !== 'agent') {
+    throw new ApiError(403, 'forbidden', 'this endpoint is reserved for the agent transport');
+  }
+}
+
+// Landlord endpoints require owner|manager (viewers read the journal, not the
+// comms controls; the agent principal holds role='agent' and is denied too).
+function requireManager(c: Context): void {
+  const role = c.get('account').role;
+  if (role !== 'owner' && role !== 'manager') {
+    throw new ApiError(403, 'forbidden', 'only an owner or manager may use this endpoint');
+  }
+}
+
+// Map the typed SQLSTATEs raised by the comms triggers/RPCs to the envelope.
+function commDbError(error: { code?: string; message: string }): ApiError {
+  switch (error.code) {
+    case 'P0002':
+      return new ApiError(404, 'not_found', 'not found');
+    case 'P0003':
+      return new ApiError(409, 'conflict', error.message);
+    case 'P0004':
+      return new ApiError(422, 'opted_out', 'the destination address has opted out of this channel');
+    case '23505':
+      return new ApiError(409, 'conflict', 'duplicate reference (provider_sid or routing key already recorded)');
+    case '23503':
+      return new ApiError(404, 'not_found', 'a referenced row does not belong to this account');
+    case '23514':
+      return new ApiError(400, 'invalid_request', error.message);
+    default:
+      return dbError(error);
+  }
+}
+
+// Destination validation is channel-specific: sms/voice must normalize to
+// E.164; email gets a shape check. Returns the canonical address.
+function normalizeAddress(channel: string, raw: string): string {
+  if (channel === 'email') {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw) || raw.length > 320) {
+      throw new ApiError(422, 'invalid_request', 'to_address is not a valid email address', {
+        fieldErrors: { to_address: ['not a valid email address'] },
+      });
+    }
+    return raw.toLowerCase();
+  }
+  const e164 = normalizePhone(raw);
+  if (!e164) {
+    throw new ApiError(422, 'invalid_phone', 'to_address cannot be normalised to E.164', {
+      fieldErrors: { to_address: ['cannot be normalised to E.164'] },
+    });
+  }
+  return e164;
+}
+
+// Tiny offset cursor for the opt-out list: the register has no uuid id to
+// keyset on (PK is (channel, address)) and a landlord's slice of it is small.
+function encodeOffsetCursor(offset: number): string {
+  return Buffer.from(JSON.stringify({ o: offset })).toString('base64url');
+}
+function decodeOffsetCursor(s: string): number {
+  try {
+    const obj = JSON.parse(Buffer.from(s, 'base64url').toString('utf8')) as { o?: unknown };
+    if (typeof obj.o === 'number' && Number.isInteger(obj.o) && obj.o >= 0) return obj.o;
+  } catch {
+    /* fall through */
+  }
+  throw new ApiError(400, 'invalid_request', 'invalid cursor');
+}
+
+type OutboxRow = z.infer<typeof CommOutbox>;
+type ParticipantRow = z.infer<typeof CommThreadParticipant>;
+
+const PARTICIPANT_COLS = 'id, thread_id, party_type, party_id, joined_at, left_at';
+const BINDING_COLS = 'id, thread_id, participant_id, platform_number, participant_address, active';
+
+// ---------------------------------------------------------------------------
+// POST /comms/outbox — create a send intent (transport + landlord)
+// ---------------------------------------------------------------------------
+// Ordering is the ADR-0007 contract: provenance validation (no DB) ->
+// destination resolution (read-only) -> INTENT INSERT (the commit point; the
+// opt-out register is enforced by a BEFORE INSERT trigger inside the same
+// statement, race-free). No provider call happens anywhere in core.
+
+commsApp.openapi(createOutbox, async (c) => {
+  const { accountId } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  const principal = c.get('principal');
+  const role = c.get('account').role;
+
+  if (principal.type !== 'agent' && role !== 'owner' && role !== 'manager') {
+    throw new ApiError(403, 'forbidden', 'only the agent transport or an owner/manager may create send intents');
+  }
+
+  // Provenance (mirrors the journal firewall vocabulary; the DB CHECK and
+  // capacity trigger are the backstops).
+  if (principal.type === 'agent') {
+    if (body.approved_by === undefined && !body.approval_ref.startsWith('grant:')) {
+      throw new ApiError(
+        403,
+        'agent_entry_type_forbidden',
+        "agent send intents require approved_by (proposal-approved) or a 'grant:'-prefixed approval_ref (policy-authorized)",
+      );
+    }
+    if (body.approved_by !== undefined) {
+      const { data: ok } = await sb.rpc('is_approver_member', {
+        p_account_id: accountId,
+        p_user_id: body.approved_by,
+      });
+      if (!ok) {
+        throw new ApiError(400, 'invalid_request', 'approved_by must be a non-agent member of this account');
+      }
+    } else {
+      // A grant ref must name a live standing policy in THIS account.
+      const grantId = body.approval_ref.slice('grant:'.length);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(grantId)) {
+        throw new ApiError(400, 'invalid_request', "a 'grant:' approval_ref must carry the comm_policies id");
+      }
+      const { data: policy, error: polErr } = await sb
+        .from('comm_policies')
+        .select('id, status')
+        .eq('account_id', accountId)
+        .eq('id', grantId)
+        .maybeSingle();
+      if (polErr) throw commDbError(polErr);
+      if (!policy || policy.status !== 'active') {
+        throw new ApiError(403, 'forbidden', 'the referenced grant is not an active policy of this account');
+      }
+    }
+  } else {
+    // Landlord-authored: the caller IS the approval. The provenance is
+    // stamped, not trusted from the body.
+    const self = `self:${c.get('auth').userId}`;
+    if (body.approval_ref !== self) {
+      throw new ApiError(400, 'invalid_request', `landlord send intents carry approval_ref='${self}'`, {
+        fieldErrors: { approval_ref: [`must be '${self}'`] },
+      });
+    }
+    if (body.approved_by !== undefined && body.approved_by !== c.get('auth').userId) {
+      throw new ApiError(400, 'invalid_request', 'landlord send intents are approved by the caller', {
+        fieldErrors: { approved_by: ['must be your own user id (or omitted)'] },
+      });
+    }
+  }
+
+  // Destination resolution: explicit address, else the thread binding, else
+  // the account's channel identity for the participant.
+  if (body.to_address === undefined && (body.thread_id === undefined || body.participant_ref === undefined)) {
+    throw new ApiError(400, 'invalid_request', 'provide to_address, or thread_id + participant_ref to resolve one');
+  }
+  if (body.participant_ref !== undefined && body.thread_id === undefined) {
+    throw new ApiError(400, 'invalid_request', 'participant_ref requires thread_id');
+  }
+
+  let participant: { id: string; party_type: string; party_id: string | null } | null = null;
+  if (body.thread_id !== undefined) {
+    const { data: thread, error: thErr } = await sb
+      .from('comm_threads')
+      .select('id, status')
+      .eq('account_id', accountId)
+      .eq('id', body.thread_id)
+      .maybeSingle();
+    if (thErr) throw commDbError(thErr);
+    if (!thread) throw new ApiError(404, 'not_found', 'thread not found');
+    if (thread.status === 'closed') throw new ApiError(409, 'conflict', 'the thread is closed');
+
+    if (body.participant_ref !== undefined) {
+      const { data: part, error: pErr } = await sb
+        .from('comm_thread_participants')
+        .select('id, party_type, party_id, left_at')
+        .eq('account_id', accountId)
+        .eq('thread_id', body.thread_id)
+        .eq('id', body.participant_ref)
+        .maybeSingle();
+      if (pErr) throw commDbError(pErr);
+      if (!part) throw new ApiError(404, 'not_found', 'participant not found in this thread');
+      if (part.left_at !== null) throw new ApiError(409, 'conflict', 'the participant has left the thread');
+      participant = part;
+    }
+  }
+
+  let toAddress: string;
+  if (body.to_address !== undefined) {
+    toAddress = normalizeAddress(body.channel, body.to_address);
+  } else {
+    // Binding first (the address the conversation is actually running on),
+    // then the address book.
+    const { data: binding, error: bErr } = await sb
+      .from('thread_channel_bindings')
+      .select('participant_address')
+      .eq('account_id', accountId)
+      .eq('thread_id', body.thread_id!)
+      .eq('participant_id', body.participant_ref!)
+      .eq('active', true)
+      .maybeSingle();
+    if (bErr) throw commDbError(bErr);
+    let resolved = binding?.participant_address ?? null;
+    if (resolved === null && participant && participant.party_id !== null) {
+      const { data: ident, error: iErr } = await sb
+        .from('channel_identities')
+        .select('address')
+        .eq('account_id', accountId)
+        .eq('channel', body.channel)
+        .eq('party_type', participant.party_type)
+        .eq('party_id', participant.party_id)
+        .limit(1)
+        .maybeSingle();
+      if (iErr) throw commDbError(iErr);
+      resolved = ident?.address ?? null;
+    }
+    if (resolved === null) {
+      throw new ApiError(422, 'invalid_request', 'no destination address is bound or on file for this participant');
+    }
+    toAddress = resolved;
+  }
+
+  const { data, error } = await sb
+    .from('comm_outbox')
+    .insert({
+      account_id: accountId,
+      channel: body.channel,
+      to_address: toAddress,
+      thread_id: body.thread_id ?? null,
+      participant_id: body.participant_ref ?? null,
+      body: body.body,
+      template_id: body.template_id ?? null,
+      not_before: body.not_before ?? null,
+      relay_of_interaction_id: body.relay_of_interaction_id ?? null,
+      approval_ref: body.approval_ref,
+      approved_by: principal.type === 'agent' ? (body.approved_by ?? null) : c.get('auth').userId,
+      author_type: principal.type === 'agent' ? 'agent' : 'landlord',
+    })
+    .select('*')
+    .single();
+  if (error) throw commDbError(error);
+  return c.json(data as OutboxRow, 201);
+});
+
+// ---------------------------------------------------------------------------
+// GET /comms/outbox — dispatch scan (transport)
+// ---------------------------------------------------------------------------
+
+commsApp.openapi(listOutbox, async (c) => {
+  requireTransport(c);
+  const { accountId } = c.req.valid('param');
+  const { cursor, limit, status, eligible_at } = c.req.valid('query');
+  const sb = getSb(c);
+  let q = sb.from('comm_outbox').select('*').eq('account_id', accountId);
+  if (status !== undefined) q = q.eq('status', status);
+  // eligible_at is zod-validated ISO, safe to interpolate; a second .or()
+  // is AND-combined with the keyset filter by PostgREST.
+  if (eligible_at !== undefined) q = q.or(`not_before.is.null,not_before.lte.${eligible_at}`);
+  const { items, next_cursor } = await keysetPage<OutboxRow>(q, { cursor, limit });
+  return c.json({ data: items, next_cursor }, 200);
+});
+
+// ---------------------------------------------------------------------------
+// GET /comms/outbox/{id} — recovery read (transport + landlord)
+// ---------------------------------------------------------------------------
+
+commsApp.openapi(getOutbox, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const principal = c.get('principal');
+  const role = c.get('account').role;
+  if (principal.type !== 'agent' && role !== 'owner' && role !== 'manager') {
+    throw new ApiError(403, 'forbidden', 'only the agent transport or an owner/manager may read outbox rows');
+  }
+  const sb = getSb(c);
+  const { data, error } = await sb
+    .from('comm_outbox')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw commDbError(error);
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  return c.json(data as OutboxRow, 200);
+});
+
+// ---------------------------------------------------------------------------
+// POST /comms/outbox/{id}/complete — ADR-0007 atomicity point (transport)
+// ---------------------------------------------------------------------------
+
+commsApp.openapi(completeSend, async (c) => {
+  requireTransport(c);
+  const { accountId, id } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  const { data: interactionId, error } = await sb.rpc('complete_send', {
+    p_outbox_id: id,
+    p_provider: body.provider,
+    p_provider_sid: body.provider_sid,
+  });
+  if (error) throw commDbError(error);
+  const { data: row, error: rowErr } = await sb
+    .from('comm_outbox')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .single();
+  if (rowErr) throw commDbError(rowErr);
+  return c.json(
+    { interaction_id: interactionId as string, outbox: row as OutboxRow },
+    200,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// POST /comms/outbox/{id}/fail — definitive rejection / reconcile parking
+// ---------------------------------------------------------------------------
+
+commsApp.openapi(failSend, async (c) => {
+  requireTransport(c);
+  const { id } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  const { data, error } = await sb.rpc('fail_send', {
+    p_outbox_id: id,
+    p_error_code: body.error_code,
+    p_detail: body.detail ?? null,
+    p_reconcile: body.reconcile ?? false,
+  });
+  if (error) throw commDbError(error);
+  return c.json(data as OutboxRow, 200);
+});
+
+// ---------------------------------------------------------------------------
+// POST /comms/outbox/{id}/delivery — monotonic callback advancement
+// ---------------------------------------------------------------------------
+
+commsApp.openapi(updateDelivery, async (c) => {
+  requireTransport(c);
+  const { id } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  const { data, error } = await sb.rpc('update_delivery', {
+    p_outbox_id: id,
+    p_status: body.status,
+    p_provider_ts: body.provider_ts,
+    p_error_code: body.error_code ?? null,
+  });
+  if (error) throw commDbError(error);
+  return c.json(data as OutboxRow, 200);
+});
+
+// ---------------------------------------------------------------------------
+// POST /comms/inbound — capture (transport); idempotent on provider_msg_id
+// ---------------------------------------------------------------------------
+
+commsApp.openapi(captureInbound, async (c) => {
+  requireTransport(c);
+  const { accountId } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  const { data, error } = await sb.rpc('capture_inbound', {
+    p_account_id: accountId,
+    p_provider: body.provider,
+    p_provider_msg_id: body.provider_msg_id,
+    p_to_number: body.to_number,
+    p_from_address: body.from_address,
+    p_channel: body.channel,
+    p_body: body.body ?? null,
+    p_media: body.media ?? null,
+    p_received_at: body.received_at,
+  });
+  if (error) throw commDbError(error);
+  const result = (data as {
+    disposition: 'matched' | 'orphan' | 'opted_out';
+    interaction_id: string | null;
+    thread_id: string | null;
+    participant_id: string | null;
+  }[])[0];
+  if (!result) throw new ApiError(500, 'internal_error', 'capture returned no result');
+
+  let participant: ParticipantRow | null = null;
+  if (result.participant_id !== null) {
+    const { data: part, error: pErr } = await sb
+      .from('comm_thread_participants')
+      .select(PARTICIPANT_COLS)
+      .eq('account_id', accountId)
+      .eq('id', result.participant_id)
+      .maybeSingle();
+    if (pErr) throw commDbError(pErr);
+    participant = (part as ParticipantRow | null) ?? null;
+  }
+  return c.json(
+    {
+      disposition: result.disposition,
+      interaction_id: result.interaction_id,
+      thread_id: result.thread_id,
+      participant,
+    },
+    200,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// POST /comms/opt-outs — record (transport); GET — landlord read
+// ---------------------------------------------------------------------------
+
+commsApp.openapi(createOptOut, async (c) => {
+  requireTransport(c);
+  const { accountId } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  const { data, error } = await sb.rpc('record_opt_out', {
+    p_account_id: accountId,
+    p_channel: body.channel,
+    p_address: normalizeAddress(body.channel, body.address),
+    p_keyword: body.keyword,
+    p_source_ref: body.source_ref,
+  });
+  if (error) throw commDbError(error);
+  return c.json(data as z.infer<typeof CommOptOut>, 200);
+});
+
+commsApp.openapi(listOptOuts, async (c) => {
+  requireManager(c);
+  const { accountId } = c.req.valid('param');
+  const { cursor, limit, channel } = c.req.valid('query');
+  const sb = getSb(c);
+  const { data, error } = await sb.rpc('list_account_opt_outs', {
+    p_account_id: accountId,
+    p_channel: channel ?? null,
+  });
+  if (error) throw commDbError(error);
+  const rows = (data ?? []) as z.infer<typeof CommOptOut>[];
+  const offset = cursor !== undefined ? decodeOffsetCursor(cursor) : 0;
+  const page = rows.slice(offset, offset + limit);
+  const next = offset + limit < rows.length ? encodeOffsetCursor(offset + limit) : null;
+  return c.json({ data: page, next_cursor: next }, 200);
+});
+
+// ---------------------------------------------------------------------------
+// Threads (landlord)
+// ---------------------------------------------------------------------------
+
+async function loadParticipants(
+  c: Context,
+  accountId: string,
+  threadIds: string[],
+): Promise<Map<string, ParticipantRow[]>> {
+  const map = new Map<string, ParticipantRow[]>();
+  if (threadIds.length === 0) return map;
+  const { data, error } = await getSb(c)
+    .from('comm_thread_participants')
+    .select(PARTICIPANT_COLS)
+    .eq('account_id', accountId)
+    .in('thread_id', threadIds)
+    .order('joined_at', { ascending: true });
+  if (error) throw commDbError(error);
+  for (const p of (data ?? []) as ParticipantRow[]) {
+    const list = map.get(p.thread_id) ?? [];
+    list.push(p);
+    map.set(p.thread_id, list);
+  }
+  return map;
+}
+
+commsApp.openapi(listThreads, async (c) => {
+  requireManager(c);
+  const { accountId } = c.req.valid('param');
+  const { cursor, limit, status, kind, tenancy_id } = c.req.valid('query');
+  const sb = getSb(c);
+  let q = sb.from('comm_threads').select('*').eq('account_id', accountId);
+  if (status !== undefined) q = q.eq('status', status);
+  if (kind !== undefined) q = q.eq('kind', kind);
+  if (tenancy_id !== undefined) q = q.eq('tenancy_id', tenancy_id);
+  const { items, next_cursor } = await keysetPage<z.infer<typeof CommThread>>(q, {
+    cursor,
+    limit,
+    descending: true,
+  });
+  const participants = await loadParticipants(c, accountId, items.map((t) => t.id));
+  const data = items.map((t) => ({ ...t, participants: participants.get(t.id) ?? [] }));
+  return c.json({ data, next_cursor } as z.infer<typeof ThreadListResponse>, 200);
+});
+
+// Attach per-leg relay delivery states to a page of journal rows.
+async function loadRelayLegs(
+  c: Context,
+  accountId: string,
+  interactionIds: string[],
+): Promise<Map<string, z.infer<typeof CommRelayLeg>[]>> {
+  const map = new Map<string, z.infer<typeof CommRelayLeg>[]>();
+  if (interactionIds.length === 0) return map;
+  const { data, error } = await getSb(c)
+    .from('comm_outbox')
+    .select('id, relay_of_interaction_id, participant_id, to_address, status, interaction_id, delivered_at')
+    .eq('account_id', accountId)
+    .in('relay_of_interaction_id', interactionIds);
+  if (error) throw commDbError(error);
+  for (const o of (data ?? []) as {
+    id: string; relay_of_interaction_id: string; participant_id: string | null;
+    to_address: string | null; status: z.infer<typeof CommOutboxStatus>;
+    interaction_id: string | null; delivered_at: string | null;
+  }[]) {
+    const leg = {
+      outbox_id: o.id,
+      participant_id: o.participant_id,
+      to_address: o.to_address,
+      status: o.status,
+      interaction_id: o.interaction_id,
+      delivered_at: o.delivered_at,
+    };
+    const list = map.get(o.relay_of_interaction_id) ?? [];
+    list.push(leg);
+    map.set(o.relay_of_interaction_id, list);
+  }
+  return map;
+}
+
+commsApp.openapi(getThread, async (c) => {
+  requireManager(c);
+  const { accountId, id } = c.req.valid('param');
+  const { cursor, limit } = c.req.valid('query');
+  const sb = getSb(c);
+
+  const { data: thread, error: thErr } = await sb
+    .from('comm_threads')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .maybeSingle();
+  if (thErr) throw commDbError(thErr);
+  if (!thread) throw new ApiError(404, 'not_found', 'not found');
+
+  const participants = (await loadParticipants(c, accountId, [id])).get(id) ?? [];
+
+  const { data: bindings, error: bErr } = await sb
+    .from('thread_channel_bindings')
+    .select(BINDING_COLS)
+    .eq('account_id', accountId)
+    .eq('thread_id', id);
+  if (bErr) throw commDbError(bErr);
+
+  // Journal rows in the thread, newest-first, with derived delivery state
+  // from the chain view (outbox join), then per-leg relay fan-out.
+  const msgQuery = sb
+    .from('interactions_with_chain')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('thread_id', id)
+    .is('deleted_at', null);
+  const { items: msgRows, next_cursor: messagesNext } = await keysetPage<Record<string, unknown>>(
+    msgQuery,
+    { cursor, limit, column: 'occurred_at', descending: true },
+  );
+  const legs = await loadRelayLegs(c, accountId, msgRows.map((m) => String(m.id)));
+  const messages = msgRows.map((m) => ({
+    ...withResolvedAuthorship(m as { author_type?: string | null; actor: string }),
+    relay_legs: legs.get(String(m.id)) ?? [],
+  }));
+
+  return c.json(
+    {
+      ...(thread as z.infer<typeof CommThread>),
+      participants,
+      bindings: (bindings ?? []) as z.infer<typeof CommThreadBinding>[],
+      messages,
+      messages_next_cursor: messagesNext,
+    } as z.infer<typeof CommThreadDetail>,
+    200,
+  );
+});
+
+commsApp.openapi(createThread, async (c) => {
+  requireManager(c);
+  const { accountId } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+
+  // Counterparties need a reachable address; require party_id so identity
+  // lookup / journal attribution stay honest.
+  for (const p of body.participants) {
+    if ((p.party_type === 'tenant' || p.party_type === 'vendor') && p.party_id === undefined) {
+      throw new ApiError(400, 'invalid_request', `${p.party_type} participants require party_id`);
+    }
+  }
+  const counterparties = body.participants.filter(
+    (p) => p.party_type === 'tenant' || p.party_type === 'vendor',
+  );
+  if (counterparties.length === 0) {
+    throw new ApiError(400, 'invalid_request', 'a thread needs at least one tenant or vendor participant');
+  }
+
+  // Resolve every counterparty address BEFORE creating anything, so a
+  // resolution failure leaves no partial thread.
+  const resolvedAddresses = new Map<number, string>();
+  for (const [i, p] of body.participants.entries()) {
+    if (p.party_type !== 'tenant' && p.party_type !== 'vendor') continue;
+    if (p.address !== undefined) {
+      resolvedAddresses.set(i, normalizeAddress(body.channel, p.address));
+      continue;
+    }
+    const { data: ident, error: iErr } = await sb
+      .from('channel_identities')
+      .select('address')
+      .eq('account_id', accountId)
+      .eq('channel', body.channel)
+      .eq('party_type', p.party_type)
+      .eq('party_id', p.party_id!)
+      .limit(1)
+      .maybeSingle();
+    if (iErr) throw commDbError(iErr);
+    if (!ident) {
+      throw new ApiError(
+        422,
+        'invalid_request',
+        `no ${body.channel} address on file for participant ${i}; supply address explicitly`,
+      );
+    }
+    resolvedAddresses.set(i, ident.address);
+  }
+
+  // The account's platform number carries every counterparty leg.
+  const { data: number, error: numErr } = await sb
+    .from('platform_numbers')
+    .select('number')
+    .eq('account_id', accountId)
+    .eq('status', 'active')
+    .contains('capabilities', [body.channel])
+    .limit(1)
+    .maybeSingle();
+  if (numErr) throw commDbError(numErr);
+  if (!number) {
+    throw new ApiError(409, 'conflict', `the account has no active platform number with ${body.channel} capability`);
+  }
+
+  const { data: thread, error: thErr } = await sb
+    .from('comm_threads')
+    .insert({
+      account_id: accountId,
+      kind: body.kind,
+      tenancy_id: body.tenancy_id ?? null,
+      maintenance_request_id: body.maintenance_request_id ?? null,
+    })
+    .select('*')
+    .single();
+  if (thErr) throw commDbError(thErr);
+
+  // Participants + bindings. PostgREST statements are not one transaction;
+  // on a later failure we best-effort delete the skeleton (hard delete is
+  // audited as hard_deleted) and rethrow, so a retry starts clean.
+  try {
+    const { data: parts, error: pErr } = await sb
+      .from('comm_thread_participants')
+      .insert(
+        body.participants.map((p) => ({
+          account_id: accountId,
+          thread_id: thread.id as string,
+          party_type: p.party_type,
+          party_id: p.party_id ?? null,
+        })),
+      )
+      .select(PARTICIPANT_COLS);
+    if (pErr) throw commDbError(pErr);
+    const participants = (parts ?? []) as ParticipantRow[];
+
+    const bindingRows = [];
+    for (const [i, p] of body.participants.entries()) {
+      const address = resolvedAddresses.get(i);
+      if (address === undefined) continue;
+      // insert order preserved participants order; match by index.
+      const participant = participants[i];
+      if (!participant) continue;
+      bindingRows.push({
+        account_id: accountId,
+        thread_id: thread.id as string,
+        participant_id: participant.id,
+        platform_number: number.number as string,
+        participant_address: address,
+      });
+      void p;
+    }
+    const { data: bindings, error: bindErr } = await sb
+      .from('thread_channel_bindings')
+      .insert(bindingRows)
+      .select(BINDING_COLS);
+    if (bindErr) {
+      if (bindErr.code === '23505') {
+        throw new ApiError(
+          409,
+          'conflict',
+          'a counterparty already has an active thread on this platform number',
+        );
+      }
+      throw commDbError(bindErr);
+    }
+
+    // Remember explicit addresses for future attribution/resolution.
+    const newIdentities = body.participants
+      .map((p, i) => ({ p, i }))
+      .filter(({ p, i }) => p.address !== undefined && resolvedAddresses.has(i) && p.party_id !== undefined)
+      .map(({ p, i }) => ({
+        account_id: accountId,
+        party_type: p.party_type,
+        party_id: p.party_id!,
+        channel: body.channel,
+        address: resolvedAddresses.get(i)!,
+      }));
+    if (newIdentities.length > 0) {
+      const { error: idErr } = await sb
+        .from('channel_identities')
+        .upsert(newIdentities, { onConflict: 'account_id,channel,address', ignoreDuplicates: true });
+      if (idErr) throw commDbError(idErr);
+    }
+
+    return c.json(
+      {
+        ...(thread as z.infer<typeof CommThread>),
+        participants,
+        bindings: (bindings ?? []) as z.infer<typeof CommThreadBinding>[],
+        messages: [],
+        messages_next_cursor: null,
+      } as z.infer<typeof CommThreadDetail>,
+      201,
+    );
+  } catch (e) {
+    // Best-effort cleanup of the skeleton; the original error is what the
+    // client needs to see.
+    await sb.from('thread_channel_bindings').delete().eq('account_id', accountId).eq('thread_id', thread.id as string);
+    await sb.from('comm_thread_participants').delete().eq('account_id', accountId).eq('thread_id', thread.id as string);
+    await sb.from('comm_threads').delete().eq('account_id', accountId).eq('id', thread.id as string);
+    throw e;
+  }
+});
+
+commsApp.openapi(createThreadMessage, async (c) => {
+  requireManager(c);
+  const { accountId, id } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  const userId = c.get('auth').userId;
+
+  const { data: thread, error: thErr } = await sb
+    .from('comm_threads')
+    .select('id, status')
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .maybeSingle();
+  if (thErr) throw commDbError(thErr);
+  if (!thread) throw new ApiError(404, 'not_found', 'not found');
+  if (thread.status === 'closed') throw new ApiError(409, 'conflict', 'the thread is closed');
+
+  // One send intent per actively-bound counterparty. The binding carries the
+  // address the conversation runs on; sms is the only bound channel today.
+  const { data: bindings, error: bErr } = await sb
+    .from('thread_channel_bindings')
+    .select('participant_id, participant_address')
+    .eq('account_id', accountId)
+    .eq('thread_id', id)
+    .eq('active', true);
+  if (bErr) throw commDbError(bErr);
+  const participants = (await loadParticipants(c, accountId, [id])).get(id) ?? [];
+  const present = new Map(
+    participants
+      .filter((p) => (p.party_type === 'tenant' || p.party_type === 'vendor') && p.left_at === null)
+      .map((p) => [p.id, p]),
+  );
+  const targets = ((bindings ?? []) as { participant_id: string; participant_address: string }[])
+    .filter((b) => present.has(b.participant_id));
+  if (targets.length === 0) {
+    throw new ApiError(409, 'conflict', 'the thread has no actively-bound counterparty to message');
+  }
+
+  const { data: rows, error } = await sb
+    .from('comm_outbox')
+    .insert(
+      targets.map((t) => ({
+        account_id: accountId,
+        channel: 'sms',
+        to_address: t.participant_address,
+        thread_id: id,
+        participant_id: t.participant_id,
+        body: body.body,
+        not_before: body.not_before ?? null,
+        approval_ref: `self:${userId}`,
+        approved_by: userId,
+        author_type: 'landlord',
+      })),
+    )
+    .select('*');
+  if (error) throw commDbError(error);
+  return c.json({ data: (rows ?? []) as OutboxRow[] }, 201);
+});
+
+// ---------------------------------------------------------------------------
+// Policies (landlord, owner|manager)
+// ---------------------------------------------------------------------------
+
+// Canonical per-kind params (agreed cross-repo): unknown keys are rejected so
+// a typo'd policy can't silently change what the reminder cron sends.
+const RENT_REMINDER_PARAMS = z
+  .object({
+    days_before: z.number().int().min(0).max(60),
+    monthly_cap: z.number().int().min(1).max(100),
+  })
+  .strict();
+
+function validatePolicyParams(kind: string, params: Record<string, unknown>): void {
+  if (kind === 'rent_reminder') {
+    const parsed = RENT_REMINDER_PARAMS.safeParse(params);
+    if (!parsed.success) {
+      throw new ApiError(
+        400,
+        'invalid_request',
+        "rent_reminder params must be exactly { days_before: number, monthly_cap: number }",
+        { fieldErrors: { params: [parsed.error.issues.map((i) => i.message).join('; ')] } },
+      );
+    }
+  }
+  // thread_autonomy / voice_autonomy: no canonical params agreed yet;
+  // pass-through until the coordinator publishes their shapes.
+}
+
+commsApp.openapi(listPolicies, async (c) => {
+  requireManager(c);
+  const { accountId } = c.req.valid('param');
+  const { cursor, limit, status, policy_kind } = c.req.valid('query');
+  const sb = getSb(c);
+  let q = sb.from('comm_policies').select('*').eq('account_id', accountId);
+  if (status !== undefined) q = q.eq('status', status);
+  if (policy_kind !== undefined) q = q.eq('policy_kind', policy_kind);
+  const { items, next_cursor } = await keysetPage<z.infer<typeof CommPolicy>>(q, {
+    cursor,
+    limit,
+    descending: true,
+  });
+  return c.json({ data: items, next_cursor }, 200);
+});
+
+commsApp.openapi(createPolicy, async (c) => {
+  requireManager(c);
+  const { accountId } = c.req.valid('param');
+  const body = c.req.valid('json');
+  validatePolicyParams(body.policy_kind, body.params);
+  const sb = getSb(c);
+  const { data, error } = await sb
+    .from('comm_policies')
+    .insert({
+      account_id: accountId,
+      policy_kind: body.policy_kind,
+      channel: body.channel,
+      template_id: body.template_id ?? null,
+      params: body.params,
+      quiet_hours: body.quiet_hours ?? null,
+      // Creation IS the approval act.
+      approved_by: c.get('auth').userId,
+    })
+    .select('*')
+    .single();
+  if (error) throw commDbError(error);
+  return c.json(data as z.infer<typeof CommPolicy>, 201);
+});
+
+commsApp.openapi(revokePolicy, async (c) => {
+  requireManager(c);
+  const { accountId, id } = c.req.valid('param');
+  const sb = getSb(c);
+  const userId = c.get('auth').userId;
+
+  const { data: existing, error: exErr } = await sb
+    .from('comm_policies')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .maybeSingle();
+  if (exErr) throw commDbError(exErr);
+  if (!existing) throw new ApiError(404, 'not_found', 'not found');
+  // Replay-friendly: revoking a revoked policy returns it unchanged.
+  if (existing.status === 'revoked') {
+    return c.json(existing as z.infer<typeof CommPolicy>, 200);
+  }
+
+  const { data: revoked, error } = await sb
+    .from('comm_policies')
+    .update({ status: 'revoked', revoked_by: userId, revoked_at: new Date().toISOString() })
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .eq('status', 'active')
+    .select('*')
+    .single();
+  if (error) throw commDbError(error);
+
+  // Queued-but-unsent intents authorized by this grant die with it. 'sending'
+  // rows are mid-flight (the transport re-checks policy status before dialing
+  // new work, and delivery callbacks still land).
+  const { error: parkErr } = await sb
+    .from('comm_outbox')
+    .update({ status: 'undeliverable', error_code: 'policy_revoked', error_message: 'standing grant revoked before dispatch' })
+    .eq('account_id', accountId)
+    .eq('status', 'queued')
+    .eq('approval_ref', `grant:${id}`);
+  if (parkErr) throw commDbError(parkErr);
+
+  return c.json(revoked as z.infer<typeof CommPolicy>, 200);
+});
+
+// ---------------------------------------------------------------------------
+// GET /comms/reconcile — stale 'sending' scan (transport)
+// ---------------------------------------------------------------------------
+
+commsApp.openapi(reconcileScan, async (c) => {
+  requireTransport(c);
+  const { accountId } = c.req.valid('param');
+  const { ttl_seconds } = c.req.valid('query');
+  const sb = getSb(c);
+  const { data, error } = await sb.rpc('reconcile_scan', {
+    p_account_id: accountId,
+    p_ttl_seconds: ttl_seconds,
+  });
+  if (error) throw commDbError(error);
+  return c.json({ data: (data ?? []) as OutboxRow[] }, 200);
+});

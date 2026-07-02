@@ -14033,7 +14033,7 @@ export interface components {
         };
         CommDeliveryBody: {
             /** @enum {string} */
-            status: "sent" | "delivered" | "failed" | "undeliverable";
+            status: "sending" | "sent" | "delivered" | "failed" | "undeliverable";
             /** Format: date-time */
             provider_ts: string;
             error_code?: string;

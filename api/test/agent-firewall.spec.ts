@@ -62,24 +62,38 @@ describe('agent principal', () => {
     expect(err?.status).toBe(403);
   });
 
-  it('allows a proposal-approved communication (approval_ref + approved_by)', () => {
+  it('allows a proposal-approved communication (approval_ref + approved_by + external_ref)', () => {
     expect(
       firewallError(AGENT, {
         kind: 'communication',
         approval_ref: 'proposal:1',
         approved_by: APPROVER,
+        external_ref: 'SM1',
       }),
     ).toBeNull();
   });
 
   it("allows a policy-authorized communication (grant: ref, no approved_by)", () => {
-    expect(firewallError(AGENT, { kind: 'communication', approval_ref: 'grant:22' })).toBeNull();
+    expect(
+      firewallError(AGENT, { kind: 'communication', approval_ref: 'grant:22', external_ref: 'SM2' }),
+    ).toBeNull();
   });
 
   it('allows a grant-ref communication that ALSO carries approved_by', () => {
     expect(
-      firewallError(AGENT, { kind: 'communication', approval_ref: 'grant:22', approved_by: APPROVER }),
+      firewallError(AGENT, {
+        kind: 'communication',
+        approval_ref: 'grant:22',
+        approved_by: APPROVER,
+        external_ref: 'SM3',
+      }),
     ).toBeNull();
+  });
+
+  it('requires external_ref on a provenance-complete communication (mirrors the DB trigger)', () => {
+    const err = firewallError(AGENT, { kind: 'communication', approval_ref: 'grant:22' });
+    expect(err?.status).toBe(400);
+    expect(err?.code).toBe('invalid_request');
   });
 
   it('requires both approval fields on a note', () => {

@@ -92,7 +92,11 @@ export type ErrorCode =
   // contract-first stub: the route is defined (and its schemas are final)
   // but the handler has not shipped yet. Clients should treat this as
   // "come back after the next deploy", never as a permanent failure.
-  | 'not_implemented';
+  | 'not_implemented'
+  // comms: the destination address is on the opt-out register; the send was
+  // refused BEFORE any intent was recorded (nothing happened, no journal
+  // trace). Not retryable until the counterparty opts back in.
+  | 'opted_out';
 
 export class ApiError extends Error {
   constructor(

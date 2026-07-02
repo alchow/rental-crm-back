@@ -570,6 +570,36 @@ A single account-scoped endpoint for finding entities by name or keyword. Result
 
 ---
 
+## 8e. Communications ledger
+
+Core owns communications **state** — threads, the outbox/delivery ledger, opt-outs, and standing policies — and never calls a messaging provider. The provider-calling *transport* (the agent) drives this ledger: it records a send **intent** before dialing and confirms or fails it after, so the journal only ever contains sends that verifiably happened (ADR-0007). Endpoints marked *transport* require the agent principal; *landlord* endpoints require an `owner`/`manager` membership (viewers are read-only elsewhere and get 403 here).
+
+Authorization provenance rides on every send: `approval_ref='proposal:<id>'` + `approved_by` means a human approved the exact message; `approval_ref='grant:<id>'` (a live `comm_policies` id, `approved_by` null) means a standing policy authorized it; `approval_ref='self:<user_id>'` is a landlord-authored send (stamped server-side).
+
+| Method | Path | Body / Notes |
+|---|---|---|
+| `POST` | `/comms/outbox` | Create a send intent (`queued`). Transport + landlord. `channel`, `body`, `approval_ref`, and either `to_address` or `thread_id`+`participant_ref`. 422 `opted_out` if the address opted out. |
+| `GET` | `/comms/outbox` | Dispatch scan (transport). Filters: `status`, `eligible_at` (honours `not_before`). Cursor-paginated. |
+| `GET` | `/comms/outbox/{id}` | Recovery read for a lost provider response. Transport + landlord. |
+| `POST` | `/comms/outbox/{id}/complete` | Confirm a send (transport): marks `sent` + appends the journal entry **atomically**; idempotent on `provider_sid` replay. |
+| `POST` | `/comms/outbox/{id}/fail` | Definitive rejection (no journal entry — nothing was sent); `reconcile: true` parks as `needs_reconcile`. Transport. |
+| `POST` | `/comms/outbox/{id}/delivery` | Monotonic delivery-state advance from provider callbacks; `sending` is the pre-dial claim. Late/duplicate callbacks are no-ops. Transport. |
+| `POST` | `/comms/inbound` | Capture an inbound message (transport). Idempotent on `provider_msg_id`. Returns `disposition`: `matched` / `orphan` / `opted_out`. |
+| `POST` | `/comms/opt-outs` | Record a STOP-style opt-out (transport). Idempotent; first opt-out wins; parks queued sends to the address. |
+| `GET` | `/comms/opt-outs` | Landlord read, filtered to addresses the account already knows (never an address oracle). |
+| `GET` | `/comms/threads` | List threads with participants (landlord). Filters: `status`, `kind`, `tenancy_id`. |
+| `GET` | `/comms/threads/{id}` | Thread detail: participants, channel bindings, and journal messages with derived delivery state (cursor/limit page the messages). |
+| `POST` | `/comms/threads` | Create a thread + participants + bindings (landlord). One active thread per counterparty per platform number. |
+| `POST` | `/comms/threads/{id}/messages` | Landlord-authored outbound: one `queued` intent per bound counterparty, `approval_ref='self:<user_id>'`. |
+| `GET` | `/comms/policies` | List standing grants (landlord). |
+| `POST` | `/comms/policies` | Create a standing grant — creation IS the approval. `rent_reminder` params must be exactly `{ days_before, monthly_cap }`. |
+| `POST` | `/comms/policies/{id}/revoke` | Revoke a grant; queued sends authorized by it are parked `undeliverable`. Idempotent. |
+| `GET` | `/comms/reconcile` | Stale `sending` rows past `ttl_seconds` (transport). Read-only; resolution goes through complete/fail. |
+
+Outbox status is monotonic: `queued → sending → sent → delivered`, with `failed` / `undeliverable` terminal and `needs_reconcile` parking ambiguity for manual resolution. Delivery state is exposed on journal rows as a **derived** read (`delivery_status` / `delivered_at` / `outbox_id` via the chain view) — the journal itself is never mutated.
+
+---
+
 ## 9. Attachments & file uploads
 
 Files tied to any entity — maintenance requests, inspection items, inspections, evidence exports.

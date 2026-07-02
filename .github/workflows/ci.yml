@@ -307,6 +307,15 @@ jobs:
         # PATCH/DELETE), cross-account corrects_id → 404, and audit attribution.
         run: pnpm --filter ./api test:interactions-journal
 
+      - name: Run comms ledger DoD checks (ADR-0007 revived)
+        # Threads + bindings, intent -> claim -> complete (journal appended
+        # exactly once, atomically, only on confirmed send), monotonic
+        # delivery, opt-out enforcement at the intent boundary, inbound
+        # capture idempotent on provider_msg_id, standing-policy provenance
+        # + revoke parking, principal gating (transport vs owner/manager vs
+        # viewer), Idempotency-Key replay, events-feed surfacing.
+        run: pnpm --filter ./api test:comms
+
       - name: Run events feed + ledger as_of checks (Phase 3)
         # Poller contract under concurrency (40 POSTs, cursor drain), next_seq
         # semantics, entity_type filter, cross-account isolation, validation
