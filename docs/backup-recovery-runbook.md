@@ -119,7 +119,16 @@ specific tables in place. General path for a full restore:
    ```
 
 4. **Data-only restore.** Run this **as the `postgres` role of the new project**
-   (it owns the tables, which `--disable-triggers` requires):
+   (it owns the tables, which `--disable-triggers` requires). If any migration
+   seeds rows, truncate the public tables first so COPY doesn't hit duplicate
+   keys:
+   ```sql
+   do $$ declare r record; begin
+     for r in (select tablename from pg_tables where schemaname='public') loop
+       execute format('truncate table public.%I restart identity cascade', r.tablename);
+     end loop;
+   end $$;
+   ```
    ```sh
    pg_restore --data-only --disable-triggers \
      --no-owner --no-privileges -j 4 \

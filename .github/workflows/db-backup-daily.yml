@@ -168,6 +168,13 @@ jobs:
       AWS_REQUEST_CHECKSUM_CALCULATION: when_required
       AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
     steps:
+      # The drill mirrors the documented recovery procedure (runbook §3):
+      # schema/RLS/triggers come from the MIGRATIONS (checked out here), and
+      # the dump is replayed data-only on top. A bare full restore cannot work:
+      # the dump is --schema=public, so extensions (pg_trgm), the auth schema
+      # our FKs target, and the RLS roles all have to come from source of truth.
+      - uses: actions/checkout@v4
+
       - name: Install postgresql-client-17 (PGDG)
         # ubuntu-latest ships client 16; the server is PG 17 (db/supabase/
         # config.toml major_version) and pg_restore's major must be >= the
@@ -224,36 +231,53 @@ jobs:
           docker logs pgv || true
           exit 1
 
-      - name: Restore the dump
-        # --exit-on-error: any restore error fails the drill immediately, which
-        # is the whole point -- a dump that only "mostly" restores is not a
-        # backup we can trust. --no-owner/--no-privileges mirrors how a real
-        # recovery into a fresh project would replay it.
-        #
-        # Drop the pre-existing public schema first: the dump was taken with
-        # --schema=public, so it carries its own CREATE SCHEMA public, and
-        # restoring over the default one fails under --exit-on-error.
+      - name: Apply schema from source of truth (compat primer + migrations)
+        # Same primer + migration loop ci.yml's isolation job runs against a
+        # stock postgres container. This is the "apply migrations first" step
+        # of the real recovery.
         run: |
-          psql postgres://postgres:postgres@127.0.0.1:5433/postgres \
-            -c "drop schema public cascade;"
-          pg_restore --no-owner --no-privileges --exit-on-error \
-            -d postgres://postgres:postgres@127.0.0.1:5433/postgres \
-            "$DUMP"
+          url="postgres://postgres:postgres@127.0.0.1:5433/postgres"
+          psql "$url" -v ON_ERROR_STOP=1 -q -f db/test/supabase_compat.sql
+          for f in db/supabase/migrations/*.sql; do
+            echo "  apply $(basename "$f")"
+            psql "$url" -v ON_ERROR_STOP=1 -q -f "$f"
+          done
 
-      - name: Sanity-check the restored schema
-        # A dump can restore cleanly yet be empty/truncated. Assert the public
-        # schema actually has a plausible number of tables (>= 10 -- the app's
-        # public schema has well over that; the threshold just catches a
-        # near-empty dump). Fail loudly with the observed count otherwise.
+      - name: Data-only restore (the real recovery command)
+        # Truncate first: if any migration seeds rows, COPY would hit duplicate
+        # keys. --disable-triggers: the audit-chain tables are trigger-
+        # maintained; re-firing triggers on load would rewrite the chain (the
+        # container's postgres user is superuser, so this is permitted).
+        # pg_restore exits non-zero if any data errors occurred, failing the
+        # drill -- a dump that only "mostly" restores is not a backup we trust.
         run: |
-          count="$(psql postgres://postgres:postgres@127.0.0.1:5433/postgres \
-            -tAc "select count(*) from information_schema.tables where table_schema='public'")"
-          echo "public tables restored: $count"
-          if [ "$count" -lt 10 ]; then
-            echo "FAIL: only $count tables in public after restore (expected >= 10) -- the dump looks empty or truncated. See the runbook." >&2
+          url="postgres://postgres:postgres@127.0.0.1:5433/postgres"
+          psql "$url" -v ON_ERROR_STOP=1 -c "
+            do \$\$ declare r record; begin
+              for r in (select tablename from pg_tables where schemaname='public') loop
+                execute format('truncate table public.%I restart identity cascade', r.tablename);
+              end loop;
+            end \$\$;"
+          pg_restore --data-only --disable-triggers \
+            --no-owner --no-privileges -j 4 \
+            -d "$url" "$DUMP"
+
+      - name: Sanity-check the restored data
+        # The schema came from migrations, so table count proves nothing about
+        # the dump. Assert the DATA actually loaded: total live rows across
+        # public tables must be > 0 (catches a dump that restored cleanly but
+        # empty/truncated).
+        run: |
+          url="postgres://postgres:postgres@127.0.0.1:5433/postgres"
+          psql "$url" -v ON_ERROR_STOP=1 -q -c "analyze;"
+          rows="$(psql "$url" -tAc \
+            "select coalesce(sum(n_live_tup),0)::bigint from pg_stat_user_tables where schemaname='public'")"
+          echo "rows restored across public tables: $rows"
+          if [ "$rows" -le 0 ]; then
+            echo "FAIL: data-only restore loaded 0 rows -- the dump looks empty or truncated. See the runbook." >&2
             exit 1
           fi
-          echo "verify-restore PASS: dump restores and public schema looks intact"
+          echo "verify-restore PASS: dump data restores onto the migration schema"
 
       - name: Tear down scratch container
         if: always()
