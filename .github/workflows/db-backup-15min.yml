@@ -48,7 +48,11 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends postgresql-client-17
-          pg_dump --version
+          # The runner ships client 16 at /usr/bin; put the freshly-installed
+          # v17 binaries first on PATH for subsequent steps, else pg_dump 16
+          # aborts on "server version mismatch" against PG 17.
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+          /usr/lib/postgresql/17/bin/pg_dump --version
 
       - name: Dump public schema
         # public only: the supabase-managed auth/storage/realtime schemas are

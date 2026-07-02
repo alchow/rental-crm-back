@@ -51,6 +51,10 @@ Paid upgrade paths, if a hard guarantee is ever required:
    ```sql
    create role backup_reader login password '<strong-random>';
    grant pg_read_all_data to backup_reader;
+   -- pg_dump runs with row_security=off and aborts on RLS-enabled tables
+   -- ("query would be affected by row-level security policy") unless the role
+   -- bypasses RLS. pg_read_all_data grants SELECT but NOT RLS bypass, so:
+   alter role backup_reader bypassrls;
    ```
    Then verify it can read `auth.users` / `auth.identities`:
    ```sql
@@ -68,7 +72,7 @@ Paid upgrade paths, if a hard guarantee is ever required:
 
    | Secret | Value |
    |---|---|
-   | `BACKUP_DB_URL` | `backup_reader` connection — **direct port 5432** or the **session pooler** URL. **NEVER** the transaction pooler (port 6543): `pg_dump` fails there. **Never** reuse `SUPABASE_DB_URL` (that is the least-privilege import role per `.env.example`). |
+   | `BACKUP_DB_URL` | `backup_reader` connection — use the **Session pooler** URL (host `aws-0-<region>.pooler.supabase.com`, port **5432**, username tenant-qualified as `backup_reader.<project_ref>`). **NOT** the direct host `db.<ref>.supabase.co` — Supabase serves it IPv6-only and GitHub runners have no IPv6, so it fails with *"Network is unreachable"*. **NOT** the transaction pooler (port 6543): `pg_dump` fails there. **Never** reuse `SUPABASE_DB_URL` (the least-privilege import role per `.env.example`). |
    | `BACKUP_S3_ENDPOINT` | `https://<accountid>.r2.cloudflarestorage.com` |
    | `BACKUP_S3_BUCKET` | e.g. `rental-crm-backups` |
    | `BACKUP_S3_ACCESS_KEY_ID` | R2 token key id |
@@ -115,7 +119,16 @@ specific tables in place. General path for a full restore:
    ```
 
 4. **Data-only restore.** Run this **as the `postgres` role of the new project**
-   (it owns the tables, which `--disable-triggers` requires):
+   (it owns the tables, which `--disable-triggers` requires). If any migration
+   seeds rows, truncate the public tables first so COPY doesn't hit duplicate
+   keys:
+   ```sql
+   do $$ declare r record; begin
+     for r in (select tablename from pg_tables where schemaname='public') loop
+       execute format('truncate table public.%I restart identity cascade', r.tablename);
+     end loop;
+   end $$;
+   ```
    ```sh
    pg_restore --data-only --disable-triggers \
      --no-owner --no-privileges -j 4 \
@@ -207,8 +220,11 @@ every bucket that was backed up.
 Run every quarter and log the outcome below.
 
 1. Actions → `db-backup-daily` → Run workflow with **`verify_restore: true`**.
-2. Confirm the run is green (the verify job restores the newest dump into a
-   scratch `postgres:17` container and asserts **≥10 public tables**).
+2. Confirm the run is green. The verify job rehearses the real recovery in a
+   scratch `postgres:17` container (migrations first, then data-only restore)
+   and asserts restored rows > 0 **and a clean `verify_chain()` for every
+   account** — so a green run means the evidence trail survived
+   dump→restore intact. Row counts are printed in the job log for eyeballing.
 3. Spot-check one attachment: pick a `public.attachments.storage_path` row and
    confirm the matching object exists under `storage/attachments/…` in the
    backup bucket.
