@@ -760,6 +760,24 @@ function requireManager(c: Context): void {
   }
 }
 
+// Pin an outbox mutation to the URL account BEFORE calling its RPC. The
+// complete/fail/delivery RPCs self-defend on the row's OWN account (and
+// fail_send/update_delivery rely on RLS), so a caller who is a member of both
+// the URL account and the row's account could otherwise drive a row in the
+// wrong account through the URL. account_id is immutable (guard trigger), so
+// this check is race-free. 404 (not 403) so a foreign id is indistinguishable
+// from a missing one.
+async function assertOutboxInAccount(c: Context, accountId: string, id: string): Promise<void> {
+  const { data, error } = await getSb(c)
+    .from('comm_outbox')
+    .select('id')
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw commDbError(error);
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+}
+
 // Map the typed SQLSTATEs raised by the comms triggers/RPCs to the envelope.
 function commDbError(error: { code?: string; message: string }): ApiError {
   switch (error.code) {
@@ -851,28 +869,34 @@ commsApp.openapi(createOutbox, async (c) => {
       );
     }
     if (body.approved_by !== undefined) {
-      const { data: ok } = await sb.rpc('is_approver_member', {
+      const { data: ok, error: approverErr } = await sb.rpc('is_approver_member', {
         p_account_id: accountId,
         p_user_id: body.approved_by,
       });
+      if (approverErr) throw commDbError(approverErr);
       if (!ok) {
         throw new ApiError(400, 'invalid_request', 'approved_by must be a non-agent member of this account');
       }
     } else {
-      // A grant ref must name a live standing policy in THIS account.
+      // A grant ref must name a live standing policy in THIS account, and the
+      // policy's channel must match the send's channel — a standing grant for
+      // sms does not authorize a voice/email send.
       const grantId = body.approval_ref.slice('grant:'.length);
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(grantId)) {
         throw new ApiError(400, 'invalid_request', "a 'grant:' approval_ref must carry the comm_policies id");
       }
       const { data: policy, error: polErr } = await sb
         .from('comm_policies')
-        .select('id, status')
+        .select('id, status, channel')
         .eq('account_id', accountId)
         .eq('id', grantId)
         .maybeSingle();
       if (polErr) throw commDbError(polErr);
       if (!policy || policy.status !== 'active') {
         throw new ApiError(403, 'forbidden', 'the referenced grant is not an active policy of this account');
+      }
+      if (policy.channel !== body.channel) {
+        throw new ApiError(403, 'forbidden', `the referenced grant authorizes ${policy.channel}, not ${body.channel}`);
       }
     }
   } else {
@@ -959,7 +983,10 @@ commsApp.openapi(createOutbox, async (c) => {
     if (resolved === null) {
       throw new ApiError(422, 'invalid_request', 'no destination address is bound or on file for this participant');
     }
-    toAddress = resolved;
+    // Validate the resolved address against the requested channel too — a
+    // binding stored for one channel must not be silently reused as the
+    // destination for another (e.g. an sms binding for an email send).
+    toAddress = normalizeAddress(body.channel, resolved);
   }
 
   const { data, error } = await sb
@@ -1034,6 +1061,7 @@ commsApp.openapi(completeSend, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
+  await assertOutboxInAccount(c, accountId, id);
   const { data: interactionId, error } = await sb.rpc('complete_send', {
     p_outbox_id: id,
     p_provider: body.provider,
@@ -1059,9 +1087,10 @@ commsApp.openapi(completeSend, async (c) => {
 
 commsApp.openapi(failSend, async (c) => {
   requireTransport(c);
-  const { id } = c.req.valid('param');
+  const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
+  await assertOutboxInAccount(c, accountId, id);
   const { data, error } = await sb.rpc('fail_send', {
     p_outbox_id: id,
     p_error_code: body.error_code,
@@ -1078,9 +1107,10 @@ commsApp.openapi(failSend, async (c) => {
 
 commsApp.openapi(updateDelivery, async (c) => {
   requireTransport(c);
-  const { id } = c.req.valid('param');
+  const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
+  await assertOutboxInAccount(c, accountId, id);
   const { data, error } = await sb.rpc('update_delivery', {
     p_outbox_id: id,
     p_status: body.status,
@@ -1317,6 +1347,20 @@ commsApp.openapi(createThread, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
+
+  // Bridged threading is wired for SMS only today. The landlord-authored
+  // message path (POST .../messages) sends on the thread's channel and
+  // currently hardcodes sms, so accepting an email/voice thread here would
+  // silently produce sms sends to a non-phone address. Reject the mismatch
+  // explicitly rather than mis-send; the schema still advertises the future
+  // channels. (Direct POST /comms/outbox remains multi-channel by design.)
+  if (body.channel !== 'sms') {
+    throw new ApiError(
+      501,
+      'not_implemented',
+      `bridged ${body.channel} threads are not supported yet; only sms threads can be created`,
+    );
+  }
 
   // Counterparties need a reachable address; require party_id so identity
   // lookup / journal attribution stay honest.
@@ -1628,8 +1672,22 @@ commsApp.openapi(revokePolicy, async (c) => {
     .eq('id', id)
     .eq('status', 'active')
     .select('*')
-    .single();
+    .maybeSingle();
   if (error) throw commDbError(error);
+  // Lost a concurrent-revoke race (the status='active' filter matched zero
+  // rows): stay replay-friendly — re-read and return the already-revoked row
+  // rather than surfacing a spurious 500 from a single-row expectation.
+  if (!revoked) {
+    const { data: current, error: reErr } = await sb
+      .from('comm_policies')
+      .select('*')
+      .eq('account_id', accountId)
+      .eq('id', id)
+      .maybeSingle();
+    if (reErr) throw commDbError(reErr);
+    if (!current) throw new ApiError(404, 'not_found', 'not found');
+    return c.json(current as z.infer<typeof CommPolicy>, 200);
+  }
 
   // Queued-but-unsent intents authorized by this grant die with it. 'sending'
   // rows are mid-flight (the transport re-checks policy status before dialing

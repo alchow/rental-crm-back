@@ -6136,7 +6136,7 @@ export interface paths {
                 query?: {
                     cursor?: string;
                     limit?: number;
-                    status?: "queued" | "sending" | "sent" | "delivered" | "failed" | "undeliverable" | "needs_reconcile" | null;
+                    status?: "queued" | "sending" | "sent" | "delivered" | "failed" | "undeliverable" | "needs_reconcile";
                     eligible_at?: string;
                 };
                 header?: never;
@@ -13937,7 +13937,7 @@ export interface components {
             /** Format: uuid */
             corrects_id?: string;
             /** @enum {string} */
-            correction_kind?: "amend" | "retract" | "classify" | null;
+            correction_kind?: "amend" | "retract" | "classify";
             /** Format: uuid */
             tenancy_id?: string;
             /** Format: uuid */
@@ -13949,7 +13949,7 @@ export interface components {
             /** Format: uuid */
             vendor_id?: string;
             /** @enum {string} */
-            entry_type?: "proposal_created" | "proposal_approved" | "proposal_rejected" | "step_executed" | "proposal_failed" | "proposal_blocked" | "resume_target_dead" | "proposal_superseded" | null;
+            entry_type?: "proposal_created" | "proposal_approved" | "proposal_rejected" | "step_executed" | "proposal_failed" | "proposal_blocked" | "resume_target_dead" | "proposal_superseded";
             /** Format: uuid */
             approved_by?: string;
             approval_ref?: string;
@@ -13978,7 +13978,7 @@ export interface components {
             /** Format: uuid */
             relay_of_interaction_id: string | null;
             /** @enum {string} */
-            status: "queued" | "sending" | "sent" | "delivered" | "failed" | "undeliverable" | "needs_reconcile" | null;
+            status: "queued" | "sending" | "sent" | "delivered" | "failed" | "undeliverable" | "needs_reconcile";
             error_code: string | null;
             error_message: string | null;
             provider: string | null;
@@ -14135,7 +14135,7 @@ export interface components {
             participant_id: string | null;
             to_address: string | null;
             /** @enum {string} */
-            status: "queued" | "sending" | "sent" | "delivered" | "failed" | "undeliverable" | "needs_reconcile" | null;
+            status: "queued" | "sending" | "sent" | "delivered" | "failed" | "undeliverable" | "needs_reconcile";
             /** Format: uuid */
             interaction_id: string | null;
             delivered_at: string | null;
@@ -14631,7 +14631,7 @@ export interface components {
             item_key?: string;
             group_label?: string;
             /** @enum {string} */
-            change_type?: "unchanged" | "normal_wear" | "damage" | "not_present_at_baseline" | "new_at_checkout" | null;
+            change_type?: "unchanged" | "normal_wear" | "damage" | "not_present_at_baseline" | "new_at_checkout";
             sort_order?: number;
         };
         PatchInspectionItemBody: {
@@ -14652,7 +14652,7 @@ export interface components {
                 notes?: string;
                 group_label?: string;
                 /** @enum {string} */
-                change_type?: "unchanged" | "normal_wear" | "damage" | "not_present_at_baseline" | "new_at_checkout" | null;
+                change_type?: "unchanged" | "normal_wear" | "damage" | "not_present_at_baseline" | "new_at_checkout";
                 sort_order?: number;
             }[];
         };

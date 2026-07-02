@@ -533,14 +533,27 @@ interactionsApp.openapi(create, async (c) => {
   // the target is a real, non-agent member of this account. The RPC uses
   // security definer so it can see other members despite self-only RLS.
   if (body.approved_by !== undefined) {
-    const { data: ok } = await sb.rpc('is_approver_member', {
+    const { data: ok, error: approverErr } = await sb.rpc('is_approver_member', {
       p_account_id: accountId,
       p_user_id: body.approved_by,
     });
+    if (approverErr) throw dbError(approverErr);
     if (!ok) {
       throw new ApiError(400, 'invalid_request', 'approved_by must be a non-agent member of this account');
     }
   }
+
+  // NOTE: a `grant:`-prefixed approval_ref on this direct journaling path is
+  // NOT validated against comm_policies here -- deliberately. This path RECORDS
+  // a send that already happened (the agent transport's confirmed-send journal,
+  // per landlord-agent/docs/agent-sends-core-records.md); refusing the record
+  // because the cited grant is (now) revoked would suppress the evidence of a
+  // real send, violating ADR-0007's "a message is never sent without a record".
+  // Grant existence/scope is enforced at INTENT-CREATION time on POST
+  // /comms/outbox instead. (Open item raised to the coordinator: whether to
+  // additionally reject a truly-nonexistent grant id here without the ADR-0007
+  // suppression risk -- pending confirmation of the grant-ref format Plan B
+  // emits.)
 
   let row: Record<string, unknown>;
 

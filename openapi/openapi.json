@@ -3504,8 +3504,7 @@
             "enum": [
               "amend",
               "retract",
-              "classify",
-              null
+              "classify"
             ]
           },
           "tenancy_id": {
@@ -3538,8 +3537,7 @@
               "proposal_failed",
               "proposal_blocked",
               "resume_target_dead",
-              "proposal_superseded",
-              null
+              "proposal_superseded"
             ]
           },
           "approved_by": {
@@ -3633,8 +3631,7 @@
               "delivered",
               "failed",
               "undeliverable",
-              "needs_reconcile",
-              null
+              "needs_reconcile"
             ]
           },
           "error_code": {
@@ -4301,8 +4298,7 @@
               "delivered",
               "failed",
               "undeliverable",
-              "needs_reconcile",
-              null
+              "needs_reconcile"
             ]
           },
           "interaction_id": {
@@ -6278,8 +6274,7 @@
               "normal_wear",
               "damage",
               "not_present_at_baseline",
-              "new_at_checkout",
-              null
+              "new_at_checkout"
             ]
           },
           "sort_order": {
@@ -6386,8 +6381,7 @@
                     "normal_wear",
                     "damage",
                     "not_present_at_baseline",
-                    "new_at_checkout",
-                    null
+                    "new_at_checkout"
                   ]
                 },
                 "sort_order": {
@@ -16693,8 +16687,7 @@
                 "delivered",
                 "failed",
                 "undeliverable",
-                "needs_reconcile",
-                null
+                "needs_reconcile"
               ]
             },
             "required": false,

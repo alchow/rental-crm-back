@@ -167,12 +167,18 @@ export function injectSchemaHygiene<T>(doc: T): T {
     if (typeof node !== 'object' || node === null) return;
     const obj = node as Record<string, unknown>;
 
-    // (1) enum missing its declared null.
+    // (1) enum missing its declared null. REPLACE the array, never push in
+    // place: zod-openapi shares one enum-array object by reference across every
+    // schema position that reuses a given z.enum (e.g. CommOutboxStatus is the
+    // status field of CommOutbox, CommRelayLeg, the outbox-scan query param,
+    // AND the nullable delivery_status). A `.push(null)` on the one nullable
+    // position would leak null into all the non-nullable ones. Reassigning a
+    // fresh array mutates only this node, leaving the shared original clean.
     if (
       Array.isArray(obj.type) && obj.type.includes('null') &&
       Array.isArray(obj.enum) && !obj.enum.includes(null)
     ) {
-      (obj.enum as unknown[]).push(null);
+      obj.enum = [...(obj.enum as unknown[]), null];
     }
 
     // (2) allOf of exactly one $ref plus only-bare-type junk members.

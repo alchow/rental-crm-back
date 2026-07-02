@@ -100,6 +100,29 @@ async function api(
 
 function rnd(): string { return Math.random().toString(36).slice(2, 10); }
 
+// Direct PostgREST call with a member's real JWT — the threat model the DB
+// triggers/RLS defend against (a member reaching past the API layer). Used to
+// exercise the DB-layer hardening guards (F1 outbox capacity, F5 binding FK).
+async function pgrest(
+  method: string,
+  path: string,
+  token: string,
+  body?: unknown,
+): Promise<{ status: number; body: unknown }> {
+  const res = await fetch(`${status.API_URL}/rest/v1/${path}`, {
+    method,
+    headers: {
+      apikey: status.ANON_KEY,
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      prefer: 'return=representation',
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  return { status: res.status, body: text ? JSON.parse(text) : null };
+}
+
 interface Failure { name: string; detail: string }
 const failures: Failure[] = [];
 async function check(name: string, fn: () => Promise<void>): Promise<void> {
@@ -273,6 +296,15 @@ async function main(): Promise<void> {
     assertStatus(ra, 403, 'agent thread create');
   });
 
+  await check('non-sms thread creation is refused (hardening F7 — sms-only today)', async () => {
+    const r = await L({
+      kind: 'bridged_tenant', channel: 'email',
+      participants: [{ party_type: 'tenant', party_id: fx.tenantId, address: 'tessa@example.test' }],
+    }, '/threads');
+    assertStatus(r, 501, 'email thread');
+    if (errCode(r) !== 'not_implemented') throw new Error(`code: ${errCode(r)}`);
+  });
+
   // =========================================================================
   // Landlord-authored thread message -> outbox intents
   // =========================================================================
@@ -347,6 +379,15 @@ async function main(): Promise<void> {
     };
     assert(row.approved_by === null, 'approved_by stays null under a grant');
     assert(row.author_type === 'agent', `author_type: ${row.author_type}`);
+  });
+
+  await check('agent intent whose channel mismatches the grant → 403 (hardening F3)', async () => {
+    // policyId is an sms rent_reminder grant; a voice send under it is refused.
+    const r = await A({
+      channel: 'voice', to_address: TENANT_ADDR, body: 'call reminder',
+      approval_ref: `grant:${policyId}`,
+    }, '/outbox');
+    assertStatus(r, 403, 'grant channel mismatch');
   });
 
   await check('agent intent with dead/foreign grant or bare proposal ref → 403', async () => {
@@ -583,12 +624,19 @@ async function main(): Promise<void> {
     assert(res.disposition === 'opted_out', `disposition: ${res.disposition}`);
     assert(res.interaction_id !== null, 'contact still journaled');
 
-    // Replay of the same opt-out is a no-op returning the original row.
+    // Replay of the same opt-out is a no-op. The RPC does NOT echo the stored
+    // keyword/source_ref for a pre-existing row (hardening F4 — the register is
+    // global, so echoing would leak another account's recording metadata), but
+    // the first recording IS kept intact (verified via the admin read).
     const again = await A({
       channel: 'sms', address: TENANT_ADDR, keyword: 'STOPALL', source_ref: `IN-${rnd()}`,
     }, '/opt-outs');
-    const rowAgain = assertStatus(again, 200, 'opt-out replay') as { keyword: string };
-    assert(rowAgain.keyword === 'STOP', 'first opt-out wins (original evidence kept)');
+    const rowAgain = assertStatus(again, 200, 'opt-out replay') as { keyword: string | null; source_ref: string | null };
+    assert(rowAgain.keyword === null && rowAgain.source_ref === null,
+      'replay does not echo stored recording metadata');
+    const { data: stored } = await admin.from('comm_opt_outs')
+      .select('keyword').eq('channel', 'sms').eq('address', TENANT_ADDR).single();
+    assert(stored?.keyword === 'STOP', 'first opt-out wins (original evidence kept)');
   });
 
   await check('landlord reads opt-outs scoped to known addresses; viewer/agent denied', async () => {
@@ -706,8 +754,9 @@ async function main(): Promise<void> {
     assert((assertStatus(th, 200, 'thread events') as { data: unknown[] }).data.length > 0, 'comm_threads events');
   });
 
+  const other = await setupOther();
+
   await check('cross-account reads 404 through the account scope', async () => {
-    const other = await setupOther();
     const r = await api('GET', `/v1/accounts/${other.accountId}/comms/outbox/${msgOutboxId}`, {
       token: other.token,
     });
@@ -716,6 +765,59 @@ async function main(): Promise<void> {
       token: other.token,
     });
     assertStatus(t, 404, 'foreign thread');
+  });
+
+  // =========================================================================
+  // Post-review hardening guards (adversarial DB-layer review of the ledger).
+  // These exercise the threat model the API cannot see: a member reaching past
+  // the app straight to PostgREST, and cross-account confusion in the RPCs.
+  // =========================================================================
+
+  await check('F1: agent cannot forge a landlord-authored outbox row via direct PostgREST', async () => {
+    const forge = await pgrest('POST', 'comm_outbox', fx.agentToken, {
+      account_id: fx.accountId, channel: 'sms', to_address: `+1717${SUFFIX}`,
+      body: 'forged as landlord', approval_ref: `grant:${policyId}`, author_type: 'landlord',
+    });
+    assert(forge.status >= 400, `agent forging author_type=landlord must be rejected (got ${forge.status})`);
+    // Control: the legitimate agent capability (author_type=agent) still works.
+    const ok = await pgrest('POST', 'comm_outbox', fx.agentToken, {
+      account_id: fx.accountId, channel: 'sms', to_address: `+1718${SUFFIX}`,
+      body: 'honest agent row', approval_ref: `grant:${policyId}`, author_type: 'agent',
+    });
+    assert(ok.status < 300, `agent author_type=agent must be accepted (got ${ok.status}: ${JSON.stringify(ok.body)})`);
+  });
+
+  await check('F5: a member cannot bind another account\'s platform number', async () => {
+    // other.platformNumber belongs to account B; account A binding it would
+    // occupy B's global routing slot. The composite FK must refuse it.
+    const bind = await pgrest('POST', 'thread_channel_bindings', fx.landlordToken, {
+      account_id: fx.accountId, thread_id: threadId, participant_id: tenantParticipantId,
+      platform_number: other.platformNumber, participant_address: `+1719${SUFFIX}`,
+    });
+    assert(bind.status >= 400, `binding a foreign platform number must be rejected (got ${bind.status})`);
+  });
+
+  await check('F2: capture_inbound will not return another account\'s cached result', async () => {
+    // The agent is a transport for BOTH accounts. Capture a message id under B
+    // (orphan is fine), then attempt the SAME id under A: the account-pinned
+    // dedupe must refuse rather than leak B's ids or poison A's capture.
+    const msgId = `IN-shared-${rnd()}`;
+    const capB = await api('POST', `/v1/accounts/${other.accountId}/comms/inbound`, {
+      token: other.agentToken,
+      body: {
+        provider: 'test', provider_msg_id: msgId, to_number: other.platformNumber,
+        from_address: `+1720${SUFFIX}`, channel: 'sms', received_at: new Date().toISOString(),
+      },
+    });
+    assertStatus(capB, 200, 'capture under B');
+    const capA = await api('POST', `/v1/accounts/${fx.accountId}/comms/inbound`, {
+      token: fx.agentToken,
+      body: {
+        provider: 'test', provider_msg_id: msgId, to_number: PLATFORM_NUMBER,
+        from_address: TENANT_ADDR, channel: 'sms', received_at: new Date().toISOString(),
+      },
+    });
+    assertStatus(capA, 409, 'same msg id under A refused, not leaked');
   });
 
   // --- summary ---------------------------------------------------------------
@@ -727,7 +829,14 @@ async function main(): Promise<void> {
   console.info('OK: comms ledger checks all green');
 }
 
-async function setupOther(): Promise<{ accountId: string; token: string }> {
+interface OtherAccount {
+  accountId: string;
+  token: string;
+  agentToken: string;
+  platformNumber: string;
+}
+
+async function setupOther(): Promise<OtherAccount> {
   const email = `comms-other-${rnd()}@example.test`;
   const password = `pw-${rnd()}-${rnd()}`;
   const su = await api('POST', '/v1/auth/signup', {
@@ -735,7 +844,28 @@ async function setupOther(): Promise<{ accountId: string; token: string }> {
   });
   if (su.status !== 200) throw new Error(`other signup: ${su.status}`);
   const b = su.body as { account: { id: string }; session: { access_token: string } };
-  return { accountId: b.account.id, token: b.session.access_token };
+  const accountId = b.account.id;
+
+  // The same agent identity serves this account too (an agent-role membership).
+  const { error: memErr } = await admin.from('account_members').insert({
+    account_id: accountId, user_id: agentAuth.id, role: 'agent',
+  });
+  if (memErr) throw new Error(`other agent membership: ${memErr.message}`);
+
+  // A platform number owned by THIS account (used to prove account A cannot
+  // bind it — hardening F5).
+  const platformNumber = `+1616${SUFFIX}`;
+  const { error: numErr } = await admin.from('platform_numbers').insert({
+    account_id: accountId, number: platformNumber, provider: 'test', capabilities: ['sms'],
+  });
+  if (numErr) throw new Error(`other platform number: ${numErr.message}`);
+
+  return {
+    accountId,
+    token: b.session.access_token,
+    agentToken: await login(agentAuth.email, agentAuth.password),
+    platformNumber,
+  };
 }
 
 await main();
