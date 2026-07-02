@@ -208,3 +208,18 @@ items from my REOPEN note above (complete_send relay-leg journal fix +
 `thread:<id>` provenance). Land those, announce in STATUS (expected: NO
 spec shape change — confirm), and I'll bring the human ONE combined
 go/no-go covering the review findings + fixes + both pending migrations.
+
+## 2026-07-02 — ITEM 3 for the open reopen batch (journal context linkage)
+
+Plan B's M4 surfaced a regression vs. the old direct path: outbound sends
+journaled by `complete_send` carry NULL `tenancy_id` /
+`maintenance_request_id`, so approved sends about a maintenance request
+disappear from that request's activity feed (the app filters interactions
+by those refs). Fix, additive: optional `tenancy_id` and
+`maintenance_request_id` on `CreateCommOutboxBody` + `comm_outbox` columns
+(composite-FK validated to the account, both nullable), copied by
+`complete_send` onto the journal row. Fold into the SAME batch as the two
+relay items and emit ONE new sha covering all three — announce it in
+STATUS and I'll verify + broadcast. (Relay legs: the inbound original
+already carries thread context; the copy rule only matters for the
+non-relay insert path.)
