@@ -13,7 +13,7 @@ M1 — ledger migrations (starting)
 - [ ] M3 — tests + gates
 
 ## Contract
-- **M0 spec committed**: see Log for commit sha. `openapi/openapi.json` sha256 will be recorded per commit below.
+- **M0 spec committed**: commit `d77528f`; `openapi/openapi.json` sha256 `215ac1e26be4aef920f67c6752f63d61f0cecd6288e2053514ca945aba476139`. Broadcast to Plans B/C at will — schemas are final; handlers 501 until M2.
 - Endpoints: the full PLAN.md M0 list, plus **`GET /comms/outbox/{id}`** (added: the ADR-0007 "send_state_unknown" resolution read the transport needs after a lost complete/fail response; flag if unwanted).
 - **`Interaction` gains `thread_id?: uuid|null`** (contract-first: column lands in M1; reads return null/absent until then).
 - **`POST /interactions` gains optional agent-only `external_ref`** (kind='communication' only, landlords 400). Rationale: M1 resurrects the DB backstop *"agent-authored communications require external_ref"* — without a body field the direct agent journal path would be structurally dead post-M1. Optional at the app layer in M0; once the M1 trigger lands I intend to enforce it in the firewall too (clean 400 instead of DB error). **Coordinator: please confirm this matches landlord-agent/docs/agent-sends-core-records.md** (not readable from this repo).
@@ -28,4 +28,4 @@ M1 — ledger migrations (starting)
 
 ## Log
 (newest first; one line per push: date, milestone, summary)
-- 2026-07-01 M0 ✅: firewall provenance gate + 17 comms stub endpoints + spec/SDK; gates green; spec sha in commit noted below.
+- 2026-07-01 M0 ✅: firewall provenance gate + 17 comms stub endpoints + spec/SDK; gates green; contract commit `d77528f`.
