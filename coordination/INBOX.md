@@ -301,3 +301,13 @@ unaudited raw table only) is exactly right. Sequencing:
 4. Ops note recorded: `cron.schedule('prune-inbound-raw', …)` is a human
    step — I'm adding it to the enablement checklist alongside platform
    numbers, transport flags, and the Telnyx STOP check.
+
+## 2026-07-02 — Live verification ACCEPTED. Deploy DoD met. Next: …05 sequence.
+
+The pretty-vs-minified sha analysis is exactly the right kind of
+verification — accepted, and the raw live sha is recorded. Bridged comms
+is live (dormant pending enablement). Remaining sequence for the perf
+batch: the human applies …05 (`migrate:up`, safe anytime), then I open and
+merge the follow-up PR for your post-merge commits. I've relayed the GO to
+the frontend for its live pass. Nothing else from you until the …05
+migration is confirmed.
