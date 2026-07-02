@@ -46,6 +46,10 @@ const CommOutboxStatus = z.enum([
 ]);
 const CommThreadKind = z.enum(['bridged_tenant', 'vendor']);
 const CommThreadStatus = z.enum(['active', 'closed']);
+// bridged = per-counterparty 1:1 legs relayed by core; group = one provider-
+// native MMS group (our platform number + up to 7 member addresses, the
+// landlord's phone included).
+const CommThreadMode = z.enum(['bridged', 'group']);
 const CommPartyType = z.enum(['tenant', 'landlord_user', 'vendor', 'agent']);
 const CommPolicyKind = z.enum(['rent_reminder', 'thread_autonomy', 'voice_autonomy']);
 const CommPolicyStatus = z.enum(['active', 'revoked']);
@@ -75,6 +79,10 @@ const CommOutbox = z
      *  frozen at intent time so the record survives later identity edits.
      *  Null only while thread routing resolves it (never null once sending). */
     to_address: z.string().nullable(),
+    /** Frozen recipient set of a group send (to_address is null exactly when
+     *  this is set); dialed as ONE provider group message whose provider_sid is
+     *  the group_message_id; null on 1:1 rows. */
+    group_addresses: z.array(z.string()).nullable(),
     thread_id: z.string().uuid().nullable(),
     /** Thread participant this leg addresses (comm_thread_participants.id). */
     participant_id: z.string().uuid().nullable(),
@@ -201,6 +209,12 @@ const CaptureInboundBody = z
     to_number: z.string().min(3).max(50),
     /** The counterparty address the message came from. */
     from_address: z.string().min(3).max(320),
+    /** The other recipients of an inbound group message (E.164 as received from
+     *  the provider, exactly like from_address). When present and non-empty,
+     *  routing is by participant-SET match ({from} ∪ cc minus our number == a
+     *  group thread's bound member set) instead of the 1:1 binding lookup; no
+     *  set match → orphan. */
+    cc: z.array(z.string().min(3).max(50)).max(10).optional(),
     channel: CommChannel,
     body: z.string().max(20000).optional(),
     media: z.array(CommInboundMedia).max(20).optional(),
@@ -289,6 +303,7 @@ const CommThread = z
     id: z.string().uuid(),
     account_id: z.string().uuid(),
     kind: CommThreadKind,
+    mode: CommThreadMode,
     status: CommThreadStatus,
     tenancy_id: z.string().uuid().nullable(),
     maintenance_request_id: z.string().uuid().nullable(),
@@ -348,6 +363,11 @@ const CommThreadDetail = CommThreadWithParticipants.extend({
 const CreateThreadBody = z
   .object({
     kind: CommThreadKind,
+    /** group threads are sms-only, carry 2..7 distinct member addresses (8
+     *  participants incl. the platform number), and MUST include a
+     *  landlord_user participant with an address — the landlord's phone is a
+     *  group member and gets bound like everyone else. */
+    mode: CommThreadMode.default('bridged'),
     channel: CommChannel.default('sms'),
     tenancy_id: z.string().uuid().optional(),
     maintenance_request_id: z.string().uuid().optional(),
@@ -846,6 +866,10 @@ type OutboxRow = z.infer<typeof CommOutbox>;
 type ParticipantRow = z.infer<typeof CommThreadParticipant>;
 
 const PARTICIPANT_COLS = 'id, thread_id, party_type, party_id, joined_at, left_at';
+// Explicit so the internal group_routing_key column (canonical member-set
+// identity, enforced DB-side) never rides along into thread responses.
+const THREAD_COLS =
+  'id, account_id, kind, mode, status, tenancy_id, maintenance_request_id, created_at, updated_at';
 const BINDING_COLS = 'id, thread_id, participant_id, platform_number, participant_address, active';
 
 // ---------------------------------------------------------------------------
@@ -963,28 +987,64 @@ commsApp.openapi(createOutbox, async (c) => {
     }
   }
 
-  // Destination resolution: explicit address, else the thread binding, else
-  // the account's channel identity for the participant.
-  if (body.to_address === undefined && (body.thread_id === undefined || body.participant_ref === undefined)) {
-    throw new ApiError(400, 'invalid_request', 'provide to_address, or thread_id + participant_ref to resolve one');
-  }
-  if (body.participant_ref !== undefined && body.thread_id === undefined) {
-    throw new ApiError(400, 'invalid_request', 'participant_ref requires thread_id');
-  }
-
-  let participant: { id: string; party_type: string; party_id: string | null } | null = null;
+  // Destination resolution. Fetch the thread first (when one is named) so a
+  // group thread — whose recipients are its whole active binding set, not a
+  // single address — is dispatched before the 1:1 presence checks below.
+  let thread: { id: string; status: string; mode: string } | null = null;
   if (body.thread_id !== undefined) {
-    const { data: thread, error: thErr } = await sb
+    const { data: t, error: thErr } = await sb
       .from('comm_threads')
-      .select('id, status')
+      .select('id, status, mode')
       .eq('account_id', accountId)
       .eq('id', body.thread_id)
       .maybeSingle();
     if (thErr) throw commDbError(thErr);
-    if (!thread) throw new ApiError(404, 'not_found', 'thread not found');
+    if (!t) throw new ApiError(404, 'not_found', 'thread not found');
+    thread = t as { id: string; status: string; mode: string };
     if (thread.status === 'closed') throw new ApiError(409, 'conflict', 'the thread is closed');
+  }
+  const isGroup = thread !== null && thread.mode === 'group';
 
+  let toAddress: string | null = null;
+  let groupAddresses: string[] | null = null;
+  let participantId: string | null = null;
+
+  if (isGroup) {
+    // A group send addresses the whole thread; its recipient set is frozen
+    // from the thread's ACTIVE bindings, never supplied on the body.
+    if (body.to_address !== undefined) {
+      throw new ApiError(400, 'invalid_request', 'a group thread derives recipients from its bindings; to_address is not accepted');
+    }
     if (body.participant_ref !== undefined) {
+      throw new ApiError(400, 'invalid_request', 'a group send addresses the whole thread; participant_ref is not accepted');
+    }
+    if (body.relay_of_interaction_id !== undefined) {
+      throw new ApiError(400, 'invalid_request', 'relays do not exist in group mode');
+    }
+    const { data: bindings, error: bErr } = await sb
+      .from('thread_channel_bindings')
+      .select('participant_address')
+      .eq('account_id', accountId)
+      .eq('thread_id', body.thread_id!)
+      .eq('active', true);
+    if (bErr) throw commDbError(bErr);
+    const rows = (bindings ?? []) as { participant_address: string }[];
+    groupAddresses = [...new Set(rows.map((b) => b.participant_address))].sort();
+    if (groupAddresses.length < 2) {
+      throw new ApiError(409, 'conflict', 'the group thread needs at least 2 actively-bound members');
+    }
+  } else {
+    // 1:1 (or thread-less): explicit address, else the thread binding, else
+    // the account's channel identity for the participant.
+    if (body.to_address === undefined && (body.thread_id === undefined || body.participant_ref === undefined)) {
+      throw new ApiError(400, 'invalid_request', 'provide to_address, or thread_id + participant_ref to resolve one');
+    }
+    if (body.participant_ref !== undefined && body.thread_id === undefined) {
+      throw new ApiError(400, 'invalid_request', 'participant_ref requires thread_id');
+    }
+
+    let participant: { id: string; party_type: string; party_id: string | null } | null = null;
+    if (body.thread_id !== undefined && body.participant_ref !== undefined) {
       const { data: part, error: pErr } = await sb
         .from('comm_thread_participants')
         .select('id, party_type, party_id, left_at')
@@ -997,44 +1057,44 @@ commsApp.openapi(createOutbox, async (c) => {
       if (part.left_at !== null) throw new ApiError(409, 'conflict', 'the participant has left the thread');
       participant = part;
     }
-  }
 
-  let toAddress: string;
-  if (body.to_address !== undefined) {
-    toAddress = normalizeAddress(body.channel, body.to_address);
-  } else {
-    // Binding first (the address the conversation is actually running on),
-    // then the address book.
-    const { data: binding, error: bErr } = await sb
-      .from('thread_channel_bindings')
-      .select('participant_address')
-      .eq('account_id', accountId)
-      .eq('thread_id', body.thread_id!)
-      .eq('participant_id', body.participant_ref!)
-      .eq('active', true)
-      .maybeSingle();
-    if (bErr) throw commDbError(bErr);
-    let resolved = binding?.participant_address ?? null;
-    if (resolved === null && participant && participant.party_id !== null) {
-      const { data: ident, error: iErr } = await sb
-        .from('channel_identities')
-        .select('address')
+    if (body.to_address !== undefined) {
+      toAddress = normalizeAddress(body.channel, body.to_address);
+    } else {
+      // Binding first (the address the conversation is actually running on),
+      // then the address book.
+      const { data: binding, error: bErr } = await sb
+        .from('thread_channel_bindings')
+        .select('participant_address')
         .eq('account_id', accountId)
-        .eq('channel', body.channel)
-        .eq('party_type', participant.party_type)
-        .eq('party_id', participant.party_id)
-        .limit(1)
+        .eq('thread_id', body.thread_id!)
+        .eq('participant_id', body.participant_ref!)
+        .eq('active', true)
         .maybeSingle();
-      if (iErr) throw commDbError(iErr);
-      resolved = ident?.address ?? null;
+      if (bErr) throw commDbError(bErr);
+      let resolved = binding?.participant_address ?? null;
+      if (resolved === null && participant && participant.party_id !== null) {
+        const { data: ident, error: iErr } = await sb
+          .from('channel_identities')
+          .select('address')
+          .eq('account_id', accountId)
+          .eq('channel', body.channel)
+          .eq('party_type', participant.party_type)
+          .eq('party_id', participant.party_id)
+          .limit(1)
+          .maybeSingle();
+        if (iErr) throw commDbError(iErr);
+        resolved = ident?.address ?? null;
+      }
+      if (resolved === null) {
+        throw new ApiError(422, 'invalid_request', 'no destination address is bound or on file for this participant');
+      }
+      // Validate the resolved address against the requested channel too — a
+      // binding stored for one channel must not be silently reused as the
+      // destination for another (e.g. an sms binding for an email send).
+      toAddress = normalizeAddress(body.channel, resolved);
     }
-    if (resolved === null) {
-      throw new ApiError(422, 'invalid_request', 'no destination address is bound or on file for this participant');
-    }
-    // Validate the resolved address against the requested channel too — a
-    // binding stored for one channel must not be silently reused as the
-    // destination for another (e.g. an sms binding for an email send).
-    toAddress = normalizeAddress(body.channel, resolved);
+    participantId = body.participant_ref ?? null;
   }
 
   const { data, error } = await sb
@@ -1043,8 +1103,9 @@ commsApp.openapi(createOutbox, async (c) => {
       account_id: accountId,
       channel: body.channel,
       to_address: toAddress,
+      group_addresses: groupAddresses,
       thread_id: body.thread_id ?? null,
-      participant_id: body.participant_ref ?? null,
+      participant_id: participantId,
       body: body.body,
       template_id: body.template_id ?? null,
       not_before: body.not_before ?? null,
@@ -1057,6 +1118,10 @@ commsApp.openapi(createOutbox, async (c) => {
     })
     .select('*')
     .single();
+  // commDbError maps the DB's typed SQLSTATEs; the P0004 opt-out trigger
+  // surfaces here as 422 opted_out — for a group row that is the "any member
+  // opted out" refusal (a group MMS reaches every member, so one opt-out
+  // refuses the whole send).
   if (error) throw commDbError(error);
   return c.json(data as OutboxRow, 201);
 });
@@ -1190,6 +1255,7 @@ commsApp.openapi(captureInbound, async (c) => {
     p_body: body.body ?? null,
     p_media: body.media ?? null,
     p_received_at: body.received_at,
+    p_cc: body.cc ?? null,
   });
   if (error) throw commDbError(error);
   const result = (data as {
@@ -1290,7 +1356,7 @@ commsApp.openapi(listThreads, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit, status, kind, tenancy_id } = c.req.valid('query');
   const sb = getSb(c);
-  let q = sb.from('comm_threads').select('*').eq('account_id', accountId);
+  let q = sb.from('comm_threads').select(THREAD_COLS).eq('account_id', accountId);
   if (status !== undefined) q = q.eq('status', status);
   if (kind !== undefined) q = q.eq('kind', kind);
   if (tenancy_id !== undefined) q = q.eq('tenancy_id', tenancy_id);
@@ -1346,7 +1412,7 @@ commsApp.openapi(getThread, async (c) => {
 
   const { data: thread, error: thErr } = await sb
     .from('comm_threads')
-    .select('*')
+    .select(THREAD_COLS)
     .eq('account_id', accountId)
     .eq('id', id)
     .maybeSingle();
@@ -1412,6 +1478,8 @@ commsApp.openapi(createThread, async (c) => {
     );
   }
 
+  const mode = body.mode;
+
   // Counterparties need a reachable address; require party_id so identity
   // lookup / journal attribution stay honest.
   for (const p of body.participants) {
@@ -1419,6 +1487,17 @@ commsApp.openapi(createThread, async (c) => {
       throw new ApiError(400, 'invalid_request', `${p.party_type} participants require party_id`);
     }
   }
+
+  // A group thread is a provider-native MMS group of human members; the agent
+  // transport is never a member of it.
+  if (mode === 'group') {
+    for (const p of body.participants) {
+      if (p.party_type === 'agent') {
+        throw new ApiError(400, 'invalid_request', 'agent participants are not part of a group MMS thread');
+      }
+    }
+  }
+
   const counterparties = body.participants.filter(
     (p) => p.party_type === 'tenant' || p.party_type === 'vendor',
   );
@@ -1426,14 +1505,27 @@ commsApp.openapi(createThread, async (c) => {
     throw new ApiError(400, 'invalid_request', 'a thread needs at least one tenant or vendor participant');
   }
 
-  // Resolve every counterparty address BEFORE creating anything, so a
-  // resolution failure leaves no partial thread.
+  // Resolve every addressable participant BEFORE creating anything, so a
+  // resolution failure leaves no partial thread. Bridged mode binds the
+  // counterparties only (tenant/vendor); a group thread additionally binds the
+  // landlord_user members — their phones are group members too.
+  const addressable = (t: string): boolean =>
+    t === 'tenant' || t === 'vendor' || (mode === 'group' && t === 'landlord_user');
   const resolvedAddresses = new Map<number, string>();
   for (const [i, p] of body.participants.entries()) {
-    if (p.party_type !== 'tenant' && p.party_type !== 'vendor') continue;
+    if (!addressable(p.party_type)) continue;
     if (p.address !== undefined) {
       resolvedAddresses.set(i, normalizeAddress(body.channel, p.address));
       continue;
+    }
+    if (p.party_id === undefined) {
+      // Only a group landlord_user reaches here (tenant/vendor already required
+      // party_id above); it needs an address or a party_id to resolve one.
+      throw new ApiError(
+        400,
+        'invalid_request',
+        'landlord_user participants in a group thread require an address or party_id',
+      );
     }
     const { data: ident, error: iErr } = await sb
       .from('channel_identities')
@@ -1441,7 +1533,7 @@ commsApp.openapi(createThread, async (c) => {
       .eq('account_id', accountId)
       .eq('channel', body.channel)
       .eq('party_type', p.party_type)
-      .eq('party_id', p.party_id!)
+      .eq('party_id', p.party_id)
       .limit(1)
       .maybeSingle();
     if (iErr) throw commDbError(iErr);
@@ -1453,6 +1545,37 @@ commsApp.openapi(createThread, async (c) => {
       );
     }
     resolvedAddresses.set(i, ident.address);
+  }
+
+  // Group-shape validation on the resolved member set (bridged skips all of
+  // this): the landlord's phone must be a member, addresses must be pairwise
+  // distinct, and the set is 2..7 (8 incl. our platform number).
+  if (mode === 'group') {
+    const hasLandlord = body.participants.some(
+      (p, i) => p.party_type === 'landlord_user' && resolvedAddresses.has(i),
+    );
+    if (!hasLandlord) {
+      throw new ApiError(
+        400,
+        'invalid_request',
+        'a group thread must include a landlord_user participant with an address (their phone is a group member)',
+      );
+    }
+    const memberAddresses = [...resolvedAddresses.values()];
+    const distinct = new Set(memberAddresses);
+    if (distinct.size !== memberAddresses.length) {
+      throw new ApiError(400, 'invalid_request', 'group participant addresses must be distinct');
+    }
+    if (distinct.size < 2) {
+      throw new ApiError(400, 'invalid_request', 'a group thread needs at least 2 member addresses');
+    }
+    if (distinct.size > 7) {
+      throw new ApiError(
+        400,
+        'invalid_request',
+        'a group thread carries at most 7 member addresses (8 participants including the platform number)',
+      );
+    }
   }
 
   // The account's platform number carries every counterparty leg.
@@ -1469,17 +1592,37 @@ commsApp.openapi(createThread, async (c) => {
     throw new ApiError(409, 'conflict', `the account has no active platform number with ${body.channel} capability`);
   }
 
+  // Canonical group routing key. This MUST stay in lockstep with
+  // public._comm_group_routing_key (capture_inbound recomputes it for inbound
+  // set-matching; the group capture test locks the two together): our number,
+  // '>', then the deduped members minus our own number, byte-order sorted (JS
+  // default sort on these ASCII addresses matches collate "C"). Bridged threads
+  // carry no key (the DB CHECK (mode='group') = (group_routing_key is not null)
+  // rejects anything else).
+  const addresses = [...resolvedAddresses.values()];
+  const groupKey =
+    mode === 'group'
+      ? number.number + '>' + [...new Set(addresses)].filter((a) => a !== number.number).sort().join('|')
+      : null;
+
   const { data: thread, error: thErr } = await sb
     .from('comm_threads')
     .insert({
       account_id: accountId,
       kind: body.kind,
+      mode,
+      group_routing_key: groupKey,
       tenancy_id: body.tenancy_id ?? null,
       maintenance_request_id: body.maintenance_request_id ?? null,
     })
     .select('*')
     .single();
-  if (thErr) throw commDbError(thErr);
+  if (thErr) {
+    if (mode === 'group' && thErr.code === '23505') {
+      throw new ApiError(409, 'conflict', 'an identical active group thread already exists on this platform number');
+    }
+    throw commDbError(thErr);
+  }
 
   // Participants + bindings. PostgREST statements are not one transaction;
   // on a later failure we best-effort delete the skeleton (hard delete is
@@ -1577,13 +1720,54 @@ commsApp.openapi(createThreadMessage, async (c) => {
 
   const { data: thread, error: thErr } = await sb
     .from('comm_threads')
-    .select('id, status, tenancy_id, maintenance_request_id')
+    .select('id, status, mode, tenancy_id, maintenance_request_id')
     .eq('account_id', accountId)
     .eq('id', id)
     .maybeSingle();
   if (thErr) throw commDbError(thErr);
   if (!thread) throw new ApiError(404, 'not_found', 'not found');
   if (thread.status === 'closed') throw new ApiError(409, 'conflict', 'the thread is closed');
+
+  if (thread.mode === 'group') {
+    // A group send is ONE outbox row = one provider group message. The
+    // recipient set is the thread's whole ACTIVE binding set (the landlord's
+    // own phone included — the provider group session is keyed by the full
+    // member set), frozen at intent time; any-member opt-out refuses at insert
+    // (P0004 -> 422 opted_out).
+    const { data: bindings, error: gErr } = await sb
+      .from('thread_channel_bindings')
+      .select('participant_address')
+      .eq('account_id', accountId)
+      .eq('thread_id', id)
+      .eq('active', true);
+    if (gErr) throw commDbError(gErr);
+    const rows = (bindings ?? []) as { participant_address: string }[];
+    const groupAddresses = [...new Set(rows.map((b) => b.participant_address))].sort();
+    if (groupAddresses.length < 2) {
+      throw new ApiError(409, 'conflict', 'the group thread needs at least 2 actively-bound members');
+    }
+    const { data: row, error } = await sb
+      .from('comm_outbox')
+      .insert({
+        account_id: accountId,
+        channel: 'sms',
+        to_address: null,
+        group_addresses: groupAddresses,
+        thread_id: id,
+        participant_id: null,
+        body: body.body,
+        not_before: body.not_before ?? null,
+        tenancy_id: thread.tenancy_id,
+        maintenance_request_id: thread.maintenance_request_id,
+        approval_ref: `self:${userId}`,
+        approved_by: userId,
+        author_type: 'landlord',
+      })
+      .select('*')
+      .single();
+    if (error) throw commDbError(error);
+    return c.json({ data: [row as OutboxRow] }, 201);
+  }
 
   // One send intent per actively-bound counterparty. The binding carries the
   // address the conversation runs on; sms is the only bound channel today.

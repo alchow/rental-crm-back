@@ -13968,6 +13968,7 @@ export interface components {
             /** @enum {string} */
             channel: "sms" | "email" | "voice";
             to_address: string | null;
+            group_addresses: string[] | null;
             /** Format: uuid */
             thread_id: string | null;
             /** Format: uuid */
@@ -14076,6 +14077,7 @@ export interface components {
             provider_msg_id: string;
             to_number: string;
             from_address: string;
+            cc?: string[];
             /** @enum {string} */
             channel: "sms" | "email" | "voice";
             body?: string;
@@ -14109,6 +14111,8 @@ export interface components {
             account_id: string;
             /** @enum {string} */
             kind: "bridged_tenant" | "vendor";
+            /** @enum {string} */
+            mode: "bridged" | "group";
             /** @enum {string} */
             status: "active" | "closed";
             /** Format: uuid */
@@ -14164,6 +14168,11 @@ export interface components {
         CreateCommThreadBody: {
             /** @enum {string} */
             kind: "bridged_tenant" | "vendor";
+            /**
+             * @default bridged
+             * @enum {string}
+             */
+            mode: "bridged" | "group";
             /**
              * @default sms
              * @enum {string}
