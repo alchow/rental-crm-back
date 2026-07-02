@@ -1,5 +1,17 @@
 # STATUS — worker-owned. Update + push after every milestone, blocker, or question.
 
+## 🚧 PROD MIGRATION — BLOCKED IN MY ENV; HUMAN MUST RUN THE ONE COMMAND
+GO received (INBOX "prod deploy resumed"). Per step 1 I attempted the prod migration and **my environment blocks the prod credentials** — the auto-mode classifier denied even loading `SUPABASE_DB_URL` from `.env.local` (exactly the expected outcome per [[prod-reads-policy]]). I have NOT applied anything and cannot. Stopping here for the human, per your instruction.
+
+**Human: run this one command from the repo root** (applies the three pending comms migrations `…02` + `…03` + `…04`, in order):
+```
+set -a; source .env.local; set +a
+pnpm --filter ./db migrate:up          # = supabase db push --db-url "$SUPABASE_DB_URL"
+```
+Expected: `supabase db push` reports applying `20260701000002_comms_ledger`, `20260701000003_comms_ledger_hardening`, `20260701000004_comms_relay_and_context` (plus any other prod-missing migrations it detects). All three are expand-only ahead of the code deploy; the 15-min backups are the rollback net.
+
+**Then tell me it's done (paste or summarize the `db push` output).** Because prod-DB reads are also classifier-denied to me, my verification for step 3 will be the `db push` success output you report (which lists the applied migrations) — I can't independently `select` the tables. I'll then push STATUS: "PROD MIGRATION APPLIED" + timestamp, and hand back to the coordinator for the PR-to-main + `/openapi.json` check (attempt logged 2026-07-02T18:18:03Z).
+
 ## Current milestone
 COMPLETE + HARDENED. Post-ACK adversarial review (independent DB + API passes, every finding re-verified against source by me) found real issues — all fixed in migration `20260701000003_comms_ledger_hardening.sql` + handler patches. **One is a CONTRACT change and needs your re-broadcast** (see ⚠️ CONTRACT below): the FINAL sha `f3336606…` you ACKed carried a spec CORRUPTION my own hygiene pass introduced. New sha `097d9dc8…`. Details in "Hardening review" section.
 
@@ -87,6 +99,7 @@ Considered and NOT changed (with reasons):
 
 ## Log
 (newest first; one line per push: date, milestone, summary)
+- 2026-07-02T18:18Z PROD MIGRATION BLOCKED: GO received; attempted `migrate:up` → classifier denied prod creds (expected). Handed the one command to the human; prod untouched; awaiting human to apply + confirm.
 - 2026-07-02 REOPEN batch ✅: migration `…04` (relay no-double-journal + `thread:` provenance + tenancy/mreq context) + spec item-3 additive fields. NEW sha `7143b97f…` — needs verify + re-broadcast. All gates green (comms 37). THREE migrations now pending. Still holding prod at your combined go/no-go.
 - 2026-07-02 DEPLOY HOLD: review found real issues → holding at deploy-sequence step 1; prod untouched; awaiting human re-confirm + your re-broadcast of `097d9dc8…`. TWO migrations now pending (`…02` + `…03`).
 - 2026-07-02 HARDENING ✅: adversarial review → migration `…03` (F1 evidence-honesty + F2/F5 cross-account + F3/F4 opt-out leak) + 7 API fixes incl. the `injectSchemaHygiene` corruption that broke `CommOutbox.status` in the broadcast sha. New FINAL sha `097d9dc8…` — **needs re-broadcast**. All gates green (comms 34 checks + full DB suite + unit 67 + drift×2). Finding 1 deferred to coordinator (Q4).
