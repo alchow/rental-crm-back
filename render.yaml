@@ -35,3 +35,13 @@ services:
         sync: false
       - key: MAIL_FROM
         sync: false
+      # HMAC secret shared with the transport repo, which mints per-address
+      # email-unsubscribe URLs statelessly. Unset -> the public unsubscribe
+      # endpoint 503s (and the transport must not emit List-Unsubscribe headers).
+      - key: UNSUBSCRIBE_HMAC_SECRET
+        sync: false
+      # Cutover flag for core-originated transactional email. ON -> the renewal
+      # email is written to the comms outbox (transport dials); OFF/unset ->
+      # the legacy in-core mailer sends directly.
+      - key: COMMS_EMAIL_PIPELINE
+        sync: false

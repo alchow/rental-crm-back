@@ -329,6 +329,15 @@ jobs:
         # and bridged 1:1 coexistence + routing-invariant regression.
         run: pnpm --filter ./api test:comms-group
 
+      - name: Run comms email slice-1 checks (E1-A)
+        # Email sends on the outbox pipeline: subject (email-only, journaled
+        # as 'Subject: …\n\n…'), system:<flow> provenance fenced to the
+        # service tier (API 403 + DB forge rejection), HMAC unsubscribe
+        # (one-click POST + GET page, parks queued + refuses new at 422),
+        # dispatch-scan channel filter, and the renewal-email cutover flag
+        # (intent written, opt-out suppressed, 202 uniform).
+        run: pnpm --filter ./api test:comms-email
+
       - name: Run events feed + ledger as_of checks (Phase 3)
         # Poller contract under concurrency (40 POSTs, cursor drain), next_seq
         # semantics, entity_type filter, cross-account isolation, validation

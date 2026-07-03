@@ -3612,6 +3612,12 @@
           "body": {
             "type": "string"
           },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "template_id": {
             "type": [
               "string",
@@ -3698,7 +3704,8 @@
             "type": "string",
             "enum": [
               "landlord",
-              "agent"
+              "agent",
+              "system"
             ]
           },
           "interaction_id": {
@@ -3730,6 +3737,7 @@
           "thread_id",
           "participant_id",
           "body",
+          "subject",
           "template_id",
           "not_before",
           "relay_of_interaction_id",
@@ -3778,6 +3786,11 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 20000
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 998
           },
           "approval_ref": {
             "type": "string",
@@ -7931,6 +7944,20 @@
         },
         "required": [
           "items"
+        ]
+      },
+      "UnsubscribeResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "unsubscribed"
+            ]
+          }
+        },
+        "required": [
+          "status"
         ]
       },
       "AgentGrantedAccount": {
@@ -16751,6 +16778,19 @@
             },
             "required": false,
             "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "sms",
+                "email",
+                "voice"
+              ]
+            },
+            "required": false,
+            "name": "channel",
             "in": "query"
           },
           {
@@ -25701,6 +25741,186 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CaptureItemList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/unsubscribe/email/{token}": {
+      "get": {
+        "tags": [
+          "unsubscribe"
+        ],
+        "summary": "Unsubscribe an email address via a signed link and render a confirmation page",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            "required": true,
+            "name": "token",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "unsubscribed",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "unsubscribe"
+        ],
+        "summary": "RFC 8058 one-click unsubscribe (no request body; returns JSON)",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            "required": true,
+            "name": "token",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "unsubscribed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnsubscribeResponse"
                 }
               }
             }

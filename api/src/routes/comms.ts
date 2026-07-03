@@ -87,6 +87,10 @@ const CommOutbox = z
     /** Thread participant this leg addresses (comm_thread_participants.id). */
     participant_id: z.string().uuid().nullable(),
     body: z.string(),
+    /** Email subject line, frozen at intent time (email-only; null on
+     *  sms/voice). On completion the journal records it as the first line
+     *  ('Subject: <subject>' + blank line + body). */
+    subject: z.string().nullable(),
     /** Opaque template reference (templates live agent-side). */
     template_id: z.string().nullable(),
     /** Earliest eligible dispatch time; the transport's dispatch scan must
@@ -112,8 +116,11 @@ const CommOutbox = z
     approval_ref: z.string(),
     approved_by: z.string().uuid().nullable(),
     /** Capacity of the author of the send intent (stamped from the resolved
-     *  principal, never client-supplied). */
-    author_type: z.enum(['landlord', 'agent']),
+     *  principal, never client-supplied). 'system' = a core-originated
+     *  transactional send (approval_ref 'system:<flow>'), mintable only by
+     *  core's service tier — it appears in reads/dispatch scans but can never
+     *  be requested through this API. */
+    author_type: z.enum(['landlord', 'agent', 'system']),
     /** Journal entry appended by the confirmed send; null until 'sent'. */
     interaction_id: z.string().uuid().nullable(),
     created_at: z.string(),
@@ -133,6 +140,10 @@ const CreateOutboxBody = z
     participant_ref: z.string().uuid().optional(),
     /** Channel-specific caps (sms: 1600) are enforced at write. */
     body: z.string().min(1).max(20000),
+    /** Email subject line. Email-only: supplying it on any other channel is a
+     *  400. Journaled on completion as `Subject: <subject>\n\n<body>` — one
+     *  documented shape shared with the transport's template rendering. */
+    subject: z.string().min(1).max(998).optional(),
     approval_ref: z.string().min(1).max(200),
     approved_by: z.string().uuid().optional(),
     not_before: z.string().datetime().optional(),
@@ -486,6 +497,9 @@ const listOutbox = createRoute({
       cursor: z.string().optional(),
       limit: z.coerce.number().int().positive().max(100).default(50),
       status: CommOutboxStatus.optional(),
+      // The transport runs a separate dispatch loop per channel; this scopes
+      // the scan to one channel's rows. Additive/optional.
+      channel: CommChannel.optional(),
       eligible_at: z.string().datetime().optional(),
     }),
   },
@@ -891,6 +905,22 @@ commsApp.openapi(createOutbox, async (c) => {
     throw new ApiError(403, 'forbidden', 'only the agent transport or an owner/manager may create send intents');
   }
 
+  // system:<flow> provenance is reserved for core-originated sends (core's
+  // server tier writing its own ledger through the admin client). Applies to
+  // BOTH the agent and landlord principals here — no JWT-bearing caller may
+  // mint one. The DB capacity trigger (auth.uid() IS NOT NULL) is the backstop.
+  if (body.approval_ref.startsWith('system:')) {
+    throw new ApiError(403, 'forbidden', 'system provenance is reserved for core-originated sends');
+  }
+
+  // subject is an email-only intent field (DB CHECK backstops it). Reject it on
+  // any other channel up front with a field-scoped 400.
+  if (body.subject !== undefined && body.channel !== 'email') {
+    throw new ApiError(400, 'invalid_request', 'subject is only valid on email sends', {
+      fieldErrors: { subject: ['only valid when channel=email'] },
+    });
+  }
+
   // Provenance (mirrors the journal firewall vocabulary; the DB CHECK and
   // capacity trigger are the backstops). Three agent-authorized shapes:
   //   approved_by            -> a human approved this exact message
@@ -1107,6 +1137,7 @@ commsApp.openapi(createOutbox, async (c) => {
       thread_id: body.thread_id ?? null,
       participant_id: participantId,
       body: body.body,
+      subject: body.subject ?? null,
       template_id: body.template_id ?? null,
       not_before: body.not_before ?? null,
       relay_of_interaction_id: body.relay_of_interaction_id ?? null,
@@ -1133,10 +1164,11 @@ commsApp.openapi(createOutbox, async (c) => {
 commsApp.openapi(listOutbox, async (c) => {
   requireTransport(c);
   const { accountId } = c.req.valid('param');
-  const { cursor, limit, status, eligible_at } = c.req.valid('query');
+  const { cursor, limit, status, channel, eligible_at } = c.req.valid('query');
   const sb = getSb(c);
   let q = sb.from('comm_outbox').select('*').eq('account_id', accountId);
   if (status !== undefined) q = q.eq('status', status);
+  if (channel !== undefined) q = q.eq('channel', channel);
   // eligible_at is zod-validated ISO, safe to interpolate; a second .or()
   // is AND-combined with the keyset filter by PostgREST.
   if (eligible_at !== undefined) q = q.or(`not_before.is.null,not_before.lte.${eligible_at}`);

@@ -6137,6 +6137,7 @@ export interface paths {
                     cursor?: string;
                     limit?: number;
                     status?: "queued" | "sending" | "sent" | "delivered" | "failed" | "undeliverable" | "needs_reconcile";
+                    channel?: "sms" | "email" | "voice";
                     eligible_at?: string;
                 };
                 header?: never;
@@ -12926,6 +12927,160 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/unsubscribe/email/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Unsubscribe an email address via a signed link and render a confirmation page */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    token: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description unsubscribed */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description rate limited */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** RFC 8058 one-click unsubscribe (no request body; returns JSON) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    token: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description unsubscribed */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["UnsubscribeResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description rate limited */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/agent/accounts": {
         parameters: {
             query?: never;
@@ -13974,6 +14129,7 @@ export interface components {
             /** Format: uuid */
             participant_id: string | null;
             body: string;
+            subject: string | null;
             template_id: string | null;
             not_before: string | null;
             /** Format: uuid */
@@ -13993,7 +14149,7 @@ export interface components {
             /** Format: uuid */
             approved_by: string | null;
             /** @enum {string} */
-            author_type: "landlord" | "agent";
+            author_type: "landlord" | "agent" | "system";
             /** Format: uuid */
             interaction_id: string | null;
             created_at: string;
@@ -14009,6 +14165,7 @@ export interface components {
             /** Format: uuid */
             participant_ref?: string;
             body: string;
+            subject?: string;
             approval_ref: string;
             /** Format: uuid */
             approved_by?: string;
@@ -15033,6 +15190,10 @@ export interface components {
                 condition?: string | null;
                 notes?: string | null;
             }[];
+        };
+        UnsubscribeResponse: {
+            /** @enum {string} */
+            status: "unsubscribed";
         };
         AgentGrantedAccount: {
             /** Format: uuid */

@@ -28,6 +28,7 @@ import { agentTokensApp } from './admin/agent-tokens';
 import { attachmentsApp } from './routes/attachments';
 import { documentAccessApp, documentsApp } from './routes/documents';
 import { inspectionCaptureApp } from './routes/inspection-capture';
+import { unsubscribeApp } from './routes/unsubscribe';
 import { evidenceExportsApp } from './routes/evidence-exports';
 import { importsApp } from './routes/imports';
 import { searchApp } from './routes/search';
@@ -243,6 +244,9 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', intakeApp);
   app.route('/v1', documentAccessApp);
   app.route('/v1', inspectionCaptureApp);
+  // PUBLIC email unsubscribe (CAN-SPAM / RFC 8058). No JWT: the signed HMAC
+  // token is the auth. Service-role work is quarantined in admin/unsubscribe.
+  app.route('/v1', unsubscribeApp);
 
   // ROOT-AUTHED agent token exchange (ADR-0009 Phase 3). In src/admin/ because
   // it mints per-account sessions with the service-role client. Authenticated
