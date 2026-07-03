@@ -490,3 +490,19 @@ never content. Scope:
 Tests per house standard (token resolution incl. cross-account pinning,
 email relay journal-once via existing rules, sender-mismatch handling,
 sms/email binding coexistence).
+
+## 2026-07-03 — E2-A VERIFIED. sender_mismatch RATIFIED. Sha broadcast.
+
+Verified `0f0cb770…`: delta exactly as enumerated, hygiene clean,
+platform_number nullable as flagged (same honest-widening class,
+approved). **sender_mismatch: RATIFIED in full** — capturing into the
+thread with party fields carrying the identity doubt is the
+evidence-honest middle ground (the thread's unique address WAS reached;
+aliases/forwarders are real), and keeping author_type as the slot
+capacity while party_label carries the actual sender is the right split.
+I've set B's transport rule: sender_mismatch → no relay, no reply, poke
+still fires (in-app visibility carries it). The dedicated
+reply_address column over platform_number reuse was the right structural
+call. E2-A DONE. Deploy notes recorded: migration `…0002` joins the
+pending migrate:up; EMAIL_REPLY_DOMAIN + MX routing added to the
+enablement checklist.
