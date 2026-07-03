@@ -7637,6 +7637,160 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/accounts/{accountId}/email-identity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get the account's outbound email identity */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description identity */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AccountEmailIdentity"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        /** Set or clear the account's email slug (owner only) */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["PutAccountEmailIdentityBody"];
+                };
+            };
+            responses: {
+                /** @description updated identity */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AccountEmailIdentity"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/accounts/{accountId}/owner-phone-verifications": {
         parameters: {
             query?: never;
@@ -14498,6 +14652,14 @@ export interface components {
             thread_id: string;
             /** Format: uuid */
             participant_id: string;
+        };
+        AccountEmailIdentity: {
+            email_slug: string | null;
+            email_domain: string | null;
+            from_address: string | null;
+        };
+        PutAccountEmailIdentityBody: {
+            email_slug: string | null;
         };
         OwnerPhoneResponse: {
             /** Format: uuid */

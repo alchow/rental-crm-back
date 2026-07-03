@@ -54,7 +54,10 @@ DECLARE
     'complete_send',
     'capture_inbound',
     'record_opt_out',
-    'list_account_opt_outs'
+    'list_account_opt_outs',
+    -- account email identity (20260703000003): asserts a live OWNER
+    -- membership in the target account before writing
+    'set_account_email_slug'
   ];
 BEGIN
 

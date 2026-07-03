@@ -4,6 +4,7 @@ import { loadEnv } from '../env';
 import { getLogger } from '../log';
 import { getAdminClient } from './supabase-admin';
 import { getMailer } from './mailer';
+import { accountFromAddress } from './account-email';
 import { removeOrphanStoredObject, type StoragePutResult } from './storage';
 
 // ============================================================================
@@ -313,12 +314,21 @@ export async function requestCaptureRenewal(args: { secret: string }): Promise<v
         getLogger().error(`[capture-renewal] outbox write failed: ${String(err)}`);
       });
     } else {
-      // Legacy path (mailer sends directly), unchanged: same non-awaited send.
-      void getMailer()
-        .send({ to: email, subject: subjectLine, text })
-        .catch((err) => {
-          getLogger().error(`[capture-renewal] email send failed: ${String(err)}`);
+      // Legacy path (mailer sends directly): same non-awaited send. The
+      // account's From identity (slug@ACCOUNT_EMAIL_DOMAIN) is resolved
+      // INSIDE the void block so the anti-enumeration contract holds (no DB
+      // latency folded into the uniform 202); a miss falls back to MAIL_FROM.
+      void (async () => {
+        const from = await accountFromAddress(tok.account_id);
+        await getMailer().send({
+          to: email,
+          subject: subjectLine,
+          text,
+          ...(from ? { from } : {}),
         });
+      })().catch((err) => {
+        getLogger().error(`[capture-renewal] email send failed: ${String(err)}`);
+      });
     }
   } catch (err) {
     getLogger().error(`[capture-renewal] renewal failed: ${String(err)}`);

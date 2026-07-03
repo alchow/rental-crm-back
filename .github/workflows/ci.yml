@@ -347,6 +347,14 @@ jobs:
         # and email opt-out enforcement.
         run: pnpm --filter ./api test:comms-email-threads
 
+      - name: Run account email identity checks
+        # Per-account outbound identity (user-chosen local part on the ONE
+        # platform sending domain): owner-only PUT via the DEFINER RPC
+        # (viewer/agent 403), normalisation + reserved-list 422s, global slug
+        # uniqueness 409, from_address composition, select-only RLS backstop
+        # (direct PostgREST UPDATE writes nothing), direct-RPC forge refusal.
+        run: pnpm --filter ./api test:account-email
+
       - name: Run events feed + ledger as_of checks (Phase 3)
         # Poller contract under concurrency (40 POSTs, cursor drain), next_seq
         # semantics, entity_type filter, cross-account isolation, validation

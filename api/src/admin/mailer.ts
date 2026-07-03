@@ -17,6 +17,9 @@ export interface OutboundEmail {
   subject: string;
   text: string;
   html?: string;
+  /** Per-send From override ("Name <slug@domain>", see admin/account-email.ts).
+   *  Unset -> the driver's global MAIL_FROM. */
+  from?: string;
 }
 
 export interface Mailer {
@@ -27,6 +30,7 @@ class StubMailer implements Mailer {
   async send(msg: OutboundEmail): Promise<void> {
     getLogger().warn(
       `[mailer:stub] no email provider wired; would send to=${msg.to} ` +
+        `${msg.from ? `from=${JSON.stringify(msg.from)} ` : ''}` +
         `subject=${JSON.stringify(msg.subject)} body=${JSON.stringify(msg.text)}`,
     );
   }
@@ -51,7 +55,7 @@ class ResendMailer implements Mailer {
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          from: this.from,
+          from: msg.from ?? this.from,
           to: msg.to,
           subject: msg.subject,
           text: msg.text,

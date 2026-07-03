@@ -22,6 +22,7 @@ import { agentGrantsApp } from './routes/agent-grants';
 import { maintenanceRequestsApp } from './routes/maintenance-requests';
 import { interactionsApp } from './routes/interactions';
 import { commsApp } from './routes/comms';
+import { accountEmailApp } from './routes/account-email';
 import { ownerPhoneApp } from './routes/owner-phone';
 import { intakeApp } from './admin/intake';
 import { agentTokensApp } from './admin/agent-tokens';
@@ -226,6 +227,9 @@ export function buildApp(): OpenAPIHono {
   // the STATE only: the provider-calling transport lives in the agent repo
   // and drives these endpoints; no provider SDK or webhook exists here.
   app.route('/v1', commsApp);
+  // Per-account outbound email identity (user-chosen local part on the ONE
+  // platform sending domain -- see routes/account-email.ts for the design).
+  app.route('/v1', accountEmailApp);
   app.route('/v1', ownerPhoneApp);
   app.route('/v1', attachmentsApp);
   app.route('/v1', documentsApp);

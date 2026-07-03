@@ -85,6 +85,9 @@ export type ErrorCode =
   | 'service_unavailable'
   // profile: a submitted phone number cannot be normalised to E.164
   | 'invalid_phone'
+  // account email identity: the submitted slug fails the format rules or is
+  // on the reserved-name list (routes/_lib/email-slug.ts)
+  | 'invalid_email_slug'
   // agent-principal firewall codes (Workstream D)
   | 'agent_forbidden'           // agent attempted a forbidden operation (correction/retraction)
   | 'agent_entry_type_forbidden' // agent attempted a communication append without provenance

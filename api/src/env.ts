@@ -55,6 +55,16 @@ const RawEnvSchema = z.object({
   // the transport must NOT emit List-Unsubscribe headers).
   UNSUBSCRIBE_HMAC_SECRET: z.string().min(32).optional(),
 
+  // The ONE provider-verified sending domain for per-account outbound email
+  // identities, e.g. `mydomain.com`. Each account may choose a slug
+  // (accounts.email_slug); mail for that account is then sent as
+  // `<slug>@<this domain>` with the account name as display name. The domain
+  // is verified ONCE at the provider (Resend) + DNS (ops) -- per-account
+  // slugs need no provider or DNS changes because any local part on a
+  // verified domain is sendable. Unset -> per-account identities are off and
+  // every send falls back to MAIL_FROM.
+  ACCOUNT_EMAIL_DOMAIN: z.string().min(3).optional(),
+
   // The global receiving domain for tokenized email reply addresses
   // (`t-<token>@<domain>`), e.g. `reply.example.com`. Global config, not
   // per-account. Unset -> email thread creation 503s. Inbound mail for this
@@ -91,6 +101,7 @@ export interface Env {
   RESEND_API_KEY: string | null;
   MAIL_FROM: string | null;
   UNSUBSCRIBE_HMAC_SECRET: string | null;
+  ACCOUNT_EMAIL_DOMAIN: string | null;
   EMAIL_REPLY_DOMAIN: string | null;
   COMMS_EMAIL_PIPELINE: boolean;
 }
@@ -126,6 +137,7 @@ export function loadEnv(): Env {
     RESEND_API_KEY: raw.RESEND_API_KEY ?? null,
     MAIL_FROM: raw.MAIL_FROM ?? null,
     UNSUBSCRIBE_HMAC_SECRET: raw.UNSUBSCRIBE_HMAC_SECRET ?? null,
+    ACCOUNT_EMAIL_DOMAIN: raw.ACCOUNT_EMAIL_DOMAIN ?? null,
     EMAIL_REPLY_DOMAIN: raw.EMAIL_REPLY_DOMAIN ?? null,
     COMMS_EMAIL_PIPELINE: raw.COMMS_EMAIL_PIPELINE === 'on' || raw.COMMS_EMAIL_PIPELINE === 'true',
   };

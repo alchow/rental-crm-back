@@ -609,6 +609,15 @@ Threads carry a **`mode`**: `bridged` (default — each counterparty has a priva
 
 Outbox status is monotonic: `queued → sending → sent → delivered`, with `failed` / `undeliverable` terminal and `needs_reconcile` parking ambiguity for manual resolution. Delivery state is exposed on journal rows as a **derived** read (`delivery_status` / `delivered_at` / `outbox_id` via the chain view) — the journal itself is never mutated.
 
+## 8f. Account email identity
+
+Each account may choose an **email slug** — the local part its outbound transactional mail is sent from on the platform's single provider-verified sending domain (`<slug>@<ACCOUNT_EMAIL_DOMAIN>`, display-named with the account name). The domain is verified once at the provider (Resend) + DNS by ops; choosing or changing a slug needs **no per-account provider or DNS work**. Slugs are DNS-label-safe (1–63 lowercase alnum with interior hyphens), globally unique across accounts (409 on a taken slug), and screened against a reserved list (`postmaster`, `noreply`, `abuse`, …) with 422 `invalid_email_slug`. Any member may read the identity; only an account **owner** may change it (403 otherwise; the agent principal is always refused). `from_address` in the response is the exact From value outbound mail will carry — `null` until both the slug and the platform domain are configured (sends then fall back to the global `MAIL_FROM`).
+
+| Method | Path | Body / Notes |
+|---|---|---|
+| `GET` | `/email-identity` | The account's outbound identity: `email_slug`, `email_domain`, `from_address` (preview of the wire From). |
+| `PUT` | `/email-identity` | Set or clear the slug (owner only): `{ "email_slug": "sunset" }`; `null` clears. Trimmed + lowercased server-side. 409 taken, 422 invalid/reserved. |
+
 ---
 
 ## 9. Attachments & file uploads
