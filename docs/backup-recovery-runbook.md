@@ -2,7 +2,7 @@
 
 Off-platform backup and restore for the rental CRM data spine. Target
 architecture is **$0/month** on a public GitHub repo (free Actions minutes):
-`pg_dump` every 15 minutes (48h retention) + a daily promoted dump (30d) +
+`pg_dump` every hour (48h retention) + a daily promoted dump (30d) +
 a daily Storage-file sync, all landing in a Cloudflare R2 bucket (any
 S3-compatible endpoint works). Supabase PITR was **deliberately not purchased**;
 the paid upgrade paths are in the RPO/RTO table below.
@@ -16,7 +16,7 @@ System: Supabase Postgres 17 cloud project (ref `wywfplbylmpfafxyaqpq`,
 
 | Tier | RPO | RTO | Retention / notes |
 |---|---|---|---|
-| DB — 15-min | ≤15 min typical; worst case ~20–30 min when the GitHub cron drifts under load | ~1–2 h (fresh project + migrate + restore) | 48 h of 15-min snapshots under `pg/15min/` |
+| DB — hourly | ≤60 min typical; worst case a few minutes past the hour when the GitHub cron drifts under load | ~1–2 h (fresh project + migrate + restore) | 48 h of hourly snapshots under `pg/15min/` (path keeps its historical `15min` name) |
 | DB — daily | 24 h | ~1–2 h | 30-day history under `pg/daily/` |
 | Storage files | 24 h | included in DB RTO | Nightly sync only. An attachment uploaded **after** the last nightly sync is lost in a full-loss scenario **even though its `public.attachments` row survives** (see Restore §B). |
 
@@ -24,8 +24,8 @@ Paid upgrade paths, if a hard guarantee is ever required:
 
 - **Supabase PITR add-on** — ~$130/mo total (Pro $25 + Small compute ~$5 net +
   PITR $100). ~2-minute granularity, in-platform, no restore choreography.
-- **Render cron job** — ~$1–2/mo for drift-free 15-min scheduling (removes the
-  GitHub-cron drift that pushes worst-case RPO to ~20–30 min). Keeps everything
+- **Render cron job** — ~$1–2/mo for drift-free hourly scheduling (removes the
+  GitHub-cron drift that pushes the backup a few minutes past the hour). Keeps everything
   else in this doc unchanged; only the trigger moves off GitHub.
 
 ## 2. One-time setup checklist
@@ -210,8 +210,9 @@ every bucket that was backed up.
 - **GitHub disables scheduled workflows after 60 days of no repo activity** on
   public repos. The Actions tab shows a re-enable banner — re-enable it and
   manually dispatch `db-backup-15min` once to backfill the gap.
-- **GitHub cron drifts** under load; that is why worst-case RPO is ~20–30 min,
-  not a hard 15. The Render-cron upgrade path (§1) removes this.
+- **GitHub cron drifts** under load; that is why worst-case RPO is a few
+  minutes past the hour, not a hard 60. The Render-cron upgrade path (§1)
+  removes this.
 - **R2 free tier is 10 GB.** The 48h/30d pruning keeps a small CRM well under
   it, but check bucket size if the DB grows.
 
