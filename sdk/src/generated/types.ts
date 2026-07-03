@@ -14218,7 +14218,7 @@ export interface components {
         } | null;
         CaptureCommInboundResponse: {
             /** @enum {string} */
-            disposition: "matched" | "orphan" | "opted_out";
+            disposition: "matched" | "orphan" | "opted_out" | "sender_mismatch";
             /** Format: uuid */
             interaction_id: string | null;
             /** Format: uuid */
@@ -14271,6 +14271,9 @@ export interface components {
             /** @enum {string} */
             mode: "bridged" | "group";
             /** @enum {string} */
+            channel: "sms" | "email" | "voice";
+            subject: string | null;
+            /** @enum {string} */
             status: "active" | "closed";
             /** Format: uuid */
             tenancy_id: string | null;
@@ -14293,8 +14296,11 @@ export interface components {
             thread_id: string;
             /** Format: uuid */
             participant_id: string;
-            platform_number: string;
+            /** @enum {string} */
+            channel: "sms" | "email";
+            platform_number: string | null;
             participant_address: string;
+            reply_address: string | null;
             active: boolean;
         };
         CommRelayLeg: {
@@ -14335,6 +14341,7 @@ export interface components {
              * @enum {string}
              */
             channel: "sms" | "email" | "voice";
+            subject?: string;
             /** Format: uuid */
             tenancy_id?: string;
             /** Format: uuid */

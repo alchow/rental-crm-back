@@ -98,6 +98,12 @@ EXCLUDES=(
   #     platform number, agent membership) and read-backs (the fire-and-forget
   #     renewal outbox row, opt-out suppression). TEST code, never shipped.
   ':!api/test/comms-email.test.ts'
+  #   - api/test/comms-email-threads.test.ts: E2-A email-threads integration
+  #     test (same shape as comms.test.ts). Assigns process.env from supabase
+  #     status and uses the admin client for the same ops-tier fixtures
+  #     (platform number, agent membership) and read-backs. TEST code, never
+  #     shipped.
+  ':!api/test/comms-email-threads.test.ts'
   ':!api/test/agent-grants.test.ts'
   ':!api/test/agent-tokens.test.ts'
   #   - api/test/agent-membership-divergence.test.ts: induces an out-of-band

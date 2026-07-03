@@ -40,6 +40,12 @@ services:
       # endpoint 503s (and the transport must not emit List-Unsubscribe headers).
       - key: UNSUBSCRIBE_HMAC_SECRET
         sync: false
+      # Global receiving domain for tokenized email reply addresses
+      # (t-<token>@<domain>). Global config, not per-account. Unset -> email
+      # thread creation 503s. Inbound mail for this domain must route to the
+      # transport's webhook (ops).
+      - key: EMAIL_REPLY_DOMAIN
+        sync: false
       # Cutover flag for core-originated transactional email. ON -> the renewal
       # email is written to the comms outbox (transport dials); OFF/unset ->
       # the legacy in-core mailer sends directly.

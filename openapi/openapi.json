@@ -3989,7 +3989,8 @@
             "enum": [
               "matched",
               "orphan",
-              "opted_out"
+              "opted_out",
+              "sender_mismatch"
             ]
           },
           "interaction_id": {
@@ -4050,7 +4051,7 @@
           "to_number": {
             "type": "string",
             "minLength": 3,
-            "maxLength": 50
+            "maxLength": 320
           },
           "from_address": {
             "type": "string",
@@ -4217,6 +4218,20 @@
               "group"
             ]
           },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "sms",
+              "email",
+              "voice"
+            ]
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -4250,6 +4265,8 @@
           "account_id",
           "kind",
           "mode",
+          "channel",
+          "subject",
           "status",
           "tenancy_id",
           "maintenance_request_id",
@@ -4314,11 +4331,27 @@
             "type": "string",
             "format": "uuid"
           },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "sms",
+              "email"
+            ]
+          },
           "platform_number": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "participant_address": {
             "type": "string"
+          },
+          "reply_address": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "active": {
             "type": "boolean"
@@ -4328,8 +4361,10 @@
           "id",
           "thread_id",
           "participant_id",
+          "channel",
           "platform_number",
           "participant_address",
+          "reply_address",
           "active"
         ]
       },
@@ -4502,6 +4537,11 @@
               "voice"
             ],
             "default": "sms"
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 998
           },
           "tenancy_id": {
             "type": "string",

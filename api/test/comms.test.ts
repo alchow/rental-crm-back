@@ -296,13 +296,24 @@ async function main(): Promise<void> {
     assertStatus(ra, 403, 'agent thread create');
   });
 
-  await check('non-sms thread creation is refused (hardening F7 — sms-only today)', async () => {
+  await check('unbuilt/unconfigured channel thread creation is refused (F7, updated for E2-A)', async () => {
+    // voice bridging is still unbuilt -> 501. Email threads are REAL since
+    // E2-A (covered by test/comms-email-threads.test.ts); this suite runs
+    // without EMAIL_REPLY_DOMAIN, so the email path must refuse with a typed
+    // 503 (not mis-send, not 500) — the F7 no-silent-mis-send guarantee.
+    const v = await L({
+      kind: 'bridged_tenant', channel: 'voice',
+      participants: [{ party_type: 'tenant', party_id: fx.tenantId, address: '+15550000001' }],
+    }, '/threads');
+    assertStatus(v, 501, 'voice thread');
+    if (errCode(v) !== 'not_implemented') throw new Error(`code: ${errCode(v)}`);
+
     const r = await L({
       kind: 'bridged_tenant', channel: 'email',
       participants: [{ party_type: 'tenant', party_id: fx.tenantId, address: 'tessa@example.test' }],
     }, '/threads');
-    assertStatus(r, 501, 'email thread');
-    if (errCode(r) !== 'not_implemented') throw new Error(`code: ${errCode(r)}`);
+    assertStatus(r, 503, 'email thread without EMAIL_REPLY_DOMAIN');
+    if (errCode(r) !== 'service_unavailable') throw new Error(`code: ${errCode(r)}`);
   });
 
   // =========================================================================
