@@ -705,6 +705,87 @@ async function main(): Promise<void> {
     assert(res.interaction_id !== null, 'still journaled (the contact is evidence)');
   });
 
+  // =========================================================================
+  // (13) E2-A2: transport token-resolve read + threads channel filter
+  // =========================================================================
+  await check('resolve-reply-address: agent resolves an active token (case-normalized) → ids', async () => {
+    const r = await api(
+      'GET',
+      `/v1/comms/resolve-reply-address?address=${encodeURIComponent(tenant1Token.toUpperCase())}`,
+      { token: fx.agentToken },
+    );
+    const res = assertStatus(r, 200, 'resolve') as {
+      account_id: string; thread_id: string; participant_id: string;
+    };
+    assert(res.account_id === fx.accountId, `account: ${res.account_id}`);
+    assert(res.thread_id === thread1Id, `thread: ${res.thread_id}`);
+    assert(res.participant_id === tenant1ParticipantId, `participant: ${res.participant_id}`);
+  });
+
+  await check('resolve-reply-address: landlord (member, not agent) → 404 (uniform)', async () => {
+    const r = await api(
+      'GET',
+      `/v1/comms/resolve-reply-address?address=${encodeURIComponent(tenant1Token)}`,
+      { token: fx.landlordToken },
+    );
+    assertStatus(r, 404, 'landlord probe');
+  });
+
+  await check("resolve-reply-address: an agent of ANOTHER account only → 404 for A's token", async () => {
+    // A fresh transport identity serving ONLY account B: RLS never shows it
+    // account A's binding, so the foreign token is indistinguishable from an
+    // unknown one.
+    const foreignAgent = await createAuthUser('foreign-agent');
+    const { error } = await admin.from('account_members').insert({
+      account_id: fxB.accountId, user_id: foreignAgent.id, role: 'agent',
+    });
+    if (error) throw new Error(`foreign agent membership: ${error.message}`);
+    const foreignToken = await login(foreignAgent.email, foreignAgent.password);
+    const r = await api(
+      'GET',
+      `/v1/comms/resolve-reply-address?address=${encodeURIComponent(tenant1Token)}`,
+      { token: foreignToken },
+    );
+    assertStatus(r, 404, 'foreign transport');
+  });
+
+  await check('resolve-reply-address: unknown token → 404; deactivated binding → 404', async () => {
+    const unknown = await api(
+      'GET',
+      `/v1/comms/resolve-reply-address?address=${encodeURIComponent(`t-${'0'.repeat(32)}@${process.env.EMAIL_REPLY_DOMAIN}`)}`,
+      { token: fx.agentToken },
+    );
+    assertStatus(unknown, 404, 'unknown token');
+
+    // Deactivate tenant2's binding (suite end — nothing downstream uses it)
+    // and confirm the resolve read stops answering for it.
+    const { error } = await admin
+      .from('thread_channel_bindings')
+      .update({ active: false })
+      .eq('account_id', fx.accountId)
+      .eq('reply_address', tenant2Token);
+    if (error) throw new Error(`deactivate binding: ${error.message}`);
+    const revoked = await api(
+      'GET',
+      `/v1/comms/resolve-reply-address?address=${encodeURIComponent(tenant2Token)}`,
+      { token: fx.agentToken },
+    );
+    assertStatus(revoked, 404, 'deactivated token');
+  });
+
+  await check('threads list ?channel= filters email vs sms threads', async () => {
+    const em = await api('GET', `${base}/threads?channel=email&limit=100`, { token: fx.landlordToken });
+    const emRows = (assertStatus(em, 200, 'email list') as { data: { id: string; channel: string }[] }).data;
+    assert(emRows.every((t) => t.channel === 'email'), 'only email threads');
+    assert(emRows.some((t) => t.id === thread1Id), 'email thread present');
+    assert(!emRows.some((t) => t.id === smsThreadId), 'sms thread absent');
+
+    const sms = await api('GET', `${base}/threads?channel=sms&limit=100`, { token: fx.landlordToken });
+    const smsRows = (assertStatus(sms, 200, 'sms list') as { data: { id: string; channel: string }[] }).data;
+    assert(smsRows.every((t) => t.channel === 'sms'), 'only sms threads');
+    assert(smsRows.some((t) => t.id === smsThreadId), 'sms thread present');
+  });
+
   // --- summary ---------------------------------------------------------------
   console.info('');
   if (failures.length > 0) {

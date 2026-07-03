@@ -6912,6 +6912,7 @@ export interface paths {
                     limit?: number;
                     status?: "active" | "closed";
                     kind?: "bridged_tenant" | "vendor";
+                    channel?: "sms" | "email" | "voice";
                     tenancy_id?: string;
                 };
                 header?: never;
@@ -7510,6 +7511,82 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["CommReconcileResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/comms/resolve-reply-address": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Resolve a tokenized email reply address to its (account, thread, participant) — transport only, account-agnostic by design (the token is all an inbound email carries). 404 for anything but an ACTIVE email binding in an account the caller transports (uniform: unknown, revoked, and foreign tokens are indistinguishable). */
+        get: {
+            parameters: {
+                query: {
+                    address: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description active binding */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CommResolveReplyAddressResponse"];
                     };
                 };
                 /** @description invalid request */
@@ -14413,6 +14490,14 @@ export interface components {
         };
         CommReconcileResponse: {
             data: components["schemas"]["CommOutbox"][];
+        };
+        CommResolveReplyAddressResponse: {
+            /** Format: uuid */
+            account_id: string;
+            /** Format: uuid */
+            thread_id: string;
+            /** Format: uuid */
+            participant_id: string;
         };
         OwnerPhoneResponse: {
             /** Format: uuid */

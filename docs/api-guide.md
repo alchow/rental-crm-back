@@ -595,7 +595,7 @@ Threads carry a **`mode`**: `bridged` (default — each counterparty has a priva
 | `POST` | `/comms/inbound` | Capture an inbound message (transport). Idempotent on `provider_msg_id`. Optional `cc[]` (group MMS) switches routing to participant-set match; email routes by the tokenized reply address in `to_number`. Returns `disposition`: `matched` / `orphan` / `opted_out` / `sender_mismatch`. |
 | `POST` | `/comms/opt-outs` | Record a STOP-style opt-out (transport). Idempotent; first opt-out wins; parks queued sends to the address. |
 | `GET` | `/comms/opt-outs` | Landlord read, filtered to addresses the account already knows (never an address oracle). |
-| `GET` | `/comms/threads` | List threads with participants (landlord). Filters: `status`, `kind`, `tenancy_id`. |
+| `GET` | `/comms/threads` | List threads with participants (landlord). Filters: `status`, `kind`, `channel`, `tenancy_id`. |
 | `GET` | `/comms/threads/{id}` | Thread detail: participants, channel bindings, and journal messages with derived delivery state (cursor/limit page the messages). |
 | `POST` | `/comms/threads` | Create a thread + participants + bindings (landlord). Optional `mode: 'group'`, `channel: 'email'` (+ email-only `subject` seed; landlord participant with an email required; per-participant reply tokens minted). Bridged sms: one active thread per counterparty per platform number. Group: one active thread per member **set** per platform number (409 on an identical set). |
 | `POST` | `/comms/threads/{id}/messages` | Landlord-authored outbound: one `queued` intent per bound counterparty (bridged), or ONE group intent for the whole member set (group). `approval_ref='self:<user_id>'`. |
@@ -605,6 +605,7 @@ Threads carry a **`mode`**: `bridged` (default — each counterparty has a priva
 | `GET` | `/comms/reconcile` | Stale `sending` rows past `ttl_seconds` (transport). Read-only; resolution goes through complete/fail. |
 | `GET` | `/v1/unsubscribe/email/{token}` | **Public** (HMAC token, no auth). Registers the email opt-out and renders a minimal confirmation page. 404 on any invalid token; rate-limited per IP. |
 | `POST` | `/v1/unsubscribe/email/{token}` | **Public** RFC 8058 one-click (List-Unsubscribe-Post). Registers the opt-out; no body required. |
+| `GET` | `/v1/comms/resolve-reply-address` | Transport-only, **account-agnostic** (the token is all an inbound email carries): resolves an ACTIVE tokenized reply address to `{account_id, thread_id, participant_id}`. Uniform 404 for unknown / revoked / foreign / non-agent callers. |
 
 Outbox status is monotonic: `queued → sending → sent → delivered`, with `failed` / `undeliverable` terminal and `needs_reconcile` parking ambiguity for manual resolution. Delivery state is exposed on journal rows as a **derived** read (`delivery_status` / `delivered_at` / `outbox_id` via the chain view) — the journal itself is never mutated.
 

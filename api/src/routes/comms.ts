@@ -3,6 +3,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import { requireAuth } from '../middleware/auth';
 import { loadEnv } from '../env';
 import { ApiError, dbError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
@@ -380,6 +381,7 @@ const ThreadListQuery = z.object({
   limit: z.coerce.number().int().positive().max(100).default(50),
   status: CommThreadStatus.optional(),
   kind: CommThreadKind.optional(),
+  channel: CommChannel.optional(),
   tenancy_id: z.string().uuid().optional(),
 });
 
@@ -803,6 +805,46 @@ const reconcileScan = createRoute({
   },
   responses: {
     200: { description: 'stale sending rows', content: { 'application/json': { schema: z.object({ data: z.array(CommOutbox) }).openapi('CommReconcileResponse') } } },
+    ...errorResponses,
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Transport token-resolve read (E2-A2). Lives OUTSIDE the account-scoped path
+// on purpose: reply tokens are runtime-minted, so an inbound email's token is
+// the ONLY thing the transport knows — the account is exactly what it is
+// asking for. requireAuth() is attached per-route (the /accounts/* middleware
+// stack never fires here); the handler gates on the agent principal itself.
+// ---------------------------------------------------------------------------
+
+const ResolveReplyAddressResponse = z
+  .object({
+    account_id: z.string().uuid(),
+    thread_id: z.string().uuid(),
+    participant_id: z.string().uuid(),
+  })
+  .openapi('CommResolveReplyAddressResponse');
+
+const resolveReplyAddress = createRoute({
+  method: 'get',
+  path: '/comms/resolve-reply-address',
+  tags: ['comms'],
+  middleware: [requireAuth()] as const,
+  summary:
+    'Resolve a tokenized email reply address to its (account, thread, ' +
+    'participant) — transport only, account-agnostic by design (the token is ' +
+    'all an inbound email carries). 404 for anything but an ACTIVE email ' +
+    'binding in an account the caller transports (uniform: unknown, revoked, ' +
+    'and foreign tokens are indistinguishable).',
+  request: {
+    query: z.object({
+      /** The full tokenized reply address (t-<token>@<domain>); matched
+       *  trim+lowercased, like capture. */
+      address: z.string().min(5).max(320),
+    }),
+  },
+  responses: {
+    200: { description: 'active binding', content: { 'application/json': { schema: ResolveReplyAddressResponse } } },
     ...errorResponses,
   },
 });
@@ -1419,11 +1461,12 @@ async function loadParticipants(
 commsApp.openapi(listThreads, async (c) => {
   requireManager(c);
   const { accountId } = c.req.valid('param');
-  const { cursor, limit, status, kind, tenancy_id } = c.req.valid('query');
+  const { cursor, limit, status, kind, channel, tenancy_id } = c.req.valid('query');
   const sb = getSb(c);
   let q = sb.from('comm_threads').select(THREAD_COLS).eq('account_id', accountId);
   if (status !== undefined) q = q.eq('status', status);
   if (kind !== undefined) q = q.eq('kind', kind);
+  if (channel !== undefined) q = q.eq('channel', channel);
   if (tenancy_id !== undefined) q = q.eq('tenancy_id', tenancy_id);
   const { items, next_cursor } = await keysetPage<z.infer<typeof CommThread>>(q, {
     cursor,
@@ -2129,4 +2172,51 @@ commsApp.openapi(reconcileScan, async (c) => {
   });
   if (error) throw commDbError(error);
   return c.json({ data: (data ?? []) as OutboxRow[] }, 200);
+});
+
+// ---------------------------------------------------------------------------
+// GET /comms/resolve-reply-address — transport token directory lookup (E2-A2)
+// ---------------------------------------------------------------------------
+// Two-layer fencing, both uniform-404:
+//   1. RLS: the binding read runs as the caller, so only bindings in accounts
+//      the caller is a MEMBER of are visible at all — a token belonging to an
+//      account this transport does not serve resolves to nothing.
+//   2. Role: the caller must hold role='agent' in the resolved binding's
+//      account (the self-only account_members SELECT policy makes this the
+//      caller's own membership row). A landlord probing their own account's
+//      tokens gets the same 404 as an unknown token — no oracle anywhere.
+
+commsApp.openapi(resolveReplyAddress, async (c) => {
+  const { address } = c.req.valid('query');
+  const sb = getSb(c);
+
+  const { data: binding, error } = await sb
+    .from('thread_channel_bindings')
+    .select('account_id, thread_id, participant_id')
+    .eq('reply_address', address.trim().toLowerCase())
+    .eq('channel', 'email')
+    .eq('active', true)
+    .maybeSingle();
+  if (error) throw commDbError(error);
+  if (!binding) throw new ApiError(404, 'not_found', 'not found');
+
+  const { data: membership, error: mErr } = await sb
+    .from('account_members')
+    .select('role')
+    .eq('account_id', binding.account_id)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (mErr) throw commDbError(mErr);
+  if (!membership || membership.role !== 'agent') {
+    throw new ApiError(404, 'not_found', 'not found');
+  }
+
+  return c.json(
+    {
+      account_id: binding.account_id as string,
+      thread_id: binding.thread_id as string,
+      participant_id: binding.participant_id as string,
+    },
+    200,
+  );
 });
