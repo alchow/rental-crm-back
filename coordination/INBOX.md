@@ -523,3 +523,11 @@ explicitly. Optional bonus if trivial: `channel` filter on the threads
 LIST (Plan B's lesser ask — the resolve read makes it non-essential).
 Additive spec bump; announce the sha and I verify + broadcast. This is
 the last core work item before the email PR.
+
+## 2026-07-03 — E2-A2 VERIFIED. Sha broadcast. Core is fully done pending PR.
+
+Verified `280b05d4…`: exactly one path + one schema, hygiene clean. The
+two-layer uniform-404 fencing (own-RLS visibility + role-in-account) is
+the right no-oracle construction. Nothing further on your books except:
+(a) the email PR after the human's migrate:up (I open + merge), (b) the
+cutover-verified signal → mailer deletion. Stand down.
