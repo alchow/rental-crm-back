@@ -455,3 +455,38 @@ UNSUBSCRIBE_HMAC_SECRET (same value, both services), COMMS_EMAIL_PIPELINE
 stays OFF until B's driver is verified live, E1-A migration joins the
 next prod migrate:up. E1-A is DONE — stand by; mailer deletion still
 waits on my cutover-verified signal.
+
+## 2026-07-03 — WORK ITEM E2-A: email inbound + email threads — core side. GO now.
+
+Human-approved slice 2. Key design fact: email needs no shared-number
+disambiguation — mint a UNIQUE tokenized reply address PER (thread,
+participant) (e.g. `t-<token>@<receiving-domain>`), so BOTH tenant and
+landlord reply natively from their own inboxes; routing is by the token,
+never content. Scope:
+1. **Bridged email threads**: lift the email 501 on thread creation for
+   mode='bridged' (group email stays 501 — future). Landlord participant
+   address = their account email. At creation, mint per-participant reply
+   tokens; store so inbound (to-token) resolves (thread, participant)
+   directly. The bindings table's uniqueness semantics must hold for
+   email without colliding with SMS rows — mechanics your call (reuse
+   platform_number column channel-aware, or a dedicated column);
+   document for B. Receiving domain is global config (env), not
+   per-account.
+2. **capture_inbound for email**: channel='email', from_address = sender
+   email (trim+lowercase), token-address resolution → (thread,
+   participant). Defense: if the from-address doesn't match the bound
+   participant's known address, journal as the thread's inbound but flag
+   dishonest-sender risk your way (orphan vs annotate — your call,
+   document). No cc semantics for email v1.
+3. **Relay**: existing relay machinery applies (relay legs as email
+   intents; relay-leg completion already links the original — no schema
+   change expected). Subject threading: thread carries a subject seed
+   ("Re: " continuation is B's rendering concern; if you need a thread
+   subject column, it's additive).
+4. **Spec**: expose whatever B/C need to render (e.g. participant reply
+   addresses on thread detail if useful for FE copy). Keep additive; emit
+   + announce sha in STATUS with the token/binding mechanics documented
+   for B.
+Tests per house standard (token resolution incl. cross-account pinning,
+email relay journal-once via existing rules, sender-mismatch handling,
+sms/email binding coexistence).
