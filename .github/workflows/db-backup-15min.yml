@@ -1,16 +1,21 @@
-# Off-platform DB backup, 15-minute tier (RPO <= ~15 min).
+# Off-platform DB backup, high-frequency tier (RPO <= ~60 min).
+# Runs hourly. The workflow name and the pg/15min/ bucket path keep their
+# historical "15min" label for continuity (this tier previously ran every 15
+# minutes) -- the cron schedule below is the source of truth for cadence, not
+# the name.
 # pg_dump of the public schema -> S3-compatible bucket (Cloudflare R2).
-# Retention: 48 hours of 15-minute snapshots; db-backup-daily.yml promotes
+# Retention: 48 hours of hourly snapshots; db-backup-daily.yml promotes
 # one snapshot per day to a 30-day tier and syncs Storage files.
 # Restore procedure + one-time setup: docs/backup-recovery-runbook.md.
 name: db-backup-15min
 
 on:
   schedule:
-    # GitHub cron can drift several minutes under load, so the worst-case
-    # recovery gap is occasionally ~20-30 min rather than a hard 15 (see the
-    # runbook's RPO table for the paid upgrade paths if that ever matters).
-    - cron: '*/15 * * * *'
+    # Hourly, on the hour. GitHub cron can drift several minutes under load, so
+    # the worst-case recovery gap is occasionally a few minutes past the hour
+    # rather than a hard 60 (see the runbook's RPO table for the paid upgrade
+    # paths if that ever matters).
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 permissions:
