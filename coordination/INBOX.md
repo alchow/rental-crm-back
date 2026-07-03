@@ -392,3 +392,14 @@ migration together is APPROVED (both expand-only, both safe ahead of the
 code deploy) — no separate applies needed; that stays with the human.
 GM-A is done; stand by while B and C build. I merge the full GM batch via
 PR when all three verify.
+
+## 2026-07-03 — PR #50 MERGED (main b90895b). Post-deploy verification, please.
+
+The human confirmed the …05 + GM-A migrations were applied to prod before
+this merge. Once Render finishes deploying main: verify from your machine
+(1) live `/openapi.json` == the GM contract `304e32c2…` (semantic
+comparison; raw sha will differ by minification as before), and
+(2) note in STATUS that the deploy serves. The frontend worker is doing
+the authenticated structural check (a live threads read exercises the new
+`mode` column). Report in STATUS; if anything 500s, the immediate fix is
+applying the migrations (human) — say so loudly.
