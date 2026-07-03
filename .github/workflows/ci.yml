@@ -347,6 +347,15 @@ jobs:
         # and email opt-out enforcement.
         run: pnpm --filter ./api test:comms-email-threads
 
+      - name: Run comms evidence-hardening checks (EV-A/EV-B)
+        # Audience stamping (inbound {to, cc} / outbound {to:[...]}, frozen,
+        # group audience == frozen routing-key set), verbatim-webhook archive
+        # (server-side sha256, audit-anchored provenance row, idempotent by
+        # provider_msg_id, conflicting-body 409, principal gating), legal
+        # holds (manager-only writes, agent denied), and the hold-gated
+        # inbound_raw prune.
+        run: pnpm --filter ./api test:comms-evidence
+
       - name: Run events feed + ledger as_of checks (Phase 3)
         # Poller contract under concurrency (40 POSTs, cursor drain), next_seq
         # semantics, entity_type filter, cross-account isolation, validation

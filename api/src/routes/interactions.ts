@@ -118,6 +118,19 @@ export const Interaction = z
      *  column lands with the comms ledger migrations, so rows read null /
      *  absent until then. */
     thread_id: z.string().uuid().nullable().optional(),
+    /** Addressed set of a communication row, stamped by the comms write
+     *  paths (capture_inbound / complete_send) and frozen once written:
+     *  inbound rows carry {to: <address the message arrived on>, cc: [other
+     *  recipients as reported by the provider]}; outbound rows carry
+     *  {to: [dialed address(es)]}. Null on non-communication rows and on
+     *  rows journaled before the column landed (20260703000003). */
+    audience: z
+      .object({
+        to: z.union([z.string(), z.array(z.string())]),
+        cc: z.array(z.string()).optional(),
+      })
+      .nullable()
+      .optional(),
     /** The prior interaction / journal entry this entry references — e.g. a
      *  step_executed agent_event anchored to the proposal it acts on. Null
      *  when unset. */

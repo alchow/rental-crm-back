@@ -3358,6 +3358,36 @@
             ],
             "format": "uuid"
           },
+          "audience": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "to": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              },
+              "cc": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "to"
+            ]
+          },
           "references_interaction_id": {
             "type": [
               "string",
@@ -4098,6 +4128,170 @@
           "from_address",
           "channel",
           "received_at"
+        ]
+      },
+      "CommInboundProvenance": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "provider_msg_id": {
+            "type": "string"
+          },
+          "body_sha256": {
+            "type": "string"
+          },
+          "signature": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "signature_timestamp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "storage_path": {
+            "type": "string"
+          },
+          "received_at": {
+            "type": "string"
+          },
+          "purged_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "provider",
+          "provider_msg_id",
+          "body_sha256",
+          "signature",
+          "signature_timestamp",
+          "storage_path",
+          "received_at",
+          "purged_at",
+          "created_at"
+        ]
+      },
+      "CommEvidenceBody": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "provider_msg_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "raw_body_b64": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 7100000,
+            "pattern": "^[A-Za-z0-9+/]*={0,2}$"
+          },
+          "signature": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "signature_timestamp": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "provider",
+          "provider_msg_id",
+          "raw_body_b64",
+          "received_at"
+        ]
+      },
+      "AccountLegalHold": {
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "set_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "set_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "released_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "account_id",
+          "active",
+          "reason",
+          "set_by",
+          "set_at",
+          "released_at"
+        ]
+      },
+      "SetAccountLegalHoldBody": {
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "required": [
+          "active"
         ]
       },
       "CommOptOut": {
@@ -17459,6 +17653,330 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CaptureCommInboundResponse"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/comms/evidence": {
+      "post": {
+        "tags": [
+          "comms"
+        ],
+        "summary": "Archive the verbatim signed webhook for an inbound message (transport). The body hash is computed server-side, recorded on an audit-anchored provenance row, and the exact bytes are stored in the private evidence bucket. Idempotent on provider_msg_id; a replay with a different body is refused (409) — the first archived claim wins. Independent of the inbound capture call: archive-then-process.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommEvidenceBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "provenance anchor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommInboundProvenance"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/comms/legal-hold": {
+      "get": {
+        "tags": [
+          "comms"
+        ],
+        "summary": "Read the account legal-hold state (any member). active=false with null timestamps means no hold was ever set.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "hold state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountLegalHold"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "comms"
+        ],
+        "summary": "Set or release the account legal hold (owner|manager). While active, every comms destruction path (raw-capture prune, evidence-blob retention) skips this account. Audited.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetAccountLegalHoldBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "hold state after the write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountLegalHold"
                 }
               }
             },

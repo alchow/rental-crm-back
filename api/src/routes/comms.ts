@@ -10,6 +10,12 @@ import { keysetPage } from './_lib/cursor';
 import { normalizePhone } from './_lib/phone';
 import { withResolvedAuthorship } from './_lib/authorship';
 import { Interaction } from './interactions';
+import {
+  evidenceSha256,
+  evidenceStoragePath,
+  storeEvidenceBytes,
+  MAX_EVIDENCE_BYTES,
+} from '../admin/evidence';
 
 // ---------------------------------------------------------------------------
 // Communications ledger contract (comms build, core repo; ADR-0007 revived).
@@ -269,6 +275,90 @@ const CaptureInboundResponse = z
     participant: CommThreadParticipant.nullable(),
   })
   .openapi('CaptureCommInboundResponse');
+
+// ---------------------------------------------------------------------------
+// Evidence archive (EV-B) — the carrier-signed webhook original, archived
+// verbatim so inbound journal rows are verifiable independently of our own
+// software. The transport POSTs the raw body + signature headers BEFORE
+// parsing (archive-then-process; see docs/comms-evidence.md). The provenance
+// row is audit-attached, so its body hash lands in the per-account event
+// hash chain — blob and ledger vouch for each other.
+// ---------------------------------------------------------------------------
+
+const CommEvidenceBody = z
+  .object({
+    provider: z.string().min(1).max(100),
+    /** Idempotency key, same value later passed to the inbound capture. A
+     *  replay with the SAME body returns the original row; a replay with a
+     *  DIFFERENT body is refused (409) — first archived claim wins. */
+    provider_msg_id: z.string().min(1).max(200),
+    /** The webhook body VERBATIM (base64 of the exact bytes received). The
+     *  hash is computed server-side from these bytes; max 5 MiB decoded. */
+    raw_body_b64: z
+      .string()
+      .min(1)
+      .max(7_100_000)
+      .regex(/^[A-Za-z0-9+/]*={0,2}$/),
+    /** Provider signature header value (e.g. telnyx-signature-ed25519).
+     *  Optional: an unsigned provider still gets body-hash anchoring. */
+    signature: z.string().min(1).max(2000).optional(),
+    /** Provider signature timestamp header value (e.g. telnyx-timestamp). */
+    signature_timestamp: z.string().min(1).max(100).optional(),
+    received_at: z.string().datetime(),
+  })
+  .openapi('CommEvidenceBody');
+
+const CommInboundProvenance = z
+  .object({
+    id: z.string().uuid(),
+    account_id: z.string().uuid(),
+    provider: z.string(),
+    provider_msg_id: z.string(),
+    /** sha256 (lowercase hex) of the archived verbatim body bytes. Anchored
+     *  in the audit hash chain by this row's insert event. */
+    body_sha256: z.string(),
+    signature: z.string().nullable(),
+    signature_timestamp: z.string().nullable(),
+    /** Object name in the private 'comm-evidence' bucket (API-mediated;
+     *  content-addressed: `<account>/<sha256>.bin`). */
+    storage_path: z.string(),
+    received_at: z.string(),
+    /** Set when the retention janitor removed the BLOB (the row itself is
+     *  never deleted — the subpoena handle survives). Null while archived. */
+    purged_at: z.string().nullable(),
+    created_at: z.string(),
+  })
+  .openapi('CommInboundProvenance');
+
+// ---------------------------------------------------------------------------
+// Legal hold — while active, every comms destruction path skips the account
+// (the inbound_raw prune and the evidence-blob retention janitor). Read is
+// member-wide; set/release is owner|manager only — the agent principal must
+// never be able to release a hold and re-enable purging.
+// ---------------------------------------------------------------------------
+
+const AccountLegalHold = z
+  .object({
+    account_id: z.string().uuid(),
+    active: z.boolean(),
+    reason: z.string().nullable(),
+    /** Member who last set the hold; null if never set. */
+    set_by: z.string().uuid().nullable(),
+    /** When the hold was last set; null if never set. */
+    set_at: z.string().nullable(),
+    /** When the hold was last released; null while active or never set. */
+    released_at: z.string().nullable(),
+  })
+  .openapi('AccountLegalHold');
+
+const SetLegalHoldBody = z
+  .object({
+    active: z.boolean(),
+    /** Why the hold exists (demand letter, filed case, …). Recorded on set;
+     *  ignored on release. */
+    reason: z.string().min(1).max(2000).optional(),
+  })
+  .openapi('SetAccountLegalHoldBody');
 
 // ---------------------------------------------------------------------------
 // Opt-outs — global compliance register keyed by (channel, address), NOT by
@@ -621,6 +711,59 @@ const captureInbound = createRoute({
   },
   responses: {
     200: { description: 'capture result', content: { 'application/json': { schema: CaptureInboundResponse } } },
+    ...errorResponses,
+  },
+});
+
+const captureEvidence = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/comms/evidence',
+  tags: ['comms'],
+  summary:
+    'Archive the verbatim signed webhook for an inbound message (transport). ' +
+    'The body hash is computed server-side, recorded on an audit-anchored ' +
+    'provenance row, and the exact bytes are stored in the private evidence ' +
+    'bucket. Idempotent on provider_msg_id; a replay with a different body ' +
+    'is refused (409) — the first archived claim wins. Independent of the ' +
+    'inbound capture call: archive-then-process.',
+  request: {
+    params: AccountParam,
+    body: { content: { 'application/json': { schema: CommEvidenceBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'provenance anchor', content: { 'application/json': { schema: CommInboundProvenance } } },
+    ...errorResponses,
+  },
+});
+
+const getLegalHold = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/comms/legal-hold',
+  tags: ['comms'],
+  summary:
+    'Read the account legal-hold state (any member). active=false with null ' +
+    'timestamps means no hold was ever set.',
+  request: { params: AccountParam },
+  responses: {
+    200: { description: 'hold state', content: { 'application/json': { schema: AccountLegalHold } } },
+    ...errorResponses,
+  },
+});
+
+const setLegalHold = createRoute({
+  method: 'put',
+  path: '/accounts/{accountId}/comms/legal-hold',
+  tags: ['comms'],
+  summary:
+    'Set or release the account legal hold (owner|manager). While active, ' +
+    'every comms destruction path (raw-capture prune, evidence-blob ' +
+    'retention) skips this account. Audited.',
+  request: {
+    params: AccountParam,
+    body: { content: { 'application/json': { schema: SetLegalHoldBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'hold state after the write', content: { 'application/json': { schema: AccountLegalHold } } },
     ...errorResponses,
   },
 });
@@ -1393,6 +1536,125 @@ commsApp.openapi(captureInbound, async (c) => {
     },
     200,
   );
+});
+
+// ---------------------------------------------------------------------------
+// POST /comms/evidence — archive the verbatim signed webhook (transport)
+// ---------------------------------------------------------------------------
+
+const HOLD_COLS = 'account_id, active, reason, set_by, set_at, released_at';
+
+commsApp.openapi(captureEvidence, async (c) => {
+  requireTransport(c);
+  const { accountId } = c.req.valid('param');
+  const body = c.req.valid('json');
+
+  // The schema's regex admits only base64 alphabet; reject ragged length here
+  // (Buffer.from silently drops trailing garbage, which would make the hash a
+  // function of something other than what the caller sent).
+  if (body.raw_body_b64.length % 4 !== 0) {
+    throw new ApiError(400, 'invalid_request', 'raw_body_b64 is not valid base64', {
+      fieldErrors: { raw_body_b64: ['not valid base64 (length not a multiple of 4)'] },
+    });
+  }
+  const bytes = Buffer.from(body.raw_body_b64, 'base64');
+  if (bytes.byteLength === 0) {
+    throw new ApiError(400, 'invalid_request', 'raw_body_b64 decodes to zero bytes', {
+      fieldErrors: { raw_body_b64: ['empty body'] },
+    });
+  }
+  if (bytes.byteLength > MAX_EVIDENCE_BYTES) {
+    throw new ApiError(
+      400,
+      'invalid_request',
+      `evidence body exceeds max size (${bytes.byteLength} > ${MAX_EVIDENCE_BYTES} bytes)`,
+    );
+  }
+
+  // Row first, then bytes: record_inbound_provenance is idempotent and
+  // first-hash-wins, so the upload below only ever writes bytes whose hash
+  // the audited row has already pinned (a crashed upload heals on retry; a
+  // conflicting body 409s here and never touches storage).
+  const sha256 = evidenceSha256(bytes);
+  const { data, error } = await getSb(c).rpc('record_inbound_provenance', {
+    p_account_id: accountId,
+    p_provider: body.provider,
+    p_provider_msg_id: body.provider_msg_id,
+    p_body_sha256: sha256,
+    p_signature: body.signature ?? null,
+    p_signature_timestamp: body.signature_timestamp ?? null,
+    p_storage_path: evidenceStoragePath(accountId, sha256),
+    p_received_at: body.received_at,
+  });
+  if (error) throw commDbError(error);
+  const row = data as z.infer<typeof CommInboundProvenance>;
+
+  await storeEvidenceBytes(accountId, bytes);
+  return c.json(row, 200);
+});
+
+// ---------------------------------------------------------------------------
+// GET/PUT /comms/legal-hold — destruction gate (read: member; write: manager)
+// ---------------------------------------------------------------------------
+
+const NO_HOLD = (accountId: string): z.infer<typeof AccountLegalHold> => ({
+  account_id: accountId,
+  active: false,
+  reason: null,
+  set_by: null,
+  set_at: null,
+  released_at: null,
+});
+
+commsApp.openapi(getLegalHold, async (c) => {
+  const { accountId } = c.req.valid('param');
+  const { data, error } = await getSb(c)
+    .from('account_legal_holds')
+    .select(HOLD_COLS)
+    .eq('account_id', accountId)
+    .maybeSingle();
+  if (error) throw commDbError(error);
+  return c.json((data as z.infer<typeof AccountLegalHold> | null) ?? NO_HOLD(accountId), 200);
+});
+
+commsApp.openapi(setLegalHold, async (c) => {
+  requireManager(c);
+  const { accountId } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  const nowIso = new Date().toISOString();
+
+  if (body.active) {
+    const { data, error } = await sb
+      .from('account_legal_holds')
+      .upsert(
+        {
+          account_id: accountId,
+          active: true,
+          reason: body.reason ?? null,
+          set_by: c.get('auth').userId,
+          set_at: nowIso,
+          released_at: null,
+          updated_at: nowIso,
+        },
+        { onConflict: 'account_id' },
+      )
+      .select(HOLD_COLS)
+      .single();
+    if (error) throw commDbError(error);
+    return c.json(data as z.infer<typeof AccountLegalHold>, 200);
+  }
+
+  // Release. Idempotent: releasing an account that never held returns the
+  // default state without minting a row that records a release of nothing.
+  const { data, error } = await sb
+    .from('account_legal_holds')
+    .update({ active: false, released_at: nowIso, updated_at: nowIso })
+    .eq('account_id', accountId)
+    .select(HOLD_COLS)
+    .maybeSingle();
+  if (error) throw commDbError(error);
+  return c.json((data as z.infer<typeof AccountLegalHold> | null) ?? NO_HOLD(accountId), 200);
 });
 
 // ---------------------------------------------------------------------------

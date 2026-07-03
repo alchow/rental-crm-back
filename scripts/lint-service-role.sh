@@ -104,6 +104,12 @@ EXCLUDES=(
   #     (platform number, agent membership) and read-backs. TEST code, never
   #     shipped.
   ':!api/test/comms-email-threads.test.ts'
+  #   - api/test/comms-evidence.test.ts: EV-A/EV-B evidence-hardening
+  #     integration test (same shape as comms.test.ts). Assigns process.env
+  #     from supabase status and uses the admin client for ops-tier fixtures
+  #     (platform number, agent membership), storage read-backs of archived
+  #     evidence blobs, and audit-event read-backs. TEST code, never shipped.
+  ':!api/test/comms-evidence.test.ts'
   ':!api/test/agent-grants.test.ts'
   ':!api/test/agent-tokens.test.ts'
   #   - api/test/agent-membership-divergence.test.ts: induces an out-of-band

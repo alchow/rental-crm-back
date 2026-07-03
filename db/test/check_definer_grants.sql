@@ -54,7 +54,10 @@ DECLARE
     'complete_send',
     'capture_inbound',
     'record_opt_out',
-    'list_account_opt_outs'
+    'list_account_opt_outs',
+    -- comms evidence (20260703000004): agent-role member of p_account_id,
+    -- same self-defense shape as capture_inbound
+    'record_inbound_provenance'
   ];
 BEGIN
 
