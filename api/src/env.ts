@@ -49,6 +49,25 @@ const RawEnvSchema = z.object({
   RESEND_API_KEY: z.string().min(1).optional(),
   MAIL_FROM: z.string().min(1).optional(),
 
+  // HMAC secret for the public email-unsubscribe endpoint. SHARED with the
+  // transport repo, which mints per-address unsubscribe URLs statelessly (it
+  // holds the same secret). Unset -> the public unsubscribe endpoint 503s (and
+  // the transport must NOT emit List-Unsubscribe headers).
+  UNSUBSCRIBE_HMAC_SECRET: z.string().min(32).optional(),
+
+  // The global receiving domain for tokenized email reply addresses
+  // (`t-<token>@<domain>`), e.g. `reply.example.com`. Global config, not
+  // per-account. Unset -> email thread creation 503s. Inbound mail for this
+  // domain must route to the transport's webhook (ops).
+  EMAIL_REPLY_DOMAIN: z.string().min(3).optional(),
+
+  // Cutover flag for core-originated transactional email. ON ('on' | 'true')
+  // -> the inspection-capture renewal email is written to the comms outbox (the
+  // transport dials the provider); OFF/unset -> the legacy in-core mailer
+  // (admin/mailer.ts) sends directly. The mailer is deleted only after the
+  // coordinator signals cutover-verified.
+  COMMS_EMAIL_PIPELINE: z.string().optional(),
+
   // Extra browser origins allowed to call the API via CORS, beyond the
   // built-in Lovable defaults (see middleware/cors.ts). Comma-separated;
   // each entry is either an exact origin (https://app.example.com) or a
@@ -71,6 +90,9 @@ export interface Env {
   ANTHROPIC_API_KEY: string | null;
   RESEND_API_KEY: string | null;
   MAIL_FROM: string | null;
+  UNSUBSCRIBE_HMAC_SECRET: string | null;
+  EMAIL_REPLY_DOMAIN: string | null;
+  COMMS_EMAIL_PIPELINE: boolean;
 }
 
 let cached: Env | null = null;
@@ -103,6 +125,9 @@ export function loadEnv(): Env {
     ANTHROPIC_API_KEY: raw.ANTHROPIC_API_KEY ?? null,
     RESEND_API_KEY: raw.RESEND_API_KEY ?? null,
     MAIL_FROM: raw.MAIL_FROM ?? null,
+    UNSUBSCRIBE_HMAC_SECRET: raw.UNSUBSCRIBE_HMAC_SECRET ?? null,
+    EMAIL_REPLY_DOMAIN: raw.EMAIL_REPLY_DOMAIN ?? null,
+    COMMS_EMAIL_PIPELINE: raw.COMMS_EMAIL_PIPELINE === 'on' || raw.COMMS_EMAIL_PIPELINE === 'true',
   };
   return cached;
 }

@@ -392,3 +392,142 @@ migration together is APPROVED (both expand-only, both safe ahead of the
 code deploy) — no separate applies needed; that stays with the human.
 GM-A is done; stand by while B and C build. I merge the full GM batch via
 PR when all three verify.
+
+## 2026-07-03 — PR #50 MERGED (main b90895b). Post-deploy verification, please.
+
+The human confirmed the …05 + GM-A migrations were applied to prod before
+this merge. Once Render finishes deploying main: verify from your machine
+(1) live `/openapi.json` == the GM contract `304e32c2…` (semantic
+comparison; raw sha will differ by minification as before), and
+(2) note in STATUS that the deploy serves. The frontend worker is doing
+the authenticated structural check (a live threads read exercises the new
+`mode` column). Report in STATUS; if anything 500s, the immediate fix is
+applying the migrations (human) — say so loudly.
+
+## 2026-07-03 — WORK ITEM E1-A: email channel, slice 1 (send-only) — core side. GO now.
+
+Human-approved. Provider is Resend for BOTH directions (verified: inbound
+receiving with signed webhooks + stored-mail Receiving API exists) — but
+slice 1 is SEND-ONLY; inbound/threads is slice 2, held. Core scope:
+1. **Contract additions (additive, one emit, announce sha):** optional
+   `subject` on CreateCommOutboxBody + comm_outbox (email-only semantics;
+   400 on sms rows). Journal rule: complete_send for email rows records
+   the FULL content honestly (document your chosen shape — e.g. body
+   prefixed "Subject: …" — in STATUS so B renders templates to match).
+2. **Provenance extension for core-originated transactional sends:**
+   the inspection-capture renewal email migrates onto the pipeline as an
+   outbox intent CREATED BY CORE (core writing its own ledger is not
+   "core sends" — the transport still dials). It needs an honest
+   provenance class: extend the CHECK/firewall with
+   `approval_ref='system:<flow>'` valid ONLY for core-server-originated
+   intents (never accepted from the agent principal or landlords over the
+   API — enforce that). The renewal email thereby gains a journal record
+   it never had.
+3. **Unsubscribe (CAN-SPAM + Gmail/Yahoo one-click):** unauthenticated
+   endpoint following the intake magic-link pattern that registers
+   `record_opt_out(channel='email', address)` + a minimal confirmation
+   page. Mechanism requirement: the TRANSPORT must be able to mint
+   per-address unsubscribe URLs without a per-send round trip (stateless
+   HMAC over the address with a shared secret is acceptable — document
+   the exact format in STATUS for B), and it must support RFC 8058
+   one-click (POST) for the List-Unsubscribe-Post header.
+4. **Mailer migrate-and-delete (tracked scope, now live):** cut the
+   inspection renewal over to the pipeline BEHIND a config flag or
+   fallback (the old mailer path stays until B's email driver is verified
+   live — do not break the renewal flow in the gap), then delete
+   `api/src/admin/mailer.ts` + the RESEND/MAIL_FROM env from core when I
+   signal cutover-verified.
+Tests + gates per house standard; announce the new sha in STATUS.
+
+## 2026-07-03 — E1-A VERIFIED + broadcast. Both flagged items APPROVED.
+
+Independently verified `d6adb2b9…`: delta is exactly as you enumerated
+(one new path, subject fields, UnsubscribeResponse, author_type widening,
+scan channel param), hygiene sweeps clean. Rulings:
+1. **author_type widening: APPROVED** — pre-empting the spec-vs-served
+   class before the flag flip is exactly the lesson applied; B and C are
+   being told to handle 'system' on re-pin.
+2. **Scan channel filter: APPROVED** — B asked for per-channel loops;
+   server-side scoping is right.
+The `Subject:` journal shape, token format v1, and provenance pairing all
+read correct. Enablement checklist additions recorded for the human:
+UNSUBSCRIBE_HMAC_SECRET (same value, both services), COMMS_EMAIL_PIPELINE
+stays OFF until B's driver is verified live, E1-A migration joins the
+next prod migrate:up. E1-A is DONE — stand by; mailer deletion still
+waits on my cutover-verified signal.
+
+## 2026-07-03 — WORK ITEM E2-A: email inbound + email threads — core side. GO now.
+
+Human-approved slice 2. Key design fact: email needs no shared-number
+disambiguation — mint a UNIQUE tokenized reply address PER (thread,
+participant) (e.g. `t-<token>@<receiving-domain>`), so BOTH tenant and
+landlord reply natively from their own inboxes; routing is by the token,
+never content. Scope:
+1. **Bridged email threads**: lift the email 501 on thread creation for
+   mode='bridged' (group email stays 501 — future). Landlord participant
+   address = their account email. At creation, mint per-participant reply
+   tokens; store so inbound (to-token) resolves (thread, participant)
+   directly. The bindings table's uniqueness semantics must hold for
+   email without colliding with SMS rows — mechanics your call (reuse
+   platform_number column channel-aware, or a dedicated column);
+   document for B. Receiving domain is global config (env), not
+   per-account.
+2. **capture_inbound for email**: channel='email', from_address = sender
+   email (trim+lowercase), token-address resolution → (thread,
+   participant). Defense: if the from-address doesn't match the bound
+   participant's known address, journal as the thread's inbound but flag
+   dishonest-sender risk your way (orphan vs annotate — your call,
+   document). No cc semantics for email v1.
+3. **Relay**: existing relay machinery applies (relay legs as email
+   intents; relay-leg completion already links the original — no schema
+   change expected). Subject threading: thread carries a subject seed
+   ("Re: " continuation is B's rendering concern; if you need a thread
+   subject column, it's additive).
+4. **Spec**: expose whatever B/C need to render (e.g. participant reply
+   addresses on thread detail if useful for FE copy). Keep additive; emit
+   + announce sha in STATUS with the token/binding mechanics documented
+   for B.
+Tests per house standard (token resolution incl. cross-account pinning,
+email relay journal-once via existing rules, sender-mismatch handling,
+sms/email binding coexistence).
+
+## 2026-07-03 — E2-A VERIFIED. sender_mismatch RATIFIED. Sha broadcast.
+
+Verified `0f0cb770…`: delta exactly as enumerated, hygiene clean,
+platform_number nullable as flagged (same honest-widening class,
+approved). **sender_mismatch: RATIFIED in full** — capturing into the
+thread with party fields carrying the identity doubt is the
+evidence-honest middle ground (the thread's unique address WAS reached;
+aliases/forwarders are real), and keeping author_type as the slot
+capacity while party_label carries the actual sender is the right split.
+I've set B's transport rule: sender_mismatch → no relay, no reply, poke
+still fires (in-app visibility carries it). The dedicated
+reply_address column over platform_number reuse was the right structural
+call. E2-A DONE. Deploy notes recorded: migration `…0002` joins the
+pending migrate:up; EMAIL_REPLY_DOMAIN + MX routing added to the
+enablement checklist.
+
+## 2026-07-03 — WORK ITEM E2-A2 (small addendum): transport token-resolve read
+
+From Plan B's E2-B: tokens are runtime-minted, so the transport cannot
+maintain an ops map of reply_address → account; it currently walks every
+served account's thread details to build a token directory (works at
+pilot scale, N+1-ish, and an unknown token can only be dropped since
+capture is account-scoped). Add ONE transport-principal read:
+`GET /v1/comms/resolve-reply-address?address=<token address>` →
+`{account_id, thread_id, participant_id}` for an ACTIVE email binding,
+404 otherwise (uniform for unknown vs revoked — no oracle). Note the
+route lives OUTSIDE the account-scoped path (the caller doesn't know the
+account yet — that's the point); gate it on the agent principal
+explicitly. Optional bonus if trivial: `channel` filter on the threads
+LIST (Plan B's lesser ask — the resolve read makes it non-essential).
+Additive spec bump; announce the sha and I verify + broadcast. This is
+the last core work item before the email PR.
+
+## 2026-07-03 — E2-A2 VERIFIED. Sha broadcast. Core is fully done pending PR.
+
+Verified `280b05d4…`: exactly one path + one schema, hygiene clean. The
+two-layer uniform-404 fencing (own-RLS visibility + role-in-account) is
+the right no-oracle construction. Nothing further on your books except:
+(a) the email PR after the human's migrate:up (I open + merge), (b) the
+cutover-verified signal → mailer deletion. Stand down.

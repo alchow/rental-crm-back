@@ -3612,6 +3612,12 @@
           "body": {
             "type": "string"
           },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "template_id": {
             "type": [
               "string",
@@ -3698,7 +3704,8 @@
             "type": "string",
             "enum": [
               "landlord",
-              "agent"
+              "agent",
+              "system"
             ]
           },
           "interaction_id": {
@@ -3730,6 +3737,7 @@
           "thread_id",
           "participant_id",
           "body",
+          "subject",
           "template_id",
           "not_before",
           "relay_of_interaction_id",
@@ -3778,6 +3786,11 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 20000
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 998
           },
           "approval_ref": {
             "type": "string",
@@ -3976,7 +3989,8 @@
             "enum": [
               "matched",
               "orphan",
-              "opted_out"
+              "opted_out",
+              "sender_mismatch"
             ]
           },
           "interaction_id": {
@@ -4037,7 +4051,7 @@
           "to_number": {
             "type": "string",
             "minLength": 3,
-            "maxLength": 50
+            "maxLength": 320
           },
           "from_address": {
             "type": "string",
@@ -4204,6 +4218,20 @@
               "group"
             ]
           },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "sms",
+              "email",
+              "voice"
+            ]
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -4237,6 +4265,8 @@
           "account_id",
           "kind",
           "mode",
+          "channel",
+          "subject",
           "status",
           "tenancy_id",
           "maintenance_request_id",
@@ -4301,11 +4331,27 @@
             "type": "string",
             "format": "uuid"
           },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "sms",
+              "email"
+            ]
+          },
           "platform_number": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "participant_address": {
             "type": "string"
+          },
+          "reply_address": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "active": {
             "type": "boolean"
@@ -4315,8 +4361,10 @@
           "id",
           "thread_id",
           "participant_id",
+          "channel",
           "platform_number",
           "participant_address",
+          "reply_address",
           "active"
         ]
       },
@@ -4489,6 +4537,11 @@
               "voice"
             ],
             "default": "sms"
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 998
           },
           "tenancy_id": {
             "type": "string",
@@ -4761,6 +4814,28 @@
         },
         "required": [
           "data"
+        ]
+      },
+      "CommResolveReplyAddressResponse": {
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "thread_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "participant_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "account_id",
+          "thread_id",
+          "participant_id"
         ]
       },
       "OwnerPhoneResponse": {
@@ -7931,6 +8006,20 @@
         },
         "required": [
           "items"
+        ]
+      },
+      "UnsubscribeResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "unsubscribed"
+            ]
+          }
+        },
+        "required": [
+          "status"
         ]
       },
       "AgentGrantedAccount": {
@@ -16756,6 +16845,19 @@
           {
             "schema": {
               "type": "string",
+              "enum": [
+                "sms",
+                "email",
+                "voice"
+              ]
+            },
+            "required": false,
+            "name": "channel",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
               "format": "date-time"
             },
             "required": false,
@@ -17729,6 +17831,19 @@
           {
             "schema": {
               "type": "string",
+              "enum": [
+                "sms",
+                "email",
+                "voice"
+              ]
+            },
+            "required": false,
+            "name": "channel",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
               "format": "uuid"
             },
             "required": false,
@@ -18562,6 +18677,87 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CommReconcileResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/comms/resolve-reply-address": {
+      "get": {
+        "tags": [
+          "comms"
+        ],
+        "summary": "Resolve a tokenized email reply address to its (account, thread, participant) — transport only, account-agnostic by design (the token is all an inbound email carries). 404 for anything but an ACTIVE email binding in an account the caller transports (uniform: unknown, revoked, and foreign tokens are indistinguishable).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 5,
+              "maxLength": 320
+            },
+            "required": true,
+            "name": "address",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "active binding",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommResolveReplyAddressResponse"
                 }
               }
             }
@@ -25701,6 +25897,186 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CaptureItemList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/unsubscribe/email/{token}": {
+      "get": {
+        "tags": [
+          "unsubscribe"
+        ],
+        "summary": "Unsubscribe an email address via a signed link and render a confirmation page",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            "required": true,
+            "name": "token",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "unsubscribed",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "unsubscribe"
+        ],
+        "summary": "RFC 8058 one-click unsubscribe (no request body; returns JSON)",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            "required": true,
+            "name": "token",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "unsubscribed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnsubscribeResponse"
                 }
               }
             }

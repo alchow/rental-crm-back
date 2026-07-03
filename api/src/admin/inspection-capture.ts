@@ -1,5 +1,6 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { ApiError } from '../routes/_lib/error';
+import { loadEnv } from '../env';
 import { getLogger } from '../log';
 import { getAdminClient } from './supabase-admin';
 import { getMailer } from './mailer';
@@ -93,8 +94,9 @@ export async function lookupCaptureToken(secret: string): Promise<CaptureTokenRo
   };
 }
 
-/** Insert a fresh capture token via the admin client (used by renewal). */
-async function mintCaptureTokenAdmin(opts: {
+/** Insert a fresh capture token via the admin client (used by renewal;
+ *  exported for the comms-email integration suite's renewal fixture). */
+export async function mintCaptureTokenAdmin(opts: {
   accountId: string;
   inspectionId: string;
   tenantId: string | null;
@@ -265,17 +267,59 @@ export async function requestCaptureRenewal(args: { secret: string }): Promise<v
       ttlMinutes: DEFAULT_CAPTURE_TTL_MIN,
     });
     const link = `${captureBaseUrl()}/capture/${minted.secret}`;
-    void getMailer()
-      .send({
-        to: email,
-        subject: 'Your condition form link',
-        text:
-          `Here is a fresh link to complete your move-in/move-out condition form:\n\n${link}\n\n` +
-          `It expires in ${Math.round(DEFAULT_CAPTURE_TTL_MIN / 60 / 24)} days.`,
-      })
-      .catch((err) => {
-        getLogger().error(`[capture-renewal] email send failed: ${String(err)}`);
+    const subjectLine = 'Your condition form link';
+    const text =
+      `Here is a fresh link to complete your move-in/move-out condition form:\n\n${link}\n\n` +
+      `It expires in ${Math.round(DEFAULT_CAPTURE_TTL_MIN / 60 / 24)} days.`;
+
+    if (loadEnv().COMMS_EMAIL_PIPELINE) {
+      // Cutover path: core writes its OWN comm_outbox ledger row instead of
+      // calling a provider. Core writing its own ledger is NOT "core sends" —
+      // the transport still makes the provider call off this outbox row.
+      // approval_ref='system:capture_renewal' is the honest provenance for a
+      // fixed server flow (no human approved this specific message, no standing
+      // grant covers it), and this row is this flow's FIRST journal record ever.
+      // Fire-and-forget (not awaited), exactly like the legacy mailer call, so
+      // the anti-enumeration contract holds: uniform 202, no provider/DB latency
+      // folded into the response. Never throws out of the void block.
+      void (async () => {
+        const { data: insp } = await admin
+          .from('inspections')
+          .select('tenancy_id')
+          .eq('account_id', tok.account_id)
+          .eq('id', tok.inspection_id)
+          .maybeSingle();
+        const { error } = await admin.from('comm_outbox').insert({
+          account_id: tok.account_id,
+          channel: 'email',
+          to_address: email.trim().toLowerCase(),
+          subject: subjectLine,
+          body: text,
+          approval_ref: 'system:capture_renewal',
+          author_type: 'system',
+          tenancy_id: (insp?.tenancy_id as string | null) ?? null,
+        });
+        if (error) {
+          // P0004 = destination on the opt-out register: the send was refused
+          // before any intent recorded. Expected, compliant behavior — not an
+          // error; log at info so it's visible but doesn't page.
+          if (error.code === 'P0004') {
+            getLogger().info('[capture-renewal] outbox intent suppressed by opt-out (compliant)');
+          } else {
+            getLogger().error(`[capture-renewal] outbox insert failed: ${error.message}`);
+          }
+        }
+      })().catch((err) => {
+        getLogger().error(`[capture-renewal] outbox write failed: ${String(err)}`);
       });
+    } else {
+      // Legacy path (mailer sends directly), unchanged: same non-awaited send.
+      void getMailer()
+        .send({ to: email, subject: subjectLine, text })
+        .catch((err) => {
+          getLogger().error(`[capture-renewal] email send failed: ${String(err)}`);
+        });
+    }
   } catch (err) {
     getLogger().error(`[capture-renewal] renewal failed: ${String(err)}`);
   }

@@ -6137,6 +6137,7 @@ export interface paths {
                     cursor?: string;
                     limit?: number;
                     status?: "queued" | "sending" | "sent" | "delivered" | "failed" | "undeliverable" | "needs_reconcile";
+                    channel?: "sms" | "email" | "voice";
                     eligible_at?: string;
                 };
                 header?: never;
@@ -6911,6 +6912,7 @@ export interface paths {
                     limit?: number;
                     status?: "active" | "closed";
                     kind?: "bridged_tenant" | "vendor";
+                    channel?: "sms" | "email" | "voice";
                     tenancy_id?: string;
                 };
                 header?: never;
@@ -7509,6 +7511,82 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["CommReconcileResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/comms/resolve-reply-address": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Resolve a tokenized email reply address to its (account, thread, participant) — transport only, account-agnostic by design (the token is all an inbound email carries). 404 for anything but an ACTIVE email binding in an account the caller transports (uniform: unknown, revoked, and foreign tokens are indistinguishable). */
+        get: {
+            parameters: {
+                query: {
+                    address: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description active binding */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CommResolveReplyAddressResponse"];
                     };
                 };
                 /** @description invalid request */
@@ -12926,6 +13004,160 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/unsubscribe/email/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Unsubscribe an email address via a signed link and render a confirmation page */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    token: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description unsubscribed */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description rate limited */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** RFC 8058 one-click unsubscribe (no request body; returns JSON) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    token: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description unsubscribed */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["UnsubscribeResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description rate limited */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/agent/accounts": {
         parameters: {
             query?: never;
@@ -13974,6 +14206,7 @@ export interface components {
             /** Format: uuid */
             participant_id: string | null;
             body: string;
+            subject: string | null;
             template_id: string | null;
             not_before: string | null;
             /** Format: uuid */
@@ -13993,7 +14226,7 @@ export interface components {
             /** Format: uuid */
             approved_by: string | null;
             /** @enum {string} */
-            author_type: "landlord" | "agent";
+            author_type: "landlord" | "agent" | "system";
             /** Format: uuid */
             interaction_id: string | null;
             created_at: string;
@@ -14009,6 +14242,7 @@ export interface components {
             /** Format: uuid */
             participant_ref?: string;
             body: string;
+            subject?: string;
             approval_ref: string;
             /** Format: uuid */
             approved_by?: string;
@@ -14061,7 +14295,7 @@ export interface components {
         } | null;
         CaptureCommInboundResponse: {
             /** @enum {string} */
-            disposition: "matched" | "orphan" | "opted_out";
+            disposition: "matched" | "orphan" | "opted_out" | "sender_mismatch";
             /** Format: uuid */
             interaction_id: string | null;
             /** Format: uuid */
@@ -14114,6 +14348,9 @@ export interface components {
             /** @enum {string} */
             mode: "bridged" | "group";
             /** @enum {string} */
+            channel: "sms" | "email" | "voice";
+            subject: string | null;
+            /** @enum {string} */
             status: "active" | "closed";
             /** Format: uuid */
             tenancy_id: string | null;
@@ -14136,8 +14373,11 @@ export interface components {
             thread_id: string;
             /** Format: uuid */
             participant_id: string;
-            platform_number: string;
+            /** @enum {string} */
+            channel: "sms" | "email";
+            platform_number: string | null;
             participant_address: string;
+            reply_address: string | null;
             active: boolean;
         };
         CommRelayLeg: {
@@ -14178,6 +14418,7 @@ export interface components {
              * @enum {string}
              */
             channel: "sms" | "email" | "voice";
+            subject?: string;
             /** Format: uuid */
             tenancy_id?: string;
             /** Format: uuid */
@@ -14249,6 +14490,14 @@ export interface components {
         };
         CommReconcileResponse: {
             data: components["schemas"]["CommOutbox"][];
+        };
+        CommResolveReplyAddressResponse: {
+            /** Format: uuid */
+            account_id: string;
+            /** Format: uuid */
+            thread_id: string;
+            /** Format: uuid */
+            participant_id: string;
         };
         OwnerPhoneResponse: {
             /** Format: uuid */
@@ -15033,6 +15282,10 @@ export interface components {
                 condition?: string | null;
                 notes?: string | null;
             }[];
+        };
+        UnsubscribeResponse: {
+            /** @enum {string} */
+            status: "unsubscribed";
         };
         AgentGrantedAccount: {
             /** Format: uuid */

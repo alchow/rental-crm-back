@@ -1,7 +1,10 @@
+import { randomBytes } from 'node:crypto';
 import { createRoute, z } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import { requireAuth } from '../middleware/auth';
+import { loadEnv } from '../env';
 import { ApiError, dbError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { normalizePhone } from './_lib/phone';
@@ -87,6 +90,10 @@ const CommOutbox = z
     /** Thread participant this leg addresses (comm_thread_participants.id). */
     participant_id: z.string().uuid().nullable(),
     body: z.string(),
+    /** Email subject line, frozen at intent time (email-only; null on
+     *  sms/voice). On completion the journal records it as the first line
+     *  ('Subject: <subject>' + blank line + body). */
+    subject: z.string().nullable(),
     /** Opaque template reference (templates live agent-side). */
     template_id: z.string().nullable(),
     /** Earliest eligible dispatch time; the transport's dispatch scan must
@@ -112,8 +119,11 @@ const CommOutbox = z
     approval_ref: z.string(),
     approved_by: z.string().uuid().nullable(),
     /** Capacity of the author of the send intent (stamped from the resolved
-     *  principal, never client-supplied). */
-    author_type: z.enum(['landlord', 'agent']),
+     *  principal, never client-supplied). 'system' = a core-originated
+     *  transactional send (approval_ref 'system:<flow>'), mintable only by
+     *  core's service tier — it appears in reads/dispatch scans but can never
+     *  be requested through this API. */
+    author_type: z.enum(['landlord', 'agent', 'system']),
     /** Journal entry appended by the confirmed send; null until 'sent'. */
     interaction_id: z.string().uuid().nullable(),
     created_at: z.string(),
@@ -133,6 +143,10 @@ const CreateOutboxBody = z
     participant_ref: z.string().uuid().optional(),
     /** Channel-specific caps (sms: 1600) are enforced at write. */
     body: z.string().min(1).max(20000),
+    /** Email subject line. Email-only: supplying it on any other channel is a
+     *  400. Journaled on completion as `Subject: <subject>\n\n<body>` — one
+     *  documented shape shared with the transport's template rendering. */
+    subject: z.string().min(1).max(998).optional(),
     approval_ref: z.string().min(1).max(200),
     approved_by: z.string().uuid().optional(),
     not_before: z.string().datetime().optional(),
@@ -205,8 +219,12 @@ const CaptureInboundBody = z
     /** Idempotency key for capture: replaying the same provider_msg_id
      *  returns the original result without writing anything. */
     provider_msg_id: z.string().min(1).max(200),
-    /** The platform number the message arrived on (binding routing key). */
-    to_number: z.string().min(3).max(50),
+    /** The platform number the message arrived on (binding routing key). For
+     *  email captures this instead carries the tokenized reply address
+     *  (lowercased) the message was sent to — the email routing key. (Capped at
+     *  320 like from_address: a `t-<token>@<domain>` address exceeds a phone's
+     *  length.) */
+    to_number: z.string().min(3).max(320),
     /** The counterparty address the message came from. */
     from_address: z.string().min(3).max(320),
     /** The other recipients of an inbound group message (E.164 as received from
@@ -240,8 +258,12 @@ const CaptureInboundResponse = z
      *  the raw tier only; nothing journaled (no account to attribute to).
      *  opted_out: matched AND journaled, but the counterparty address is on
      *  the opt-out register — the transport must not relay further replies
-     *  and should run its keyword handling. */
-    disposition: z.enum(['matched', 'orphan', 'opted_out']),
+     *  and should run its keyword handling.
+     *  sender_mismatch: the email reply token resolved but the from-address is
+     *  NOT the bound participant's — the message IS journaled into the thread
+     *  (party 'unspecified', actual sender as the label) but the transport must
+     *  NOT auto-relay it as verified. */
+    disposition: z.enum(['matched', 'orphan', 'opted_out', 'sender_mismatch']),
     interaction_id: z.string().uuid().nullable(),
     thread_id: z.string().uuid().nullable(),
     participant: CommThreadParticipant.nullable(),
@@ -288,12 +310,20 @@ const CommThreadBinding = z
     id: z.string().uuid(),
     thread_id: z.string().uuid(),
     participant_id: z.string().uuid(),
-    /** The account's platform number carrying this leg. */
-    platform_number: z.string(),
-    /** The counterparty address bound on that number. (platform_number,
-     *  participant_address) is unique among ACTIVE bindings — the inbound
-     *  routing key. */
+    /** The binding's transport channel, stamped from the thread. */
+    channel: z.enum(['sms', 'email']),
+    /** The account's platform number carrying this leg (sms bindings); null
+     *  on email bindings, which route by reply_address instead. */
+    platform_number: z.string().nullable(),
+    /** The counterparty address bound on that number. For sms,
+     *  (platform_number, participant_address) is unique among ACTIVE bridged
+     *  bindings — the inbound routing key. */
     participant_address: z.string(),
+    /** Email bindings carry the participant's UNIQUE tokenized reply address
+     *  (`t-<token>@<domain>`) — the transport sets it as the Reply-To/From on
+     *  relayed mail so replies route by token; null on sms bindings (which
+     *  route by platform number instead). */
+    reply_address: z.string().nullable(),
     active: z.boolean(),
   })
   .openapi('CommThreadBinding');
@@ -304,6 +334,12 @@ const CommThread = z
     account_id: z.string().uuid(),
     kind: CommThreadKind,
     mode: CommThreadMode,
+    /** The thread's transport channel, frozen at create. Its legs (landlord
+     *  in-app messages, relay legs) dial on it. */
+    channel: CommChannel,
+    /** Email-only subject seed — the transport continues it as "Re: …"; null
+     *  on sms/voice threads. */
+    subject: z.string().nullable(),
     status: CommThreadStatus,
     tenancy_id: z.string().uuid().nullable(),
     maintenance_request_id: z.string().uuid().nullable(),
@@ -345,6 +381,7 @@ const ThreadListQuery = z.object({
   limit: z.coerce.number().int().positive().max(100).default(50),
   status: CommThreadStatus.optional(),
   kind: CommThreadKind.optional(),
+  channel: CommChannel.optional(),
   tenancy_id: z.string().uuid().optional(),
 });
 
@@ -369,6 +406,9 @@ const CreateThreadBody = z
      *  group member and gets bound like everyone else. */
     mode: CommThreadMode.default('bridged'),
     channel: CommChannel.default('sms'),
+    /** Email threads only: the subject seed the transport continues as "Re: …".
+     *  Supplying it on any other channel is a 400. */
+    subject: z.string().min(1).max(998).optional(),
     tenancy_id: z.string().uuid().optional(),
     maintenance_request_id: z.string().uuid().optional(),
     /** Counterparty + landlord-side participants. Each non-landlord
@@ -486,6 +526,9 @@ const listOutbox = createRoute({
       cursor: z.string().optional(),
       limit: z.coerce.number().int().positive().max(100).default(50),
       status: CommOutboxStatus.optional(),
+      // The transport runs a separate dispatch loop per channel; this scopes
+      // the scan to one channel's rows. Additive/optional.
+      channel: CommChannel.optional(),
       eligible_at: z.string().datetime().optional(),
     }),
   },
@@ -766,6 +809,46 @@ const reconcileScan = createRoute({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Transport token-resolve read (E2-A2). Lives OUTSIDE the account-scoped path
+// on purpose: reply tokens are runtime-minted, so an inbound email's token is
+// the ONLY thing the transport knows — the account is exactly what it is
+// asking for. requireAuth() is attached per-route (the /accounts/* middleware
+// stack never fires here); the handler gates on the agent principal itself.
+// ---------------------------------------------------------------------------
+
+const ResolveReplyAddressResponse = z
+  .object({
+    account_id: z.string().uuid(),
+    thread_id: z.string().uuid(),
+    participant_id: z.string().uuid(),
+  })
+  .openapi('CommResolveReplyAddressResponse');
+
+const resolveReplyAddress = createRoute({
+  method: 'get',
+  path: '/comms/resolve-reply-address',
+  tags: ['comms'],
+  middleware: [requireAuth()] as const,
+  summary:
+    'Resolve a tokenized email reply address to its (account, thread, ' +
+    'participant) — transport only, account-agnostic by design (the token is ' +
+    'all an inbound email carries). 404 for anything but an ACTIVE email ' +
+    'binding in an account the caller transports (uniform: unknown, revoked, ' +
+    'and foreign tokens are indistinguishable).',
+  request: {
+    query: z.object({
+      /** The full tokenized reply address (t-<token>@<domain>); matched
+       *  trim+lowercased, like capture. */
+      address: z.string().min(5).max(320),
+    }),
+  },
+  responses: {
+    200: { description: 'active binding', content: { 'application/json': { schema: ResolveReplyAddressResponse } } },
+    ...errorResponses,
+  },
+});
+
 export const commsApp = newApiApp();
 
 // ---------------------------------------------------------------------------
@@ -869,8 +952,9 @@ const PARTICIPANT_COLS = 'id, thread_id, party_type, party_id, joined_at, left_a
 // Explicit so the internal group_routing_key column (canonical member-set
 // identity, enforced DB-side) never rides along into thread responses.
 const THREAD_COLS =
-  'id, account_id, kind, mode, status, tenancy_id, maintenance_request_id, created_at, updated_at';
-const BINDING_COLS = 'id, thread_id, participant_id, platform_number, participant_address, active';
+  'id, account_id, kind, mode, channel, subject, status, tenancy_id, maintenance_request_id, created_at, updated_at';
+const BINDING_COLS =
+  'id, thread_id, participant_id, channel, platform_number, participant_address, reply_address, active';
 
 // ---------------------------------------------------------------------------
 // POST /comms/outbox — create a send intent (transport + landlord)
@@ -889,6 +973,22 @@ commsApp.openapi(createOutbox, async (c) => {
 
   if (principal.type !== 'agent' && role !== 'owner' && role !== 'manager') {
     throw new ApiError(403, 'forbidden', 'only the agent transport or an owner/manager may create send intents');
+  }
+
+  // system:<flow> provenance is reserved for core-originated sends (core's
+  // server tier writing its own ledger through the admin client). Applies to
+  // BOTH the agent and landlord principals here — no JWT-bearing caller may
+  // mint one. The DB capacity trigger (auth.uid() IS NOT NULL) is the backstop.
+  if (body.approval_ref.startsWith('system:')) {
+    throw new ApiError(403, 'forbidden', 'system provenance is reserved for core-originated sends');
+  }
+
+  // subject is an email-only intent field (DB CHECK backstops it). Reject it on
+  // any other channel up front with a field-scoped 400.
+  if (body.subject !== undefined && body.channel !== 'email') {
+    throw new ApiError(400, 'invalid_request', 'subject is only valid on email sends', {
+      fieldErrors: { subject: ['only valid when channel=email'] },
+    });
   }
 
   // Provenance (mirrors the journal firewall vocabulary; the DB CHECK and
@@ -1107,6 +1207,7 @@ commsApp.openapi(createOutbox, async (c) => {
       thread_id: body.thread_id ?? null,
       participant_id: participantId,
       body: body.body,
+      subject: body.subject ?? null,
       template_id: body.template_id ?? null,
       not_before: body.not_before ?? null,
       relay_of_interaction_id: body.relay_of_interaction_id ?? null,
@@ -1133,10 +1234,11 @@ commsApp.openapi(createOutbox, async (c) => {
 commsApp.openapi(listOutbox, async (c) => {
   requireTransport(c);
   const { accountId } = c.req.valid('param');
-  const { cursor, limit, status, eligible_at } = c.req.valid('query');
+  const { cursor, limit, status, channel, eligible_at } = c.req.valid('query');
   const sb = getSb(c);
   let q = sb.from('comm_outbox').select('*').eq('account_id', accountId);
   if (status !== undefined) q = q.eq('status', status);
+  if (channel !== undefined) q = q.eq('channel', channel);
   // eligible_at is zod-validated ISO, safe to interpolate; a second .or()
   // is AND-combined with the keyset filter by PostgREST.
   if (eligible_at !== undefined) q = q.or(`not_before.is.null,not_before.lte.${eligible_at}`);
@@ -1245,12 +1347,17 @@ commsApp.openapi(captureInbound, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
+  // Bound email addresses and reply tokens are stored lowercased; the token is
+  // the routing key and the from-address is the sender-verification input, so
+  // both normalize identically (trim + lowercase). The sms path is unchanged.
+  const toNumber = body.channel === 'email' ? body.to_number.trim().toLowerCase() : body.to_number;
+  const fromAddress = body.channel === 'email' ? body.from_address.trim().toLowerCase() : body.from_address;
   const { data, error } = await sb.rpc('capture_inbound', {
     p_account_id: accountId,
     p_provider: body.provider,
     p_provider_msg_id: body.provider_msg_id,
-    p_to_number: body.to_number,
-    p_from_address: body.from_address,
+    p_to_number: toNumber,
+    p_from_address: fromAddress,
     p_channel: body.channel,
     p_body: body.body ?? null,
     p_media: body.media ?? null,
@@ -1259,7 +1366,7 @@ commsApp.openapi(captureInbound, async (c) => {
   });
   if (error) throw commDbError(error);
   const result = (data as {
-    disposition: 'matched' | 'orphan' | 'opted_out';
+    disposition: 'matched' | 'orphan' | 'opted_out' | 'sender_mismatch';
     interaction_id: string | null;
     thread_id: string | null;
     participant_id: string | null;
@@ -1354,11 +1461,12 @@ async function loadParticipants(
 commsApp.openapi(listThreads, async (c) => {
   requireManager(c);
   const { accountId } = c.req.valid('param');
-  const { cursor, limit, status, kind, tenancy_id } = c.req.valid('query');
+  const { cursor, limit, status, kind, channel, tenancy_id } = c.req.valid('query');
   const sb = getSb(c);
   let q = sb.from('comm_threads').select(THREAD_COLS).eq('account_id', accountId);
   if (status !== undefined) q = q.eq('status', status);
   if (kind !== undefined) q = q.eq('kind', kind);
+  if (channel !== undefined) q = q.eq('channel', channel);
   if (tenancy_id !== undefined) q = q.eq('tenancy_id', tenancy_id);
   const { items, next_cursor } = await keysetPage<z.infer<typeof CommThread>>(q, {
     cursor,
@@ -1464,18 +1572,45 @@ commsApp.openapi(createThread, async (c) => {
   const body = c.req.valid('json');
   const sb = getSb(c);
 
-  // Bridged threading is wired for SMS only today. The landlord-authored
-  // message path (POST .../messages) sends on the thread's channel and
-  // currently hardcodes sms, so accepting an email/voice thread here would
-  // silently produce sms sends to a non-phone address. Reject the mismatch
-  // explicitly rather than mis-send; the schema still advertises the future
-  // channels. (Direct POST /comms/outbox remains multi-channel by design.)
-  if (body.channel !== 'sms') {
+  // Channel gating. sms (bridged + group) and bridged email are the built
+  // paths. Voice bridging and group email remain unbuilt: a group email would
+  // fan a native group out of tokenized 1:1 reply addresses (no shared
+  // routing key), so the DB CHECK (comm_threads_group_sms_only) also backstops
+  // it. (Direct POST /comms/outbox remains multi-channel by design.)
+  if (body.channel === 'voice') {
+    throw new ApiError(501, 'not_implemented', 'bridged voice threads are not supported yet');
+  }
+  if (body.channel === 'email' && body.mode === 'group') {
     throw new ApiError(
       501,
       'not_implemented',
-      `bridged ${body.channel} threads are not supported yet; only sms threads can be created`,
+      'group email threads are not supported yet; group mode is sms-only',
     );
+  }
+  const isEmail = body.channel === 'email';
+
+  // subject is an email-only thread seed (DB CHECK comm_threads_subject_email_only
+  // backstops). Reject it on any other channel with a field-scoped 400.
+  if (body.subject !== undefined && !isEmail) {
+    throw new ApiError(400, 'invalid_request', 'subject is only valid on email threads', {
+      fieldErrors: { subject: ['only valid on email threads'] },
+    });
+  }
+
+  // Email threads mint a UNIQUE tokenized reply address per participant under a
+  // global receiving domain; without it configured there is nowhere for replies
+  // to land, so refuse up front (retryable once ops sets it).
+  let domain: string | null = null;
+  if (isEmail) {
+    const configured = loadEnv().EMAIL_REPLY_DOMAIN;
+    if (configured === null) {
+      throw new ApiError(
+        503,
+        'service_unavailable',
+        'email threads are not configured (EMAIL_REPLY_DOMAIN unset)',
+      );
+    }
+    domain = configured.toLowerCase();
   }
 
   const mode = body.mode;
@@ -1498,6 +1633,16 @@ commsApp.openapi(createThread, async (c) => {
     }
   }
 
+  // An email thread relays natively between human inboxes (tenant/vendor +
+  // landlord); the agent transport is not a party to it.
+  if (isEmail) {
+    for (const p of body.participants) {
+      if (p.party_type === 'agent') {
+        throw new ApiError(400, 'invalid_request', 'agent participants are not part of an email thread');
+      }
+    }
+  }
+
   const counterparties = body.participants.filter(
     (p) => p.party_type === 'tenant' || p.party_type === 'vendor',
   );
@@ -1506,11 +1651,13 @@ commsApp.openapi(createThread, async (c) => {
   }
 
   // Resolve every addressable participant BEFORE creating anything, so a
-  // resolution failure leaves no partial thread. Bridged mode binds the
-  // counterparties only (tenant/vendor); a group thread additionally binds the
-  // landlord_user members — their phones are group members too.
+  // resolution failure leaves no partial thread. Bridged sms binds the
+  // counterparties only (tenant/vendor); a group thread AND an email thread
+  // additionally bind the landlord_user members — the group landlord's phone is
+  // a group member, and the email landlord replies natively from their own
+  // inbox so they get a tokenized reply address too.
   const addressable = (t: string): boolean =>
-    t === 'tenant' || t === 'vendor' || (mode === 'group' && t === 'landlord_user');
+    t === 'tenant' || t === 'vendor' || ((mode === 'group' || isEmail) && t === 'landlord_user');
   const resolvedAddresses = new Map<number, string>();
   for (const [i, p] of body.participants.entries()) {
     if (!addressable(p.party_type)) continue;
@@ -1518,33 +1665,74 @@ commsApp.openapi(createThread, async (c) => {
       resolvedAddresses.set(i, normalizeAddress(body.channel, p.address));
       continue;
     }
-    if (p.party_id === undefined) {
-      // Only a group landlord_user reaches here (tenant/vendor already required
-      // party_id above); it needs an address or a party_id to resolve one.
-      throw new ApiError(
-        400,
-        'invalid_request',
-        'landlord_user participants in a group thread require an address or party_id',
-      );
-    }
-    const { data: ident, error: iErr } = await sb
-      .from('channel_identities')
-      .select('address')
-      .eq('account_id', accountId)
-      .eq('channel', body.channel)
-      .eq('party_type', p.party_type)
-      .eq('party_id', p.party_id)
-      .limit(1)
-      .maybeSingle();
-    if (iErr) throw commDbError(iErr);
-    if (!ident) {
+    if (p.party_id !== undefined) {
+      const { data: ident, error: iErr } = await sb
+        .from('channel_identities')
+        .select('address')
+        .eq('account_id', accountId)
+        .eq('channel', body.channel)
+        .eq('party_type', p.party_type)
+        .eq('party_id', p.party_id)
+        .limit(1)
+        .maybeSingle();
+      if (iErr) throw commDbError(iErr);
+      if (ident) {
+        resolvedAddresses.set(i, ident.address);
+        continue;
+      }
+      // Email landlord fallback: the caller replies from their OWN inbox, so a
+      // landlord_user participant that IS the caller resolves to the caller's
+      // JWT email (lowercased) when no identity is on file. Skip if absent.
+      if (isEmail && p.party_type === 'landlord_user' && p.party_id === c.get('auth').userId) {
+        const authEmail = c.get('auth').claims.email;
+        if (authEmail) {
+          resolvedAddresses.set(i, authEmail.toLowerCase());
+          continue;
+        }
+      }
       throw new ApiError(
         422,
         'invalid_request',
         `no ${body.channel} address on file for participant ${i}; supply address explicitly`,
       );
     }
-    resolvedAddresses.set(i, ident.address);
+    // No explicit address and no party_id.
+    if (isEmail) {
+      // An email landlord_user with neither can't be resolved (no identity key,
+      // and no way to confirm it is the caller); ask for an explicit address.
+      throw new ApiError(
+        422,
+        'invalid_request',
+        `no ${body.channel} address on file for participant ${i}; supply address explicitly`,
+      );
+    }
+    // Only a group landlord_user reaches here (tenant/vendor already required
+    // party_id above); it needs an address or a party_id to resolve one.
+    throw new ApiError(
+      400,
+      'invalid_request',
+      'landlord_user participants in a group thread require an address or party_id',
+    );
+  }
+
+  // Email-shape validation on the resolved set (group has its own block below):
+  // an email thread must carry a resolvable landlord_user (they reply from
+  // their own inbox), and every reply-address participant must be distinct.
+  if (isEmail) {
+    const hasLandlord = body.participants.some(
+      (p, i) => p.party_type === 'landlord_user' && resolvedAddresses.has(i),
+    );
+    if (!hasLandlord) {
+      throw new ApiError(
+        400,
+        'invalid_request',
+        'an email thread must include a landlord_user participant with an email address (they reply from their own inbox)',
+      );
+    }
+    const emailAddresses = [...resolvedAddresses.values()];
+    if (new Set(emailAddresses).size !== emailAddresses.length) {
+      throw new ApiError(400, 'invalid_request', 'email thread participant addresses must be distinct');
+    }
   }
 
   // Group-shape validation on the resolved member set (bridged skips all of
@@ -1578,18 +1766,24 @@ commsApp.openapi(createThread, async (c) => {
     }
   }
 
-  // The account's platform number carries every counterparty leg.
-  const { data: number, error: numErr } = await sb
-    .from('platform_numbers')
-    .select('number')
-    .eq('account_id', accountId)
-    .eq('status', 'active')
-    .contains('capabilities', [body.channel])
-    .limit(1)
-    .maybeSingle();
-  if (numErr) throw commDbError(numErr);
-  if (!number) {
-    throw new ApiError(409, 'conflict', `the account has no active platform number with ${body.channel} capability`);
+  // The account's platform number carries every counterparty leg. Email threads
+  // route by a minted reply token per participant, so they need no platform
+  // number — skip the lookup entirely.
+  let number: { number: string } | null = null;
+  if (!isEmail) {
+    const { data: num, error: numErr } = await sb
+      .from('platform_numbers')
+      .select('number')
+      .eq('account_id', accountId)
+      .eq('status', 'active')
+      .contains('capabilities', [body.channel])
+      .limit(1)
+      .maybeSingle();
+    if (numErr) throw commDbError(numErr);
+    if (!num) {
+      throw new ApiError(409, 'conflict', `the account has no active platform number with ${body.channel} capability`);
+    }
+    number = num as { number: string };
   }
 
   // Canonical group routing key. This MUST stay in lockstep with
@@ -1599,10 +1793,12 @@ commsApp.openapi(createThread, async (c) => {
   // default sort on these ASCII addresses matches collate "C"). Bridged threads
   // carry no key (the DB CHECK (mode='group') = (group_routing_key is not null)
   // rejects anything else).
+  // group implies !isEmail (email group is 501'd above), so `number` is set on
+  // the only branch that reads it.
   const addresses = [...resolvedAddresses.values()];
   const groupKey =
     mode === 'group'
-      ? number.number + '>' + [...new Set(addresses)].filter((a) => a !== number.number).sort().join('|')
+      ? number!.number + '>' + [...new Set(addresses)].filter((a) => a !== number!.number).sort().join('|')
       : null;
 
   const { data: thread, error: thErr } = await sb
@@ -1611,6 +1807,8 @@ commsApp.openapi(createThread, async (c) => {
       account_id: accountId,
       kind: body.kind,
       mode,
+      channel: body.channel,
+      subject: body.subject ?? null,
       group_routing_key: groupKey,
       tenancy_id: body.tenancy_id ?? null,
       maintenance_request_id: body.maintenance_request_id ?? null,
@@ -1649,13 +1847,27 @@ commsApp.openapi(createThread, async (c) => {
       // insert order preserved participants order; match by index.
       const participant = participants[i];
       if (!participant) continue;
-      bindingRows.push({
-        account_id: accountId,
-        thread_id: thread.id as string,
-        participant_id: participant.id,
-        platform_number: number.number as string,
-        participant_address: address,
-      });
+      if (isEmail) {
+        // Email bindings route by a UNIQUE minted reply token (128-bit random),
+        // not a shared platform number; the whole address is lowercase. The DB
+        // stamp trigger sets `channel` from the thread — never send it.
+        const token = ('t-' + randomBytes(16).toString('hex') + '@' + domain!).toLowerCase();
+        bindingRows.push({
+          account_id: accountId,
+          thread_id: thread.id as string,
+          participant_id: participant.id,
+          participant_address: address,
+          reply_address: token,
+        });
+      } else {
+        bindingRows.push({
+          account_id: accountId,
+          thread_id: thread.id as string,
+          participant_id: participant.id,
+          platform_number: number!.number as string,
+          participant_address: address,
+        });
+      }
       void p;
     }
     const { data: bindings, error: bindErr } = await sb
@@ -1720,7 +1932,7 @@ commsApp.openapi(createThreadMessage, async (c) => {
 
   const { data: thread, error: thErr } = await sb
     .from('comm_threads')
-    .select('id, status, mode, tenancy_id, maintenance_request_id')
+    .select('id, status, mode, channel, tenancy_id, maintenance_request_id')
     .eq('account_id', accountId)
     .eq('id', id)
     .maybeSingle();
@@ -1750,7 +1962,8 @@ commsApp.openapi(createThreadMessage, async (c) => {
       .from('comm_outbox')
       .insert({
         account_id: accountId,
-        channel: 'sms',
+        // Group threads are always sms (DB CHECK), so this is effectively sms.
+        channel: thread.channel,
         to_address: null,
         group_addresses: groupAddresses,
         thread_id: id,
@@ -1770,7 +1983,8 @@ commsApp.openapi(createThreadMessage, async (c) => {
   }
 
   // One send intent per actively-bound counterparty. The binding carries the
-  // address the conversation runs on; sms is the only bound channel today.
+  // address the conversation runs on; the leg dials on the thread's channel
+  // (sms relays 1:1 per platform number, email relays natively per reply token).
   const { data: bindings, error: bErr } = await sb
     .from('thread_channel_bindings')
     .select('participant_id, participant_address')
@@ -1795,11 +2009,13 @@ commsApp.openapi(createThreadMessage, async (c) => {
     .insert(
       targets.map((t) => ({
         account_id: accountId,
-        channel: 'sms',
+        channel: thread.channel,
         to_address: t.participant_address,
         thread_id: id,
         participant_id: t.participant_id,
         body: body.body,
+        // No outbox subject on a thread leg: the transport renders the actual
+        // email subject from the thread's subject seed ("Re: …").
         not_before: body.not_before ?? null,
         // Inherit the thread's context so the message lands in the tenancy /
         // maintenance-request feed on completion.
@@ -1956,4 +2172,51 @@ commsApp.openapi(reconcileScan, async (c) => {
   });
   if (error) throw commDbError(error);
   return c.json({ data: (data ?? []) as OutboxRow[] }, 200);
+});
+
+// ---------------------------------------------------------------------------
+// GET /comms/resolve-reply-address — transport token directory lookup (E2-A2)
+// ---------------------------------------------------------------------------
+// Two-layer fencing, both uniform-404:
+//   1. RLS: the binding read runs as the caller, so only bindings in accounts
+//      the caller is a MEMBER of are visible at all — a token belonging to an
+//      account this transport does not serve resolves to nothing.
+//   2. Role: the caller must hold role='agent' in the resolved binding's
+//      account (the self-only account_members SELECT policy makes this the
+//      caller's own membership row). A landlord probing their own account's
+//      tokens gets the same 404 as an unknown token — no oracle anywhere.
+
+commsApp.openapi(resolveReplyAddress, async (c) => {
+  const { address } = c.req.valid('query');
+  const sb = getSb(c);
+
+  const { data: binding, error } = await sb
+    .from('thread_channel_bindings')
+    .select('account_id, thread_id, participant_id')
+    .eq('reply_address', address.trim().toLowerCase())
+    .eq('channel', 'email')
+    .eq('active', true)
+    .maybeSingle();
+  if (error) throw commDbError(error);
+  if (!binding) throw new ApiError(404, 'not_found', 'not found');
+
+  const { data: membership, error: mErr } = await sb
+    .from('account_members')
+    .select('role')
+    .eq('account_id', binding.account_id)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (mErr) throw commDbError(mErr);
+  if (!membership || membership.role !== 'agent') {
+    throw new ApiError(404, 'not_found', 'not found');
+  }
+
+  return c.json(
+    {
+      account_id: binding.account_id as string,
+      thread_id: binding.thread_id as string,
+      participant_id: binding.participant_id as string,
+    },
+    200,
+  );
 });
