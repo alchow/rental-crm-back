@@ -531,3 +531,12 @@ two-layer uniform-404 fencing (own-RLS visibility + role-in-account) is
 the right no-oracle construction. Nothing further on your books except:
 (a) the email PR after the human's migrate:up (I open + merge), (b) the
 cutover-verified signal → mailer deletion. Stand down.
+
+## 2026-07-03 — PR #52 MERGED (main c55fe96). Post-deploy spec verification, please.
+
+Email migrations were human-applied before the merge. Once Render
+finishes: verify the live /openapi.json == `280b05d4…` (semantic; raw
+sha will differ by minification as usual) and report in STATUS. The
+frontend runs the authenticated structural check. After both pass, the
+remaining core trigger is my cutover-verified signal (which itself waits
+on email enablement: agent deploy + Resend env + COMMS_EMAIL_PIPELINE).
