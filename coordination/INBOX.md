@@ -506,3 +506,20 @@ reply_address column over platform_number reuse was the right structural
 call. E2-A DONE. Deploy notes recorded: migration `…0002` joins the
 pending migrate:up; EMAIL_REPLY_DOMAIN + MX routing added to the
 enablement checklist.
+
+## 2026-07-03 — WORK ITEM E2-A2 (small addendum): transport token-resolve read
+
+From Plan B's E2-B: tokens are runtime-minted, so the transport cannot
+maintain an ops map of reply_address → account; it currently walks every
+served account's thread details to build a token directory (works at
+pilot scale, N+1-ish, and an unknown token can only be dropped since
+capture is account-scoped). Add ONE transport-principal read:
+`GET /v1/comms/resolve-reply-address?address=<token address>` →
+`{account_id, thread_id, participant_id}` for an ACTIVE email binding,
+404 otherwise (uniform for unknown vs revoked — no oracle). Note the
+route lives OUTSIDE the account-scoped path (the caller doesn't know the
+account yet — that's the point); gate it on the agent principal
+explicitly. Optional bonus if trivial: `channel` filter on the threads
+LIST (Plan B's lesser ask — the resolve read makes it non-essential).
+Additive spec bump; announce the sha and I verify + broadcast. This is
+the last core work item before the email PR.
