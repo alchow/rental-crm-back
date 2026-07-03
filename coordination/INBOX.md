@@ -269,3 +269,126 @@ verified):
 3. Then I create and merge the PR to main (Render auto-deploys), verify
    `/comms/*` on the live /openapi.json, and broadcast. Do not merge or
    push to main yourself.
+
+## 2026-07-02 — MERGED TO MAIN. Verify the live deploy from your side.
+
+PR #49 merged (main = 32c24dc); prod migrations were applied beforehand.
+Render should be auto-deploying main now. My sandbox egress cannot reach
+rental-crm-api.onrender.com (proxy policy), so LIVE VERIFICATION falls to
+you: once Render finishes, run from your machine:
+`curl -s https://rental-crm-api.onrender.com/openapi.json | sha256sum`
+— expect `7143b97f…` (the frozen contract sha; the served spec is
+byte-identical to the committed one by design), and spot-check that
+`/comms/outbox` paths are present. Report the result in STATUS (this is
+the deploy's definition of done). If the sha differs or Render hasn't
+deployed within ~15 min, say so — the human may need to check the Render
+dashboard for a stuck/failed deploy.
+
+## 2026-07-02 — Perf batch APPROVED. But live-deploy verification comes FIRST.
+
+The …05 perf/retention migration is reviewed and approved — (A)/(B) fix
+real hot-path scans, (C) is correct (composite unique subsumes them), and
+the (D) rationale (never prune audit-attached tables; janitor for the
+unaudited raw table only) is exactly right. Sequencing:
+1. **FIRST: the live-deploy verification from my previous note is still
+   pending** — curl the live /openapi.json, confirm sha `7143b97f…` and
+   /comms paths, report in STATUS. Everything else waits on knowing main's
+   deploy is actually serving.
+2. Then the human applies …05 (one more `migrate:up` — index/janitor only,
+   safe with the deployed code, no contract change).
+3. Then I open and merge the follow-up PR for the …05 commit(s). Do not
+   merge yourself.
+4. Ops note recorded: `cron.schedule('prune-inbound-raw', …)` is a human
+   step — I'm adding it to the enablement checklist alongside platform
+   numbers, transport flags, and the Telnyx STOP check.
+
+## 2026-07-02 — Live verification ACCEPTED. Deploy DoD met. Next: …05 sequence.
+
+The pretty-vs-minified sha analysis is exactly the right kind of
+verification — accepted, and the raw live sha is recorded. Bridged comms
+is live (dormant pending enablement). Remaining sequence for the perf
+batch: the human applies …05 (`migrate:up`, safe anytime), then I open and
+merge the follow-up PR for your post-merge commits. I've relayed the GO to
+the frontend for its live pass. Nothing else from you until the …05
+migration is confirmed.
+
+## 2026-07-02 — WORK ITEM GM-A: native group-MMS threads (core side)
+
+Human-approved fast-follow. Verified Telnyx facts you design against:
+group MMS on US/CAN long codes only, ≤8 participants, v2 API/webhooks;
+inbound group messages hit our number with a `cc` array of the other
+participants; outbound group send = one API call, per-recipient records
+correlated by `group_message_id`; MMS delivery receipts unreliable
+(Telnyx-to-Telnyx only).
+
+Design (contract-first again — emit early, announce sha in STATUS):
+1. `comm_threads.mode: 'bridged'|'group'` (default bridged; additive).
+   `CreateCommThreadBody.mode` optional; `CommThread` response exposes it.
+   Group mode: sms only, ≤7 human participants (8 incl. our number); the
+   landlord participant's address IS a group member (bind it).
+2. Bindings: keep per-participant rows. The (platform_number,
+   participant_address) WHERE active partial-unique applies to BRIDGED
+   bindings only (group bindings excluded via mode); instead enforce
+   per-number GROUP-SET uniqueness (no two active group threads on one
+   number with the identical human participant set) in the create path.
+3. `capture_inbound` gains optional `cc: text[]`: when present, resolve by
+   participant-set match (from + cc minus our number == a group thread's
+   bound addresses on that number) → journal once with thread_id;
+   no set match → orphan. 1:1 messages (no cc) keep the existing binding
+   resolution — both modes coexist on one number.
+4. Group outbound: ONE outbox row per group send — no per-recipient legs,
+   no relay concept in group mode. `provider_sid` stores the
+   group_message_id; `to_address` nullable for group rows (recipients
+   derived from the thread). complete_send journals once (non-relay path,
+   thread context) — unchanged code path should mostly cover it; verify.
+5. STOP compliance rule for groups (hard requirement): a group MMS from
+   our number reaches EVERY member, so an opt-out by ANY member blocks ALL
+   system sends into that group (intent create → 422; queued group rows to
+   that thread park). Inbound stays captured (evidence). Landlord sees why
+   in the thread (frontend renders the parked state).
+6. Spec: additive only. Emit + announce sha; B and C consume.
+Gates as usual; tests: set-match capture (incl. orphan + cross-account),
+group-set uniqueness, group send journal-once, any-member opt-out block.
+Sequencing: independent of the …05 prod apply; same branch; I merge via PR
+when the full GM batch (A+B+C) is verified.
+
+## 2026-07-03 — GO GM-A NOW (explicit)
+
+Clean state-sync from the fresh session — well done. To remove all
+ambiguity: **GM-A is GO, start now.** It needs no further human approval
+(the human approved the group-MMS fast-follow explicitly) and is
+independent of the …05 prod apply, which stays with the human. Contract
+first: emit the additive spec early and record the sha in STATUS so B and
+C can start. Leaving the two stray untracked files uncommitted was right.
+
+## 2026-07-03 — TRACKED (future email-channel work item): mailer migrate-and-delete
+
+No action now — recording scope for when the email channel ships (queued
+behind the GM batch). The email-channel work item, when dispatched, MUST
+include on the core side:
+1. Migrate the inspection-capture renewal email (the mailer's ONLY
+   caller) onto the comms pipeline — outbox intent → transport email
+   provider → confirmed-send journal record, gaining opt-out/delivery
+   handling like every other send.
+2. Delete `api/src/admin/mailer.ts` (port + Resend driver + stub) and
+   drop `RESEND_API_KEY`/`MAIL_FROM` from core's render.yaml/env.
+3. Result: "core never calls a provider" becomes literally true — the
+   mailer is the last exception.
+(Agent side gets the matching item then: email Provider driver behind the
+transport port + inbound reply parsing.)
+
+## 2026-07-03 — GM-A VERIFIED + all six decisions RATIFIED. Sha broadcast.
+
+Independently verified `304e32c2…`: exactly the four additive fields, no
+removals, paths unchanged, both hygiene sweeps clean. Decision rulings:
+all six are ratified — in particular, the DB-enforced canonical
+routing-key uniqueness is BETTER than what I directed; keeping it internal
+is right; party_label-as-dialed-set is the honest attribution; including
+the landlord's line in the send set is correct provider semantics; the
+404-vs-400 nuance is acceptable (and arguably more correct — relayed to
+B); rejecting 1:1 side-sends inside group threads is the right evidence
+call. Sequencing answer: ONE prod `migrate:up` applying …05 + the GM-A
+migration together is APPROVED (both expand-only, both safe ahead of the
+code deploy) — no separate applies needed; that stays with the human.
+GM-A is done; stand by while B and C build. I merge the full GM batch via
+PR when all three verify.

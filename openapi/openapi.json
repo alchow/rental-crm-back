@@ -3586,6 +3586,15 @@
               "null"
             ]
           },
+          "group_addresses": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
           "thread_id": {
             "type": [
               "string",
@@ -3717,6 +3726,7 @@
           "account_id",
           "channel",
           "to_address",
+          "group_addresses",
           "thread_id",
           "participant_id",
           "body",
@@ -4034,6 +4044,15 @@
             "minLength": 3,
             "maxLength": 320
           },
+          "cc": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 50
+            },
+            "maxItems": 10
+          },
           "channel": {
             "type": "string",
             "enum": [
@@ -4178,6 +4197,13 @@
               "vendor"
             ]
           },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "bridged",
+              "group"
+            ]
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -4210,6 +4236,7 @@
           "id",
           "account_id",
           "kind",
+          "mode",
           "status",
           "tenancy_id",
           "maintenance_request_id",
@@ -4445,6 +4472,14 @@
               "bridged_tenant",
               "vendor"
             ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "bridged",
+              "group"
+            ],
+            "default": "bridged"
           },
           "channel": {
             "type": "string",

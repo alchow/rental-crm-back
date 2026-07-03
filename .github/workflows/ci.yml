@@ -193,6 +193,11 @@ jobs:
         # future-dated tenancies untouched; audit-attributed to system:cron:tenancy.
         run: pnpm --filter ./db test:tenancy-status
 
+      - name: Run inbound_raw retention janitor checks
+        # prune_inbound_raw drops rows past the TTL horizon, keeps recent ones,
+        # is idempotent, and honours the interval parameter (service-role-only).
+        run: pnpm --filter ./db test:comms-retention
+
   integration:
     # Higher-fidelity tier: real GoTrue token issuance + real PostgREST claim
     # handling. This is the test that catches drift between our hand-minted
@@ -315,6 +320,14 @@ jobs:
         # + revoke parking, principal gating (transport vs owner/manager vs
         # viewer), Idempotency-Key replay, events-feed surfacing.
         run: pnpm --filter ./api test:comms
+
+      - name: Run comms group-MMS checks (GM-A)
+        # Native group threads: group-set uniqueness (order-insensitive),
+        # cc[] participant-set capture (matched / orphan / cross-account
+        # pinned / idempotent replay), ONE outbox row + journal-once per
+        # group send, any-member STOP (parks queued + refuses new at 422),
+        # and bridged 1:1 coexistence + routing-invariant regression.
+        run: pnpm --filter ./api test:comms-group
 
       - name: Run events feed + ledger as_of checks (Phase 3)
         # Poller contract under concurrency (40 POSTs, cursor drain), next_seq
