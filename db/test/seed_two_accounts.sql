@@ -197,6 +197,15 @@ begin
        'phone', 'inbound', 'B called about leak',  '2026-02-01T09:00:00Z',
        v_tenancy_b, v_unit_b);
 
+  -- Cast rows (20260703000003): one per account so the isolation suite gets
+  -- its own>0 / cross==0 check on interaction_participants. Seeded directly
+  -- (superuser) — client roles have no INSERT on this table by design.
+  insert into public.interaction_participants (
+    account_id, interaction_id, role, party_type, party_id, address, label, source
+  ) values
+    (v_acc_a, v_int_a, 'sender', 'tenant', v_tenant_a, null, 'Tenant A', 'backfill'),
+    (v_acc_b, v_int_b, 'sender', 'tenant', v_tenant_b, null, 'Tenant B', 'backfill');
+
   -- Notices & scheduled tasks
   v_notice_a := gen_random_uuid(); v_notice_b := gen_random_uuid();
   insert into public.notices (

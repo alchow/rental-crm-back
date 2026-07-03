@@ -32,6 +32,9 @@
 --   * list_account_opt_outs           -- member of p_account_id; result is
 --                                        intersected with the account's own
 --                                        channel_identities (no address oracle)
+--   * journal_with_participants       -- live member of p_account_id; the
+--                                        manual capture path's atomic
+--                                        row+cast writer (20260703000003)
 -- (Migration 009 also revokes anon from the first four — the comms migration
 --  does the same for its own — so authenticated is the only non-service_role
 --  grantee that remains on any public SECURITY DEFINER function.)
@@ -57,7 +60,10 @@ DECLARE
     'list_account_opt_outs',
     -- comms evidence (20260703000004): agent-role member of p_account_id,
     -- same self-defense shape as capture_inbound
-    'record_inbound_provenance'
+    'record_inbound_provenance',
+    -- participants cast (20260703000003): live-member self-defense inside;
+    -- the manual capture path's atomic row+cast writer
+    'journal_with_participants'
   ];
 BEGIN
 
