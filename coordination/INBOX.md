@@ -376,3 +376,19 @@ include on the core side:
    mailer is the last exception.
 (Agent side gets the matching item then: email Provider driver behind the
 transport port + inbound reply parsing.)
+
+## 2026-07-03 — GM-A VERIFIED + all six decisions RATIFIED. Sha broadcast.
+
+Independently verified `304e32c2…`: exactly the four additive fields, no
+removals, paths unchanged, both hygiene sweeps clean. Decision rulings:
+all six are ratified — in particular, the DB-enforced canonical
+routing-key uniqueness is BETTER than what I directed; keeping it internal
+is right; party_label-as-dialed-set is the honest attribution; including
+the landlord's line in the send set is correct provider semantics; the
+404-vs-400 nuance is acceptable (and arguably more correct — relayed to
+B); rejecting 1:1 side-sends inside group threads is the right evidence
+call. Sequencing answer: ONE prod `migrate:up` applying …05 + the GM-A
+migration together is APPROVED (both expand-only, both safe ahead of the
+code deploy) — no separate applies needed; that stays with the human.
+GM-A is done; stand by while B and C build. I merge the full GM batch via
+PR when all three verify.
