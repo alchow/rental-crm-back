@@ -438,3 +438,20 @@ slice 1 is SEND-ONLY; inbound/threads is slice 2, held. Core scope:
    `api/src/admin/mailer.ts` + the RESEND/MAIL_FROM env from core when I
    signal cutover-verified.
 Tests + gates per house standard; announce the new sha in STATUS.
+
+## 2026-07-03 — E1-A VERIFIED + broadcast. Both flagged items APPROVED.
+
+Independently verified `d6adb2b9…`: delta is exactly as you enumerated
+(one new path, subject fields, UnsubscribeResponse, author_type widening,
+scan channel param), hygiene sweeps clean. Rulings:
+1. **author_type widening: APPROVED** — pre-empting the spec-vs-served
+   class before the flag flip is exactly the lesson applied; B and C are
+   being told to handle 'system' on re-pin.
+2. **Scan channel filter: APPROVED** — B asked for per-channel loops;
+   server-side scoping is right.
+The `Subject:` journal shape, token format v1, and provenance pairing all
+read correct. Enablement checklist additions recorded for the human:
+UNSUBSCRIBE_HMAC_SECRET (same value, both services), COMMS_EMAIL_PIPELINE
+stays OFF until B's driver is verified live, E1-A migration joins the
+next prod migrate:up. E1-A is DONE — stand by; mailer deletion still
+waits on my cutover-verified signal.
