@@ -1,5 +1,5 @@
 # Off-platform DB backup, daily tier (RPO <= ~24 hours for the promoted copy).
-# Companion to db-backup-15min.yml: that workflow keeps 48 hours of 15-minute
+# Companion to db-backup-15min.yml: that workflow keeps 48 hours of hourly
 # snapshots in pg/15min/; this one promotes one of them per day into a 30-day
 # tier (pg/daily/), mirrors Supabase Storage files, and -- on demand -- proves
 # the newest dump actually restores. Restore procedure + one-time setup:
@@ -10,7 +10,7 @@ on:
   schedule:
     # 09:23 UTC daily. Odd minute on purpose: the top-of-hour cron slots are the
     # most contended on GitHub's shared scheduler, and we want this to fire well
-    # after a 15-min tick has landed a fresh snapshot to promote.
+    # after an hourly tick has landed a fresh snapshot to promote.
     - cron: '23 9 * * *'
   workflow_dispatch:
     inputs:
@@ -142,8 +142,8 @@ jobs:
         # This runs once a day, so Storage files have a ~24-hour RPO: a file
         # uploaded and then lost within the same day is not recoverable from
         # here. That is the deliberate, runbook-documented trade-off -- the DB
-        # (business-of-record) gets a 15-minute RPO; bulky attachments do not
-        # warrant 96x the egress. --checksum compares content, not mtime, so
+        # (business-of-record) gets a 60-minute RPO; bulky attachments do not
+        # warrant 24x the egress. --checksum compares content, not mtime, so
         # unchanged files are skipped cheaply.
         run: |
           rclone sync src: "dst:$S3_BUCKET/storage" \
