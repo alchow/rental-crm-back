@@ -403,3 +403,38 @@ comparison; raw sha will differ by minification as before), and
 the authenticated structural check (a live threads read exercises the new
 `mode` column). Report in STATUS; if anything 500s, the immediate fix is
 applying the migrations (human) — say so loudly.
+
+## 2026-07-03 — WORK ITEM E1-A: email channel, slice 1 (send-only) — core side. GO now.
+
+Human-approved. Provider is Resend for BOTH directions (verified: inbound
+receiving with signed webhooks + stored-mail Receiving API exists) — but
+slice 1 is SEND-ONLY; inbound/threads is slice 2, held. Core scope:
+1. **Contract additions (additive, one emit, announce sha):** optional
+   `subject` on CreateCommOutboxBody + comm_outbox (email-only semantics;
+   400 on sms rows). Journal rule: complete_send for email rows records
+   the FULL content honestly (document your chosen shape — e.g. body
+   prefixed "Subject: …" — in STATUS so B renders templates to match).
+2. **Provenance extension for core-originated transactional sends:**
+   the inspection-capture renewal email migrates onto the pipeline as an
+   outbox intent CREATED BY CORE (core writing its own ledger is not
+   "core sends" — the transport still dials). It needs an honest
+   provenance class: extend the CHECK/firewall with
+   `approval_ref='system:<flow>'` valid ONLY for core-server-originated
+   intents (never accepted from the agent principal or landlords over the
+   API — enforce that). The renewal email thereby gains a journal record
+   it never had.
+3. **Unsubscribe (CAN-SPAM + Gmail/Yahoo one-click):** unauthenticated
+   endpoint following the intake magic-link pattern that registers
+   `record_opt_out(channel='email', address)` + a minimal confirmation
+   page. Mechanism requirement: the TRANSPORT must be able to mint
+   per-address unsubscribe URLs without a per-send round trip (stateless
+   HMAC over the address with a shared secret is acceptable — document
+   the exact format in STATUS for B), and it must support RFC 8058
+   one-click (POST) for the List-Unsubscribe-Post header.
+4. **Mailer migrate-and-delete (tracked scope, now live):** cut the
+   inspection renewal over to the pipeline BEHIND a config flag or
+   fallback (the old mailer path stays until B's email driver is verified
+   live — do not break the renewal flow in the gap), then delete
+   `api/src/admin/mailer.ts` + the RESEND/MAIL_FROM env from core when I
+   signal cutover-verified.
+Tests + gates per house standard; announce the new sha in STATUS.
