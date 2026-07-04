@@ -352,7 +352,7 @@ async function main(): Promise<void> {
   async function readAccount(acctId: string): Promise<Record<string, unknown>> {
     const { data, error } = await admin
       .from('accounts')
-      .select('name, deleted_at, email_subdomain')
+      .select('name, deleted_at, email_subdomain, sender_display_name')
       .eq('id', acctId)
       .single();
     if (error) throw new Error(`admin read: ${error.message}`);
@@ -390,6 +390,35 @@ async function main(): Promise<void> {
     assert(reserved >= 400, `reserved: expected 4xx CHECK violation, got ${reserved}`);
     const token = await directPatch(owner.accountId, owner.token, { persona_local_part: 't-0123456789abcdef' });
     assert(token >= 400, `t- prefix: expected 4xx CHECK violation, got ${token}`);
+  });
+
+  await check('direct PostgREST punycode (xn--) subdomain is rejected by the CHECK backstop', async () => {
+    // The API rejects `xn--…` labels; the DB backstop (migration 20260711000001)
+    // must too, or a direct write could claim a homoglyph receiving subdomain.
+    const punycode = 'xn--80ak6aa92e';
+    const st = await directPatch(owner.accountId, owner.token, { email_subdomain: punycode });
+    assert(st >= 400, `expected 4xx CHECK violation, got ${st}`);
+    const after = await readAccount(owner.accountId);
+    assert(after.email_subdomain !== punycode, 'punycode subdomain slipped past the CHECK');
+  });
+
+  await check('direct PostgREST C1 control char in sender_display_name is rejected by the CHECK backstop', async () => {
+    // U+0085 (NEL) is a C1 control the API CONTROL_RE rejects; the widened DB
+    // no-ctrl CHECK (migration 20260711000001) must reject it on the direct path.
+    const before = await readAccount(owner.accountId);
+    const st = await directPatch(owner.accountId, owner.token, {
+      sender_display_name: 'Acme\u0085Bcc: evil@x',
+    });
+    assert(st >= 400, `expected 4xx CHECK violation, got ${st}`);
+    const after = await readAccount(owner.accountId);
+    assert(
+      !String(after.sender_display_name ?? '').includes('\u0085'),
+      'C1 control char slipped past the CHECK',
+    );
+    assert(
+      after.sender_display_name === before.sender_display_name,
+      `sender_display_name mutated: ${String(before.sender_display_name)} -> ${String(after.sender_display_name)}`,
+    );
   });
 
   // --- summary ---------------------------------------------------------------
