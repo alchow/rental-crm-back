@@ -3158,6 +3158,68 @@
           }
         }
       },
+      "InteractionParticipant": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "sender",
+              "recipient",
+              "cc",
+              "attendee"
+            ]
+          },
+          "party_type": {
+            "type": "string",
+            "enum": [
+              "tenant",
+              "landlord_user",
+              "vendor",
+              "agent",
+              "inspector",
+              "other",
+              "platform",
+              "unknown"
+            ]
+          },
+          "party_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "capture",
+              "comms",
+              "backfill"
+            ]
+          }
+        },
+        "required": [
+          "role",
+          "party_type",
+          "party_id",
+          "address",
+          "label",
+          "source"
+        ]
+      },
       "Interaction": {
         "type": "object",
         "properties": {
@@ -3358,35 +3420,23 @@
             ],
             "format": "uuid"
           },
-          "audience": {
+          "attestation": {
             "type": [
-              "object",
+              "string",
               "null"
             ],
-            "properties": {
-              "to": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              },
-              "cc": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              }
-            },
-            "required": [
-              "to"
+            "enum": [
+              "provider_verified",
+              "attested",
+              "imported",
+              null
             ]
+          },
+          "participants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InteractionParticipant"
+            }
           },
           "references_interaction_id": {
             "type": [
@@ -3435,6 +3485,7 @@
           "area_id",
           "work_order_id",
           "vendor_id",
+          "participants",
           "references_interaction_id",
           "created_at",
           "updated_at",
@@ -3588,6 +3639,55 @@
             "type": "string",
             "format": "uuid",
             "description": "Same-account reference to a prior interaction / journal entry this entry follows from (e.g. a step_executed agent_event's anchor)."
+          },
+          "participants": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "sender",
+                    "recipient",
+                    "cc",
+                    "attendee"
+                  ]
+                },
+                "party_type": {
+                  "type": "string",
+                  "enum": [
+                    "tenant",
+                    "landlord_user",
+                    "vendor",
+                    "agent",
+                    "inspector",
+                    "other",
+                    "unknown"
+                  ]
+                },
+                "party_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "address": {
+                  "type": "string",
+                  "minLength": 3,
+                  "maxLength": 320
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                }
+              },
+              "required": [
+                "role",
+                "party_type"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 20
           }
         }
       },

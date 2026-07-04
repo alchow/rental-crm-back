@@ -14342,6 +14342,18 @@ export interface components {
             /** Format: uuid */
             asset_id?: string | null;
         };
+        InteractionParticipant: {
+            /** @enum {string} */
+            role: "sender" | "recipient" | "cc" | "attendee";
+            /** @enum {string} */
+            party_type: "tenant" | "landlord_user" | "vendor" | "agent" | "inspector" | "other" | "platform" | "unknown";
+            /** Format: uuid */
+            party_id: string | null;
+            address: string | null;
+            label: string | null;
+            /** @enum {string} */
+            source: "capture" | "comms" | "backfill";
+        };
         Interaction: {
             /** Format: uuid */
             id: string;
@@ -14389,10 +14401,9 @@ export interface components {
             vendor_id: string | null;
             /** Format: uuid */
             thread_id?: string | null;
-            audience?: {
-                to: string | string[];
-                cc?: string[];
-            } | null;
+            /** @enum {string|null} */
+            attestation?: "provider_verified" | "attested" | "imported" | null;
+            participants: components["schemas"]["InteractionParticipant"][];
             /** Format: uuid */
             references_interaction_id: string | null;
             created_at: string;
@@ -14443,6 +14454,16 @@ export interface components {
              * @description Same-account reference to a prior interaction / journal entry this entry follows from (e.g. a step_executed agent_event's anchor).
              */
             references_interaction_id?: string;
+            participants?: {
+                /** @enum {string} */
+                role: "sender" | "recipient" | "cc" | "attendee";
+                /** @enum {string} */
+                party_type: "tenant" | "landlord_user" | "vendor" | "agent" | "inspector" | "other" | "unknown";
+                /** Format: uuid */
+                party_id?: string;
+                address?: string;
+                label?: string;
+            }[];
         };
         CommOutbox: {
             /** Format: uuid */

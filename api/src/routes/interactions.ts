@@ -73,6 +73,44 @@ const EntryType = z.enum([
 ]);
 const AuthorType = z.enum(['landlord', 'tenant', 'vendor', 'agent', 'system']);
 
+// The cast (interaction_participants, 20260703000003): who was ON the
+// event, one row per person-per-role, frozen at write time. Wire/attendance
+// roles only — authorship stays on the row (author_type/actor), exactly once.
+const ParticipantRole = z.enum(['sender', 'recipient', 'cc', 'attendee']);
+// Cast vocabulary = thread-roster types + legacy manual types + 'platform'
+// (our own number/token as a wire leg) + 'unknown' (an address we refuse to
+// guess an identity for, e.g. an email sender_mismatch).
+const ParticipantPartyType = z.enum([
+  'tenant', 'landlord_user', 'vendor', 'agent', 'inspector', 'other', 'platform', 'unknown',
+]);
+// 'platform' is reserved for the verified comms write paths; a manual entry
+// has no wire leg to claim.
+const CreateParticipantPartyType = z.enum([
+  'tenant', 'landlord_user', 'vendor', 'agent', 'inspector', 'other', 'unknown',
+]);
+const ParticipantSource = z.enum(['capture', 'comms', 'backfill']);
+/** How trustworthy the record is: 'provider_verified' (carrier-confirmed
+ *  transmission; only the verified comms paths can stamp it — DB-gated),
+ *  'attested' (a human/agent's account of an off-platform event),
+ *  'imported' (bulk import), null (legacy rows, never rewritten). */
+const Attestation = z.enum(['provider_verified', 'attested', 'imported']);
+
+export const InteractionParticipant = z
+  .object({
+    role: ParticipantRole,
+    party_type: ParticipantPartyType,
+    /** Typed reference into tenants/vendors/users, resolved and frozen at
+     *  write time; null when the person is unresolved (label/address-only). */
+    party_id: z.string().uuid().nullable(),
+    /** The wire fact: the address this person appeared as on the transport
+     *  (phone/email/token). Null for in-person attendance. */
+    address: z.string().nullable(),
+    /** Display-name snapshot at write time — renames never rewrite history. */
+    label: z.string().nullable(),
+    source: ParticipantSource,
+  })
+  .openapi('InteractionParticipant');
+
 // Exported: the messages route returns the journal entry created by a
 // confirmed send and must reference THIS schema so the SDK contract is typed.
 export const Interaction = z
@@ -118,19 +156,18 @@ export const Interaction = z
      *  column lands with the comms ledger migrations, so rows read null /
      *  absent until then. */
     thread_id: z.string().uuid().nullable().optional(),
-    /** Addressed set of a communication row, stamped by the comms write
-     *  paths (capture_inbound / complete_send) and frozen once written:
-     *  inbound rows carry {to: <address the message arrived on>, cc: [other
-     *  recipients as reported by the provider]}; outbound rows carry
-     *  {to: [dialed address(es)]}. Null on non-communication rows and on
-     *  rows journaled before the column landed (20260703000003). */
-    audience: z
-      .object({
-        to: z.union([z.string(), z.array(z.string())]),
-        cc: z.array(z.string()).optional(),
-      })
-      .nullable()
-      .optional(),
+    /** Trust tier of this record, frozen once written (20260703000003):
+     *  'provider_verified' — a carrier-confirmed transmission, stamped only
+     *  by the verified comms paths; 'attested' — someone's account of an
+     *  off-platform event; 'imported' — bulk import; null — legacy rows
+     *  journaled before the column landed (never rewritten). */
+    attestation: Attestation.nullable().optional(),
+    /** The cast: who was on THIS event, one row per person-per-role
+     *  (sender/recipient/cc on the wire, attendee in person), frozen at
+     *  write time. Empty on legacy rows that predate the cast and on
+     *  notes/agent_events. The legacy party_* fields remain the derived
+     *  single-slot headline. */
+    participants: z.array(InteractionParticipant),
     /** The prior interaction / journal entry this entry references — e.g. a
      *  step_executed agent_event anchored to the proposal it acts on. Null
      *  when unset. */
@@ -200,6 +237,30 @@ export const CreateInteractionBody = z
     references_interaction_id: z.string().uuid().optional().openapi({
       description: "Same-account reference to a prior interaction / journal entry this entry follows from (e.g. a step_executed agent_event's anchor).",
     }),
+    /** The cast: everyone on the event, one entry per person-per-role.
+     *  Fresh kind='communication' entries only (notes/agent_events carry no
+     *  cast; corrections inherit the original's). When present, the row and
+     *  its cast are written atomically (journal_with_participants) and the
+     *  entry is stamped attestation='attested'. Each entry needs at least
+     *  one identity layer: party_id, address, or label. */
+    participants: z
+      .array(
+        z
+          .object({
+            role: ParticipantRole,
+            party_type: CreateParticipantPartyType,
+            party_id: z.string().uuid().optional(),
+            address: z.string().min(3).max(320).optional(),
+            label: z.string().min(1).max(200).optional(),
+          })
+          .refine(
+            (p) => p.party_id !== undefined || p.address !== undefined || p.label !== undefined,
+            { message: 'a participant needs at least one of party_id, address, label' },
+          ),
+      )
+      .min(1)
+      .max(20)
+      .optional(),
   })
   .superRefine((b, ctx) => {
     const issue = (path: string, message: string) =>
@@ -208,6 +269,19 @@ export const CreateInteractionBody = z
     if ((b.corrects_id === undefined) !== (b.correction_kind === undefined)) {
       issue('correction_kind', 'corrects_id and correction_kind must be provided together');
       return;
+    }
+
+    // The cast rides only on a FRESH communication: notes and agent_events
+    // structurally have no counterparties, and a correction inherits the
+    // original entry's cast (the cast is evidence of the event, not of the
+    // correction).
+    if (b.participants !== undefined) {
+      if (b.corrects_id !== undefined) {
+        issue('participants', 'participants are recorded on the original entry; a correction inherits them');
+      }
+      if ((b.kind ?? 'communication') !== 'communication') {
+        issue('participants', "participants are only valid on a new kind='communication' entry");
+      }
     }
 
     // entry_type is forbidden on a correction (corrections inherit kind;
@@ -345,6 +419,36 @@ const ListResponse = z
   .object({ data: z.array(Interaction), next_cursor: z.string().nullable() })
   .openapi('InteractionListResponse');
 
+export type InteractionParticipantRow = z.infer<typeof InteractionParticipant>;
+
+/** Batched cast loader: ONE query for a page of journal rows, bucketed by
+ *  interaction id — the same embed pattern comms thread participants use
+ *  (comms.ts loadParticipants). The cast belongs to the ROOT entry of a
+ *  correction chain (the event record); correction rows read back with an
+ *  empty cast of their own. */
+export async function loadInteractionParticipants(
+  sb: ReturnType<typeof getSb>,
+  accountId: string,
+  interactionIds: string[],
+): Promise<Map<string, InteractionParticipantRow[]>> {
+  const map = new Map<string, InteractionParticipantRow[]>();
+  if (interactionIds.length === 0) return map;
+  const { data, error } = await sb
+    .from('interaction_participants')
+    .select('interaction_id, role, party_type, party_id, address, label, source')
+    .eq('account_id', accountId)
+    .in('interaction_id', interactionIds)
+    .order('created_at', { ascending: true });
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  for (const row of (data ?? []) as (InteractionParticipantRow & { interaction_id: string })[]) {
+    const { interaction_id, ...entry } = row;
+    const list = map.get(interaction_id) ?? [];
+    list.push(entry);
+    map.set(interaction_id, list);
+  }
+  return map;
+}
+
 const list = createRoute({
   method: 'get',
   path: '/accounts/{accountId}/interactions',
@@ -402,8 +506,13 @@ interactionsApp.openapi(list, async (c) => {
     limit,
     column: 'occurred_at',
   });
-  const data = (items as { author_type?: string | null; actor: string }[]).map(
-    withResolvedAuthorship,
+  const casts = await loadInteractionParticipants(
+    sb,
+    accountId,
+    (items as { id: string }[]).map((r) => r.id),
+  );
+  const data = (items as ({ id: string; author_type?: string | null; actor: string })[]).map(
+    (r) => ({ ...withResolvedAuthorship(r), participants: casts.get(r.id) ?? [] }),
   );
   return c.json({ data, next_cursor: nextCursor } as z.infer<typeof ListResponse>, 200);
 });
@@ -420,10 +529,12 @@ interactionsApp.openapi(get, async (c) => {
     .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
   if (!data) throw new ApiError(404, 'not_found', 'not found');
+  const cast = (await loadInteractionParticipants(sb, accountId, [id])).get(id) ?? [];
   return c.json(
-    withResolvedAuthorship(data as { author_type?: string | null; actor: string }) as z.infer<
-      typeof Interaction
-    >,
+    {
+      ...withResolvedAuthorship(data as { author_type?: string | null; actor: string }),
+      participants: cast,
+    } as z.infer<typeof Interaction>,
     200,
   );
 });
@@ -532,6 +643,20 @@ interactionsApp.openapi(create, async (c) => {
   // Landlord checks are fast path (no DB). Agent checks may also be fast.
   // Both run before any DB write so violations never touch the journal.
   assertAgentJournalWrite(principal, body);
+
+  // The manual cast path is landlord-only BY DESIGN: an agent's
+  // communications are journaled (with their cast) by the verified comms
+  // transport paths, and an agent's notes carry no cast — so an agent
+  // supplying participants here could only be fabricating an unverifiable
+  // record of who was contacted.
+  if (principal.type === 'agent' && body.participants !== undefined) {
+    throw new ApiError(
+      400,
+      'invalid_request',
+      'participants are recorded by the comms transport for agent communications; the manual participants path is landlord-only',
+      { fieldErrors: { participants: ['not permitted for the agent principal'] } },
+    );
+  }
 
   // actor is derived from the authenticated user; the audit chain records the
   // same value via auth.uid(). Agent-authored rows use actor='user:<agent-uuid>'
@@ -699,6 +824,57 @@ interactionsApp.openapi(create, async (c) => {
       references_interaction_id: body.references_interaction_id ?? null,
     };
   } else {
+    // Cast-carrying create: the row and its cast are written atomically by
+    // the journal_with_participants RPC (no window where a valid-but-castless
+    // entry exists), which also stamps attestation='attested' and derives
+    // actor/author_type from the caller — same values this handler computes.
+    // Landlord-only at this point (agent guard above).
+    if (body.participants !== undefined) {
+      const { data: created, error: rpcErr } = await sb.rpc('journal_with_participants', {
+        p_account_id: accountId,
+        p_entry: {
+          channel: body.channel,
+          direction: body.direction ?? 'unspecified',
+          party_type: body.party_type,
+          party_id: body.party_id ?? null,
+          party_label: body.party_label ?? null,
+          body: body.body ?? null,
+          occurred_at: body.occurred_at,
+          tenancy_id: body.tenancy_id ?? null,
+          maintenance_request_id: body.maintenance_request_id ?? null,
+          area_id: body.area_id ?? null,
+          work_order_id: body.work_order_id ?? null,
+          vendor_id: body.vendor_id ?? null,
+        },
+        p_participants: body.participants.map((p) => ({
+          role: p.role,
+          party_type: p.party_type,
+          party_id: p.party_id ?? null,
+          address: p.address ?? null,
+          label: p.label ?? null,
+        })),
+      });
+      if (rpcErr) {
+        if (rpcErr.code === '23503') {
+          throw new ApiError(404, 'not_found', 'a referenced row does not belong to this account');
+        }
+        if (rpcErr.code === '22023') {
+          throw new ApiError(400, 'invalid_request', rpcErr.message);
+        }
+        throw dbError(rpcErr);
+      }
+      const createdRow = created as unknown as { id: string; author_type?: string | null; actor: string };
+      const cast = (await loadInteractionParticipants(sb, accountId, [createdRow.id])).get(createdRow.id) ?? [];
+      return c.json(
+        withResolvedAuthorship({
+          ...createdRow,
+          superseded_by_id: null,
+          is_head: true,
+          participants: cast,
+        }) as z.infer<typeof Interaction>,
+        201,
+      );
+    }
     row = {
       account_id: accountId,
       actor,
@@ -750,12 +926,14 @@ interactionsApp.openapi(create, async (c) => {
     throw dbError(error);
   }
   // Derived fields, true by construction for a row that did not exist a
-  // moment ago: nothing can reference it yet.
+  // moment ago: nothing can reference it yet, and (on this castless path)
+  // no participants exist for it.
   return c.json(
     withResolvedAuthorship({
       ...data,
       superseded_by_id: null,
       is_head: true,
+      participants: [],
     }) as z.infer<typeof Interaction>,
     201,
   );

@@ -9,7 +9,7 @@ import { ApiError, dbError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { normalizePhone } from './_lib/phone';
 import { withResolvedAuthorship } from './_lib/authorship';
-import { Interaction } from './interactions';
+import { Interaction, loadInteractionParticipants } from './interactions';
 import {
   evidenceSha256,
   evidenceStoragePath,
@@ -1811,9 +1811,11 @@ commsApp.openapi(getThread, async (c) => {
     { cursor, limit, column: 'occurred_at', descending: true },
   );
   const legs = await loadRelayLegs(c, accountId, msgRows.map((m) => String(m.id)));
+  const casts = await loadInteractionParticipants(sb, accountId, msgRows.map((m) => String(m.id)));
   const messages = msgRows.map((m) => ({
     ...withResolvedAuthorship(m as { author_type?: string | null; actor: string }),
     relay_legs: legs.get(String(m.id)) ?? [],
+    participants: casts.get(String(m.id)) ?? [],
   }));
 
   return c.json(
