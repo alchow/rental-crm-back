@@ -51,3 +51,49 @@ services:
       # the legacy in-core mailer sends directly.
       - key: COMMS_EMAIL_PIPELINE
         sync: false
+
+  # ==========================================================================
+  # Automatic rent-charge generator (cron)
+  # ==========================================================================
+  # Phase 9 shipped generate_rent_charges() as an idempotent, opt-in generator
+  # but deliberately left it UNSCHEDULED ("define, don't schedule") with only an
+  # ops note to "schedule operationally after deploy" — which never happened,
+  # twice. This service IS that schedule, now living in reviewable IaC instead
+  # of a runbook: it runs `charges:generate` (api/src/admin/run-rent-charges.ts),
+  # which calls generate_rent_charges once per opted-in account (see ADR-0011).
+  #
+  # Daily at 08:00 UTC — early US morning (00:00-05:00 across US timezones), so
+  # a charge lands overnight and is waiting when the landlord/tenant wakes,
+  # while staying clear of the midnight boundary where date math is touchiest.
+  # The exact minute does not matter for correctness: the generator is
+  # idempotent (ON CONFLICT on (source_schedule_id, period_start)) and bills in
+  # ADVANCE (next period's charge the day after this period's due date), so a
+  # missed, delayed, or retried run cannot double-bill and always has slack to
+  # heal on the following day's run.
+  - type: cron
+    name: rent-charge-generator
+    runtime: node
+    region: oregon
+    schedule: "0 8 * * *"
+    # Same build as the web service: --prod=false keeps devDeps (tsx) that the
+    # `charges:generate` runner needs at runtime.
+    buildCommand: npm install -g pnpm@11.1.2 && pnpm install --prod=false && pnpm --filter ./api build
+    startCommand: pnpm --filter ./api charges:generate
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Must track .nvmrc / engines (>=22) -- pnpm 11 itself needs node:sqlite.
+      - key: NODE_VERSION
+        value: "22"
+      # The runner uses the service-role admin client (getAdminClient); loadEnv
+      # still requires SUPABASE_URL + SUPABASE_ANON_KEY at boot. SUPABASE_DB_URL
+      # is not used by this job but is declared for env parity with the web
+      # service. sync:false — set per-environment in the Render dashboard.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_DB_URL
+        sync: false

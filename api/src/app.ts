@@ -23,6 +23,7 @@ import { maintenanceRequestsApp } from './routes/maintenance-requests';
 import { interactionsApp } from './routes/interactions';
 import { commsApp } from './routes/comms';
 import { ownerPhoneApp } from './routes/owner-phone';
+import { settingsApp } from './routes/settings';
 import { intakeApp } from './admin/intake';
 import { agentTokensApp } from './admin/agent-tokens';
 import { attachmentsApp } from './routes/attachments';
@@ -227,6 +228,7 @@ export function buildApp(): OpenAPIHono {
   // and drives these endpoints; no provider SDK or webhook exists here.
   app.route('/v1', commsApp);
   app.route('/v1', ownerPhoneApp);
+  app.route('/v1', settingsApp);
   app.route('/v1', attachmentsApp);
   app.route('/v1', documentsApp);
   app.route('/v1', inspectionTemplatesApp);
