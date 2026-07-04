@@ -18,7 +18,7 @@ System: Supabase Postgres 17 cloud project (ref `wywfplbylmpfafxyaqpq`,
 |---|---|---|---|
 | DB — hourly | ≤60 min typical; worst case a few minutes past the hour when the GitHub cron drifts under load | ~1–2 h (fresh project + migrate + restore) | 48 h of hourly snapshots under `pg/15min/` (path keeps its historical `15min` name) |
 | DB — daily | 24 h | ~1–2 h | 30-day history under `pg/daily/` |
-| Storage files | 24 h | included in DB RTO | Nightly sync only. An attachment uploaded **after** the last nightly sync is lost in a full-loss scenario **even though its `public.attachments` row survives** (see Restore §B). |
+| Storage files | 24 h | included in DB RTO | Nightly sync only, from the Storage S3 root, so **every** bucket is covered (today `attachments` and `comm-evidence`). A blob uploaded **after** the last nightly sync is lost in a full-loss scenario **even though its DB row survives** — for `attachments` that's a missing file behind a live `public.attachments` row; for `comm-evidence` it's a dangling `public.inbound_provenance` row (sha256 recorded, archived webhook body gone), which is worse since these are legal-evidence artifacts. See Restore §B. |
 
 Paid upgrade paths, if a hard guarantee is ever required:
 
@@ -180,8 +180,12 @@ endpoint + keys + region (setup step 2), then:
 ```sh
 rclone sync "bak:<bucket>/storage" newproj: --checksum --transfers 8
 ```
-Today the only bucket is `attachments`; syncing to the remote root restores
-every bucket that was backed up.
+Today the buckets are `attachments` (document/inspection files) and
+`comm-evidence` (private; archived verbatim webhook bodies referenced by
+`public.inbound_provenance.storage_path`); syncing to the remote root restores
+every bucket that was backed up. `comm-evidence` is a private bucket — the
+sync recreates its objects, but confirm the bucket's public/private flag on
+the new project matches (private) after cutover.
 
 ### C. Cut over the app
 
@@ -226,9 +230,13 @@ Run every quarter and log the outcome below.
    and asserts restored rows > 0 **and a clean `verify_chain()` for every
    account** — so a green run means the evidence trail survived
    dump→restore intact. Row counts are printed in the job log for eyeballing.
-3. Spot-check one attachment: pick a `public.attachments.storage_path` row and
-   confirm the matching object exists under `storage/attachments/…` in the
-   backup bucket.
+3. Spot-check one blob per bucket:
+   - pick a `public.attachments.storage_path` row and confirm the matching
+     object exists under `storage/attachments/…` in the backup bucket;
+   - pick a `public.inbound_provenance.storage_path` row and confirm the
+     matching object exists under `storage/comm-evidence/…` (its name is the
+     content-addressed `<account>/<sha256>.bin`). A dangling provenance row
+     with no backed-up blob is the evidence-loss case from §1.
 4. Record the date and outcome in the table below.
 
 | Date | Ran by | Result | Notes |
