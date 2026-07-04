@@ -19,12 +19,23 @@
 //
 //   (D) Period-scoped bounds: a schedule whose end_date is before the derived
 //       p_start is not charged; an ENDED tenancy with a still-open schedule is
-//       not charged.
+//       not charged. Status nuance: a 'holdover' tenant is billed even when the
+//       tenancy end_date has passed (they stayed past the fixed term and still
+//       owe rent), whereas a still-'active' tenancy IS bounded by its end_date.
 //
-//   (E) End cascade: admin-updating a tenancy to set end_date + status='ended'
-//       (the shape the settings/tenancy PATCH produces) writes that end_date
-//       onto the tenancy's open rent_schedules, and a later generate emits
-//       nothing for periods after it.
+//   (E) End cascade: it fires ONLY on the status transition into 'ended', not
+//       on an end_date edit. Ending a tenancy writes coalesce(end_date, today)
+//       onto its open rent_schedules; a later generate emits nothing after it.
+//       Merely EXTENDING (or setting) end_date while status stays 'active'
+//       must NOT touch the schedule -- otherwise an extended term would be
+//       stuck short. The live tenancy.end_date bounds billing at runtime until
+//       the tenancy actually ends.
+//
+//   (F) H1 column guard: on the member (user-JWT) write path the ONLY column
+//       that may change is auto_charge_enabled; a member's attempt to change
+//       any other column (e.g. name) is rejected with insufficient_privilege.
+//       The service-role admin client (auth.uid()=null) skips the guard, so
+//       this case is exercised through a user-scoped PostgREST client.
 //
 // Mirrors phase9.test.ts exactly (same env bootstrap, getAdminClient, check()).
 // Needs the live local Supabase stack (SUPABASE_URL etc. resolved from
@@ -335,6 +346,33 @@ async function main(): Promise<void> {
     if ((await chargesFor(scheduleId)).length !== 0) throw new Error('expected 0 charges for ended tenancy');
   });
 
+  await check('holdover: status=holdover past its end_date -> STILL billed', async () => {
+    // A holdover tenant stayed PAST the fixed-term end_date and keeps owing
+    // rent, so the tenancy.end_date bound must NOT silence them. due_day=1,
+    // as_of 2026-07-02 -> p_start 2026-08-01; end_date 2026-06-30 is already in
+    // the past, but the 'holdover' status overrides the tenancy end_date bound.
+    const { scheduleId } = await seed({
+      dueDay: 1, tenancyStatus: 'holdover', tenancyEnd: '2026-06-30',
+    });
+    const rows = (await generate('2026-07-02T12:00:00Z')).filter((r) => r.o_schedule_id === scheduleId);
+    if (rows.length !== 1) throw new Error(`expected 1 generated row for holdover, got ${rows.length}`);
+    if (rows[0]!.o_period_start !== '2026-08-01') {
+      throw new Error(`expected period_start 2026-08-01 for holdover, got ${rows[0]!.o_period_start}`);
+    }
+  });
+
+  await check('active past end_date: status=active, end_date passed -> NOT billed', async () => {
+    // Contrast to holdover: a still-'active' tenancy IS bounded by its own
+    // end_date. Same derived p_start 2026-08-01; end_date 2026-06-30 < p_start
+    // excludes it via the (t.end_date >= p_start) clause.
+    const { scheduleId } = await seed({
+      dueDay: 1, tenancyStatus: 'active', tenancyEnd: '2026-06-30',
+    });
+    const rows = (await generate('2026-07-02T12:00:00Z')).filter((r) => r.o_schedule_id === scheduleId);
+    if (rows.length !== 0) throw new Error(`expected 0 rows for active-past-end, got ${rows.length}`);
+    if ((await chargesFor(scheduleId)).length !== 0) throw new Error('expected 0 charges for active-past-end');
+  });
+
   // =========================================================================
   // (E) End cascade
   // =========================================================================
@@ -343,7 +381,9 @@ async function main(): Promise<void> {
     const { tenancyId, scheduleId } = await seed({ dueDay: 1 });
 
     // PATCH-equivalent: set the move-out date AND mark the tenancy ended in one
-    // update (the trigger fires on the status flip / end_date set).
+    // update. The cascade fires on the status flip into 'ended' (see the
+    // dedicated "fires ONLY on status->ended" case below); v_end resolves to the
+    // NEW.end_date supplied here.
     const upd = await admin
       .from('tenancies')
       .update({ end_date: '2026-07-31', status: 'ended' })
@@ -364,6 +404,120 @@ async function main(): Promise<void> {
     // the schedule end_date (2026-07-31) and the ended-tenancy guard exclude it.
     const rows = (await generate('2026-08-02T12:00:00Z')).filter((r) => r.o_schedule_id === scheduleId);
     if (rows.length !== 0) throw new Error(`expected 0 generated rows after tenancy end, got ${rows.length}`);
+  });
+
+  await check('extend: pushing end_date out (status still active) keeps billing; cascade does NOT fire', async () => {
+    // Planned move-out 2026-07-31 on an OPEN schedule. Before extending, a
+    // period after the move-out is bounded out by the live tenancy.end_date.
+    const { tenancyId, scheduleId } = await seed({
+      dueDay: 1, tenancyStatus: 'active', tenancyEnd: '2026-07-31',
+    });
+    const before = (await generate('2026-08-02T12:00:00Z')).filter((r) => r.o_schedule_id === scheduleId);
+    if (before.length !== 0) throw new Error(`expected 0 rows before extend (bounded by end_date), got ${before.length}`);
+
+    // EXTEND: push end_date far out; status stays 'active'. The cascade fires
+    // ONLY on status->'ended', so this end_date edit must NOT touch the
+    // schedule (otherwise the extended term would be stuck short).
+    const upd = await admin.from('tenancies').update({ end_date: '2027-12-31' }).eq('id', tenancyId);
+    if (upd.error) throw new Error(`extend tenancy: ${upd.error.message}`);
+
+    const { data: sched, error } = await admin
+      .from('rent_schedules').select('end_date').eq('id', scheduleId).single();
+    if (error || !sched) throw new Error(`read schedule after extend: ${error?.message}`);
+    if (sched.end_date !== null) {
+      throw new Error(`schedule end_date must stay null after an end_date-only edit, got ${sched.end_date}`);
+    }
+
+    // Billing now continues into the extended term: p_start 2026-09-01 is now
+    // within the live tenancy end_date 2027-12-31.
+    const after = (await generate('2026-08-02T12:00:00Z')).filter((r) => r.o_schedule_id === scheduleId);
+    if (after.length !== 1) throw new Error(`expected 1 row after extend, got ${after.length}`);
+    if (after[0]!.o_period_start !== '2026-09-01') {
+      throw new Error(`expected period_start 2026-09-01 after extend, got ${after[0]!.o_period_start}`);
+    }
+  });
+
+  await check('cascade fires ONLY on status->ended, not on an end_date edit', async () => {
+    const { tenancyId, scheduleId } = await seed({ dueDay: 1, tenancyStatus: 'active' });
+
+    // Step 1: set end_date only (status stays 'active') -> schedule UNCHANGED.
+    const s1 = await admin.from('tenancies').update({ end_date: '2027-06-30' }).eq('id', tenancyId);
+    if (s1.error) throw new Error(`set end_date: ${s1.error.message}`);
+    let sched = await admin.from('rent_schedules').select('end_date').eq('id', scheduleId).single();
+    if (sched.error) throw new Error(`read schedule (1): ${sched.error.message}`);
+    if (sched.data!.end_date !== null) {
+      throw new Error(`schedule end_date must stay null on an end_date-only edit, got ${sched.data!.end_date}`);
+    }
+
+    // Step 2: flip status to 'ended' -> schedule end_date := coalesce(end_date, today).
+    const s2 = await admin.from('tenancies').update({ status: 'ended' }).eq('id', tenancyId);
+    if (s2.error) throw new Error(`end tenancy: ${s2.error.message}`);
+    sched = await admin.from('rent_schedules').select('end_date').eq('id', scheduleId).single();
+    if (sched.error) throw new Error(`read schedule (2): ${sched.error.message}`);
+    if (sched.data!.end_date !== '2027-06-30') {
+      throw new Error(`expected schedule end_date 2027-06-30 after status->ended, got ${sched.data!.end_date}`);
+    }
+
+    // Step 3: no billing for a period after the cascaded end.
+    const rows = (await generate('2027-07-02T12:00:00Z')).filter((r) => r.o_schedule_id === scheduleId);
+    if (rows.length !== 0) throw new Error(`expected 0 rows after cascade end, got ${rows.length}`);
+  });
+
+  // =========================================================================
+  // (F) H1 column guard -- member (user-JWT) write path
+  // =========================================================================
+  //
+  // The admin client is service-role (auth.uid()=null) so it CANNOT exercise
+  // the guard -- it is skipped for the privileged path. setupUser exposes the
+  // signup access token but not a PostgREST client, so we build a user-scoped
+  // client here the same way src/supabase/user-client.ts does (anon key at the
+  // URL level + the caller's JWT in the Authorization header, which is what RLS
+  // and auth.uid() key off). This is the REAL member write path, not a fake.
+
+  await check('H1 guard: member (owner) may set auto_charge_enabled but NOT other columns', async () => {
+    const { createClient } = await import('@supabase/supabase-js');
+    const userSb = createClient(status.API_URL, status.ANON_KEY, {
+      global: { headers: { Authorization: `Bearer ${A.accessToken}` } },
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+
+    // ALLOWED: auto_charge_enabled is the one member-writable column. A is the
+    // owner of their account (signup creates the owner membership), so the
+    // accounts_member_settings_update RLS policy authorises the UPDATE and the
+    // BEFORE-UPDATE column guard passes it through.
+    const ok = await userSb
+      .from('accounts')
+      .update({ auto_charge_enabled: true })
+      .eq('id', A.accountId)
+      .select('auto_charge_enabled')
+      .maybeSingle();
+    if (ok.error) throw new Error(`member auto_charge_enabled update should succeed, got ${ok.error.message}`);
+    if (ok.data?.auto_charge_enabled !== true) {
+      throw new Error('auto_charge_enabled did not persist true on the user path');
+    }
+
+    // REJECTED: any other column (here: name). RLS still permits the row (A is
+    // owner), but the column guard raises insufficient_privilege (SQLSTATE
+    // 42501 -> PostgREST HTTP 403).
+    const bad = await userSb
+      .from('accounts')
+      .update({ name: 'hijacked-by-member' })
+      .eq('id', A.accountId)
+      .select('name')
+      .maybeSingle();
+    if (!bad.error) {
+      throw new Error('member UPDATE of accounts.name should be rejected by the column guard, but it succeeded');
+    }
+    if (bad.error.code !== '42501') {
+      throw new Error(`expected insufficient_privilege (42501), got code=${bad.error.code} msg=${bad.error.message}`);
+    }
+
+    // Confirm the write was actually blocked (not merely hidden from RETURNING):
+    // re-read via admin and assert the name is unchanged.
+    const { data: acct, error: readErr } = await admin
+      .from('accounts').select('name').eq('id', A.accountId).single();
+    if (readErr || !acct) throw new Error(`re-read account: ${readErr?.message}`);
+    if (acct.name === 'hijacked-by-member') throw new Error('account name was changed despite the guard');
   });
 
   // --- summary ---

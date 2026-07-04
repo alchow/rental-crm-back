@@ -63,23 +63,37 @@ export async function runRentCharges(now: Date = new Date()): Promise<RentCharge
   const admin = getAdminClient();
   const asOf = now.toISOString();
 
-  const { data: accounts, error: aErr } = await admin
-    .from('accounts')
-    .select('id')
-    .eq('auto_charge_enabled', true)
-    .is('deleted_at', null);
-  if (aErr) {
-    throw new ApiError(500, 'database_error', `opt-in account scan failed: ${aErr.message}`);
+  // Enumerate ALL opted-in accounts, paginated. A bare select is capped by
+  // PostgREST's max-rows (default 1000) and returns the first page with NO
+  // error -- for a billing job that would silently stop billing every account
+  // past the cap, nondeterministically. Page through with an ordered range
+  // until a short page proves we've reached the end.
+  const PAGE = 1000;
+  const accounts: { id: string }[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error: aErr } = await admin
+      .from('accounts')
+      .select('id')
+      .eq('auto_charge_enabled', true)
+      .is('deleted_at', null)
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (aErr) {
+      throw new ApiError(500, 'database_error', `opt-in account scan failed: ${aErr.message}`);
+    }
+    const page = (data ?? []) as { id: string }[];
+    accounts.push(...page);
+    if (page.length < PAGE) break;
   }
 
   const result: RentChargeRunResult = {
-    accounts_enabled: (accounts ?? []).length,
+    accounts_enabled: accounts.length,
     accounts_processed: 0,
     charges_created: 0,
     failures: 0,
   };
 
-  for (const row of (accounts ?? []) as { id: string }[]) {
+  for (const row of accounts) {
     const accountId = row.id;
     const { data, error } = await admin.rpc('generate_rent_charges', {
       p_account_id: accountId,

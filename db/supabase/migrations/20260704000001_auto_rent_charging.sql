@@ -86,6 +86,47 @@ create policy accounts_member_settings_update on public.accounts
        and m.role in ('owner', 'manager')
        and m.deleted_at is null));
 
+-- ----------------------------------------------------------------------------
+-- Column-level guard for the member UPDATE path.
+--
+-- The policy above is the FIRST client-writable UPDATE ever allowed on
+-- accounts, and Postgres RLS is row-level, not column-level: on its own it
+-- would let an owner/manager PATCH ANY column of their own account row straight
+-- through PostgREST (bypassing the settings route's one-column allow-list) --
+-- e.g. rename the account, or set/clear deleted_at outside the controlled admin
+-- deletion flow. This BEFORE UPDATE trigger re-imposes the single-column intent
+-- at the DB: on a USER-facing write (auth.uid() present -- the PostgREST/JWT
+-- path) the ONLY column that may change is auto_charge_enabled.
+--
+-- The privileged paths are unaffected: the admin client and every SECURITY
+-- DEFINER maintenance function run as service_role with auth.uid() = null, so
+-- the guard is skipped and the legitimate soft-delete / rename / lifecycle
+-- writes still work. If a future column becomes member-writable, add it to the
+-- allow-list below explicitly (fail-closed: unknown column change is rejected).
+create or replace function public._accounts_reject_member_column_writes()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if auth.uid() is not null
+     and (NEW.name       is distinct from OLD.name
+       or NEW.deleted_at is distinct from OLD.deleted_at
+       or NEW.id         is distinct from OLD.id
+       or NEW.created_at is distinct from OLD.created_at)
+  then
+    raise exception
+      'a member may only change account settings (auto_charge_enabled), not other account columns'
+      using errcode = 'insufficient_privilege';
+  end if;
+  return NEW;
+end;
+$$;
+
+create trigger accounts_member_column_guard
+  before update on public.accounts
+  for each row execute function public._accounts_reject_member_column_writes();
+
 -- ============================================================================
 -- (3) generate_rent_charges -- advance-timing rewrite
 -- ============================================================================
@@ -142,6 +183,14 @@ declare
   v_actor   text := 'system:cron:rent';
   v_enabled boolean;
 begin
+  -- Pin the session to UTC so extract(day ...) and date_trunc('month', ...) on
+  -- the timestamptz p_as_of are deterministic regardless of the caller's
+  -- TimeZone (same requirement advance_tenancy_statuses documents). The prod
+  -- cron already fires at 08:00 UTC, but a manual RPC from a localized psql
+  -- session would otherwise shift the day-of-month / period_start by up to a
+  -- day. transaction-local, so it never leaks past this call.
+  perform set_config('timezone', 'UTC', true);
+
   -- (a) opt-in gate. Empty set for a non-opted-in (or missing) account.
   select a.auto_charge_enabled
     into v_enabled
@@ -178,12 +227,20 @@ begin
       -- allows advance-generating the FIRST charge of a schedule that starts
       -- next month (start_date <= p_start even though start_date > today).
       --
-      -- (d) tenancy guard. Ending a tenancy must stop future auto-charges even
-      -- if the schedule row was never explicitly ended (belt to the cascade
-      -- trigger's braces below). Of the four statuses -- upcoming, active,
-      -- ended, holdover -- only 'ended' is excluded: a holdover tenant still
-      -- owes rent, and 'upcoming' must be billable so the first month can be
-      -- generated in advance.
+      -- (d) tenancy guard. Of the four statuses -- upcoming, active, ended,
+      -- holdover -- only 'ended' is excluded: 'upcoming' must be billable so the
+      -- first month can be generated in advance, and a 'holdover' tenant still
+      -- owes rent.
+      --
+      -- The tenancy's OWN end_date bounds billing for a still-running tenancy
+      -- (a planned move-out date auto-stops billing after it) -- EXCEPT for a
+      -- holdover, who by definition stayed PAST the fixed-term end_date and
+      -- keeps owing rent, so the end_date bound must not silence them. The
+      -- durable, visible off-switch is status='ended' + the cascade trigger
+      -- below writing the SCHEDULE's own end_date; the tenancy end_date here is
+      -- only a runtime convenience for an active tenancy with a planned move-out.
+      -- (This is why the cascade fires on END, not on every end_date edit --
+      -- otherwise extending a tenancy would leave its schedules stuck short.)
       select d.*
         from derived d
         join public.tenancies t
@@ -193,7 +250,7 @@ begin
          and (d.end_date is null or d.end_date >= d.p_start)
          and t.deleted_at is null
          and t.status <> 'ended'
-         and (t.end_date is null or t.end_date >= d.p_start)
+         and (t.status = 'holdover' or t.end_date is null or t.end_date >= d.p_start)
     ),
     inserted as (
       insert into public.charges
@@ -233,16 +290,22 @@ grant  execute on function public.generate_rent_charges(uuid, timestamptz) to se
 -- (4) Cascade: ending a tenancy ends its still-open rent schedules
 -- ============================================================================
 --
--- The generator's tenancy guard (d, above) already refuses to bill an ended
--- tenancy at RUNTIME. This trigger makes the stop DURABLE by writing the
--- end_date onto the schedule rows themselves: the schedule now visibly reads
--- "ended <date>" in the ledger/UI, not merely "silently skipped by the cron".
+-- When a tenancy is ENDED this trigger makes the stop DURABLE by writing the
+-- end_date onto the schedule rows themselves: the schedule then visibly reads
+-- "ended <date>" and the generator's schedule-bound filter (s.end_date >=
+-- p_start) stops it, independent of tenancy state.
 --
--- FIRES on either transition into an ended state:
---   * status flips to 'ended', or
---   * end_date is set/changed (a landlord scheduling a move-out date).
--- v_end := coalesce(NEW.end_date, current_date): if they ended the tenancy
--- without a date, close the schedules as of today.
+-- FIRES ONLY on a genuine end: status transitions INTO 'ended'. It deliberately
+-- does NOT fire on an end_date edit alone. Reason (this is the fix for a real
+-- bug): if it fired on end_date changes and only ever SHORTENED schedules
+-- (end_date > v_end guard), then a landlord who set a planned move-out date and
+-- later EXTENDED it -- or cleared it because the tenant renewed -- would leave
+-- the schedule rows stuck at the old, earlier end_date, and billing would
+-- silently stop for the extended term. For a still-running tenancy the
+-- generator already bounds billing by the LIVE tenancy.end_date at runtime
+-- (guard (d) above), so no durable schedule write is needed until the tenancy
+-- actually ends. v_end := coalesce(NEW.end_date, current_date): an end with no
+-- date closes the schedules as of today.
 --
 -- We only shorten schedules that outlive v_end (end_date is null or > v_end);
 -- a schedule already ending earlier is left untouched.
@@ -253,12 +316,11 @@ grant  execute on function public.generate_rent_charges(uuid, timestamptz) to se
 -- updates to WHOEVER ended the tenancy (the landlord) -- which is exactly
 -- right. Stamping 'system:cron:*' here would misattribute a human action.
 --
--- DELIBERATE NON-BEHAVIOR: re-opening a tenancy (clearing end_date, or moving
--- status off 'ended') does NOT resurrect the schedules. The condition only
--- fires on ending/date-setting, and even if it fired, it only SHORTENS
--- schedules -- it never re-extends one. Silent resurrection would be surprise
--- billing; the landlord recreates the schedule explicitly if they want billing
--- to resume.
+-- DELIBERATE NON-BEHAVIOR: re-opening a tenancy (status moving off 'ended')
+-- does NOT resurrect the schedules -- the condition only fires on the
+-- transition INTO 'ended', and even then only SHORTENS, never re-extends.
+-- Silent resurrection would be surprise billing; the landlord recreates the
+-- schedule explicitly if they want billing to resume.
 create or replace function public._end_rent_schedules_on_tenancy_end()
 returns trigger
 language plpgsql
@@ -268,9 +330,7 @@ as $$
 declare
   v_end date;
 begin
-  if (NEW.status = 'ended' and OLD.status is distinct from NEW.status)
-     or (NEW.end_date is not null and NEW.end_date is distinct from OLD.end_date)
-  then
+  if NEW.status = 'ended' and OLD.status is distinct from NEW.status then
     v_end := coalesce(NEW.end_date, current_date);
 
     update public.rent_schedules
