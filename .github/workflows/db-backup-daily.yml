@@ -137,7 +137,7 @@ jobs:
         # The app keeps document/inspection attachments in the `attachments`
         # bucket. Sync from the S3 ROOT (src:) rather than a single bucket so
         # every current and future Storage bucket is covered automatically --
-        # today that's just `attachments`, tomorrow it may be more.
+        # today that's `attachments` and `comm-evidence`, tomorrow it may be more.
         #
         # This runs once a day, so Storage files have a ~24-hour RPO: a file
         # uploaded and then lost within the same day is not recoverable from
