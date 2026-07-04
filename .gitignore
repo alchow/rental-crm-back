@@ -21,6 +21,9 @@ db/supabase/.branches/
 db/supabase/.temp/
 db/supabase/.env
 
+# Local DB backups — never commit (use the automated off-platform backup)
+*_backup_*.sql
+
 # Generated artifacts -- COMMITTED. CI regenerates and runs `git diff --exit-code`
 # against the committed copies; the diff is the contract-drift check the brief
 # requires ("SDK builds from the spec with no drift").
@@ -37,3 +40,4 @@ sdk/dist/
 
 # Claude Code per-project state
 .claude/
+.agents/
