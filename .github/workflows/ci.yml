@@ -312,6 +312,14 @@ jobs:
         # PATCH/DELETE), cross-account corrects_id → 404, and audit attribution.
         run: pnpm --filter ./api test:interactions-journal
 
+      - name: Run interactions participants-cast checks (EV-A)
+        # Manual capture path's interaction_participants round-trip: attendee
+        # group + witnessed exchange cast (attestation='attested',
+        # source='capture') echoed on POST/GET/list, legacy path preserved
+        # (attestation null, participants []), and the reject matrix (note /
+        # correction / bad role / party_type='platform' / >20 → 400).
+        run: pnpm --filter ./api test:interactions-participants
+
       - name: Run comms ledger DoD checks (ADR-0007 revived)
         # Threads + bindings, intent -> claim -> complete (journal appended
         # exactly once, atomically, only on confirmed send), monotonic
