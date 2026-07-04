@@ -99,6 +99,12 @@ const NO_SEED_REQUIRED = new Set([
   // capture-link API (sibling of document_access_tokens); nothing to seed in a
   // static fixture. Still gets the cross-tenant == 0 isolation check.
   'inspection_capture_tokens',
+  // Comms evidence hardening (20260703000004): provenance anchors are written
+  // by the transport-driven evidence endpoint on demand; legal holds are set
+  // by an explicit manager call. Neither has a natural static seed row. Both
+  // still get the cross-tenant == 0 isolation check.
+  'inbound_provenance',
+  'account_legal_holds',
 ]);
 
 interface ColumnInfo {

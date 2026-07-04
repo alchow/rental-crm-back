@@ -68,6 +68,14 @@ const RawEnvSchema = z.object({
   // coordinator signals cutover-verified.
   COMMS_EMAIL_PIPELINE: z.string().optional(),
 
+  // Retention horizon (days) for archived inbound-webhook evidence BLOBS
+  // (bucket 'comm-evidence'; see admin/evidence.ts). The audit-anchored
+  // inbound_provenance rows are never deleted — only the blob is removed
+  // once past this horizon, and never while the account holds an active
+  // legal hold. Default ≈ 7 years (tenancy dispute horizon: written-lease
+  // statutes of limitation run 4–10 years across US states).
+  COMM_EVIDENCE_RETENTION_DAYS: z.coerce.number().int().positive().default(2555),
+
   // Extra browser origins allowed to call the API via CORS, beyond the
   // built-in Lovable defaults (see middleware/cors.ts). Comma-separated;
   // each entry is either an exact origin (https://app.example.com) or a
@@ -93,6 +101,7 @@ export interface Env {
   UNSUBSCRIBE_HMAC_SECRET: string | null;
   EMAIL_REPLY_DOMAIN: string | null;
   COMMS_EMAIL_PIPELINE: boolean;
+  COMM_EVIDENCE_RETENTION_DAYS: number;
 }
 
 let cached: Env | null = null;
@@ -128,6 +137,7 @@ export function loadEnv(): Env {
     UNSUBSCRIBE_HMAC_SECRET: raw.UNSUBSCRIBE_HMAC_SECRET ?? null,
     EMAIL_REPLY_DOMAIN: raw.EMAIL_REPLY_DOMAIN ?? null,
     COMMS_EMAIL_PIPELINE: raw.COMMS_EMAIL_PIPELINE === 'on' || raw.COMMS_EMAIL_PIPELINE === 'true',
+    COMM_EVIDENCE_RETENTION_DAYS: raw.COMM_EVIDENCE_RETENTION_DAYS,
   };
   return cached;
 }

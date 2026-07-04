@@ -93,6 +93,47 @@ async function main(): Promise<void> {
     );
     check('(e) interval param honoured: 1-day horizon prunes the recent row', afterTight.rows[0]!.n === '0',
       `count=${afterTight.rows[0]!.n}`);
+
+    // (f)+(g) legal-hold gate (20260703000004): an aged row whose matched
+    //     account holds an ACTIVE hold survives the prune; releasing the hold
+    //     lets the next run take it. Un-matched rows (no account) are never
+    //     held.
+    const acct = await c.query<{ id: string }>(
+      `insert into public.accounts (name) values ('retention-hold-fixture') returning id`,
+    );
+    const acctId = acct.rows[0]!.id;
+    await c.query(
+      `insert into public.inbound_raw (provider, provider_msg_id, payload, received_at, matched_account_id)
+       values ('t', $1, '{}'::jsonb, now() - interval '200 days', $2)`,
+      [`${PFX}held`, acctId],
+    );
+    await c.query(
+      `insert into public.account_legal_holds (account_id, active, reason) values ($1, true, 'dod test')`,
+      [acctId],
+    );
+    await c.query(`select public.prune_inbound_raw()`);
+    const heldLeft = await c.query<{ n: string }>(
+      `select count(*)::text as n from public.inbound_raw where provider_msg_id = $1`,
+      [`${PFX}held`],
+    );
+    check('(f) an active legal hold blocks the prune for the account', heldLeft.rows[0]!.n === '1',
+      `count=${heldLeft.rows[0]!.n}`);
+
+    await c.query(
+      `update public.account_legal_holds set active = false, released_at = now() where account_id = $1`,
+      [acctId],
+    );
+    await c.query(`select public.prune_inbound_raw()`);
+    const releasedLeft = await c.query<{ n: string }>(
+      `select count(*)::text as n from public.inbound_raw where provider_msg_id = $1`,
+      [`${PFX}held`],
+    );
+    check('(g) releasing the hold re-enables the prune', releasedLeft.rows[0]!.n === '0',
+      `count=${releasedLeft.rows[0]!.n}`);
+
+    await c.query(`delete from public.account_legal_holds where account_id = $1`, [acctId]);
+    await c.query(`delete from public.events where account_id = $1`, [acctId]);
+    await c.query(`delete from public.accounts where id = $1`, [acctId]);
   } finally {
     // Clean up any of our rows that might survive a failed assertion.
     await c.query(`delete from public.inbound_raw where provider_msg_id like $1`, [`${PFX}%`]);

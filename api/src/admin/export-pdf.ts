@@ -330,6 +330,31 @@ interface ExportData {
    *  (tenant full_name / vendor name). party_id has no FK, so this is built by
    *  looking ids up by type; party_label and 'unspecified' are render-time. */
   partyNames: Map<string, string>;
+  /** The cast (interaction_participants) per journal row: who was on the
+   *  event, one entry per person-per-role, frozen at write time. The legal
+   *  artifact renders the FULL cast — a group message names every recipient
+   *  as a person, not a comma-string of addresses. */
+  castByInteraction: Map<string, CastRow[]>;
+  /** Outbound proof handle: the (non-relay) outbox row's delivery state per
+   *  journal row. Rendered so the artifact never overclaims — 'sent' means
+   *  the provider ACCEPTED the message; only 'delivered' means a delivery
+   *  receipt arrived. */
+  deliveryByInteraction: Map<string, { status: string; delivered_at: string | null }>;
+  /** Inbound proof handle: inbound_provenance.body_sha256 keyed by
+   *  provider_msg_id (== the journal row's external_ref). The hash the
+   *  archived signed webhook can be re-verified against (EV-B). */
+  provenanceShaByMsgId: Map<string, string>;
+}
+
+/** One cast entry as loaded for the export render. */
+export interface CastRow {
+  interaction_id: string;
+  role: string;
+  party_type: string;
+  party_id: string | null;
+  address: string | null;
+  label: string | null;
+  source: string;
 }
 
 // A correction chain is one event: the original entry plus the append-only
@@ -421,6 +446,37 @@ export function interactionPartyDisplay(
   const label = row.party_label as string | null;
   if (label) return `${label} (${pt})`;
   return pt;
+}
+
+// Human-facing cast line for an interaction row in the export: the full
+// participants list grouped by role — every person a group message reached,
+// named. Name resolution per entry: frozen label snapshot, else partyNames,
+// else the wire address, else the party_type. Platform entries (our own
+// number / reply token — wire plumbing, not people) render as "via <addr>".
+// Exported for unit testing (mirrors interactionPartyDisplay).
+export function interactionCastDisplay(
+  cast: CastRow[],
+  partyNames: Map<string, string>,
+): string {
+  if (cast.length === 0) return '';
+  const name = (p: CastRow): string => {
+    const resolved = p.label ?? (p.party_id ? partyNames.get(p.party_id) : undefined);
+    if (resolved && p.address) return `${resolved} (${p.address})`;
+    return resolved ?? p.address ?? p.party_type;
+  };
+  const parts: string[] = [];
+  const byRole = (role: string) => cast.filter((p) => p.role === role && p.party_type !== 'platform');
+  const via = cast.filter((p) => p.party_type === 'platform' && p.address);
+  const senders = byRole('sender');
+  const recipients = byRole('recipient');
+  const ccs = byRole('cc');
+  const attendees = byRole('attendee');
+  if (senders.length > 0) parts.push(`from ${senders.map(name).join(', ')}`);
+  if (recipients.length > 0) parts.push(`to ${recipients.map(name).join(', ')}`);
+  if (ccs.length > 0) parts.push(`cc ${ccs.map(name).join(', ')}`);
+  if (attendees.length > 0) parts.push(`attendees ${attendees.map(name).join(', ')}`);
+  if (via.length > 0) parts.push(`via ${via.map((p) => p.address as string).join(', ')}`);
+  return parts.join(' · ');
 }
 
 export async function loadExportData(scope: ExportScope): Promise<ExportData> {
@@ -650,6 +706,57 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     for (const v of ((vRes.data as { id: string; name: string }[] | null) ?? [])) partyNames.set(v.id, v.name);
   }
 
+  // The cast per journal row (interaction_participants). Loaded for every
+  // in-scope interaction so the artifact names all recipients of a group
+  // message and all attendees of an in-person contact.
+  const castByInteraction = new Map<string, CastRow[]>();
+  if (interactions.length > 0) {
+    const castRes = await admin
+      .from('interaction_participants')
+      .select('interaction_id, role, party_type, party_id, address, label, source')
+      .eq('account_id', scope.accountId)
+      .in('interaction_id', interactions.map((r) => String(r.id)))
+      .order('created_at', { ascending: true });
+    for (const p of ((castRes.data as CastRow[] | null) ?? [])) {
+      const list = castByInteraction.get(p.interaction_id) ?? [];
+      list.push(p);
+      castByInteraction.set(p.interaction_id, list);
+    }
+  }
+
+  // Proof handles: outbound delivery state (accepted ≠ delivered) and the
+  // inbound provenance hash, so a provider_verified entry renders alongside
+  // the evidence it can be checked against.
+  const deliveryByInteraction = new Map<string, { status: string; delivered_at: string | null }>();
+  const provenanceShaByMsgId = new Map<string, string>();
+  if (interactions.length > 0) {
+    const ids = interactions.map((r) => String(r.id));
+    const msgIds = interactions
+      .map((r) => r.external_ref)
+      .filter((x): x is string => typeof x === 'string' && x.length > 0);
+    const [obRes, provRes] = await Promise.all([
+      admin
+        .from('comm_outbox')
+        .select('interaction_id, status, delivered_at')
+        .eq('account_id', scope.accountId)
+        .is('relay_of_interaction_id', null)
+        .in('interaction_id', ids),
+      msgIds.length > 0
+        ? admin
+            .from('inbound_provenance')
+            .select('provider_msg_id, body_sha256')
+            .eq('account_id', scope.accountId)
+            .in('provider_msg_id', msgIds)
+        : Promise.resolve({ data: [] as { provider_msg_id: string; body_sha256: string }[], error: null }),
+    ]);
+    for (const o of ((obRes.data as { interaction_id: string | null; status: string; delivered_at: string | null }[] | null) ?? [])) {
+      if (o.interaction_id) deliveryByInteraction.set(o.interaction_id, { status: o.status, delivered_at: o.delivered_at });
+    }
+    for (const p of ((provRes.data as { provider_msg_id: string; body_sha256: string }[] | null) ?? [])) {
+      provenanceShaByMsgId.set(p.provider_msg_id, p.body_sha256);
+    }
+  }
+
   return {
     account_name: accountName,
     tenancy,
@@ -673,6 +780,9 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     uploaderNames,
     intakeTokenById,
     partyNames,
+    castByInteraction,
+    deliveryByInteraction,
+    provenanceShaByMsgId,
   };
 }
 
@@ -1020,14 +1130,39 @@ async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
             : '')
         : '';
       const sid = root.external_ref ? `  provider_ref=${root.external_ref as string}` : '';
+      // Trust tier (EV-A rework): how the record is known. provider_verified
+      // = carrier-confirmed transmission (DB-gated); attested = someone's
+      // account of an off-platform event; imported = bulk import. Legacy
+      // rows (null) render nothing rather than implying a tier.
+      const att = root.attestation ? `  attestation=${root.attestation as string}` : '';
+      // Never overclaim: 'sent' = provider accepted; only 'delivered' means
+      // a delivery receipt arrived. Rendered separately from attestation.
+      const delivery = data.deliveryByInteraction.get(String(root.id));
+      const deliveryStr = delivery
+        ? `  delivery=${delivery.status}${delivery.delivered_at ? ` @ ${delivery.delivered_at}` : ''}`
+        : '';
       // Counterparty (PR 2): communications now name who they were with --
       // resolved tenant/vendor name, else party_label, else party_type
       // ('unspecified' for a role-unknown capture). Notes/agent_events: none.
       const party = interactionPartyDisplay(root, data.partyNames);
       doc.text(
         `• ${root.occurred_at as string}  ${what}${party ? `  with ${party}` : ''}  ` +
-        `actor=${root.actor as string}${capacity}${sid}  (logged ${root.logged_at as string})`,
+        `actor=${root.actor as string}${capacity}${sid}${att}${deliveryStr}  (logged ${root.logged_at as string})`,
       );
+      // The cast: everyone on this event, by role, as named people. This is
+      // where a group message stops reading as a comma-string of numbers.
+      const castLine = interactionCastDisplay(
+        data.castByInteraction.get(String(root.id)) ?? [],
+        data.partyNames,
+      );
+      if (castLine) doc.text(`    participants: ${castLine}`);
+      // Inbound proof handle: the archived signed webhook's hash — what a
+      // provider_verified claim can be independently checked against
+      // (dispute playbook, docs/comms-evidence.md).
+      const proofSha = root.external_ref
+        ? data.provenanceShaByMsgId.get(String(root.external_ref))
+        : undefined;
+      if (proofSha) doc.text(`    proof: signed webhook sha256=${proofSha}`);
       if (root.body) doc.text(`    ${String(root.body).slice(0, 400)}`);
       for (const corr of chain.corrections) {
         // classify completes metadata only -- the body is inherited, unchanged.

@@ -312,6 +312,14 @@ jobs:
         # PATCH/DELETE), cross-account corrects_id → 404, and audit attribution.
         run: pnpm --filter ./api test:interactions-journal
 
+      - name: Run interactions participants-cast checks (EV-A)
+        # Manual capture path's interaction_participants round-trip: attendee
+        # group + witnessed exchange cast (attestation='attested',
+        # source='capture') echoed on POST/GET/list, legacy path preserved
+        # (attestation null, participants []), and the reject matrix (note /
+        # correction / bad role / party_type='platform' / >20 → 400).
+        run: pnpm --filter ./api test:interactions-participants
+
       - name: Run comms ledger DoD checks (ADR-0007 revived)
         # Threads + bindings, intent -> claim -> complete (journal appended
         # exactly once, atomically, only on confirmed send), monotonic
@@ -346,6 +354,17 @@ jobs:
         # journal-once, channel-aware thread messages, sms/email coexistence,
         # and email opt-out enforcement.
         run: pnpm --filter ./api test:comms-email-threads
+
+      - name: Run comms evidence-hardening checks (EV-A/EV-B)
+        # Participants cast + attestation (sender/platform/cc shapes per
+        # channel, group headline = joined display names, cast insert-only
+        # even for admin, provider_verified forge-gated, intent-time
+        # recipient snapshot beats identity edits), verbatim-webhook archive
+        # (server-side sha256, audit-anchored provenance row, idempotent by
+        # provider_msg_id, conflicting-body 409, principal gating), legal
+        # holds (manager-only writes, agent denied), and the hold-gated
+        # inbound_raw prune.
+        run: pnpm --filter ./api test:comms-evidence
 
       - name: Run events feed + ledger as_of checks (Phase 3)
         # Poller contract under concurrency (40 POSTs, cursor drain), next_seq
