@@ -10,8 +10,12 @@
 //     platform-recipient, cc…} (sms 1:1, group MMS, email token), outbound
 //     {platform-sender, recipient…} (1:1 and group). The cast is member
 //     SELECT-only (INSERT/UPDATE/DELETE revoked → raw writes denied) and
-//     attestation is immutable + forge-gated at the DB. Group sends also carry
-//     the joined display NAMES as interactions.party_label.
+//     insert-only evidence — a BEFORE UPDATE/DELETE trigger denies EVERYONE,
+//     service-role admin included. attestation is immutable + forge-gated at
+//     the DB. Outbound recipient identities are snapshotted at INTENT time, so
+//     an identity edited between approval and completion never rewrites the
+//     journaled cast. Group sends also carry the joined display NAMES as
+//     interactions.party_label.
 //   * verbatim-webhook archive (EV-B): server-side sha256, audit-anchored
 //     inbound_provenance row (insert event carries the hash), bytes stored in
 //     the private comm-evidence bucket; idempotent by provider_msg_id, a
@@ -487,6 +491,64 @@ async function main(): Promise<void> {
     assert(attestation === 'provider_verified', `attestation=${attestation}`);
   });
 
+  await check('outbound 1:1 recipient snapshot is frozen at INTENT time (an identity edit after intent does not rewrite the journaled cast)', async () => {
+    // A DEDICATED channel_identity so this drift probe never perturbs the
+    // shared M1_A identity the other outbound checks resolve against. Address
+    // is fresh (unused by any thread/fixture). party_type must be one of
+    // tenant/landlord_user/vendor (channel_identities CHECK).
+    const driftAddr = `+1210${SUFFIX}`;
+    const ins = await admin
+      .from('channel_identities')
+      .insert({
+        account_id: fx.accountId,
+        party_type: 'tenant',
+        party_id: fx.tenant1Id,
+        channel: 'sms',
+        address: driftAddr,
+        label: 'Snapshot Tenant One',
+      })
+      .select('id')
+      .single();
+    assert(!ins.error && ins.data, `channel_identity insert: ${ins.error?.message}`);
+    const identityId = (ins.data as { id: string }).id;
+
+    // Intent creation stamps comm_outbox.recipient_snapshot from the identity
+    // as it stands RIGHT NOW (tenant1) — frozen by the guard thereafter.
+    const cr = await L('POST', '/outbox', {
+      channel: 'sms',
+      to_address: driftAddr,
+      body: 'snapshot freeze probe',
+      approval_ref: `self:${fx.landlordId}`,
+    });
+    const row = assertStatus(cr, 201, 'intent') as { id: string };
+
+    // Edit the identity AFTER intent, BEFORE completion: repoint it at the
+    // OTHER tenant (and rename it). Old behaviour (re-resolve at completion)
+    // would journal tenant2 / 'Tenant Two'; the snapshot must ignore this.
+    const upd = await admin
+      .from('channel_identities')
+      .update({ party_id: fx.tenant2Id, label: 'Edited After Intent' })
+      .eq('id', identityId);
+    assert(!upd.error, `identity edit: ${upd.error?.message}`);
+
+    const done = await A('POST', `/outbox/${row.id}/complete`, {
+      provider: 'test', provider_sid: `ev-${SUFFIX}-sid-snapshot`,
+    });
+    const c = assertStatus(done, 200, 'complete') as { interaction_id: string };
+
+    // The journaled cast recipient carries the identity as it was at INTENT
+    // time: party_id = tenant1 (not the edited tenant2) and the snapshot label
+    // = tenant1's display name ('Tenant One', not 'Tenant Two').
+    const cast = await journalCast(fx, c.interaction_id);
+    const recipient = one(cast, (x) => x.role === 'recipient', 'recipient');
+    assert(recipient.party_type === 'tenant', `recipient party_type=${recipient.party_type}`);
+    assert(recipient.party_id === fx.tenant1Id,
+      `recipient party_id=${recipient.party_id} expected the pre-edit tenant1 ${fx.tenant1Id}`);
+    assert(recipient.address === driftAddr, `recipient address=${recipient.address}`);
+    assert(recipient.label === 'Tenant One',
+      `recipient label=${recipient.label} expected the pre-edit snapshot 'Tenant One'`);
+  });
+
   await check('outbound group send casts platform sender + one recipient per member; party_label is joined names', async () => {
     const cr = await L('POST', `/threads/${groupThreadId}/messages`, { body: 'thanks all' });
     const rows = assertStatus(cr, 201, 'group intent') as { data: { id: string }[] };
@@ -602,6 +664,28 @@ async function main(): Promise<void> {
     assert(denied, `member DELETE should be denied, got ${del.status} ${JSON.stringify(del.body)}`);
     const after = await journalCast(fx, groupInboundInteraction);
     assert(after.some((c) => c.id === target.id), 'cast row survived the delete attempt');
+  });
+
+  await check('cast rows: an ADMIN (service-role) UPDATE is denied by the immutability trigger', async () => {
+    // The revoke posture stops the client roles; the BEFORE UPDATE/DELETE
+    // trigger denies EVERYONE the revoke misses — service-role admin included
+    // (belt-and-braces against a future DEFINER bug or service-tier job).
+    const cast = await journalCast(fx, groupInboundInteraction);
+    assert(cast.length > 0, 'need a cast row to tamper with');
+    const target = cast[0]!;
+    const upd = await admin
+      .from('interaction_participants')
+      .update({ label: 'forged-by-admin' })
+      .eq('id', target.id);
+    assert(upd.error, `expected the admin UPDATE to be rejected, got ${JSON.stringify(upd.data)}`);
+    assert(
+      /immutable/i.test(upd.error!.message) || upd.error!.code === '23514',
+      `unexpected rejection: code=${upd.error!.code} msg=${upd.error!.message}`,
+    );
+    // And the row is unchanged on re-read.
+    const after = await journalCast(fx, groupInboundInteraction);
+    const still = after.find((c) => c.id === target.id);
+    assert(still && still.label === target.label, `cast row changed: ${JSON.stringify(still)}`);
   });
 
   await check("attestation: a direct provider_verified insert is rejected by the forge gate", async () => {

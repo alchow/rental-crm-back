@@ -9,8 +9,9 @@
 // present, the row is created via the atomic journal_with_participants RPC:
 // the response is stamped attestation='attested' and carries the created cast
 // (source='capture'); GET (single + list) embed the same cast. Without
-// participants the legacy path is preserved verbatim (attestation null,
-// participants []).
+// participants the legacy insert path is preserved, but the attestation
+// default-fill trigger still stamps 'attested' for a communication/note
+// (null now means strictly a pre-migration legacy row); participants [].
 //
 // Covers:
 //   (a) manual create with 3 attendees (in-person group) round-trips
@@ -18,7 +19,7 @@
 //       source='capture'.
 //   (b) witnessed exchange: sender + recipient cast; the row is landlord-
 //       authored (author_type='landlord'), attribution unaffected by the cast.
-//   (c) plain create (no participants) -> attestation null, participants [].
+//   (c) plain create (no participants) -> attestation 'attested', participants [].
 //   (d) participants on kind='note' -> 400.
 //   (e) a participant role outside the vocab ('author') -> 400.
 //   (f) a participant party_type='platform' (reserved for the wire paths) -> 400.
@@ -303,17 +304,20 @@ async function main(): Promise<void> {
   // (c) plain create without participants -> legacy path preserved
   // =========================================================================
 
-  await check('plain create (no participants): attestation null, participants []', async () => {
+  await check("plain create (no participants): attestation 'attested', participants []", async () => {
     const r = await createInteraction(commBody({ party_type: 'tenant', body: 'Phoned about the gate code.' }));
     const row = assertStatus(r, 201, 'plain create') as InteractionRow;
-    if (row.attestation !== null) throw new Error(`attestation must be null on the legacy path, got ${row.attestation}`);
+    // The plain path skips journal_with_participants, but the BEFORE INSERT
+    // default-fill trigger still stamps a communication with no stated tier as
+    // 'attested' (null is now strictly a pre-migration legacy row).
+    if (row.attestation !== 'attested') throw new Error(`attestation must default-fill to 'attested', got ${row.attestation}`);
     if (!Array.isArray(row.participants) || row.participants.length !== 0) {
       throw new Error(`participants must be [], got ${JSON.stringify(row.participants)}`);
     }
     // GET agrees.
     const g = await api('GET', `${base}/${row.id}`, { token: A.accessToken });
     const got = assertStatus(g, 200, 'get plain') as InteractionRow;
-    if (got.attestation !== null) throw new Error(`GET attestation: ${got.attestation}`);
+    if (got.attestation !== 'attested') throw new Error(`GET attestation: ${got.attestation}`);
     if (got.participants.length !== 0) throw new Error(`GET participants: ${JSON.stringify(got.participants)}`);
   });
 
