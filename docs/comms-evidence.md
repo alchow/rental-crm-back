@@ -1,9 +1,9 @@
 # Comms evidence archive — transport contract (EV-A / EV-B)
 
 Audience: the transport driver (landlord-agent repo) and whoever operates it.
-Core side: migrations `20260703000003` (audience stamping) and `20260703000004`
-(provenance + legal holds), endpoints in `api/src/routes/comms.ts`, blob store
-in `api/src/admin/evidence.ts`.
+Core side: migrations `20260703000003` (participants cast + attestation) and
+`20260703000004` (provenance + legal holds), endpoints in
+`api/src/routes/comms.ts`, blob store in `api/src/admin/evidence.ts`.
 
 ## Why this exists
 
@@ -15,14 +15,37 @@ record (`inbound_raw.payload`, itself a parameter echo) was pruned after 90
 days. In a dispute that left two gaps:
 
 1. **Self-containment** — an inbound journal row didn't say who the message
-   was addressed to. Now every communication row carries a frozen `audience`
-   (`{to, cc}` inbound / `{to: [...]}` outbound), stamped by
-   `capture_inbound` / `complete_send`.
+   was addressed to. Now every comms-journaled row carries a frozen **cast**
+   (`interaction_participants`, one row per person-per-role:
+   `sender`/`recipient`/`cc` on the wire, `attendee` in person), written by
+   `capture_inbound` / `complete_send` in the same transaction as the journal
+   row. Each cast row keeps the three layers of truth SEPARATE so they can be
+   examined independently: `address` (the wire fact as the transport reported
+   it), `party_id` (OUR resolution of who that address was, frozen at capture
+   time), `label` (display-name snapshot — later renames never rewrite
+   history). The cast is member-readable and hard insert-only: client-role
+   INSERT/UPDATE/DELETE are revoked at the DB, so post-hoc tampering is
+   denied, not merely audited. The legacy `party_*` single slot stays
+   populated as the derived headline ("filed under"), which classify
+   corrections may fill — **evidence and discovery queries run on the cast,
+   never the headline**.
 2. **Independent verifiability** — "our software wrote its own evidence" is a
    real cross-examination line. Now the verbatim signed webhook is archived
    and hash-anchored into the per-account audit chain, so anyone can
    re-verify the provider signature against the provider's published public
-   key — without trusting this codebase.
+   key — without trusting this codebase. On top of that, every journal row
+   states its trust tier in **`attestation`**: `provider_verified` (a
+   carrier-confirmed transmission — stampable ONLY inside the verified comms
+   write paths, enforced by a DB gate on the transaction-local
+   `comm.verified_write` setting, so no other writer — member, agent, or
+   service job — can forge the tier), `attested` (a human's account of an
+   off-platform event, e.g. a logged phone call or in-person meeting),
+   `imported` (bulk import), `null` (legacy rows, never rewritten).
+   Attestation is immutable once written. Note the two axes are independent:
+   an AI-authored send (`author_type='agent'`) can be `provider_verified`,
+   and a `provider_verified` email can still carry a `sender` cast row of
+   `party_type='unknown'` (sender_mismatch) — trust of the wire and certainty
+   of identity are different questions with different fields.
 
 ## What the driver MUST do per inbound webhook
 
@@ -60,8 +83,11 @@ Order matters: **verify → archive → process.**
      but must NOT block step 3 — losing a provenance blob is bad, dropping a
      tenant's message is worse. Alert on a queue that doesn't drain.
 3. **Process as today**: `POST /comms/inbound` (`capture_inbound`), then any
-   relay legs. No changes to that call — the `audience` stamp is derived
-   server-side from the fields it already carries.
+   relay legs. No changes to that call — the cast and the attestation stamp
+   are derived server-side from the fields it already carries (and, for
+   outbound, from the FROZEN intent — the transport reports only
+   `{provider, provider_sid}` and cannot influence who a send is recorded as
+   reaching).
 
 For unsigned email providers, omit `signature`/`signature_timestamp` — the
 body still gets hash-anchoring (weaker: integrity from archive time, no
@@ -105,6 +131,12 @@ record DKIM/SPF verdicts inside the payload where available.
    `<signature_timestamp>|<blob bytes>` against the provider's published
    public key (Telnyx: Ed25519).
 5. Correlate with the journal row via `external_ref == provider_msg_id`; the
-   row's `audience` states the addressed set of that delivery.
+   row's **cast** (`interaction_participants`) states the addressed set of
+   that delivery — each recipient as wire address + frozen identity
+   resolution + name snapshot — and its `attestation` states the tier
+   (`provider_verified` here, backed by steps 2–4). For "every interaction
+   involving <person>" questions, query the cast by
+   `(account_id, party_type, party_id)` — it is indexed for exactly that —
+   NOT the single-slot `party_*` headline, which is a display/filing field.
 
 Steps 2–4 need nothing from this codebase — that independence is the point.

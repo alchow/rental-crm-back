@@ -330,6 +330,22 @@ interface ExportData {
    *  (tenant full_name / vendor name). party_id has no FK, so this is built by
    *  looking ids up by type; party_label and 'unspecified' are render-time. */
   partyNames: Map<string, string>;
+  /** The cast (interaction_participants) per journal row: who was on the
+   *  event, one entry per person-per-role, frozen at write time. The legal
+   *  artifact renders the FULL cast — a group message names every recipient
+   *  as a person, not a comma-string of addresses. */
+  castByInteraction: Map<string, CastRow[]>;
+}
+
+/** One cast entry as loaded for the export render. */
+export interface CastRow {
+  interaction_id: string;
+  role: string;
+  party_type: string;
+  party_id: string | null;
+  address: string | null;
+  label: string | null;
+  source: string;
 }
 
 // A correction chain is one event: the original entry plus the append-only
@@ -421,6 +437,37 @@ export function interactionPartyDisplay(
   const label = row.party_label as string | null;
   if (label) return `${label} (${pt})`;
   return pt;
+}
+
+// Human-facing cast line for an interaction row in the export: the full
+// participants list grouped by role — every person a group message reached,
+// named. Name resolution per entry: frozen label snapshot, else partyNames,
+// else the wire address, else the party_type. Platform entries (our own
+// number / reply token — wire plumbing, not people) render as "via <addr>".
+// Exported for unit testing (mirrors interactionPartyDisplay).
+export function interactionCastDisplay(
+  cast: CastRow[],
+  partyNames: Map<string, string>,
+): string {
+  if (cast.length === 0) return '';
+  const name = (p: CastRow): string => {
+    const resolved = p.label ?? (p.party_id ? partyNames.get(p.party_id) : undefined);
+    if (resolved && p.address) return `${resolved} (${p.address})`;
+    return resolved ?? p.address ?? p.party_type;
+  };
+  const parts: string[] = [];
+  const byRole = (role: string) => cast.filter((p) => p.role === role && p.party_type !== 'platform');
+  const via = cast.filter((p) => p.party_type === 'platform' && p.address);
+  const senders = byRole('sender');
+  const recipients = byRole('recipient');
+  const ccs = byRole('cc');
+  const attendees = byRole('attendee');
+  if (senders.length > 0) parts.push(`from ${senders.map(name).join(', ')}`);
+  if (recipients.length > 0) parts.push(`to ${recipients.map(name).join(', ')}`);
+  if (ccs.length > 0) parts.push(`cc ${ccs.map(name).join(', ')}`);
+  if (attendees.length > 0) parts.push(`attendees ${attendees.map(name).join(', ')}`);
+  if (via.length > 0) parts.push(`via ${via.map((p) => p.address as string).join(', ')}`);
+  return parts.join(' · ');
 }
 
 export async function loadExportData(scope: ExportScope): Promise<ExportData> {
@@ -650,6 +697,24 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     for (const v of ((vRes.data as { id: string; name: string }[] | null) ?? [])) partyNames.set(v.id, v.name);
   }
 
+  // The cast per journal row (interaction_participants). Loaded for every
+  // in-scope interaction so the artifact names all recipients of a group
+  // message and all attendees of an in-person contact.
+  const castByInteraction = new Map<string, CastRow[]>();
+  if (interactions.length > 0) {
+    const castRes = await admin
+      .from('interaction_participants')
+      .select('interaction_id, role, party_type, party_id, address, label, source')
+      .eq('account_id', scope.accountId)
+      .in('interaction_id', interactions.map((r) => String(r.id)))
+      .order('created_at', { ascending: true });
+    for (const p of ((castRes.data as CastRow[] | null) ?? [])) {
+      const list = castByInteraction.get(p.interaction_id) ?? [];
+      list.push(p);
+      castByInteraction.set(p.interaction_id, list);
+    }
+  }
+
   return {
     account_name: accountName,
     tenancy,
@@ -673,6 +738,7 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     uploaderNames,
     intakeTokenById,
     partyNames,
+    castByInteraction,
   };
 }
 
@@ -1020,14 +1086,26 @@ async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
             : '')
         : '';
       const sid = root.external_ref ? `  provider_ref=${root.external_ref as string}` : '';
+      // Trust tier (EV-A rework): how the record is known. provider_verified
+      // = carrier-confirmed transmission (DB-gated); attested = someone's
+      // account of an off-platform event; imported = bulk import. Legacy
+      // rows (null) render nothing rather than implying a tier.
+      const att = root.attestation ? `  attestation=${root.attestation as string}` : '';
       // Counterparty (PR 2): communications now name who they were with --
       // resolved tenant/vendor name, else party_label, else party_type
       // ('unspecified' for a role-unknown capture). Notes/agent_events: none.
       const party = interactionPartyDisplay(root, data.partyNames);
       doc.text(
         `• ${root.occurred_at as string}  ${what}${party ? `  with ${party}` : ''}  ` +
-        `actor=${root.actor as string}${capacity}${sid}  (logged ${root.logged_at as string})`,
+        `actor=${root.actor as string}${capacity}${sid}${att}  (logged ${root.logged_at as string})`,
       );
+      // The cast: everyone on this event, by role, as named people. This is
+      // where a group message stops reading as a comma-string of numbers.
+      const castLine = interactionCastDisplay(
+        data.castByInteraction.get(String(root.id)) ?? [],
+        data.partyNames,
+      );
+      if (castLine) doc.text(`    participants: ${castLine}`);
       if (root.body) doc.text(`    ${String(root.body).slice(0, 400)}`);
       for (const corr of chain.corrections) {
         // classify completes metadata only -- the body is inherited, unchanged.
