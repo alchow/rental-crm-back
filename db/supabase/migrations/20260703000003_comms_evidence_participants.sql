@@ -748,6 +748,7 @@ declare
   v_cast           jsonb := '[]'::jsonb;
   v_names          text[] := '{}';
   v_name           text;
+  v_journal_body   text;
   r                record;
 begin
   select * into v_outbox
@@ -947,6 +948,17 @@ begin
 
   v_author_type := v_outbox.author_type;
 
+  -- Journal body (20260703000001, regression caught by CI): an email send
+  -- with a subject journals 'Subject: <subject>' + blank line + body — the
+  -- documented shape the transport's rendering and the journal share. The
+  -- superseded audience rework of this migration was rebuilt from the
+  -- group-MMS body and silently dropped this; restored here.
+  v_journal_body := case
+    when v_outbox.channel = 'email' and v_outbox.subject is not null
+      then 'Subject: ' || v_outbox.subject || e'\n\n' || v_outbox.body
+    else v_outbox.body
+  end;
+
   -- The capacity trigger would (rightly) reject e.g. the agent transport
   -- writing author_type='landlord'; this is the verified completion path,
   -- so exempt this transaction AFTER the checks above.
@@ -972,7 +984,7 @@ begin
     v_party_type,
     v_party_id,
     v_party_label,
-    v_outbox.body,
+    v_journal_body,
     now(),
     null,
     null,
