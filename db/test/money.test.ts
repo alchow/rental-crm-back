@@ -413,6 +413,114 @@ async function main(): Promise<void> {
   });
 
   // -----------------------------------------------------------------------
+  // (3.5) Void RELEASES capacity. The over-allocation caps must ignore
+  //       allocations whose counterpart row was voided -- matching the
+  //       ledger's "active allocation = payment AND charge both non-voided"
+  //       rule. Regression for the FE-reported bug where a charge that once
+  //       had a voided payment became permanently un-payable.
+  // -----------------------------------------------------------------------
+  await check(
+    'void release (per-charge): $1200 charge -> pay $900 -> void -> pay $1200 succeeds, balance $0',
+    async () => {
+      await withClient(async (c) => {
+        const charge = await c.query<{ id: string }>(
+          `insert into public.charges (account_id, tenancy_id, type, amount_cents, currency, due_date)
+           values ($1, $2, 'rent', 120000, 'USD', '2026-10-01') returning id`,
+          [ACCOUNT_A, tenancyA],
+        );
+        const chargeId = charge.rows[0]!.id;
+
+        // Partial $900 payment + allocation -> $300 remaining.
+        const p1 = await c.query<{ id: string }>(
+          `insert into public.payments (account_id, tenancy_id, amount_cents, currency, received_at, method)
+           values ($1, $2, 90000, 'USD', '2026-10-02T00:00:00Z', 'check') returning id`,
+          [ACCOUNT_A, tenancyA],
+        );
+        await c.query(
+          `insert into public.payment_allocations (account_id, payment_id, charge_id, amount_cents)
+           values ($1, $2, $3, 90000)`,
+          [ACCOUNT_A, p1.rows[0]!.id, chargeId],
+        );
+        if ((await chargeBalance(c, chargeId)) !== 30000) {
+          throw new Error('expected $300 remaining after the partial payment');
+        }
+
+        // Void the $900 payment -> its allocation is released, charge open again.
+        await c.query(
+          `update public.payments set voided_at = now(), void_reason = 'wrong amount' where id = $1`,
+          [p1.rows[0]!.id],
+        );
+        if ((await chargeBalance(c, chargeId)) !== 120000) {
+          throw new Error('void should release the allocation; charge open at $1200');
+        }
+
+        // Re-record the correct $1200. Pre-fix the trigger summed the voided
+        // $900 and rejected this with "exceed charge amount (120000)".
+        const p2 = await c.query<{ id: string }>(
+          `insert into public.payments (account_id, tenancy_id, amount_cents, currency, received_at, method)
+           values ($1, $2, 120000, 'USD', '2026-10-03T00:00:00Z', 'check') returning id`,
+          [ACCOUNT_A, tenancyA],
+        );
+        await c.query(
+          `insert into public.payment_allocations (account_id, payment_id, charge_id, amount_cents)
+           values ($1, $2, $3, 120000)`,
+          [ACCOUNT_A, p2.rows[0]!.id, chargeId],
+        );
+        if ((await chargeBalance(c, chargeId)) !== 0) {
+          throw new Error('charge should close at $0 after the re-payment');
+        }
+      });
+    },
+  );
+
+  await check(
+    'void release (per-payment): voiding a charge frees its payment capacity for re-allocation',
+    async () => {
+      await withClient(async (c) => {
+        // $1000 payment, three $500 rent charges.
+        const mkCharge = (due: string) =>
+          c.query<{ id: string }>(
+            `insert into public.charges (account_id, tenancy_id, type, amount_cents, currency, due_date)
+             values ($1, $2, 'rent', 50000, 'USD', $3) returning id`,
+            [ACCOUNT_A, tenancyA, due],
+          );
+        const c1 = (await mkCharge('2026-11-01')).rows[0]!.id;
+        const c2 = (await mkCharge('2026-12-01')).rows[0]!.id;
+        const c3 = (await mkCharge('2027-01-01')).rows[0]!.id;
+        const p = await c.query<{ id: string }>(
+          `insert into public.payments (account_id, tenancy_id, amount_cents, currency, received_at, method)
+           values ($1, $2, 100000, 'USD', '2026-11-02T00:00:00Z', 'check') returning id`,
+          [ACCOUNT_A, tenancyA],
+        );
+        const pid = p.rows[0]!.id;
+        const alloc = (chargeId: string) =>
+          c.query(
+            `insert into public.payment_allocations (account_id, payment_id, charge_id, amount_cents)
+             values ($1, $2, $3, 50000)`,
+            [ACCOUNT_A, pid, chargeId],
+          );
+
+        await alloc(c1);
+        await alloc(c2); // payment fully applied ($1000)
+
+        // Void charge C1 -> its $500 allocation is released; payment has $500 free.
+        await c.query(
+          `update public.charges set voided_at = now(), void_reason = 'mistake' where id = $1`,
+          [c1],
+        );
+
+        // Re-allocate the freed $500 from the SAME payment to C3. Pre-fix the
+        // trigger summed the voided-charge allocation and rejected this with
+        // "exceed payment amount (100000)".
+        await alloc(c3);
+
+        if ((await chargeBalance(c, c3)) !== 0) throw new Error('C3 should close at $0');
+        if ((await chargeBalance(c, c2)) !== 0) throw new Error('C2 should stay closed at $0');
+      });
+    },
+  );
+
+  // -----------------------------------------------------------------------
   // (4) Concurrency: N parallel allocations against the same charge. The
   //     per-charge advisory lock should serialize them; total allocation
   //     must not exceed the charge amount.
