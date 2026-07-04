@@ -355,6 +355,15 @@ jobs:
         # and email opt-out enforcement.
         run: pnpm --filter ./api test:comms-email-threads
 
+      - name: Run per-account email-branding checks
+        # Branded reply subdomains + sender display name: GET/PATCH
+        # /accounts/{id}/email-branding (owner/manager write, viewer 403, any
+        # member reads), RFC-1035 label + reserved-word validation (422), the
+        # global-uniqueness conflict (409), and null-clears — all under real
+        # PostgREST RLS. Pairs with the branded-minting assertions folded into
+        # the comms email-threads suite above.
+        run: pnpm --filter ./api test:accounts-branding
+
       - name: Run comms evidence-hardening checks (EV-A/EV-B)
         # Participants cast + attestation (sender/platform/cc shapes per
         # channel, group headline = joined display names, cast insert-only

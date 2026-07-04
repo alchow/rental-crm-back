@@ -61,6 +61,13 @@ const RawEnvSchema = z.object({
   // domain must route to the transport's webhook (ops).
   EMAIL_REPLY_DOMAIN: z.string().min(3).optional(),
 
+  // Parent domain for per-account branded reply subdomains (e.g.
+  // mail.example.com). When set AND an account has an email_subdomain, NEW
+  // email threads mint their reply tokens under `<subdomain>.<parent>` instead
+  // of the shared EMAIL_REPLY_DOMAIN. Unset -> branded minting is off
+  // platform-wide and accounts fall back to EMAIL_REPLY_DOMAIN.
+  EMAIL_PLATFORM_PARENT_DOMAIN: z.string().min(3).optional(),
+
   // Cutover flag for core-originated transactional email. ON ('on' | 'true')
   // -> the inspection-capture renewal email is written to the comms outbox (the
   // transport dials the provider); OFF/unset -> the legacy in-core mailer
@@ -100,6 +107,7 @@ export interface Env {
   MAIL_FROM: string | null;
   UNSUBSCRIBE_HMAC_SECRET: string | null;
   EMAIL_REPLY_DOMAIN: string | null;
+  EMAIL_PLATFORM_PARENT_DOMAIN: string | null;
   COMMS_EMAIL_PIPELINE: boolean;
   COMM_EVIDENCE_RETENTION_DAYS: number;
 }
@@ -136,6 +144,7 @@ export function loadEnv(): Env {
     MAIL_FROM: raw.MAIL_FROM ?? null,
     UNSUBSCRIBE_HMAC_SECRET: raw.UNSUBSCRIBE_HMAC_SECRET ?? null,
     EMAIL_REPLY_DOMAIN: raw.EMAIL_REPLY_DOMAIN ?? null,
+    EMAIL_PLATFORM_PARENT_DOMAIN: raw.EMAIL_PLATFORM_PARENT_DOMAIN ?? null,
     COMMS_EMAIL_PIPELINE: raw.COMMS_EMAIL_PIPELINE === 'on' || raw.COMMS_EMAIL_PIPELINE === 'true',
     COMM_EVIDENCE_RETENTION_DAYS: raw.COMM_EVIDENCE_RETENTION_DAYS,
   };
