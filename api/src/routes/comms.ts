@@ -8,6 +8,7 @@ import { loadEnv } from '../env';
 import { ApiError, dbError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { normalizePhone } from './_lib/phone';
+import { brandedReplyDomain } from './_lib/subdomain';
 import { withResolvedAuthorship } from './_lib/authorship';
 import { Interaction, loadInteractionParticipants } from './interactions';
 import {
@@ -501,6 +502,10 @@ const CommThreadDetail = CommThreadWithParticipants.extend({
    *  via the cursor/limit query params). */
   messages: z.array(CommThreadMessage),
   messages_next_cursor: z.string().nullable(),
+  /** The account's From display name the transport renders on relayed mail;
+   *  account-level, injected at the handler (not on list/THREAD_COLS). Null
+   *  when the account has not set one. */
+  sender_display_name: z.string().nullable(),
 }).openapi('CommThreadDetail');
 
 const CreateThreadBody = z
@@ -1807,6 +1812,15 @@ commsApp.openapi(getThread, async (c) => {
 
   const participants = (await loadParticipants(c, accountId, [id])).get(id) ?? [];
 
+  // Account-level From display name, injected on the detail read (the transport
+  // renders it). One extra indexed read; not on list/THREAD_COLS.
+  const { data: account, error: acctErr } = await sb
+    .from('accounts')
+    .select('sender_display_name')
+    .eq('id', accountId)
+    .maybeSingle();
+  if (acctErr) throw commDbError(acctErr);
+
   const { data: bindings, error: bErr } = await sb
     .from('thread_channel_bindings')
     .select(BINDING_COLS)
@@ -1841,6 +1855,7 @@ commsApp.openapi(getThread, async (c) => {
       bindings: (bindings ?? []) as z.infer<typeof CommThreadBinding>[],
       messages,
       messages_next_cursor: messagesNext,
+      sender_display_name: (account?.sender_display_name ?? null) as string | null,
     } as z.infer<typeof CommThreadDetail>,
     200,
   );
@@ -1877,20 +1892,39 @@ commsApp.openapi(createThread, async (c) => {
     });
   }
 
+  // Account branding row, read once: the email branch may mint reply tokens
+  // under this account's branded subdomain, and the 201 assembly echoes the
+  // sender_display_name back on every channel. RLS member SELECT permits it.
+  const { data: account, error: acctErr } = await sb
+    .from('accounts')
+    .select('email_subdomain, sender_display_name')
+    .eq('id', accountId)
+    .maybeSingle();
+  if (acctErr) throw commDbError(acctErr);
+  const senderDisplayName = (account?.sender_display_name ?? null) as string | null;
+
   // Email threads mint a UNIQUE tokenized reply address per participant under a
-  // global receiving domain; without it configured there is nowhere for replies
-  // to land, so refuse up front (retryable once ops sets it).
+  // receiving domain. Prefer the account's branded subdomain
+  // (`<subdomain>.<EMAIL_PLATFORM_PARENT_DOMAIN>`) when both are configured;
+  // otherwise fall back to the shared EMAIL_REPLY_DOMAIN. With NO resolvable
+  // domain at all there is nowhere for replies to land, so refuse up front
+  // (retryable once ops configures one).
   let domain: string | null = null;
   if (isEmail) {
-    const configured = loadEnv().EMAIL_REPLY_DOMAIN;
-    if (configured === null) {
+    const env = loadEnv();
+    const branded = brandedReplyDomain(
+      (account?.email_subdomain ?? null) as string | null,
+      env.EMAIL_PLATFORM_PARENT_DOMAIN,
+    );
+    const resolved = branded ?? env.EMAIL_REPLY_DOMAIN;
+    if (resolved === null) {
       throw new ApiError(
         503,
         'service_unavailable',
-        'email threads are not configured (EMAIL_REPLY_DOMAIN unset)',
+        'email threads are not configured (no branded subdomain and EMAIL_REPLY_DOMAIN unset)',
       );
     }
-    domain = configured.toLowerCase();
+    domain = resolved.toLowerCase();
   }
 
   const mode = body.mode;
@@ -2190,6 +2224,7 @@ commsApp.openapi(createThread, async (c) => {
         bindings: (bindings ?? []) as z.infer<typeof CommThreadBinding>[],
         messages: [],
         messages_next_cursor: null,
+        sender_display_name: senderDisplayName,
       } as z.infer<typeof CommThreadDetail>,
       201,
     );

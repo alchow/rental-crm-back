@@ -82,6 +82,11 @@ process.env.SUPABASE_JWT_AUDIENCE = 'authenticated';
 // every fixture address below.
 const SUFFIX = String(Math.floor(Math.random() * 10_000_000)).padStart(7, '0');
 process.env.EMAIL_REPLY_DOMAIN = `reply-${SUFFIX}.test`;
+// E2-branding: the platform parent domain that per-account branded reply
+// subdomains hang under. Set at BOOT alongside EMAIL_REPLY_DOMAIN so an account
+// WITH an email_subdomain mints under `<sub>.<parent>` while an account without
+// one still falls back to EMAIL_REPLY_DOMAIN. Fingerprinted per run.
+process.env.EMAIL_PLATFORM_PARENT_DOMAIN = `brand-${SUFFIX}.test`;
 
 const { _resetAdminClientForTests, getAdminClient } = await import('../src/admin/supabase-admin');
 _resetAdminClientForTests();
@@ -179,6 +184,7 @@ const VOICE_PHONE = `+1918${SUFFIX}`;           // channel=voice reject probe
 const SMS_SUBJ_PHONE = `+1930${SUFFIX}`;        // subject-on-sms reject probe
 const PLATFORM_A = `+1912${SUFFIX}`;
 const PLATFORM_B = `+1913${SUFFIX}`;
+const PLATFORM_C = `+1914${SUFFIX}`;        // branded-subdomain account
 
 const REPLY_RE = new RegExp(`^t-[0-9a-f]{32}@reply-${SUFFIX}\\.test$`);
 
@@ -271,6 +277,7 @@ interface ThreadDetailShape {
   participants: ParticipantShape[];
   bindings: BindingShape[];
   messages: MessageShape[];
+  sender_display_name: string | null;
 }
 interface CaptureShape {
   disposition: string;
@@ -784,6 +791,70 @@ async function main(): Promise<void> {
     const smsRows = (assertStatus(sms, 200, 'sms list') as { data: { id: string; channel: string }[] }).data;
     assert(smsRows.every((t) => t.channel === 'sms'), 'only sms threads');
     assert(smsRows.some((t) => t.id === smsThreadId), 'sms thread present');
+  });
+
+  // =========================================================================
+  // (14) Per-account branding — subdomain-scoped reply tokens + display name.
+  // A fresh account sets a branded subdomain via the owner endpoint; its email
+  // threads then mint reply tokens under `<sub>.<parent>` and carry the account
+  // sender_display_name. thread1 (account fx, no subdomain) is the control: it
+  // stays on EMAIL_REPLY_DOMAIN with a null display name.
+  // =========================================================================
+  await check('account WITHOUT a subdomain mints under EMAIL_REPLY_DOMAIN, display name null', async () => {
+    const d = await threadDetail(thread1Id);
+    for (const b of d.bindings) {
+      if (b.channel === 'email' && b.reply_address) {
+        assert(REPLY_RE.test(b.reply_address), `fallback reply_address: ${b.reply_address}`);
+        assert(
+          b.reply_address.endsWith(`@${process.env.EMAIL_REPLY_DOMAIN}`),
+          `ends with the shared reply domain: ${b.reply_address}`,
+        );
+      }
+    }
+    assert(d.sender_display_name === null, `no branding set → null display name: ${d.sender_display_name}`);
+  });
+
+  await check('account WITH an email_subdomain mints reply tokens under <sub>.<parent> + carries the display name', async () => {
+    const fxC = await setup(PLATFORM_C, 'c');
+    const sub = `brand${SUFFIX}`;
+    const branded = `${sub}.brand-${SUFFIX}.test`;
+    const BRAND_RE = new RegExp(`^t-[0-9a-f]{32}@${sub}\\.brand-${SUFFIX}\\.test$`);
+
+    // Set branding via the owner (landlord) endpoint — exercises the PATCH path.
+    const patch = await api('PATCH', `/v1/accounts/${fxC.accountId}/email-branding`, {
+      token: fxC.landlordToken,
+      body: { email_subdomain: sub, sender_display_name: 'Brand Co' },
+    });
+    const pb = assertStatus(patch, 200, 'set branding') as { email_subdomain: string; reply_domain: string };
+    assert(pb.email_subdomain === sub, `patched subdomain: ${pb.email_subdomain}`);
+    assert(pb.reply_domain === branded, `patched reply_domain: ${pb.reply_domain}`);
+
+    const r = await api('POST', `/v1/accounts/${fxC.accountId}/comms/threads`, {
+      token: fxC.landlordToken,
+      body: {
+        kind: 'bridged_tenant', channel: 'email', subject: 'Branded lease notice',
+        participants: [
+          { party_type: 'landlord_user', party_id: fxC.landlordId, address: `llc-${SUFFIX}@e2.test` },
+          { party_type: 'tenant', party_id: fxC.tenant1Id, address: `t1c-${SUFFIX}@e2.test` },
+        ],
+      },
+    });
+    const t = assertStatus(r, 201, 'branded thread create') as ThreadDetailShape;
+    assert(t.bindings.length === 2, `bindings: ${t.bindings.length}`);
+    for (const b of t.bindings) {
+      assert(
+        b.reply_address !== null && BRAND_RE.test(b.reply_address),
+        `branded reply_address under ${branded}: ${b.reply_address}`,
+      );
+    }
+    assert(t.sender_display_name === 'Brand Co', `sender_display_name on create: ${t.sender_display_name}`);
+
+    // getThread carries the account display name too (transport reads it there).
+    const g = await api('GET', `/v1/accounts/${fxC.accountId}/comms/threads/${t.id}?limit=10`, {
+      token: fxC.landlordToken,
+    });
+    const gd = assertStatus(g, 200, 'branded thread detail') as ThreadDetailShape;
+    assert(gd.sender_display_name === 'Brand Co', `sender_display_name on read: ${gd.sender_display_name}`);
   });
 
   // --- summary ---------------------------------------------------------------
