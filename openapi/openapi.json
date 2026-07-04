@@ -3725,6 +3725,45 @@
               "type": "string"
             }
           },
+          "recipient_snapshot": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "address": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "party_type": {
+                  "type": "string"
+                },
+                "party_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "address",
+                "party_type",
+                "party_id",
+                "label"
+              ]
+            }
+          },
           "thread_id": {
             "type": [
               "string",

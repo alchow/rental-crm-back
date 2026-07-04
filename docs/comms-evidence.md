@@ -28,7 +28,11 @@ days. In a dispute that left two gaps:
    denied, not merely audited. The legacy `party_*` single slot stays
    populated as the derived headline ("filed under"), which classify
    corrections may fill — **evidence and discovery queries run on the cast,
-   never the headline**.
+   never the headline**, with one chain-aware caveat: a `classify`
+   correction currently records its resolved attribution in the correction
+   row's party fields, not as a cast row (minting cast rows from classify is
+   a tracked follow-up). Until then, an exhaustive per-person sweep should
+   union the cast with classify corrections' `party_id`.
 2. **Independent verifiability** — "our software wrote its own evidence" is a
    real cross-examination line. Now the verbatim signed webhook is archived
    and hash-anchored into the per-account audit chain, so anyone can
@@ -40,8 +44,14 @@ days. In a dispute that left two gaps:
    `comm.verified_write` setting, so no other writer — member, agent, or
    service job — can forge the tier), `attested` (a human's account of an
    off-platform event, e.g. a logged phone call or in-person meeting),
-   `imported` (bulk import), `null` (legacy rows, never rewritten).
-   Attestation is immutable once written. Note the two axes are independent:
+   `imported` (bulk import), `null` (STRICTLY legacy: a DB default fills
+   `attested`/`imported` on every new communication/note that doesn't state
+   a tier, so a null tier can only mean "journaled before the column
+   existed"). Attestation is immutable once written. Outbound casts are
+   copied from a recipient snapshot frozen at INTENT time
+   (`comm_outbox.recipient_snapshot`, trigger-stamped, immutable) — an
+   identity edited while a send sits queued can never rewrite who the send
+   is recorded as reaching. Note the two axes are independent:
    an AI-authored send (`author_type='agent'`) can be `provider_verified`,
    and a `provider_verified` email can still carry a `sender` cast row of
    `party_type='unknown'` (sender_mismatch) — trust of the wire and certainty

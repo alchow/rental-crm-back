@@ -92,6 +92,22 @@ const CommOutbox = z
      *  this is set); dialed as ONE provider group message whose provider_sid is
      *  the group_message_id; null on 1:1 rows. */
     group_addresses: z.array(z.string()).nullable(),
+    /** WHO the dialed address(es) resolved to at INTENT time — trigger-stamped
+     *  from thread bindings / channel identities, immutable, and copied
+     *  verbatim into the journal cast on completion, so an identity edited
+     *  while the row sits queued can never rewrite who the send is recorded
+     *  as reaching. Null on rows queued before the column landed. */
+    recipient_snapshot: z
+      .array(
+        z.object({
+          address: z.string().nullable(),
+          party_type: z.string(),
+          party_id: z.string().uuid().nullable(),
+          label: z.string().nullable(),
+        }),
+      )
+      .nullable()
+      .optional(),
     thread_id: z.string().uuid().nullable(),
     /** Thread participant this leg addresses (comm_thread_participants.id). */
     participant_id: z.string().uuid().nullable(),

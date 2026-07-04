@@ -11,8 +11,12 @@
 -- attests, never say more. Concretely:
 --   * no landlord row is invented (actor records who WROTE the row; writer
 --     is not evidence of participation),
---   * party_type='unspecified' rows are skipped (nothing known — the
---     needs-attribution/classify flow remains their path to a cast),
+--   * party_type='unspecified' rows WITHOUT a label are skipped (nothing
+--     known — the needs-attribution/classify flow remains their path to a
+--     cast); 'unspecified' rows WITH a party_label restate as
+--     party_type='unknown' + that label ("a real counterparty, recorded but
+--     never identified" is information, and losing it would be the
+--     backfill's only lie of omission),
 --   * notes and agent_events are skipped (structurally no counterparty),
 --   * no address is invented (the slot never held one),
 --   * label = the frozen party_label where present, else the party's
@@ -55,6 +59,33 @@ left join public.vendors v
 where i.kind = 'communication'
   and i.party_type in ('tenant', 'vendor', 'inspector', 'other')
   and (i.party_id is not null or i.party_label is not null)
+  and not exists (
+    select 1 from public.interaction_participants ip
+     where ip.interaction_id = i.id
+  );
+
+-- 'unspecified' + a recorded label: a real counterparty whose role/identity
+-- was never resolved. Restated honestly as 'unknown' with the frozen label —
+-- no id (none was ever claimed), no address (none was ever recorded).
+insert into public.interaction_participants
+  (account_id, interaction_id, role, party_type, party_id, address, label, source)
+select
+  i.account_id,
+  i.id,
+  case i.direction
+    when 'inbound'  then 'sender'
+    when 'outbound' then 'recipient'
+    else 'attendee'
+  end,
+  'unknown',
+  null,
+  null,
+  left(i.party_label, 200),
+  'backfill'
+from public.interactions i
+where i.kind = 'communication'
+  and i.party_type = 'unspecified'
+  and i.party_label is not null
   and not exists (
     select 1 from public.interaction_participants ip
      where ip.interaction_id = i.id

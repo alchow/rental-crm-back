@@ -109,6 +109,33 @@ create trigger interaction_participants_audit
   after insert or update or delete on public.interaction_participants
   for each row execute function public._emit_event();
 
+-- Belt-and-braces immutability: the RLS/revoke posture above already denies
+-- client-role writes, but a service-tier job or a future DEFINER bug could
+-- still mutate cast rows and merely leave an audit trail. Evidence must be
+-- DENIED mutation, not just observed mutation — so updates and deletes raise
+-- unconditionally (same spirit as the logged_at / attestation freezes). A
+-- deliberate operator act (ALTER TABLE ... DISABLE TRIGGER as superuser)
+-- remains possible and visibly exceptional.
+create or replace function public._interaction_participants_immutable()
+returns trigger
+language plpgsql
+as $$
+begin
+  raise exception 'interaction_participants rows are immutable (insert-only evidence)'
+    using errcode = 'check_violation';
+end;
+$$;
+
+create trigger interaction_participants_immutable
+  before update or delete on public.interaction_participants
+  for each row execute function public._interaction_participants_immutable();
+
+-- Address-only discovery: "every message involving +1555… / this email",
+-- regardless of whether (or to whom) the address was resolved at the time.
+create index interaction_participants_address_idx
+  on public.interaction_participants (account_id, lower(address))
+  where address is not null;
+
 -- ============================================================================
 -- (B) interactions.attestation — the trust tier, frozen and forge-proof
 -- ============================================================================
@@ -163,6 +190,16 @@ begin
      and coalesce(current_setting('comm.verified_write', true), '') <> 'on' then
     raise exception 'attestation=provider_verified requires a verified comms write path'
       using errcode = 'check_violation';
+  end if;
+  -- Default-fill: after this migration, NULL strictly means "journaled
+  -- before the column existed". Every new communication/note that doesn't
+  -- state a tier gets the honest default for its shape — a human/system
+  -- record of an event is testimony ('attested'), an import-channel row is
+  -- 'imported'. agent_event rows stay null (the tier does not apply; the
+  -- kind CHECK enforces it). The verified paths set their value explicitly
+  -- before this fires.
+  if new.attestation is null and new.kind <> 'agent_event' then
+    new.attestation := case when new.channel = 'import' then 'imported' else 'attested' end;
   end if;
   return new;
 end;
@@ -548,6 +585,136 @@ revoke execute on function public.capture_inbound(uuid, text, text, text, text, 
 grant  execute on function public.capture_inbound(uuid, text, text, text, text, text, text, jsonb, timestamptz, text[]) to authenticated, service_role;
 
 -- ============================================================================
+-- (E0) comm_outbox.recipient_snapshot — identities frozen at INTENT time
+-- ============================================================================
+-- The addresses of a send were always frozen at intent (to_address /
+-- group_addresses); WHO those addresses belonged to was not — a completion
+-- that resolves identities through live bindings/channel_identities can
+-- drift from what the human approved if an identity is edited while the row
+-- sits queued (or worse, in needs_reconcile for days). So the resolution
+-- itself is now snapshotted at intent creation, stamped by trigger (never
+-- trusted from the writer), frozen by the guard below, and complete_send
+-- COPIES it instead of re-resolving. The cast then states who we believed
+-- we were dialing at the moment of approval — the evidentiary claim.
+
+alter table public.comm_outbox
+  add column recipient_snapshot jsonb
+    check (recipient_snapshot is null or jsonb_typeof(recipient_snapshot) = 'array');
+
+create or replace function public._comm_outbox_snapshot_recipients()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_type  text;
+  v_id    uuid;
+  v_label text;
+begin
+  -- Always stamped here — a writer-supplied snapshot is discarded (a forged
+  -- snapshot would put words in the cast's mouth).
+  if new.group_addresses is not null then
+    select jsonb_agg(
+             jsonb_build_object(
+               'address',    ga.addr,
+               'party_type', coalesce(p.party_type, 'unknown'),
+               'party_id',   p.party_id,
+               'label',      public._party_display_name(new.account_id, p.party_type, p.party_id))
+             order by ga.ord)
+      into new.recipient_snapshot
+      from unnest(new.group_addresses) with ordinality ga(addr, ord)
+      left join public.thread_channel_bindings b
+        on b.account_id = new.account_id
+       and b.thread_id = new.thread_id
+       and b.participant_address = ga.addr
+       and b.active
+      left join public.comm_thread_participants p
+        on p.id = b.participant_id;
+  else
+    if new.participant_id is not null then
+      select p.party_type, p.party_id
+        into v_type, v_id
+        from public.comm_thread_participants p
+       where p.id = new.participant_id;
+    end if;
+    if v_type is null then
+      select ci.party_type, ci.party_id, ci.label
+        into v_type, v_id, v_label
+        from public.channel_identities ci
+       where ci.account_id = new.account_id
+         and ci.channel   = new.channel
+         and ci.address   = new.to_address;
+    end if;
+    new.recipient_snapshot := jsonb_build_array(jsonb_build_object(
+      'address',    new.to_address,
+      'party_type', coalesce(v_type, 'unknown'),
+      'party_id',   v_id,
+      'label',      coalesce(public._party_display_name(new.account_id, v_type, v_id), v_label)));
+  end if;
+  return new;
+end;
+$$;
+
+create trigger comm_outbox_snapshot_recipients
+  before insert on public.comm_outbox
+  for each row execute function public._comm_outbox_snapshot_recipients();
+
+-- Guard-update rebuild (head was 20260703000001): the snapshot joins the
+-- frozen intent fields — who we resolved at approval time must survive
+-- later identity edits, which is its entire reason to exist.
+create or replace function public._comm_outbox_guard_update()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_rank_old int;
+  v_rank_new int;
+begin
+  if new.account_id   is distinct from old.account_id
+     or new.channel      is distinct from old.channel
+     or new.to_address   is distinct from old.to_address
+     or new.group_addresses is distinct from old.group_addresses
+     or new.subject      is distinct from old.subject
+     or new.body         is distinct from old.body
+     or new.approval_ref is distinct from old.approval_ref
+     or new.approved_by  is distinct from old.approved_by
+     or new.author_type  is distinct from old.author_type
+     or new.client_ref   is distinct from old.client_ref
+     or new.created_at   is distinct from old.created_at
+     or new.recipient_snapshot is distinct from old.recipient_snapshot then
+    raise exception 'comm_outbox intent fields are immutable'
+      using errcode = 'check_violation';
+  end if;
+
+  v_rank_old := case old.status
+    when 'queued' then 0 when 'sending' then 1 when 'needs_reconcile' then 2
+    when 'sent' then 3 when 'delivered' then 4 else 9 end;
+  v_rank_new := case new.status
+    when 'queued' then 0 when 'sending' then 1 when 'needs_reconcile' then 2
+    when 'sent' then 3 when 'delivered' then 4 else 9 end;
+
+  if v_rank_old = 9 and new.status is distinct from old.status then
+    raise exception 'comm_outbox row is terminal (%)', old.status
+      using errcode = 'P0003';
+  end if;
+
+  if v_rank_new < v_rank_old then
+    raise exception 'comm_outbox status may not move backwards (% -> %)', old.status, new.status
+      using errcode = 'P0003';
+  end if;
+
+  -- A journal link is written exactly once, by the completion path.
+  if old.interaction_id is not null and new.interaction_id is distinct from old.interaction_id then
+    raise exception 'comm_outbox.interaction_id is write-once'
+      using errcode = 'check_violation';
+  end if;
+
+  return new;
+end;
+$$;
+
+-- ============================================================================
 -- (E) complete_send: stamp attestation + write the cast
 -- ============================================================================
 -- Body identical to 20260702000001 (+ email additions) except:
@@ -625,92 +792,138 @@ begin
     return v_outbox.relay_of_interaction_id;
   end if;
 
-  -- Party attribution + cast assembly, all from the frozen intent.
+  -- Party attribution + cast assembly. The identities were snapshotted at
+  -- INTENT time (recipient_snapshot, stamped by trigger, frozen) — the cast
+  -- copies that snapshot so identity edits between approval and completion
+  -- can never rewrite who the send is recorded as reaching. The resolution
+  -- fallbacks below exist only for legacy queued rows that predate the
+  -- snapshot column (none in prod: comms are dormant).
   if v_outbox.group_addresses is not null then
     v_party_type := 'unspecified';
     v_party_id   := null;
-    -- One recipient cast entry per frozen group address, resolved through
-    -- this thread's bindings; the headline label is the joined names.
-    for r in
-      select ga.addr,
-             ga.ord,
-             p.party_type as p_party_type,
-             p.party_id   as p_party_id
-        from unnest(v_outbox.group_addresses) with ordinality ga(addr, ord)
-        left join public.thread_channel_bindings b
-          on b.account_id = v_outbox.account_id
-         and b.thread_id = v_outbox.thread_id
-         and b.participant_address = ga.addr
-         and b.active
-        left join public.comm_thread_participants p
-          on p.id = b.participant_id
-       order by ga.ord
-    loop
-      v_name := public._party_display_name(v_outbox.account_id, r.p_party_type, r.p_party_id);
-      v_names := v_names || coalesce(v_name, r.addr);
-      v_cast := v_cast || jsonb_build_array(jsonb_build_object(
-        'role', 'recipient',
-        'party_type', coalesce(r.p_party_type, 'unknown'),
-        'party_id', r.p_party_id,
-        'address', r.addr,
-        'label', v_name));
-    end loop;
+    if v_outbox.recipient_snapshot is not null then
+      for r in
+        select e->>'address'                    as addr,
+               e->>'party_type'                 as p_party_type,
+               nullif(e->>'party_id', '')::uuid as p_party_id,
+               e->>'label'                      as p_label
+          from jsonb_array_elements(v_outbox.recipient_snapshot) e
+      loop
+        v_names := v_names || coalesce(r.p_label, r.addr);
+        v_cast := v_cast || jsonb_build_array(jsonb_build_object(
+          'role', 'recipient',
+          'party_type', r.p_party_type,
+          'party_id', r.p_party_id,
+          'address', r.addr,
+          'label', r.p_label));
+      end loop;
+    else
+      for r in
+        select ga.addr,
+               ga.ord,
+               p.party_type as p_party_type,
+               p.party_id   as p_party_id
+          from unnest(v_outbox.group_addresses) with ordinality ga(addr, ord)
+          left join public.thread_channel_bindings b
+            on b.account_id = v_outbox.account_id
+           and b.thread_id = v_outbox.thread_id
+           and b.participant_address = ga.addr
+           and b.active
+          left join public.comm_thread_participants p
+            on p.id = b.participant_id
+         order by ga.ord
+      loop
+        v_name := public._party_display_name(v_outbox.account_id, r.p_party_type, r.p_party_id);
+        v_names := v_names || coalesce(v_name, r.addr);
+        v_cast := v_cast || jsonb_build_array(jsonb_build_object(
+          'role', 'recipient',
+          'party_type', coalesce(r.p_party_type, 'unknown'),
+          'party_id', r.p_party_id,
+          'address', r.addr,
+          'label', v_name));
+      end loop;
+    end if;
     v_party_label := left(array_to_string(v_names, ', '), 200);
   else
-    if v_outbox.participant_id is not null then
-      select case p.party_type
-               when 'tenant' then 'tenant'
-               when 'vendor' then 'vendor'
-               else 'other'
-             end,
-             p.party_id,
-             p.party_type
-        into v_party_type, v_party_id, v_cast_type
-        from public.comm_thread_participants p
-       where p.id = v_outbox.participant_id;
-      if v_party_type is not null then
-        v_name := public._party_display_name(v_outbox.account_id, v_cast_type, v_party_id);
-        v_cast := jsonb_build_array(jsonb_build_object(
-          'role', 'recipient',
-          'party_type', v_cast_type,
-          'party_id', v_party_id,
-          'address', v_outbox.to_address,
-          'label', v_name));
+    if v_outbox.recipient_snapshot is not null then
+      select e->>'party_type',
+             nullif(e->>'party_id', '')::uuid,
+             e->>'label'
+        into v_cast_type, v_party_id, v_name
+        from jsonb_array_elements(v_outbox.recipient_snapshot) e
+       limit 1;
+      v_party_type := case v_cast_type
+        when 'tenant' then 'tenant'
+        when 'vendor' then 'vendor'
+        when 'unknown' then 'unspecified'
+        else 'other'
+      end;
+      if v_party_type = 'unspecified' then
+        v_party_id    := null;
+        v_party_label := v_outbox.to_address;
       end if;
-    end if;
-    if v_party_type is null then
-      select case ci.party_type
-               when 'tenant' then 'tenant'
-               when 'vendor' then 'vendor'
-               else 'other'
-             end,
-             ci.party_id,
-             ci.party_type,
-             coalesce(public._party_display_name(v_outbox.account_id, ci.party_type, ci.party_id), ci.label)
-        into v_party_type, v_party_id, v_cast_type, v_name
-        from public.channel_identities ci
-       where ci.account_id = v_outbox.account_id
-         and ci.channel   = v_outbox.channel
-         and ci.address   = v_outbox.to_address;
-      if v_party_type is not null then
-        v_cast := jsonb_build_array(jsonb_build_object(
-          'role', 'recipient',
-          'party_type', v_cast_type,
-          'party_id', v_party_id,
-          'address', v_outbox.to_address,
-          'label', v_name));
-      end if;
-    end if;
-    if v_party_type is null then
-      v_party_type  := 'unspecified';
-      v_party_id    := null;
-      v_party_label := v_outbox.to_address;
       v_cast := jsonb_build_array(jsonb_build_object(
         'role', 'recipient',
-        'party_type', 'unknown',
-        'party_id', null,
+        'party_type', v_cast_type,
+        'party_id', v_party_id,
         'address', v_outbox.to_address,
-        'label', null));
+        'label', v_name));
+    else
+      if v_outbox.participant_id is not null then
+        select case p.party_type
+                 when 'tenant' then 'tenant'
+                 when 'vendor' then 'vendor'
+                 else 'other'
+               end,
+               p.party_id,
+               p.party_type
+          into v_party_type, v_party_id, v_cast_type
+          from public.comm_thread_participants p
+         where p.id = v_outbox.participant_id;
+        if v_party_type is not null then
+          v_name := public._party_display_name(v_outbox.account_id, v_cast_type, v_party_id);
+          v_cast := jsonb_build_array(jsonb_build_object(
+            'role', 'recipient',
+            'party_type', v_cast_type,
+            'party_id', v_party_id,
+            'address', v_outbox.to_address,
+            'label', v_name));
+        end if;
+      end if;
+      if v_party_type is null then
+        select case ci.party_type
+                 when 'tenant' then 'tenant'
+                 when 'vendor' then 'vendor'
+                 else 'other'
+               end,
+               ci.party_id,
+               ci.party_type,
+               coalesce(public._party_display_name(v_outbox.account_id, ci.party_type, ci.party_id), ci.label)
+          into v_party_type, v_party_id, v_cast_type, v_name
+          from public.channel_identities ci
+         where ci.account_id = v_outbox.account_id
+           and ci.channel   = v_outbox.channel
+           and ci.address   = v_outbox.to_address;
+        if v_party_type is not null then
+          v_cast := jsonb_build_array(jsonb_build_object(
+            'role', 'recipient',
+            'party_type', v_cast_type,
+            'party_id', v_party_id,
+            'address', v_outbox.to_address,
+            'label', v_name));
+        end if;
+      end if;
+      if v_party_type is null then
+        v_party_type  := 'unspecified';
+        v_party_id    := null;
+        v_party_label := v_outbox.to_address;
+        v_cast := jsonb_build_array(jsonb_build_object(
+          'role', 'recipient',
+          'party_type', 'unknown',
+          'party_id', null,
+          'address', v_outbox.to_address,
+          'label', null));
+      end if;
     end if;
   end if;
 
@@ -849,8 +1062,20 @@ begin
       using errcode = '42501';
   end if;
 
+  -- Agent principals are refused OUTRIGHT: an agent's communications are
+  -- journaled (with their cast) by the verified comms paths, and an agent
+  -- note carries no cast — so an agent calling this could only be
+  -- fabricating an unverifiable record of who was contacted. (The capacity
+  -- trigger would also reject the insert — external_ref is required on
+  -- agent communications and this path never carries one — but the intent
+  -- deserves its own explicit gate, not a fortunate trigger interaction.)
+  if v_role = 'agent' then
+    raise exception 'agent principals may not journal manual participants'
+      using errcode = '42501';
+  end if;
+
   -- Capacity from the principal, never from the caller's body.
-  v_author_type := case when v_role = 'agent' then 'agent' else 'landlord' end;
+  v_author_type := 'landlord';
 
   -- Only communications carry a cast (notes structurally have no party;
   -- agent_events are workflow exhaust).

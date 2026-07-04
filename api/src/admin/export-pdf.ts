@@ -335,6 +335,15 @@ interface ExportData {
    *  artifact renders the FULL cast — a group message names every recipient
    *  as a person, not a comma-string of addresses. */
   castByInteraction: Map<string, CastRow[]>;
+  /** Outbound proof handle: the (non-relay) outbox row's delivery state per
+   *  journal row. Rendered so the artifact never overclaims — 'sent' means
+   *  the provider ACCEPTED the message; only 'delivered' means a delivery
+   *  receipt arrived. */
+  deliveryByInteraction: Map<string, { status: string; delivered_at: string | null }>;
+  /** Inbound proof handle: inbound_provenance.body_sha256 keyed by
+   *  provider_msg_id (== the journal row's external_ref). The hash the
+   *  archived signed webhook can be re-verified against (EV-B). */
+  provenanceShaByMsgId: Map<string, string>;
 }
 
 /** One cast entry as loaded for the export render. */
@@ -715,6 +724,39 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     }
   }
 
+  // Proof handles: outbound delivery state (accepted ≠ delivered) and the
+  // inbound provenance hash, so a provider_verified entry renders alongside
+  // the evidence it can be checked against.
+  const deliveryByInteraction = new Map<string, { status: string; delivered_at: string | null }>();
+  const provenanceShaByMsgId = new Map<string, string>();
+  if (interactions.length > 0) {
+    const ids = interactions.map((r) => String(r.id));
+    const msgIds = interactions
+      .map((r) => r.external_ref)
+      .filter((x): x is string => typeof x === 'string' && x.length > 0);
+    const [obRes, provRes] = await Promise.all([
+      admin
+        .from('comm_outbox')
+        .select('interaction_id, status, delivered_at')
+        .eq('account_id', scope.accountId)
+        .is('relay_of_interaction_id', null)
+        .in('interaction_id', ids),
+      msgIds.length > 0
+        ? admin
+            .from('inbound_provenance')
+            .select('provider_msg_id, body_sha256')
+            .eq('account_id', scope.accountId)
+            .in('provider_msg_id', msgIds)
+        : Promise.resolve({ data: [] as { provider_msg_id: string; body_sha256: string }[], error: null }),
+    ]);
+    for (const o of ((obRes.data as { interaction_id: string | null; status: string; delivered_at: string | null }[] | null) ?? [])) {
+      if (o.interaction_id) deliveryByInteraction.set(o.interaction_id, { status: o.status, delivered_at: o.delivered_at });
+    }
+    for (const p of ((provRes.data as { provider_msg_id: string; body_sha256: string }[] | null) ?? [])) {
+      provenanceShaByMsgId.set(p.provider_msg_id, p.body_sha256);
+    }
+  }
+
   return {
     account_name: accountName,
     tenancy,
@@ -739,6 +781,8 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     intakeTokenById,
     partyNames,
     castByInteraction,
+    deliveryByInteraction,
+    provenanceShaByMsgId,
   };
 }
 
@@ -1091,13 +1135,19 @@ async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
       // account of an off-platform event; imported = bulk import. Legacy
       // rows (null) render nothing rather than implying a tier.
       const att = root.attestation ? `  attestation=${root.attestation as string}` : '';
+      // Never overclaim: 'sent' = provider accepted; only 'delivered' means
+      // a delivery receipt arrived. Rendered separately from attestation.
+      const delivery = data.deliveryByInteraction.get(String(root.id));
+      const deliveryStr = delivery
+        ? `  delivery=${delivery.status}${delivery.delivered_at ? ` @ ${delivery.delivered_at}` : ''}`
+        : '';
       // Counterparty (PR 2): communications now name who they were with --
       // resolved tenant/vendor name, else party_label, else party_type
       // ('unspecified' for a role-unknown capture). Notes/agent_events: none.
       const party = interactionPartyDisplay(root, data.partyNames);
       doc.text(
         `• ${root.occurred_at as string}  ${what}${party ? `  with ${party}` : ''}  ` +
-        `actor=${root.actor as string}${capacity}${sid}${att}  (logged ${root.logged_at as string})`,
+        `actor=${root.actor as string}${capacity}${sid}${att}${deliveryStr}  (logged ${root.logged_at as string})`,
       );
       // The cast: everyone on this event, by role, as named people. This is
       // where a group message stops reading as a comma-string of numbers.
@@ -1106,6 +1156,13 @@ async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
         data.partyNames,
       );
       if (castLine) doc.text(`    participants: ${castLine}`);
+      // Inbound proof handle: the archived signed webhook's hash — what a
+      // provider_verified claim can be independently checked against
+      // (dispute playbook, docs/comms-evidence.md).
+      const proofSha = root.external_ref
+        ? data.provenanceShaByMsgId.get(String(root.external_ref))
+        : undefined;
+      if (proofSha) doc.text(`    proof: signed webhook sha256=${proofSha}`);
       if (root.body) doc.text(`    ${String(root.body).slice(0, 400)}`);
       for (const corr of chain.corrections) {
         // classify completes metadata only -- the body is inherited, unchanged.

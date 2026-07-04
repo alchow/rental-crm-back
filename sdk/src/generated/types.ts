@@ -14474,6 +14474,13 @@ export interface components {
             channel: "sms" | "email" | "voice";
             to_address: string | null;
             group_addresses: string[] | null;
+            recipient_snapshot?: {
+                address: string | null;
+                party_type: string;
+                /** Format: uuid */
+                party_id: string | null;
+                label: string | null;
+            }[] | null;
             /** Format: uuid */
             thread_id: string | null;
             /** Format: uuid */
