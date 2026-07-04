@@ -356,8 +356,10 @@ jobs:
         run: pnpm --filter ./api test:comms-email-threads
 
       - name: Run comms evidence-hardening checks (EV-A/EV-B)
-        # Audience stamping (inbound {to, cc} / outbound {to:[...]}, frozen,
-        # group audience == frozen routing-key set), verbatim-webhook archive
+        # Participants cast + attestation (sender/platform/cc shapes per
+        # channel, group headline = joined display names, cast insert-only
+        # even for admin, provider_verified forge-gated, intent-time
+        # recipient snapshot beats identity edits), verbatim-webhook archive
         # (server-side sha256, audit-anchored provenance row, idempotent by
         # provider_msg_id, conflicting-body 409, principal gating), legal
         # holds (manager-only writes, agent denied), and the hold-gated

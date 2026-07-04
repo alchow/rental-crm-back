@@ -601,9 +601,18 @@ alter table public.comm_outbox
   add column recipient_snapshot jsonb
     check (recipient_snapshot is null or jsonb_typeof(recipient_snapshot) = 'array');
 
+-- SECURITY DEFINER deliberately (review finding): the intent is inserted
+-- through the caller's RLS context, and public.users is self-SELECT-only —
+-- an invoker trigger would freeze label=null for any landlord_user the
+-- CALLER isn't (e.g. a manager queuing a group send whose member is the
+-- owner), while the DEFINER inbound path resolves the same name fine.
+-- Safe: every lookup below is pinned to NEW.account_id (or reached through
+-- a composite FK on it), and NEW itself has already passed the caller's
+-- RLS with-check; trigger-returning functions are not PostgREST-callable.
 create or replace function public._comm_outbox_snapshot_recipients()
 returns trigger
 language plpgsql
+security definer
 set search_path = public
 as $$
 declare
