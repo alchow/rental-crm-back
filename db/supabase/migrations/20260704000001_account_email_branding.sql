@@ -19,11 +19,15 @@
 --   accounts.sender_display_name  the From display name the transport renders
 --                                 on relayed mail ("Acme Properties <…>").
 --
--- Reserved-word enforcement (www, mail, api, …) lives in the API layer, NOT
--- here: that list evolves with product/ops decisions and must not require a
--- migration to change. The DB enforces only what is structural and permanent —
--- the RFC-1035 label FORMAT and global UNIQUENESS of a subdomain (two accounts
--- cannot mint under the same branded domain). Everything else is API policy.
+-- Reserved-word enforcement (www, mail, api, …) lives in TWO layers: the API
+-- (routes/_lib/subdomain.ts) validates first and returns friendly 422 field
+-- errors, and a CHECK below carries the SAME list as the unbypassable backstop
+-- — the UPDATE grant added at the bottom of this migration means an
+-- owner/manager can write these two columns directly against PostgREST, so a
+-- policy that only the API enforced would be a bypassable control. Keep the two
+-- lists identical; evolving the list means a migration AND an API change (the
+-- API is checked first, so an API-only addition degrades gracefully to a 409/
+-- 500-mapped CHECK failure rather than a silent bypass).
 -- ----------------------------------------------------------------------------
 
 alter table public.accounts
@@ -43,6 +47,33 @@ alter table public.accounts
   check (
     sender_display_name is null
     or length(sender_display_name) between 1 and 120
+  );
+
+-- Reserved labels an account may never claim (mirror of RESERVED_SUBDOMAINS in
+-- api/src/routes/_lib/subdomain.ts — keep in sync). Enforced here so a direct
+-- PostgREST write under the column grant below cannot claim an operational or
+-- mail-infrastructure name (postmaster.<parent>, mx.<parent>, …).
+alter table public.accounts
+  add constraint accounts_email_subdomain_reserved
+  check (
+    email_subdomain is null
+    or email_subdomain <> all (array[
+      'www', 'mail', 'api', 'app', 'admin', 'root',
+      'smtp', 'imap', 'pop', 'pop3', 'mx', 'ns', 'ns1', 'ns2', 'ftp',
+      'webmail', 'email', 'reply', 'noreply', 'no-reply',
+      'bounce', 'bounces', 'unsubscribe',
+      'abuse', 'postmaster', 'support', 'help', 'info',
+      'billing', 'security', 'status',
+      'dev', 'staging', 'test', 'internal'
+    ])
+  ),
+  -- C0 controls + DEL have no place in a From display name and are a
+  -- header-injection vector; the API also rejects them (plus C1), this is the
+  -- unbypassable backstop for direct column-granted writes.
+  add constraint accounts_sender_display_name_no_ctrl
+  check (
+    sender_display_name is null
+    or sender_display_name !~ E'[\\x01-\\x1F\\x7F]'
   );
 
 -- Global uniqueness: a branded subdomain resolves to exactly one account, so a
@@ -78,3 +109,16 @@ create policy accounts_manager_update on public.accounts
       and m.role in ('owner', 'manager')
       and m.deleted_at is null
   ));
+
+-- RLS is ROW-level: the policy above alone would let an owner/manager UPDATE
+-- ANY column of their accounts row straight through PostgREST (Supabase's
+-- default privileges grant authenticated table-wide UPDATE), including `name`
+-- and `deleted_at`, bypassing the API entirely. Narrow the surface with
+-- COLUMN privileges: only the two branding columns (+ updated_at, which the
+-- API PATCH sets — accounts has no updated_at trigger) are writable by a user
+-- JWT. service_role is unaffected (its grants are separate; admin paths keep
+-- full access). What a direct write CAN still do is exactly what the API
+-- would allow — format, reserved list, and uniqueness all enforced above.
+revoke update on public.accounts from anon, authenticated;
+grant update (email_subdomain, sender_display_name, updated_at)
+  on public.accounts to authenticated;

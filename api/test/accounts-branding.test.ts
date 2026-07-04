@@ -278,6 +278,61 @@ async function main(): Promise<void> {
     assertStatus(r, 400, 'empty PATCH');
   });
 
+  // --- direct-PostgREST hardening (the branding UPDATE grant is column-scoped) -
+  // The accounts_manager_update RLS policy is row-level; an owner/manager holds
+  // a real GoTrue JWT and can hit PostgREST directly. These assert the column
+  // grant + CHECK backstops added in the branding migration actually fence that
+  // path — not just the API handler.
+  async function directPatch(acctId: string, token: string, body: unknown): Promise<number> {
+    const res = await fetch(`${status.API_URL}/rest/v1/accounts?id=eq.${acctId}`, {
+      method: 'PATCH',
+      headers: {
+        apikey: status.ANON_KEY,
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        prefer: 'return=representation',
+      },
+      body: JSON.stringify(body),
+    });
+    await res.text();
+    return res.status;
+  }
+  async function readAccount(acctId: string): Promise<Record<string, unknown>> {
+    const { data, error } = await admin
+      .from('accounts')
+      .select('name, deleted_at, email_subdomain')
+      .eq('id', acctId)
+      .single();
+    if (error) throw new Error(`admin read: ${error.message}`);
+    return data as Record<string, unknown>;
+  }
+
+  await check('direct PostgREST write to accounts.name is denied (column grant)', async () => {
+    const before = await readAccount(owner.accountId);
+    const st = directPatch(owner.accountId, owner.token, { name: 'HACKED VIA POSTGREST' });
+    assert((await st) >= 400, `expected 4xx, got ${await st}`);
+    const after = await readAccount(owner.accountId);
+    assert(after.name === before.name, `name mutated: ${before.name} -> ${after.name}`);
+  });
+
+  await check('direct PostgREST write to accounts.deleted_at is denied (column grant)', async () => {
+    const st = await directPatch(owner.accountId, owner.token, {
+      deleted_at: new Date().toISOString(),
+    });
+    assert(st >= 400, `expected 4xx, got ${st}`);
+    const after = await readAccount(owner.accountId);
+    assert(after.deleted_at === null, `deleted_at mutated to ${after.deleted_at}`);
+  });
+
+  await check('direct PostgREST reserved subdomain is rejected by the CHECK backstop', async () => {
+    // The column IS grantable, so this reaches the reserved-word CHECK, not the
+    // grant — proving the reserved list is enforced in the DB, not just the API.
+    const st = await directPatch(owner.accountId, owner.token, { email_subdomain: 'postmaster' });
+    assert(st >= 400, `expected 4xx CHECK violation, got ${st}`);
+    const after = await readAccount(owner.accountId);
+    assert(after.email_subdomain !== 'postmaster', 'reserved subdomain slipped past the CHECK');
+  });
+
   // --- summary ---------------------------------------------------------------
   console.info('');
   if (failures.length > 0) {

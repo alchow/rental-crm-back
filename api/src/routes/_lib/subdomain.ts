@@ -23,7 +23,10 @@ const CONTROL_RE = /[\x00-\x1f\x7f-\x9f]/;
 // Reserved labels a landlord may never claim: operational hostnames, mail
 // infrastructure, and support/abuse mailbox local-parts that would collide
 // with platform or provider expectations if they became a receiving subdomain.
-// This list is API policy and evolves; the DB deliberately does NOT encode it.
+// MIRRORED by the accounts_email_subdomain_reserved DB CHECK (migration
+// 20260704000001) — the unbypassable backstop for direct column-granted
+// PostgREST writes. Keep the two lists identical; evolving the list means a
+// migration and an API change together.
 const RESERVED_SUBDOMAINS: readonly string[] = [
   'www', 'mail', 'api', 'app', 'admin', 'root',
   'smtp', 'imap', 'pop', 'pop3', 'mx', 'ns', 'ns1', 'ns2', 'ftp',
