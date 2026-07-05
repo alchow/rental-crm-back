@@ -48,84 +48,35 @@ comment on column public.accounts.auto_charge_enabled is
   'Opt-in switch for the automatic rent-charge cron. Default false so '
   'existing accounts (whose rent_schedules were created by bulk import) are '
   'never surprise-billed when auto-charging is enabled fleet-wide. Only the '
-  'account owner/manager may flip it (RLS policy accounts_member_settings_update); '
-  'generate_rent_charges returns empty for any account where this is false.';
+  'account owner/manager may flip it (RLS policy accounts_manager_update + the '
+  'column-level UPDATE grant below); generate_rent_charges returns empty for '
+  'any account where this is false.';
 
 -- ============================================================================
--- (2) RLS: who may flip the flag
+-- (2) Authorize the member-facing flip of the flag
 -- ============================================================================
 --
--- Phase 2 gave accounts a member-only SELECT policy and NO update policy at
--- all (account writes went through the admin path). The settings PATCH route
--- runs under the USER's JWT via PostgREST, so a member-scoped UPDATE policy is
--- what authorizes the toggle -- without one, the PATCH is denied by
--- default-deny RLS.
+-- The settings PATCH route runs under the USER's JWT via PostgREST, so RLS +
+-- table grants decide whether the write lands. The account-branding migration
+-- (20260704000001_account_email_branding) already established the pattern for
+-- a member-writable accounts column, and we REUSE it here rather than add a
+-- parallel one:
 --
--- Scope to owner/manager, mirroring account_legal_holds_manager_write
--- (20260703000004): a viewer must not be able to start billing tenants. Uses
--- the ADR-0003 initplan IN-subquery form (membership set evaluated once per
--- statement) rather than the per-row is_account_member() helper.
+--   * RLS: policy `accounts_manager_update` (owner/manager, USING + WITH CHECK)
+--     already authorizes the row for UPDATE. A viewer is denied -- exactly the
+--     "a viewer must not start billing tenants" rule -- so no new policy needed.
+--   * COLUMN grant: that migration did `revoke update on accounts from
+--     authenticated` and re-granted UPDATE on only the branding columns. Postgres
+--     RLS is row-level, so the column grant is what stops an owner/manager from
+--     PATCHing name/deleted_at straight through PostgREST. We simply EXTEND the
+--     grant to include auto_charge_enabled -- the one column the settings route
+--     writes. (This migration is ordered AFTER the branding one, so the grant
+--     sticks.) No BEFORE-UPDATE guard trigger is needed: a column the user has
+--     no UPDATE privilege on is rejected by Postgres before any row is touched.
 --
--- COLUMN-LEVEL NOTE: Postgres RLS cannot restrict an UPDATE to a single
--- column, so this policy technically authorizes an owner/manager to UPDATE any
--- accounts column on their own account. Column-level protection is enforced by
--- the API layer: the settings PATCH route exposes ONLY auto_charge_enabled and
--- writes nothing else. Any direct member UPDATE of other columns is still
--- fully captured by the audit chain (accounts is audited), so it is
--- tamper-evident even though RLS alone cannot forbid it.
-create policy accounts_member_settings_update on public.accounts
-  for update
-  using (id in (
-    select m.account_id from public.account_members m
-     where m.user_id = (select auth.uid())
-       and m.role in ('owner', 'manager')
-       and m.deleted_at is null))
-  with check (id in (
-    select m.account_id from public.account_members m
-     where m.user_id = (select auth.uid())
-       and m.role in ('owner', 'manager')
-       and m.deleted_at is null));
-
--- ----------------------------------------------------------------------------
--- Column-level guard for the member UPDATE path.
---
--- The policy above is the FIRST client-writable UPDATE ever allowed on
--- accounts, and Postgres RLS is row-level, not column-level: on its own it
--- would let an owner/manager PATCH ANY column of their own account row straight
--- through PostgREST (bypassing the settings route's one-column allow-list) --
--- e.g. rename the account, or set/clear deleted_at outside the controlled admin
--- deletion flow. This BEFORE UPDATE trigger re-imposes the single-column intent
--- at the DB: on a USER-facing write (auth.uid() present -- the PostgREST/JWT
--- path) the ONLY column that may change is auto_charge_enabled.
---
--- The privileged paths are unaffected: the admin client and every SECURITY
--- DEFINER maintenance function run as service_role with auth.uid() = null, so
--- the guard is skipped and the legitimate soft-delete / rename / lifecycle
--- writes still work. If a future column becomes member-writable, add it to the
--- allow-list below explicitly (fail-closed: unknown column change is rejected).
-create or replace function public._accounts_reject_member_column_writes()
-returns trigger
-language plpgsql
-set search_path = public
-as $$
-begin
-  if auth.uid() is not null
-     and (NEW.name       is distinct from OLD.name
-       or NEW.deleted_at is distinct from OLD.deleted_at
-       or NEW.id         is distinct from OLD.id
-       or NEW.created_at is distinct from OLD.created_at)
-  then
-    raise exception
-      'a member may only change account settings (auto_charge_enabled), not other account columns'
-      using errcode = 'insufficient_privilege';
-  end if;
-  return NEW;
-end;
-$$;
-
-create trigger accounts_member_column_guard
-  before update on public.accounts
-  for each row execute function public._accounts_reject_member_column_writes();
+-- service_role is unaffected (separate grants; admin/cron paths keep full
+-- access), and accounts remains audited so every flip is tamper-evident.
+grant update (auto_charge_enabled) on public.accounts to authenticated;
 
 -- ============================================================================
 -- (3) generate_rent_charges -- advance-timing rewrite

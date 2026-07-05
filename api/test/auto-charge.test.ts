@@ -31,11 +31,11 @@
 //       stuck short. The live tenancy.end_date bounds billing at runtime until
 //       the tenancy actually ends.
 //
-//   (F) H1 column guard: on the member (user-JWT) write path the ONLY column
+//   (F) H1 column grant: on the member (user-JWT) write path the ONLY column
 //       that may change is auto_charge_enabled; a member's attempt to change
-//       any other column (e.g. name) is rejected with insufficient_privilege.
-//       The service-role admin client (auth.uid()=null) skips the guard, so
-//       this case is exercised through a user-scoped PostgREST client.
+//       any other column (e.g. name) is rejected with insufficient_privilege
+//       (no column UPDATE grant). The service-role admin client keeps full
+//       access, so this case is exercised through a user-scoped PostgREST client.
 //
 // Mirrors phase9.test.ts exactly (same env bootstrap, getAdminClient, check()).
 // Needs the live local Supabase stack (SUPABASE_URL etc. resolved from
@@ -250,7 +250,7 @@ async function main(): Promise<void> {
   });
 
   // Flip the opt-in on for A (admin path -- the API PATCH route would do this
-  // under the user's JWT via the accounts_member_settings_update policy).
+  // under the user's JWT via the accounts_manager_update policy + column grant).
   await check('flag ON: admin sets auto_charge_enabled=true', async () => {
     const { error } = await admin
       .from('accounts')
@@ -481,10 +481,10 @@ async function main(): Promise<void> {
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
     });
 
-    // ALLOWED: auto_charge_enabled is the one member-writable column. A is the
-    // owner of their account (signup creates the owner membership), so the
-    // accounts_member_settings_update RLS policy authorises the UPDATE and the
-    // BEFORE-UPDATE column guard passes it through.
+    // ALLOWED: auto_charge_enabled is a member-writable column. A is the owner
+    // of their account (signup creates the owner membership), so the
+    // accounts_manager_update RLS policy authorises the row and the column-level
+    // UPDATE grant on auto_charge_enabled lets the write through.
     const ok = await userSb
       .from('accounts')
       .update({ auto_charge_enabled: true })
@@ -497,8 +497,8 @@ async function main(): Promise<void> {
     }
 
     // REJECTED: any other column (here: name). RLS still permits the row (A is
-    // owner), but the column guard raises insufficient_privilege (SQLSTATE
-    // 42501 -> PostgREST HTTP 403).
+    // owner), but the user JWT has no UPDATE grant on `name`, so Postgres raises
+    // insufficient_privilege (SQLSTATE 42501 -> PostgREST HTTP 403).
     const bad = await userSb
       .from('accounts')
       .update({ name: 'hijacked-by-member' })
@@ -506,7 +506,7 @@ async function main(): Promise<void> {
       .select('name')
       .maybeSingle();
     if (!bad.error) {
-      throw new Error('member UPDATE of accounts.name should be rejected by the column guard, but it succeeded');
+      throw new Error('member UPDATE of accounts.name should be rejected (no column grant), but it succeeded');
     }
     if (bad.error.code !== '42501') {
       throw new Error(`expected insufficient_privilege (42501), got code=${bad.error.code} msg=${bad.error.message}`);

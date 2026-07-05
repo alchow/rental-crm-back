@@ -7,15 +7,17 @@ import { ApiError, dbError, errorResponses } from './_lib/error';
 // Account settings — the per-account knobs a landlord controls directly.
 //
 // Today this exposes exactly ONE field, auto_charge_enabled: the opt-in for
-// the automatic rent-charge cron (migration 20260704000001). It is a separate
+// the automatic rent-charge cron (migration 20260704000002). It is a separate
 // resource from the account record itself because the write path is
 // deliberately narrow:
 //
 //   * READ  (GET) — any account member may see the setting. The shared
 //     accounts_member_select RLS policy authorises the SELECT.
 //   * WRITE (PATCH) — only an account owner/manager may flip it. The
-//     accounts_member_settings_update RLS policy (added by the same migration)
-//     scopes the UPDATE to owner/manager; a viewer's UPDATE matches zero rows.
+//     accounts_manager_update RLS policy scopes the UPDATE to owner/manager (a
+//     viewer's UPDATE matches zero rows), and a column-level UPDATE grant limits
+//     a user-JWT write to auto_charge_enabled — both established by the account
+//     migrations, so the API never has to police columns itself.
 //
 // Both run under the CALLER's JWT via getSb() (never the service-role admin
 // client) so RLS is the authority: the API layer exposes only this one
@@ -98,7 +100,7 @@ settingsApp.openapi(patch, async (c) => {
   const { auto_charge_enabled } = c.req.valid('json');
   const sb = getSb(c);
   // Writes the ONLY writable field. Under the caller's JWT, the
-  // accounts_member_settings_update RLS policy authorises the UPDATE only for
+  // accounts_manager_update RLS policy authorises the UPDATE only for
   // an owner/manager.
   const { data, error } = await sb
     .from('accounts')
