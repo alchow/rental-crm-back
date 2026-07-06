@@ -5568,12 +5568,14 @@
           "filename": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 255
+            "maxLength": 255,
+            "pattern": "^[ -~]+$"
           },
           "content_type": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 200
+            "maxLength": 200,
+            "pattern": "^[ -~]+$"
           },
           "data_b64": {
             "type": "string",

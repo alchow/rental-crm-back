@@ -209,3 +209,32 @@ Nothing new mechanically — same endpoint, same rule: relay only on
   nosniff, CSP sandbox).
 - Storage: private `comm-attachments` bucket, no authenticated policies —
   bytes move only through the API; paths are content-addressed per message.
+
+## Known limitations (reviewed 2026-07-06; deliberate, tracked as follow-ups)
+
+- **Address book is first-writer-wins.** Every learning upsert
+  (capture, rebind, triage link) uses on-conflict-do-nothing: an address that
+  already maps to a different party keeps its OLD mapping. Consequence: on a
+  genuinely shared address (a couple sharing one inbox), cold/persona mail
+  attributes to whichever party was learned first, even after a human rebinds
+  or links the other party. Moving to last-human-wins is a cross-cutting
+  decision (it must not let a capture path overwrite a human's mapping).
+- **Shared `tenants.emails` fallback picks the oldest tenant** (stable
+  `created_at` order) and the learning step makes that sticky. Same root as
+  above.
+- **A landlord CC addressed to multiple known recipients journals into ONE
+  thread** (most-recently-active binding wins); the other recipients' threads
+  carry no record of that mail. Multi-thread fan-out of a single CC capture is
+  a deliberate follow-up, not v1.
+- **The CC arm requires `landlord_user` email identities.** They are created
+  when a landlord makes an email thread with an explicit address, on rebind,
+  or by ops. Until an account has one, that landlord's CCs land in triage
+  (they are never acked — the stranger ack suppresses recognized landlords
+  and, defensively, anyone until identities exist means: unknown senders only).
+- **Attachment filenames are printable-ASCII only** (rejected otherwise):
+  the value is rendered into download response headers. The transport should
+  transliterate or generically rename non-ASCII filenames before upload.
+- **`channel_identities.address` is trusted-lowercase, not enforced.** All
+  in-repo writers normalize; a future writer that stores mixed case would
+  silently miss the exact-hit lookups. A normalization trigger is a candidate
+  hardening.
