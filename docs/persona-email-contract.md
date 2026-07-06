@@ -191,3 +191,21 @@ Nothing new mechanically — same endpoint, same rule: relay only on
   the address so future mail auto-resolves), `POST …/unmatched/{id}/dismiss`.
 - Transport impact: none beyond reading `unmatched_id` if useful for
   logging. A linked sender's future mail starts resolving as `matched`.
+
+## Phase 7 — attachment ingestion (shipped with migration 20260709000002)
+
+- After a capture returns `matched` / `cc_journaled`, the transport may store
+  the original attachment bytes:
+  `POST /accounts/{id}/interactions/{interactionId}/attachments`
+  `{filename, content_type, data_b64}` — ≤10 MiB decoded per file, ≤10 per
+  message, base64. Idempotent per (interaction, content-hash): retries return
+  the existing row. **Skip on `duplicate`** (the original already carries
+  them) and on `triaged` (nothing journaled; the triage row keeps the
+  provider media URLs).
+- Only provider-verified capture rows accept attachments (400 otherwise);
+  the endpoint is transport-only (403).
+- Members list via GET on the same path and stream bytes from
+  `…/attachments/{attachmentId}/download` (forced Content-Disposition,
+  nosniff, CSP sandbox).
+- Storage: private `comm-attachments` bucket, no authenticated policies —
+  bytes move only through the API; paths are content-addressed per message.

@@ -707,7 +707,79 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
-  // (9) Guards
+  // (9) Attachment ingestion (phase 7)
+  // =========================================================================
+  const FILE_BYTES = new TextEncoder().encode(`fake-pdf-bytes-${SUFFIX}`);
+  const FILE_B64 = Buffer.from(FILE_BYTES).toString('base64');
+  let attachmentId = '';
+
+  await check('transport stores an attachment on a persona-captured row; retry is idempotent', async () => {
+    const path = `/v1/accounts/${accountId}/interactions/${t1FirstIid}/attachments`;
+    const r = await api('POST', path, {
+      token: agentToken,
+      body: { filename: 'deposit-photos.pdf', content_type: 'application/pdf', data_b64: FILE_B64 },
+    });
+    const row = assertStatus(r, 201, 'attachment upload') as {
+      id: string; filename: string | null; mime_type: string | null; content_hash: string;
+    };
+    assert(row.filename === 'deposit-photos.pdf', `filename: ${row.filename}`);
+    assert(row.mime_type === 'application/pdf', `mime: ${row.mime_type}`);
+    assert(/^[a-f0-9]{64}$/.test(row.content_hash), `hash: ${row.content_hash}`);
+    attachmentId = row.id;
+
+    const retry = await api('POST', path, {
+      token: agentToken,
+      body: { filename: 'deposit-photos.pdf', content_type: 'application/pdf', data_b64: FILE_B64 },
+    });
+    const again = assertStatus(retry, 201, 'attachment retry') as { id: string };
+    assert(again.id === attachmentId, `retry returns the existing row: ${again.id}`);
+  });
+
+  await check('members list + download the stored bytes (headers forced)', async () => {
+    const list = await api('GET', `/v1/accounts/${accountId}/interactions/${t1FirstIid}/attachments`, {
+      token: landlordToken,
+    });
+    const rows = (assertStatus(list, 200, 'attachment list') as { data: { id: string }[] }).data;
+    assert(rows.length === 1 && rows[0]!.id === attachmentId, `list: ${JSON.stringify(rows)}`);
+
+    const res = await app.fetch(new Request(
+      `http://test/v1/accounts/${accountId}/interactions/${t1FirstIid}/attachments/${attachmentId}/download`,
+      { headers: { authorization: `Bearer ${landlordToken}` } },
+    ));
+    assert(res.status === 200, `download status: ${res.status}`);
+    const got = new Uint8Array(await res.arrayBuffer());
+    assert(Buffer.from(got).equals(Buffer.from(FILE_BYTES)), 'bytes round-trip');
+    assert(res.headers.get('content-type') === 'application/pdf', `ct: ${res.headers.get('content-type')}`);
+    assert((res.headers.get('content-disposition') ?? '').includes('deposit-photos.pdf'), 'disposition filename');
+    assert(res.headers.get('x-content-type-options') === 'nosniff', 'nosniff forced');
+  });
+
+  await check('attachments are refused on non-capture rows and non-transport callers', async () => {
+    // A manually-journaled row (actor user:*, attestation attested) takes none.
+    const manual = await api('POST', `/v1/accounts/${accountId}/interactions`, {
+      token: landlordToken,
+      body: {
+        kind: 'communication', channel: 'email', direction: 'inbound',
+        party_type: 'tenant', party_id: t1Id, body: 'manual note of a call',
+        occurred_at: iso(),
+      },
+    });
+    const manualRow = assertStatus(manual, 201, 'manual journal') as { id: string };
+    const refused = await api('POST', `/v1/accounts/${accountId}/interactions/${manualRow.id}/attachments`, {
+      token: agentToken,
+      body: { filename: 'x.pdf', content_type: 'application/pdf', data_b64: FILE_B64 },
+    });
+    assertStatus(refused, 400, 'non-capture upload');
+
+    const landlordUpload = await api('POST', `/v1/accounts/${accountId}/interactions/${t1FirstIid}/attachments`, {
+      token: landlordToken,
+      body: { filename: 'x.pdf', content_type: 'application/pdf', data_b64: FILE_B64 },
+    });
+    assertStatus(landlordUpload, 403, 'landlord upload');
+  });
+
+  // =========================================================================
+  // (10) Guards
   // =========================================================================
   await check('landlord calling the persona endpoint → 403 (transport only)', async () => {
     const r = await api('POST', `${base}/inbound-persona`, {
