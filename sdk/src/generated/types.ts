@@ -15451,6 +15451,8 @@ export interface components {
             error_message: string | null;
             provider: string | null;
             provider_sid: string | null;
+            rfc822_message_id?: string | null;
+            relay_source_rfc822_message_id?: string | null;
             client_ref: string;
             approval_ref: string;
             /** Format: uuid */
@@ -15498,6 +15500,7 @@ export interface components {
         CompleteCommSendBody: {
             provider: string;
             provider_sid: string;
+            rfc822_message_id?: string;
         };
         FailCommSendBody: {
             error_code: string;
@@ -15525,7 +15528,7 @@ export interface components {
         } | null;
         CaptureCommInboundResponse: {
             /** @enum {string} */
-            disposition: "matched" | "orphan" | "opted_out" | "sender_mismatch";
+            disposition: "matched" | "orphan" | "opted_out" | "sender_mismatch" | "duplicate";
             /** Format: uuid */
             interaction_id: string | null;
             /** Format: uuid */
@@ -15535,6 +15538,14 @@ export interface components {
         CommInboundMedia: {
             url: string;
             content_type?: string;
+        };
+        CommAuthResults: {
+            /** @enum {string} */
+            spf: "pass" | "fail" | "neutral" | "none" | "softfail" | "temperror" | "permerror";
+            /** @enum {string} */
+            dkim: "pass" | "fail" | "neutral" | "none" | "policy" | "temperror" | "permerror";
+            /** @enum {string} */
+            dmarc: "pass" | "fail" | "none" | "temperror" | "permerror";
         };
         CaptureCommInboundBody: {
             provider: string;
@@ -15548,6 +15559,11 @@ export interface components {
             media?: components["schemas"]["CommInboundMedia"][];
             /** Format: date-time */
             received_at: string;
+            subject?: string;
+            rfc822_message_id?: string;
+            in_reply_to?: string;
+            references?: string[];
+            auth_results?: components["schemas"]["CommAuthResults"];
         };
         CommInboundProvenance: {
             /** Format: uuid */

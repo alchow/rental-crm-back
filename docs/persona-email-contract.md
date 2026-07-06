@@ -57,7 +57,40 @@ inbound rcpt <addr>:
 **Namespace guarantee**: persona local parts can never start with `t-`
 (DB CHECK), so the `t-` prefix test above is a safe discriminator forever.
 
-## Phase 2 — RFC822 headers + `duplicate` disposition (pending)
+## Phase 2 — RFC822 headers + `duplicate` disposition (shipped with migration 20260707000002)
+
+**What exists**
+
+- `POST /accounts/{id}/comms/inbound` accepts five NEW optional email-only
+  fields (a 400 on any other channel): `subject`, `rfc822_message_id`,
+  `in_reply_to`, `references[]`, and
+  `auth_results {spf, dkim, dmarc}` (RFC 7601 verdict enums). All ride into
+  the raw capture; the normalized Message-ID also lands on the journal row.
+  Message-IDs are normalized trim + strip-one-`<>` + lowercase server-side.
+- **New capture disposition `duplicate`**: the token resolved AND this
+  email's own Message-ID already journaled into the SAME thread — the second
+  delivery door of one send. Nothing new is written;
+  `interaction_id/thread_id/participant` point at the ORIGINAL row. Treat as
+  success-no-op; relay nothing. (Reminder of the standing rule: relay
+  nothing on ANY unrecognized disposition.)
+- `POST /accounts/{id}/comms/outbox/{id}/complete` accepts optional
+  `rfc822_message_id` — the Message-ID the provider stamped on the SENT
+  mail. It is recorded on the outbox row (`rfc822_message_id` in reads) and
+  the journal entry.
+- Outbox reads (`GET .../comms/outbox`, `GET .../comms/outbox/{id}`) expose
+  `relay_source_rfc822_message_id` on email relay legs: the Message-ID of
+  the inbound original the leg relays.
+
+**What the transport should do with it**
+
+- Pass `rfc822_message_id`, `subject`, `in_reply_to`, `references`, and the
+  provider's auth verdicts on every email capture (phases 3–4 gate
+  attribution and auto-acks on the verdicts — captures without them will be
+  treated as unauthenticated).
+- Report the sent Message-ID on every email `complete`.
+- When rendering an email relay leg, set `In-Reply-To:
+  <relay_source_rfc822_message_id>` and append it to `References` — relayed
+  conversations then thread natively in recipients' mail clients.
 
 ## Phase 3 — persona capture: known senders + auto-ack (pending)
 

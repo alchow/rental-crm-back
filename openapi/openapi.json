@@ -4183,6 +4183,18 @@
               "null"
             ]
           },
+          "rfc822_message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "relay_source_rfc822_message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "client_ref": {
             "type": "string"
           },
@@ -4374,6 +4386,11 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          },
+          "rfc822_message_id": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 998
           }
         },
         "required": [
@@ -4486,7 +4503,8 @@
               "matched",
               "orphan",
               "opted_out",
-              "sender_mismatch"
+              "sender_mismatch",
+              "duplicate"
             ]
           },
           "interaction_id": {
@@ -4529,6 +4547,50 @@
         },
         "required": [
           "url"
+        ]
+      },
+      "CommAuthResults": {
+        "type": "object",
+        "properties": {
+          "spf": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "fail",
+              "neutral",
+              "none",
+              "softfail",
+              "temperror",
+              "permerror"
+            ]
+          },
+          "dkim": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "fail",
+              "neutral",
+              "none",
+              "policy",
+              "temperror",
+              "permerror"
+            ]
+          },
+          "dmarc": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "fail",
+              "none",
+              "temperror",
+              "permerror"
+            ]
+          }
+        },
+        "required": [
+          "spf",
+          "dkim",
+          "dmarc"
         ]
       },
       "CaptureCommInboundBody": {
@@ -4585,6 +4647,33 @@
           "received_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 998
+          },
+          "rfc822_message_id": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 998
+          },
+          "in_reply_to": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 998
+          },
+          "references": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 998
+            },
+            "maxItems": 50
+          },
+          "auth_results": {
+            "$ref": "#/components/schemas/CommAuthResults"
           }
         },
         "required": [

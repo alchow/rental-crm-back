@@ -136,6 +136,16 @@ const CommOutbox = z
     provider: z.string().nullable(),
     /** Provider message id; unique, set on completion. */
     provider_sid: z.string().nullable(),
+    /** The SENT mail's RFC 5322 Message-ID, reported by the transport at
+     *  completion (email only; normalized server-side). Null until completed
+     *  or when the transport did not report one. */
+    rfc822_message_id: z.string().nullable().optional(),
+    /** Derived, read-only (email relay legs): the Message-ID of the inbound
+     *  original this leg relays (relay_of_interaction_id's journal row) — set
+     *  it as In-Reply-To/References when rendering the relayed mail so the
+     *  conversation threads natively in the recipient's client. Null when the
+     *  original carried no Message-ID; absent on non-relay rows. */
+    relay_source_rfc822_message_id: z.string().nullable().optional(),
     /** Server-generated opaque ref the transport passes to the provider so
      *  callbacks can always re-associate with this row (unique). */
     client_ref: z.string(),
@@ -191,6 +201,10 @@ const CompleteSendBody = z
   .object({
     provider: z.string().min(1).max(100),
     provider_sid: z.string().min(1).max(200),
+    /** Email-only: the Message-ID the provider stamped on the SENT mail
+     *  (angle brackets optional; normalized server-side). Recorded on the
+     *  outbox row + journal entry so later replies/relays can cite it. */
+    rfc822_message_id: z.string().min(3).max(998).optional(),
   })
   .openapi('CompleteCommSendBody');
 
@@ -236,6 +250,18 @@ const CommInboundMedia = z
   })
   .openapi('CommInboundMedia');
 
+/** Provider-evaluated email authentication verdicts (RFC 7601 vocabulary),
+ *  passed through by the transport from the receiving provider's headers.
+ *  Core stores them with the raw capture; later phases gate attribution and
+ *  auto-replies on them. */
+const CommAuthResults = z
+  .object({
+    spf: z.enum(['pass', 'fail', 'neutral', 'none', 'softfail', 'temperror', 'permerror']),
+    dkim: z.enum(['pass', 'fail', 'neutral', 'none', 'policy', 'temperror', 'permerror']),
+    dmarc: z.enum(['pass', 'fail', 'none', 'temperror', 'permerror']),
+  })
+  .openapi('CommAuthResults');
+
 const CaptureInboundBody = z
   .object({
     provider: z.string().min(1).max(100),
@@ -260,6 +286,21 @@ const CaptureInboundBody = z
     body: z.string().max(20000).optional(),
     media: z.array(CommInboundMedia).max(20).optional(),
     received_at: z.string().datetime(),
+    /** Email-only. The mail's Subject header, stored with the raw capture
+     *  (NOT folded into the journal body — the journal shape is unchanged). */
+    subject: z.string().min(1).max(998).optional(),
+    /** Email-only. The mail's own RFC 5322 Message-ID (angle brackets
+     *  optional; normalized trim+strip+lowercase server-side). Powers the
+     *  same-thread duplicate detection: one email delivered to two platform
+     *  mailboxes arrives as two receipts with two provider_msg_ids, and this
+     *  is the identity that recognizes them as one message. */
+    rfc822_message_id: z.string().min(3).max(998).optional(),
+    /** Email-only. The In-Reply-To header, stored with the raw capture. */
+    in_reply_to: z.string().min(3).max(998).optional(),
+    /** Email-only. The References header's Message-IDs, oldest first. */
+    references: z.array(z.string().min(3).max(998)).max(50).optional(),
+    /** Email-only. Provider auth verdicts; stored with the raw capture. */
+    auth_results: CommAuthResults.optional(),
   })
   .openapi('CaptureCommInboundBody');
 
@@ -285,8 +326,13 @@ const CaptureInboundResponse = z
      *  sender_mismatch: the email reply token resolved but the from-address is
      *  NOT the bound participant's — the message IS journaled into the thread
      *  (party 'unspecified', actual sender as the label) but the transport must
-     *  NOT auto-relay it as verified. */
-    disposition: z.enum(['matched', 'orphan', 'opted_out', 'sender_mismatch']),
+     *  NOT auto-relay it as verified.
+     *  duplicate: the token resolved AND this email's own Message-ID already
+     *  journaled into the same thread (a second delivery door of one send) —
+     *  nothing new was written; interaction_id/thread_id/participant point at
+     *  the ORIGINAL row. Treat as success-no-op; relay nothing.
+     *  Forward-compat rule: relay nothing on any unrecognized disposition. */
+    disposition: z.enum(['matched', 'orphan', 'opted_out', 'sender_mismatch', 'duplicate']),
     interaction_id: z.string().uuid().nullable(),
     thread_id: z.string().uuid().nullable(),
     participant: CommThreadParticipant.nullable(),
@@ -1425,6 +1471,42 @@ commsApp.openapi(createOutbox, async (c) => {
 // GET /comms/outbox — dispatch scan (transport)
 // ---------------------------------------------------------------------------
 
+// Attach relay_source_rfc822_message_id to email relay legs: the Message-ID
+// of the inbound original each leg relays, so the transport can set
+// In-Reply-To/References and the relayed mail threads natively in the
+// recipient's client. One batched read per page; non-relay rows are untouched.
+async function withRelaySourceMessageIds(
+  c: Context,
+  accountId: string,
+  rows: OutboxRow[],
+): Promise<OutboxRow[]> {
+  const sourceIds = [
+    ...new Set(
+      rows
+        .filter((r) => r.channel === 'email' && r.relay_of_interaction_id !== null)
+        .map((r) => r.relay_of_interaction_id as string),
+    ),
+  ];
+  if (sourceIds.length === 0) return rows;
+  const { data, error } = await getSb(c)
+    .from('interactions')
+    .select('id, rfc822_message_id')
+    .eq('account_id', accountId)
+    .in('id', sourceIds);
+  if (error) throw commDbError(error);
+  const byId = new Map(
+    ((data ?? []) as { id: string; rfc822_message_id: string | null }[]).map((i) => [
+      i.id,
+      i.rfc822_message_id,
+    ]),
+  );
+  return rows.map((r) =>
+    r.channel === 'email' && r.relay_of_interaction_id !== null
+      ? { ...r, relay_source_rfc822_message_id: byId.get(r.relay_of_interaction_id) ?? null }
+      : r,
+  );
+}
+
 commsApp.openapi(listOutbox, async (c) => {
   requireTransport(c);
   const { accountId } = c.req.valid('param');
@@ -1437,7 +1519,8 @@ commsApp.openapi(listOutbox, async (c) => {
   // is AND-combined with the keyset filter by PostgREST.
   if (eligible_at !== undefined) q = q.or(`not_before.is.null,not_before.lte.${eligible_at}`);
   const { items, next_cursor } = await keysetPage<OutboxRow>(q, { cursor, limit });
-  return c.json({ data: items, next_cursor }, 200);
+  const data = await withRelaySourceMessageIds(c, accountId, items);
+  return c.json({ data, next_cursor }, 200);
 });
 
 // ---------------------------------------------------------------------------
@@ -1460,7 +1543,8 @@ commsApp.openapi(getOutbox, async (c) => {
     .maybeSingle();
   if (error) throw commDbError(error);
   if (!data) throw new ApiError(404, 'not_found', 'not found');
-  return c.json(data as OutboxRow, 200);
+  const [row] = await withRelaySourceMessageIds(c, accountId, [data as OutboxRow]);
+  return c.json(row, 200);
 });
 
 // ---------------------------------------------------------------------------
@@ -1477,6 +1561,7 @@ commsApp.openapi(completeSend, async (c) => {
     p_outbox_id: id,
     p_provider: body.provider,
     p_provider_sid: body.provider_sid,
+    p_rfc822_message_id: body.rfc822_message_id ?? null,
   });
   if (error) throw commDbError(error);
   const { data: row, error: rowErr } = await sb
@@ -1546,6 +1631,18 @@ commsApp.openapi(captureInbound, async (c) => {
   // both normalize identically (trim + lowercase). The sms path is unchanged.
   const toNumber = body.channel === 'email' ? body.to_number.trim().toLowerCase() : body.to_number;
   const fromAddress = body.channel === 'email' ? body.from_address.trim().toLowerCase() : body.from_address;
+  // Email header fields are email-only: reject them on sms/voice up front so
+  // an sms capture can never smuggle a Message-ID into the dedupe space.
+  if (body.channel !== 'email') {
+    const emailOnly = ['subject', 'rfc822_message_id', 'in_reply_to', 'references', 'auth_results'] as const;
+    for (const f of emailOnly) {
+      if (body[f] !== undefined) {
+        throw new ApiError(400, 'invalid_request', `${f} is only valid on email captures`, {
+          fieldErrors: { [f]: ['only valid when channel=email'] },
+        });
+      }
+    }
+  }
   const { data, error } = await sb.rpc('capture_inbound', {
     p_account_id: accountId,
     p_provider: body.provider,
@@ -1557,10 +1654,15 @@ commsApp.openapi(captureInbound, async (c) => {
     p_media: body.media ?? null,
     p_received_at: body.received_at,
     p_cc: body.cc ?? null,
+    p_subject: body.subject ?? null,
+    p_rfc822_message_id: body.rfc822_message_id ?? null,
+    p_in_reply_to: body.in_reply_to ?? null,
+    p_references: body.references ?? null,
+    p_auth_results: body.auth_results ?? null,
   });
   if (error) throw commDbError(error);
   const result = (data as {
-    disposition: 'matched' | 'orphan' | 'opted_out' | 'sender_mismatch';
+    disposition: 'matched' | 'orphan' | 'opted_out' | 'sender_mismatch' | 'duplicate';
     interaction_id: string | null;
     thread_id: string | null;
     participant_id: string | null;

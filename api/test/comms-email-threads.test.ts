@@ -616,6 +616,143 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
+  // (9b) RFC822 headers + duplicate detection (persona plan, phase 2)
+  // =========================================================================
+  // The email's own Message-ID (not the provider receipt id) identifies it
+  // across delivery doors: same account + same normalized Message-ID + same
+  // thread → 'duplicate', pointing at the ORIGINAL journal row.
+  let msgidInboundIid = '';
+  const RFC_ID = `Dup-${SUFFIX}@sender.test`; // stored normalized: lowercased
+
+  await check('email capture with Message-ID/subject/auth_results → matched; journal carries the normalized id', async () => {
+    const r = await capture({
+      provider: 'resend', provider_msg_id: `IN-hdr-${rnd()}`, to_number: tenant1Token,
+      from_address: T1_EMAIL, channel: 'email', body: 'headed reply', received_at: iso(),
+      subject: 'About the sink',
+      rfc822_message_id: `<${RFC_ID}>`,
+      in_reply_to: '<prior@sender.test>',
+      references: ['<root@sender.test>', '<prior@sender.test>'],
+      auth_results: { spf: 'pass', dkim: 'pass', dmarc: 'pass' },
+    });
+    const res = assertStatus(r, 200, 'headed capture') as CaptureShape;
+    assert(res.disposition === 'matched', `disposition: ${res.disposition}`);
+    msgidInboundIid = res.interaction_id!;
+    const { data: row, error } = await admin
+      .from('interactions')
+      .select('rfc822_message_id, body')
+      .eq('id', msgidInboundIid)
+      .single();
+    if (error) throw new Error(`journal read: ${error.message}`);
+    assert(row.rfc822_message_id === RFC_ID.toLowerCase(), `normalized id on the journal: ${row.rfc822_message_id}`);
+    // Subject is NOT folded into the journal body (phase-2 contract).
+    assert(row.body === 'headed reply', `journal body unchanged: ${row.body}`);
+  });
+
+  await check('same Message-ID again via the SAME token (new receipt id) → duplicate, original ids returned', async () => {
+    const r = await capture({
+      provider: 'resend', provider_msg_id: `IN-hdr-${rnd()}`, to_number: tenant1Token,
+      from_address: T1_EMAIL, channel: 'email', body: 'headed reply', received_at: iso(),
+      rfc822_message_id: RFC_ID.toUpperCase(), // no brackets, different case → same normalized id
+    });
+    const res = assertStatus(r, 200, 'same-door duplicate') as CaptureShape;
+    assert(res.disposition === 'duplicate', `disposition: ${res.disposition}`);
+    assert(res.interaction_id === msgidInboundIid, `points at the original: ${res.interaction_id}`);
+    assert(res.thread_id === thread1Id, `thread: ${res.thread_id}`);
+  });
+
+  await check("two-door delivery: the same Message-ID via the LANDLORD's token (same thread) → duplicate", async () => {
+    const doorTwo = `IN-hdr-${rnd()}`;
+    const r = await capture({
+      provider: 'resend', provider_msg_id: doorTwo, to_number: landlordToken,
+      from_address: LL_EMAIL, channel: 'email', body: 'headed reply', received_at: iso(),
+      rfc822_message_id: `<${RFC_ID}>`,
+    });
+    const res = assertStatus(r, 200, 'two-door duplicate') as CaptureShape;
+    assert(res.disposition === 'duplicate', `disposition: ${res.disposition}`);
+    assert(res.interaction_id === msgidInboundIid, `points at the original: ${res.interaction_id}`);
+
+    // Replay of the duplicate receipt answers identically from the raw cache.
+    const replay = await capture({
+      provider: 'resend', provider_msg_id: doorTwo, to_number: landlordToken,
+      from_address: LL_EMAIL, channel: 'email', body: 'headed reply', received_at: iso(),
+      rfc822_message_id: `<${RFC_ID}>`,
+    });
+    const rr = assertStatus(replay, 200, 'duplicate replay') as CaptureShape;
+    assert(rr.disposition === 'duplicate', `replay disposition: ${rr.disposition}`);
+    assert(rr.interaction_id === msgidInboundIid, 'replay returns the original id');
+  });
+
+  await check('no Message-ID → never dedupes (two captures journal twice)', async () => {
+    const a = assertStatus(await capture({
+      provider: 'resend', provider_msg_id: `IN-noid-${rnd()}`, to_number: tenant1Token,
+      from_address: T1_EMAIL, channel: 'email', body: 'no id', received_at: iso(),
+    }), 200, 'no-id capture 1') as CaptureShape;
+    const b = assertStatus(await capture({
+      provider: 'resend', provider_msg_id: `IN-noid-${rnd()}`, to_number: tenant1Token,
+      from_address: T1_EMAIL, channel: 'email', body: 'no id', received_at: iso(),
+    }), 200, 'no-id capture 2') as CaptureShape;
+    assert(a.disposition === 'matched' && b.disposition === 'matched', `dispositions: ${a.disposition}/${b.disposition}`);
+    assert(a.interaction_id !== b.interaction_id, 'distinct journal rows without a Message-ID');
+  });
+
+  await check('header fields on an sms capture → 400 (email-only)', async () => {
+    const r = await capture({
+      provider: 'telnyx', provider_msg_id: `IN-sms-${rnd()}`, to_number: PLATFORM_A,
+      from_address: T1_PHONE, channel: 'sms', body: 'hi', received_at: iso(),
+      rfc822_message_id: `<${RFC_ID}>`,
+    });
+    assertStatus(r, 400, 'sms with rfc822_message_id');
+  });
+
+  await check('complete with rfc822_message_id → stamped (normalized) on the outbox row + journal entry', async () => {
+    const intent = await api('POST', `${base}/outbox`, {
+      token: fx.landlordToken,
+      body: {
+        channel: 'email', to_address: T1_EMAIL, body: 'sent with an id',
+        subject: 'Receipt', approval_ref: self,
+      },
+    });
+    const row = assertStatus(intent, 201, 'headed intent') as OutboxShape;
+    const done = await api('POST', `${base}/outbox/${row.id}/complete`, {
+      token: fx.agentToken,
+      body: { provider: 'resend', provider_sid: `em-${rnd()}`, rfc822_message_id: `<Sent-${SUFFIX}@resend>` },
+    });
+    const body = assertStatus(done, 200, 'headed complete') as {
+      interaction_id: string;
+      outbox: OutboxShape & { rfc822_message_id: string | null };
+    };
+    assert(
+      body.outbox.rfc822_message_id === `sent-${SUFFIX}@resend`,
+      `outbox sent id (normalized): ${body.outbox.rfc822_message_id}`,
+    );
+    const { data: j, error } = await admin
+      .from('interactions')
+      .select('rfc822_message_id')
+      .eq('id', body.interaction_id)
+      .single();
+    if (error) throw new Error(`sent journal read: ${error.message}`);
+    assert(j.rfc822_message_id === `sent-${SUFFIX}@resend`, `journal sent id: ${j.rfc822_message_id}`);
+  });
+
+  await check('email relay leg exposes relay_source_rfc822_message_id (the inbound original)', async () => {
+    const intent = await api('POST', `${base}/outbox`, {
+      token: fx.agentToken,
+      body: {
+        channel: 'email', thread_id: thread1Id, participant_ref: landlordParticipantId,
+        relay_of_interaction_id: msgidInboundIid, body: 'relayed headed body',
+        approval_ref: `thread:${thread1Id}`,
+      },
+    });
+    const row = assertStatus(intent, 201, 'headed relay intent') as OutboxShape;
+    const read = await api('GET', `${base}/outbox/${row.id}`, { token: fx.agentToken });
+    const got = assertStatus(read, 200, 'relay read') as { relay_source_rfc822_message_id?: string | null };
+    assert(
+      got.relay_source_rfc822_message_id === RFC_ID.toLowerCase(),
+      `relay source id: ${got.relay_source_rfc822_message_id}`,
+    );
+  });
+
+  // =========================================================================
   // (10) Channel-aware landlord in-app message on the email thread
   // =========================================================================
   await check('landlord thread message on the email thread → one email intent to the tenant, no subject on the row', async () => {
