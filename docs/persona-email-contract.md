@@ -135,4 +135,27 @@ inbound rcpt <addr>:
                                     (relay ONLY on 'matched')
 ```
 
-## Phase 4 — CC journal-only capture (pending)
+## Phase 4 — CC journal-only capture (shipped with migration 20260708000002)
+
+**What exists**
+
+- `POST /comms/inbound-persona` now recognizes the account's OWN landlord as
+  the sender (their email identity + **DMARC pass** — a landlord From that
+  fails DMARC is triaged, never attributed). The mail is journaled
+  **outbound, landlord-authored** into the conversation matched by a To/CC
+  address bound in an active email thread; when no thread exists but a To/CC
+  address resolves to a known tenant/vendor, the thread is created
+  outbound-cold (the landlord opened the conversation from their own inbox;
+  they are bound with their own address + a minted token). Unknown
+  counterparties → `triaged`.
+- **Disposition `cc_journaled`: journal-only. Relay NOTHING** — both humans
+  already have the mail; re-sending would duplicate the conversation.
+- The reply-all two-door is closed in both orders: one email arriving via a
+  reply token AND via the persona CC produces one journal row + one
+  `duplicate`.
+
+**What the transport should do with it**
+
+Nothing new mechanically — same endpoint, same rule: relay only on
+`matched`. The practical upshot for rendering/UX: landlords can be told
+"CC riley@… from your own inbox and it lands in the file."
