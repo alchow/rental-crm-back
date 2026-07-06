@@ -582,6 +582,20 @@ async function main(): Promise<void> {
     }), 200, 'triage replay') as CaptureShape;
     assert(replay.disposition === 'triaged' && replay.unmatched_id === triageRowId,
       `replay resolves the same triage row: ${replay.unmatched_id}`);
+
+    // The fire-and-forget ack stamps auto_acked_at on the triage row — the
+    // FE's "we already replied" signal. Poll briefly like the ack checks.
+    let acked: string | null = null;
+    for (let i = 0; i < 20 && acked === null; i++) {
+      await sleep(150);
+      const { data } = await admin
+        .from('comm_unmatched_inbound')
+        .select('auto_acked_at')
+        .eq('id', triageRowId)
+        .maybeSingle();
+      acked = (data?.auto_acked_at as string | null) ?? null;
+    }
+    assert(acked !== null, 'auto_acked_at stamped on the triage row');
   });
 
   await check('the triage queue lists pending rows with their stored copy + reason', async () => {

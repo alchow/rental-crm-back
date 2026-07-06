@@ -1081,9 +1081,13 @@ const UnmatchedSuggestion = z
     party_id: z.string().uuid(),
     title: z.string(),
     subtitle: z.string().nullable(),
-    /** email_exact: the sender address appears verbatim in the party's
-     *  contact emails. name_match: trigram match of the From display name. */
-    source: z.enum(['email_exact', 'name_match']),
+    /** email_exact: the sender address appears VERBATIM (case-sensitive) in
+     *  the party's contact emails. address_match: trigram match of the sender
+     *  address against the party's searchable text — catches case variants
+     *  the verbatim probe misses (capture matching is case-insensitive, so
+     *  these parties would auto-resolve on capture). name_match: trigram
+     *  match of the From display name. */
+    source: z.enum(['email_exact', 'address_match', 'name_match']),
   })
   .openapi('CommUnmatchedSuggestion');
 
@@ -2020,7 +2024,7 @@ commsApp.openapi(capturePersonaInbound, async (c) => {
   // inside. A recognized landlord (e.g. CCing about a counterparty core doesn't
   // know) or a self-addressed persona loop must NEVER receive the tenant-
   // oriented receipt. Fire-and-forget so ack latency/failures never couple to
-  // capture.
+  // capture. The triage row id rides along so the ack stamps auto_acked_at.
   if (
     result.disposition === 'triaged' &&
     body.auth_results.dmarc === 'pass' &&
@@ -2037,7 +2041,7 @@ commsApp.openapi(capturePersonaInbound, async (c) => {
     // Fail closed: an identity-read failure must never cause a mis-targeted
     // email, and a recognized landlord identity is never a stranger.
     if (!identityErr && !landlordIdentity) {
-      queuePersonaAck(accountId, fromAddress);
+      queuePersonaAck(accountId, fromAddress, result.unmatched_id ?? undefined);
     }
   }
 
@@ -2909,12 +2913,20 @@ commsApp.openapi(getUnmatched, async (c) => {
     seen.add(t.id);
   }
 
-  // (2) Trigram name match on the From display name (the entity-search RPC —
-  // returns unit/property context as the subtitle for disambiguation).
-  if (row.from_display_name) {
+  // (2) Trigram match of the sender ADDRESS against searchable party text
+  // (tenant search text includes contact emails): catches the case variants
+  // the verbatim probe misses — capture matching is case-insensitive, so a
+  // mixed-case stored email that capture WOULD auto-resolve must still be
+  // suggested here. (3) Trigram name match on the From display name.
+  const probes: { q: string | null; source: 'address_match' | 'name_match' }[] = [
+    { q: row.from_address, source: 'address_match' },
+    { q: row.from_display_name, source: 'name_match' },
+  ];
+  for (const probe of probes) {
+    if (!probe.q) continue;
     const { data: hits, error: sErr } = await sb.rpc('search_entities', {
       p_account_id: accountId,
-      p_q: row.from_display_name,
+      p_q: probe.q,
       p_types: ['tenant', 'vendor'],
       p_exclude: null,
       p_limit: 5,
@@ -2927,7 +2939,7 @@ commsApp.openapi(getUnmatched, async (c) => {
       if (h.entity_type !== 'tenant' && h.entity_type !== 'vendor') continue;
       suggestions.push({
         party_type: h.entity_type, party_id: h.entity_id,
-        title: h.title, subtitle: h.subtitle, source: 'name_match',
+        title: h.title, subtitle: h.subtitle, source: probe.source,
       });
       seen.add(h.entity_id);
     }

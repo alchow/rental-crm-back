@@ -5754,6 +5754,7 @@
             "type": "string",
             "enum": [
               "email_exact",
+              "address_match",
               "name_match"
             ]
           }

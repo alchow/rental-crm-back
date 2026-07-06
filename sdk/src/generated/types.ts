@@ -16340,7 +16340,7 @@ export interface components {
             title: string;
             subtitle: string | null;
             /** @enum {string} */
-            source: "email_exact" | "name_match";
+            source: "email_exact" | "address_match" | "name_match";
         };
         CommUnmatchedDetailResponse: components["schemas"]["CommUnmatchedInbound"] & {
             suggestions: components["schemas"]["CommUnmatchedSuggestion"][];
