@@ -537,13 +537,24 @@ async function main(): Promise<void> {
     assert(res.interaction_id === null, 'nothing journaled');
   });
 
-  await check('landlord CC about an unknown counterparty → triaged', async () => {
+  await check('landlord CC about an unknown counterparty → triaged, and the landlord is NEVER acked', async () => {
     const r = await personaCapture({
       from_address: LL_EMAIL, to_addresses: [`nobody-${SUFFIX}@unknown.test`],
       body: 'who is this even about',
     });
     const res = assertStatus(r, 200, 'unknown-counterparty cc') as CaptureShape;
     assert(res.disposition === 'triaged', `disposition: ${res.disposition}`);
+
+    // The stranger ack is for strangers: a recognized landlord landing in
+    // triage (DMARC pass and all) must not receive the tenant-oriented
+    // receipt. Poll-wait like the positive ack checks, then assert absence.
+    await sleep(600);
+    const { count } = await admin
+      .from('comm_outbox')
+      .select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId).eq('to_address', LL_EMAIL)
+      .eq('approval_ref', 'system:persona_ack');
+    assert((count ?? 0) === 0, `no ack to the landlord: ${count}`);
   });
 
   // =========================================================================
