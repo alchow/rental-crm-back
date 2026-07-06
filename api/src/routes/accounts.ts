@@ -6,7 +6,9 @@ import { loadEnv } from '../env';
 import { ApiError, dbError, errorResponses } from './_lib/error';
 import {
   brandedReplyDomain,
+  personaAddress,
   validateEmailSubdomain,
+  validatePersonaLocalPart,
   validateSenderDisplayName,
 } from './_lib/subdomain';
 
@@ -37,6 +39,15 @@ const EmailBranding = z
      *  BOTH the subdomain and EMAIL_PLATFORM_PARENT_DOMAIN are set; null
      *  otherwise (branded minting off — threads fall back to EMAIL_REPLY_DOMAIN). */
     reply_domain: z.string().nullable(),
+    /** The local part of the account's persona address (e.g. 'riley'); null
+     *  when the persona feature is off for the account. */
+    persona_local_part: z.string().nullable(),
+    /** The computed full persona address
+     *  (`<persona_local_part>@<subdomain>.<parent>`) when the local part, the
+     *  branded subdomain, AND the platform parent domain are all set; null
+     *  otherwise. The persona is branded-subdomain-only by design — a local
+     *  part on the shared reply domain would be ambiguous across accounts. */
+    persona_address: z.string().nullable(),
   })
   .openapi('AccountEmailBranding');
 
@@ -45,6 +56,7 @@ const PatchEmailBrandingBody = z
     /** Partial update. Omit to leave unchanged; explicit null clears the field. */
     email_subdomain: z.string().nullable().optional(),
     sender_display_name: z.string().nullable().optional(),
+    persona_local_part: z.string().nullable().optional(),
   })
   .refine((b) => Object.keys(b).length > 0, {
     message: 'at least one field is required',
@@ -90,16 +102,23 @@ function requireManager(c: Context): void {
 }
 
 // Shape the account row + env into the API response (shared by GET and PATCH).
-function brandingResponse(row: {
+interface BrandingRow {
   email_subdomain: string | null;
   sender_display_name: string | null;
-}): z.infer<typeof EmailBranding> {
+  persona_local_part: string | null;
+}
+function brandingResponse(row: BrandingRow): z.infer<typeof EmailBranding> {
+  const parent = loadEnv().EMAIL_PLATFORM_PARENT_DOMAIN;
   return {
     email_subdomain: row.email_subdomain,
     sender_display_name: row.sender_display_name,
-    reply_domain: brandedReplyDomain(row.email_subdomain, loadEnv().EMAIL_PLATFORM_PARENT_DOMAIN),
+    reply_domain: brandedReplyDomain(row.email_subdomain, parent),
+    persona_local_part: row.persona_local_part,
+    persona_address: personaAddress(row.persona_local_part, row.email_subdomain, parent),
   };
 }
+
+const BRANDING_COLS = 'email_subdomain, sender_display_name, persona_local_part';
 
 accountsApp.openapi(getBranding, async (c) => {
   const { accountId } = c.req.valid('param');
@@ -107,13 +126,13 @@ accountsApp.openapi(getBranding, async (c) => {
 
   const { data, error } = await sb
     .from('accounts')
-    .select('email_subdomain, sender_display_name')
+    .select(BRANDING_COLS)
     .eq('id', accountId)
     .maybeSingle();
   if (error) throw dbError(error);
   if (!data) throw new ApiError(404, 'not_found', 'not found');
 
-  return c.json(brandingResponse(data as { email_subdomain: string | null; sender_display_name: string | null }), 200);
+  return c.json(brandingResponse(data as unknown as BrandingRow), 200);
 });
 
 accountsApp.openapi(patchBranding, async (c) => {
@@ -145,6 +164,15 @@ accountsApp.openapi(patchBranding, async (c) => {
       else fieldErrors.sender_display_name = [res.reason];
     }
   }
+  if (body.persona_local_part !== undefined) {
+    if (body.persona_local_part === null) {
+      update.persona_local_part = null;
+    } else {
+      const res = validatePersonaLocalPart(body.persona_local_part);
+      if (res.ok) update.persona_local_part = res.value;
+      else fieldErrors.persona_local_part = [res.reason];
+    }
+  }
   if (Object.keys(fieldErrors).length > 0) {
     throw new ApiError(422, 'invalid_request', 'email branding input is invalid', { fieldErrors });
   }
@@ -153,7 +181,7 @@ accountsApp.openapi(patchBranding, async (c) => {
     .from('accounts')
     .update(update)
     .eq('id', accountId)
-    .select('email_subdomain, sender_display_name')
+    .select(BRANDING_COLS)
     .maybeSingle();
   if (error) {
     // Global uniqueness on email_subdomain: another account already holds it.
@@ -164,5 +192,5 @@ accountsApp.openapi(patchBranding, async (c) => {
   }
   if (!data) throw new ApiError(404, 'not_found', 'not found');
 
-  return c.json(brandingResponse(data as { email_subdomain: string | null; sender_display_name: string | null }), 200);
+  return c.json(brandingResponse(data as unknown as BrandingRow), 200);
 });

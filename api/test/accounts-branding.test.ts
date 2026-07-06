@@ -2,8 +2,9 @@
 // Per-account email-branding integration tests. Exercised against a real
 // Supabase stack (GoTrue + PostgREST + RLS).
 //
-//   * GET /accounts/{id}/email-branding returns nulls before anything is set,
-//     and reply_domain is null until a subdomain is minted.
+//   * GET /accounts/{id}/email-branding: sender_display_name DEFAULTS to the
+//     account name at signup (20260707000001); subdomain/persona start null and
+//     reply_domain/persona_address are null until their inputs are set.
 //   * PATCH as an owner sets email_subdomain + sender_display_name; the response
 //     echoes them and computes reply_domain = <subdomain>.<parent> (the parent
 //     is EMAIL_PLATFORM_PARENT_DOMAIN, set at boot).
@@ -11,6 +12,10 @@
 //   * an invalid label (bad chars) and a reserved word both → 422.
 //   * the same subdomain on a SECOND account → 409 (global uniqueness).
 //   * explicit null clears a field back to null (and reply_domain follows).
+//   * persona_local_part: settable by an owner; persona_address computes only
+//     when local part + subdomain + parent are ALL set; reserved names, the
+//     t- token prefix, and bad formats → 422; the DB CHECK backstops the
+//     direct-PostgREST path.
 // ----------------------------------------------------------------------------
 
 import { execSync } from 'node:child_process';
@@ -147,6 +152,8 @@ interface BrandingShape {
   email_subdomain: string | null;
   sender_display_name: string | null;
   reply_domain: string | null;
+  persona_local_part: string | null;
+  persona_address: string | null;
 }
 
 // --- tests ------------------------------------------------------------------
@@ -173,12 +180,15 @@ async function main(): Promise<void> {
   const SUB = `acme${SUFFIX}`;
   const DUP = `dup${SUFFIX}`;
 
-  await check('GET returns nulls before anything is set (reply_domain null)', async () => {
+  await check('GET before any PATCH: display name defaults to the account name; the rest null', async () => {
     const r = await api('GET', base, { token: owner.token });
     const b = assertStatus(r, 200, 'initial GET') as BrandingShape;
     assert(b.email_subdomain === null, `email_subdomain: ${b.email_subdomain}`);
-    assert(b.sender_display_name === null, `sender_display_name: ${b.sender_display_name}`);
+    // Signup default (20260707000001): sender_display_name = account name.
+    assert(b.sender_display_name === 'Branding Acct A', `sender_display_name: ${b.sender_display_name}`);
     assert(b.reply_domain === null, `reply_domain: ${b.reply_domain}`);
+    assert(b.persona_local_part === null, `persona_local_part: ${b.persona_local_part}`);
+    assert(b.persona_address === null, `persona_address: ${b.persona_address}`);
   });
 
   await check('PATCH as owner sets both fields; reply_domain = <sub>.<parent>', async () => {
@@ -248,6 +258,44 @@ async function main(): Promise<void> {
     assertStatus(r, 422, 'newline display name');
   });
 
+  // --- persona local part -----------------------------------------------------
+  // At this point the account still carries email_subdomain = SUB.
+
+  await check('PATCH persona_local_part; persona_address = <local>@<sub>.<parent>', async () => {
+    const r = await api('PATCH', base, {
+      token: owner.token,
+      body: { persona_local_part: '  Riley  ' }, // trims + lowercases
+    });
+    const b = assertStatus(r, 200, 'persona PATCH') as BrandingShape;
+    assert(b.persona_local_part === 'riley', `persona_local_part: ${b.persona_local_part}`);
+    assert(b.persona_address === `riley@${SUB}.${PARENT}`, `persona_address: ${b.persona_address}`);
+  });
+
+  await check('persona reserved local part (postmaster) → 422', async () => {
+    const r = await api('PATCH', base, {
+      token: owner.token,
+      body: { persona_local_part: 'postmaster' },
+    });
+    assertStatus(r, 422, 'reserved persona');
+    if (errCode(r) !== 'invalid_request') throw new Error(`code: ${errCode(r)}`);
+  });
+
+  await check('persona t- prefix (token namespace) → 422', async () => {
+    const r = await api('PATCH', base, {
+      token: owner.token,
+      body: { persona_local_part: 't-riley' },
+    });
+    assertStatus(r, 422, 't- persona');
+  });
+
+  await check('persona invalid format (spaces) → 422', async () => {
+    const r = await api('PATCH', base, {
+      token: owner.token,
+      body: { persona_local_part: 'front desk' },
+    });
+    assertStatus(r, 422, 'bad persona format');
+  });
+
   await check('duplicate subdomain across two accounts → 409', async () => {
     // Claim DUP on account A first.
     const a = await api('PATCH', base, { token: owner.token, body: { email_subdomain: DUP } });
@@ -261,7 +309,7 @@ async function main(): Promise<void> {
     if (errCode(b) !== 'conflict') throw new Error(`code: ${errCode(b)}`);
   });
 
-  await check('explicit null clears a field (reply_domain follows)', async () => {
+  await check('explicit null clears a field (reply_domain + persona_address follow)', async () => {
     const r = await api('PATCH', base, {
       token: owner.token,
       body: { email_subdomain: null },
@@ -271,6 +319,10 @@ async function main(): Promise<void> {
     assert(b.reply_domain === null, `reply_domain after clear: ${b.reply_domain}`);
     // sender_display_name (untouched) is preserved.
     assert(b.sender_display_name === 'Acme Properties', `preserved display name: ${b.sender_display_name}`);
+    // The persona is branded-subdomain-only: the local part survives, but the
+    // computed address goes null with the subdomain.
+    assert(b.persona_local_part === 'riley', `preserved persona_local_part: ${b.persona_local_part}`);
+    assert(b.persona_address === null, `persona_address after clear: ${b.persona_address}`);
   });
 
   await check('empty PATCH body → 400 (at least one field required)', async () => {
@@ -331,6 +383,13 @@ async function main(): Promise<void> {
     assert(st >= 400, `expected 4xx CHECK violation, got ${st}`);
     const after = await readAccount(owner.accountId);
     assert(after.email_subdomain !== 'postmaster', 'reserved subdomain slipped past the CHECK');
+  });
+
+  await check('direct PostgREST reserved/token persona local part is rejected by the CHECKs', async () => {
+    const reserved = await directPatch(owner.accountId, owner.token, { persona_local_part: 'abuse' });
+    assert(reserved >= 400, `reserved: expected 4xx CHECK violation, got ${reserved}`);
+    const token = await directPatch(owner.accountId, owner.token, { persona_local_part: 't-0123456789abcdef' });
+    assert(token >= 400, `t- prefix: expected 4xx CHECK violation, got ${token}`);
   });
 
   // --- summary ---------------------------------------------------------------

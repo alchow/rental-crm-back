@@ -30,6 +30,7 @@
     "test:comms-email": "tsx test/comms-email.test.ts",
     "test:comms-email-threads": "tsx test/comms-email-threads.test.ts",
     "test:accounts-branding": "tsx test/accounts-branding.test.ts",
+    "test:comms-persona-resolve": "tsx test/comms-persona-resolve.test.ts",
     "test:comms-evidence": "tsx test/comms-evidence.test.ts",
     "retention:evidence": "tsx src/admin/run-evidence-retention.ts",
     "charges:generate": "tsx src/admin/run-rent-charges.ts",

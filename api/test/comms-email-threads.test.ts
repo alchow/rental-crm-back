@@ -798,9 +798,10 @@ async function main(): Promise<void> {
   // A fresh account sets a branded subdomain via the owner endpoint; its email
   // threads then mint reply tokens under `<sub>.<parent>` and carry the account
   // sender_display_name. thread1 (account fx, no subdomain) is the control: it
-  // stays on EMAIL_REPLY_DOMAIN with a null display name.
+  // stays on EMAIL_REPLY_DOMAIN with the SIGNUP-DEFAULT display name (the
+  // account name — 20260707000001 stamps it at creation; never null anymore).
   // =========================================================================
-  await check('account WITHOUT a subdomain mints under EMAIL_REPLY_DOMAIN, display name null', async () => {
+  await check('account WITHOUT a subdomain mints under EMAIL_REPLY_DOMAIN, display name = signup default', async () => {
     const d = await threadDetail(thread1Id);
     for (const b of d.bindings) {
       if (b.channel === 'email' && b.reply_address) {
@@ -811,7 +812,10 @@ async function main(): Promise<void> {
         );
       }
     }
-    assert(d.sender_display_name === null, `no branding set → null display name: ${d.sender_display_name}`);
+    assert(
+      d.sender_display_name === 'Comms Email Threads Acct',
+      `unbranded account carries the signup-default display name: ${d.sender_display_name}`,
+    );
   });
 
   await check('account WITH an email_subdomain mints reply tokens under <sub>.<parent> + carries the display name', async () => {
