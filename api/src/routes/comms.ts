@@ -17,6 +17,7 @@ import {
   storeEvidenceBytes,
   MAX_EVIDENCE_BYTES,
 } from '../admin/evidence';
+import { queuePersonaAck } from '../admin/persona-ack';
 
 // ---------------------------------------------------------------------------
 // Communications ledger contract (comms build, core repo; ADR-0007 revived).
@@ -314,6 +315,72 @@ const CommThreadParticipant = z
     left_at: z.string().nullable(),
   })
   .openapi('CommThreadParticipant');
+
+// ---------------------------------------------------------------------------
+// Persona inbound capture — the cold-inbound front door (no reply token).
+// Routing resolves the SENDER, not the recipient: the transport resolves the
+// persona address to an account first (resolve-persona-address), then posts
+// the mail here.
+// ---------------------------------------------------------------------------
+
+const CapturePersonaInboundBody = z
+  .object({
+    provider: z.string().min(1).max(100),
+    /** Idempotency key (same space as token captures: one inbound_raw). */
+    provider_msg_id: z.string().min(1).max(200),
+    /** The persona address the mail arrived on (already resolved to this
+     *  account by resolve-persona-address). */
+    persona_address: z.string().min(5).max(320),
+    /** The sender — the routing input. */
+    from_address: z.string().min(3).max(320),
+    /** The sender's From display name, if any (cast label fallback + the
+     *  phase-6 triage suggestion input). */
+    from_display_name: z.string().min(1).max(200).optional(),
+    /** The mail's other To recipients (persona excluded or not — core
+     *  filters). */
+    to_addresses: z.array(z.string().min(3).max(320)).max(50).default([]),
+    cc_addresses: z.array(z.string().min(3).max(320)).max(50).default([]),
+    subject: z.string().min(1).max(998).optional(),
+    /** Capped at the relay/outbox limit: a larger body could never be relayed
+     *  onward or acked. The transport truncates / strips HTML first. */
+    body: z.string().max(20000).optional(),
+    media: z.array(CommInboundMedia).max(20).optional(),
+    rfc822_message_id: z.string().min(3).max(998).optional(),
+    in_reply_to: z.string().min(3).max(998).optional(),
+    references: z.array(z.string().min(3).max(998)).max(50).optional(),
+    /** REQUIRED here (unlike token capture): sender identity is the routing
+     *  key, so attribution is gated on DMARC — a capture without verdicts is
+     *  treated as unauthenticated and lands in triage. */
+    auth_results: CommAuthResults,
+    received_at: z.string().datetime(),
+  })
+  .openapi('CapturePersonaInboundBody');
+
+const CapturePersonaInboundResponse = z
+  .object({
+    /** matched: the sender resolved to a known tenant/vendor (DMARC pass) and
+     *  the message journaled into their active email thread — created
+     *  atomically (tokens minted) when none existed. Relay it onward like any
+     *  thread inbound.
+     *  triaged: unknown sender, or a claimed-known sender that failed DMARC —
+     *  raw-tier captured; nothing journaled; relay nothing. (Phase 6 adds the
+     *  visible triage queue.)
+     *  duplicate: this email's Message-ID already journaled into the resolved
+     *  thread (the token door landed first) — ids point at the ORIGINAL row;
+     *  success-no-op, relay nothing.
+     *  opted_out: matched AND journaled, but the sender is on the opt-out
+     *  register — relay nothing.
+     *  cc_journaled: reserved for the phase-4 landlord CC arm — journal-only;
+     *  relay nothing.
+     *  Forward-compat rule: relay nothing on any unrecognized disposition. */
+    disposition: z.enum(['matched', 'triaged', 'duplicate', 'opted_out', 'cc_journaled']),
+    interaction_id: z.string().uuid().nullable(),
+    thread_id: z.string().uuid().nullable(),
+    participant: CommThreadParticipant.nullable(),
+    /** The triage row id once phase 6 lands; null until then. */
+    unmatched_id: z.string().uuid().nullable(),
+  })
+  .openapi('CapturePersonaInboundResponse');
 
 const CaptureInboundResponse = z
   .object({
@@ -778,6 +845,26 @@ const captureInbound = createRoute({
   },
   responses: {
     200: { description: 'capture result', content: { 'application/json': { schema: CaptureInboundResponse } } },
+    ...errorResponses,
+  },
+});
+
+const capturePersonaInbound = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/comms/inbound-persona',
+  tags: ['comms'],
+  summary:
+    'Capture an inbound email addressed to the account persona (transport). ' +
+    'No reply token: the SENDER is the routing key — a known tenant/vendor ' +
+    '(DMARC pass) journals into their active email thread, created atomically ' +
+    'when none exists; everything else lands in triage. Idempotent on ' +
+    'provider_msg_id (shared raw tier with token capture).',
+  request: {
+    params: AccountParam,
+    body: { content: { 'application/json': { schema: CapturePersonaInboundBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'capture result', content: { 'application/json': { schema: CapturePersonaInboundResponse } } },
     ...errorResponses,
   },
 });
@@ -1686,6 +1773,96 @@ commsApp.openapi(captureInbound, async (c) => {
       interaction_id: result.interaction_id,
       thread_id: result.thread_id,
       participant,
+    },
+    200,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// POST /comms/inbound-persona — persona capture (transport)
+// ---------------------------------------------------------------------------
+
+commsApp.openapi(capturePersonaInbound, async (c) => {
+  requireTransport(c);
+  const { accountId } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+
+  // The persona mints thread tokens on the cold-create path, so the account
+  // must still carry a branded receiving domain (it did at resolve time; a
+  // branding change since then surfaces here as a retryable conflict).
+  const { data: account, error: acctErr } = await sb
+    .from('accounts')
+    .select('email_subdomain')
+    .eq('id', accountId)
+    .maybeSingle();
+  if (acctErr) throw commDbError(acctErr);
+  const replyDomain = brandedReplyDomain(
+    (account?.email_subdomain ?? null) as string | null,
+    loadEnv().EMAIL_PLATFORM_PARENT_DOMAIN,
+  );
+  if (replyDomain === null) {
+    throw new ApiError(409, 'conflict', 'the account has no branded receiving domain (persona is not configured)');
+  }
+
+  const lower = (a: string): string => a.trim().toLowerCase();
+  const fromAddress = lower(body.from_address);
+  const { data, error } = await sb.rpc('capture_persona_inbound', {
+    p_account_id: accountId,
+    p_provider: body.provider,
+    p_provider_msg_id: body.provider_msg_id,
+    p_persona_address: lower(body.persona_address),
+    p_from_address: fromAddress,
+    p_from_display_name: body.from_display_name ?? null,
+    p_to_addresses: body.to_addresses.map(lower),
+    p_cc_addresses: body.cc_addresses.map(lower),
+    p_subject: body.subject ?? null,
+    p_body: body.body ?? null,
+    p_media: body.media ?? null,
+    p_rfc822_message_id: body.rfc822_message_id ?? null,
+    p_in_reply_to: body.in_reply_to ?? null,
+    p_references: body.references ?? null,
+    p_spf: body.auth_results.spf,
+    p_dkim: body.auth_results.dkim,
+    p_dmarc: body.auth_results.dmarc,
+    p_received_at: body.received_at,
+    p_reply_domain: replyDomain,
+  });
+  if (error) throw commDbError(error);
+  const result = (data as {
+    disposition: 'matched' | 'triaged' | 'duplicate' | 'opted_out' | 'cc_journaled';
+    interaction_id: string | null;
+    thread_id: string | null;
+    participant_id: string | null;
+    unmatched_id: string | null;
+  }[])[0];
+  if (!result) throw new ApiError(500, 'internal_error', 'capture returned no result');
+
+  // Friendly front door: a first-touch unknown sender gets ONE ack — only on
+  // provider-verified mail (DMARC), rate-capped inside. Fire-and-forget so
+  // ack latency/failures never couple to capture.
+  if (result.disposition === 'triaged' && body.auth_results.dmarc === 'pass') {
+    queuePersonaAck(accountId, fromAddress);
+  }
+
+  let participant: ParticipantRow | null = null;
+  if (result.participant_id !== null) {
+    const { data: part, error: pErr } = await sb
+      .from('comm_thread_participants')
+      .select(PARTICIPANT_COLS)
+      .eq('account_id', accountId)
+      .eq('id', result.participant_id)
+      .maybeSingle();
+    if (pErr) throw commDbError(pErr);
+    participant = (part as ParticipantRow | null) ?? null;
+  }
+  return c.json(
+    {
+      disposition: result.disposition,
+      interaction_id: result.interaction_id,
+      thread_id: result.thread_id,
+      participant,
+      unmatched_id: result.unmatched_id,
     },
     200,
   );

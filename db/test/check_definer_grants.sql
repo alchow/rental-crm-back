@@ -56,6 +56,9 @@ DECLARE
     -- comms ledger (20260701000002): self-defending membership asserts inside
     'complete_send',
     'capture_inbound',
+    -- persona capture (20260708000001): same agent-role self-defense shape
+    -- as capture_inbound
+    'capture_persona_inbound',
     'record_opt_out',
     'list_account_opt_outs',
     -- comms evidence (20260703000004): agent-role member of p_account_id,

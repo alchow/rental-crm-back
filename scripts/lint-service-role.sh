@@ -131,6 +131,13 @@ EXCLUDES=(
   #     and uses the admin client only for agent-role membership fixtures the
   #     API does not expose. TEST code, never shipped.
   ':!api/test/comms-persona-resolve.test.ts'
+  #   - api/test/comms-persona.test.ts: persona inbound-capture integration
+  #     test (same shape as comms-email-threads.test.ts). Assigns process.env
+  #     from supabase status and uses the admin client for ops-tier fixtures
+  #     (agent membership, a channel_identities exact-hit row) and read-backs
+  #     (learned identities, the fire-and-forget system:persona_ack outbox
+  #     intent + its rate cap). TEST code, never shipped.
+  ':!api/test/comms-persona.test.ts'
   #   - api/test/comms-evidence.test.ts: EV-A/EV-B evidence-hardening
   #     integration test (same shape as comms.test.ts). Assigns process.env
   #     from supabase status and uses the admin client for ops-tier fixtures

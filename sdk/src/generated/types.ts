@@ -7378,6 +7378,100 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/accounts/{accountId}/comms/inbound-persona": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Capture an inbound email addressed to the account persona (transport). No reply token: the SENDER is the routing key — a known tenant/vendor (DMARC pass) journals into their active email thread, created atomically when none exists; everything else lands in triage. Idempotent on provider_msg_id (shared raw tier with token capture). */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CapturePersonaInboundBody"];
+                };
+            };
+            responses: {
+                /** @description capture result */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CapturePersonaInboundResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/accounts/{accountId}/comms/evidence": {
         parameters: {
             query?: never;
@@ -15564,6 +15658,37 @@ export interface components {
             in_reply_to?: string;
             references?: string[];
             auth_results?: components["schemas"]["CommAuthResults"];
+        };
+        CapturePersonaInboundResponse: {
+            /** @enum {string} */
+            disposition: "matched" | "triaged" | "duplicate" | "opted_out" | "cc_journaled";
+            /** Format: uuid */
+            interaction_id: string | null;
+            /** Format: uuid */
+            thread_id: string | null;
+            participant: components["schemas"]["CommThreadParticipant"];
+            /** Format: uuid */
+            unmatched_id: string | null;
+        };
+        CapturePersonaInboundBody: {
+            provider: string;
+            provider_msg_id: string;
+            persona_address: string;
+            from_address: string;
+            from_display_name?: string;
+            /** @default [] */
+            to_addresses: string[];
+            /** @default [] */
+            cc_addresses: string[];
+            subject?: string;
+            body?: string;
+            media?: components["schemas"]["CommInboundMedia"][];
+            rfc822_message_id?: string;
+            in_reply_to?: string;
+            references?: string[];
+            auth_results: components["schemas"]["CommAuthResults"];
+            /** Format: date-time */
+            received_at: string;
         };
         CommInboundProvenance: {
             /** Format: uuid */

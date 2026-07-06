@@ -4685,6 +4685,152 @@
           "received_at"
         ]
       },
+      "CapturePersonaInboundResponse": {
+        "type": "object",
+        "properties": {
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "matched",
+              "triaged",
+              "duplicate",
+              "opted_out",
+              "cc_journaled"
+            ]
+          },
+          "interaction_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "thread_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "participant": {
+            "$ref": "#/components/schemas/CommThreadParticipant"
+          },
+          "unmatched_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "disposition",
+          "interaction_id",
+          "thread_id",
+          "participant",
+          "unmatched_id"
+        ]
+      },
+      "CapturePersonaInboundBody": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "provider_msg_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "persona_address": {
+            "type": "string",
+            "minLength": 5,
+            "maxLength": 320
+          },
+          "from_address": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 320
+          },
+          "from_display_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "to_addresses": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 320
+            },
+            "maxItems": 50,
+            "default": []
+          },
+          "cc_addresses": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 320
+            },
+            "maxItems": 50,
+            "default": []
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 998
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "media": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommInboundMedia"
+            },
+            "maxItems": 20
+          },
+          "rfc822_message_id": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 998
+          },
+          "in_reply_to": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 998
+          },
+          "references": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 998
+            },
+            "maxItems": 50
+          },
+          "auth_results": {
+            "$ref": "#/components/schemas/CommAuthResults"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "provider",
+          "provider_msg_id",
+          "persona_address",
+          "from_address",
+          "auth_results",
+          "received_at"
+        ]
+      },
       "CommInboundProvenance": {
         "type": "object",
         "properties": {
@@ -19144,6 +19290,129 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CaptureCommInboundResponse"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/comms/inbound-persona": {
+      "post": {
+        "tags": [
+          "comms"
+        ],
+        "summary": "Capture an inbound email addressed to the account persona (transport). No reply token: the SENDER is the routing key — a known tenant/vendor (DMARC pass) journals into their active email thread, created atomically when none exists; everything else lands in triage. Idempotent on provider_msg_id (shared raw tier with token capture).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapturePersonaInboundBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "capture result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapturePersonaInboundResponse"
                 }
               }
             },

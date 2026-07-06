@@ -92,6 +92,47 @@ inbound rcpt <addr>:
   <relay_source_rfc822_message_id>` and append it to `References` — relayed
   conversations then thread natively in recipients' mail clients.
 
-## Phase 3 — persona capture: known senders + auto-ack (pending)
+## Phase 3 — persona capture: known senders + auto-ack (shipped with migration 20260708000001)
+
+**What exists**
+
+- `POST /v1/accounts/{accountId}/comms/inbound-persona` (transport-only) —
+  capture for mail addressed to the persona. Body mirrors token capture plus:
+  `persona_address`, `from_display_name?`, `to_addresses[]`, `cc_addresses[]`,
+  and **`auth_results` is REQUIRED** (sender identity is the routing key, so
+  attribution is DMARC-gated; a capture without verdicts is treated as
+  unauthenticated). Same `provider_msg_id` idempotency space as token capture.
+- Dispositions (standing rule still applies — relay nothing on anything
+  unrecognized):
+  - `matched` — sender resolved to a known tenant/vendor AND DMARC passed;
+    journaled into their active email thread. When none existed, the thread
+    was **created atomically**: counterparty token minted under the branded
+    domain (their FUTURE replies ride the token path), landlord participant =
+    the account owner (bound only if an email identity is on file — in-app
+    reply works regardless). **Relay onward like any thread inbound**
+    (`approval_ref='thread:<id>'` relay legs).
+  - `triaged` — unknown sender, or a claimed-known sender that failed DMARC.
+    Raw-tier captured; nothing journaled; **relay nothing**. Phase 6 adds the
+    visible triage queue; `unmatched_id` stays null until then.
+  - `duplicate` — this email's Message-ID already journaled into the resolved
+    thread (the token door landed first). Success-no-op; relay nothing.
+  - `opted_out` — journaled; relay nothing.
+  - `cc_journaled` — reserved for phase 4.
+- **Auto-ack**: a `triaged` capture from an unknown sender with DMARC pass
+  queues at most ONE `system:persona_ack` email intent per sender per day
+  (and ≤20/account/day) — the transport dispatches it like any other system
+  send. Nothing for the transport to do at capture time; the intent shows up
+  in the normal outbox scan.
+
+**Routing update (supersedes the phase-1 HOLD)**
+
+```
+inbound rcpt <addr>:
+  local starts with 't-'  → resolve-reply-address → POST /comms/inbound
+  else                    → resolve-persona-address
+                              404 → not ours / drop per current policy
+                              200 → POST /accounts/{id}/comms/inbound-persona
+                                    (relay ONLY on 'matched')
+```
 
 ## Phase 4 — CC journal-only capture (pending)
