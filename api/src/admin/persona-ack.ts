@@ -36,8 +36,11 @@ const WINDOW_SEC = 86_400;
 const SENDER_DAILY_CAP = 1;
 const ACCOUNT_DAILY_CAP = 20;
 
-/** Queue the ack intent (fire-and-forget; call WITHOUT await). Never throws. */
-export function queuePersonaAck(accountId: string, senderAddress: string): void {
+/** Queue the ack intent (fire-and-forget; call WITHOUT await). Never throws.
+ *  When the capture produced a triage row, pass its id so the row records
+ *  that (and when) the sender was acked — the FE's "we already replied"
+ *  signal. */
+export function queuePersonaAck(accountId: string, senderAddress: string, unmatchedId?: string): void {
   void (async () => {
     try {
       const admin = getAdminClient();
@@ -92,6 +95,21 @@ export function queuePersonaAck(accountId: string, senderAddress: string): void 
           getLogger().info('[persona-ack] intent suppressed by opt-out (compliant)');
         } else {
           getLogger().error(`[persona-ack] outbox insert failed: ${error.message}`);
+        }
+        return;
+      }
+
+      // Record the ack on the triage row (service tier; client writes on the
+      // table are revoked). Best-effort: a failed stamp only loses the FE
+      // signal, never the ack itself.
+      if (unmatchedId) {
+        const { error: stampErr } = await admin
+          .from('comm_unmatched_inbound')
+          .update({ auto_acked_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+          .eq('account_id', accountId)
+          .eq('id', unmatchedId);
+        if (stampErr) {
+          getLogger().warn(`[persona-ack] auto_acked_at stamp failed: ${stampErr.message}`);
         }
       }
     } catch (e) {

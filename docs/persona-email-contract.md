@@ -172,3 +172,69 @@ Nothing new mechanically — same endpoint, same rule: relay only on
   learned into `channel_identities` (so persona capture recognizes it too).
 - Transport impact: none — capture verification just starts passing for the
   rebound address.
+
+## Phase 6 — unknown-sender triage (shipped with migration 20260709000001)
+
+- `triaged` persona captures now land in a durable, member-visible store
+  (`comm_unmatched_inbound`) carrying their own copy of the message — they
+  outlive the raw-tier prune. `unmatched_id` in the persona capture response
+  is now real (and stable across replays).
+- `reason` distinguishes `unknown_sender` from `auth_failed` (a RECOGNIZED
+  tenant/vendor/landlord identity whose mail failed DMARC — the suspicious
+  kind).
+- Landlord surface (owner|manager): `GET /accounts/{id}/comms/unmatched`
+  (queue, status filter), `GET …/unmatched/{id}` (detail + read-time
+  suggestions: exact contact-email hits, trigram name matches),
+  `POST …/unmatched/{id}/link {party_type, party_id}` (journals the stored
+  original into the party's thread — created atomically if needed;
+  `provider_verified` when the stored DMARC passed, else `attested`; learns
+  the address so future mail auto-resolves), `POST …/unmatched/{id}/dismiss`.
+- Transport impact: none beyond reading `unmatched_id` if useful for
+  logging. A linked sender's future mail starts resolving as `matched`.
+
+## Phase 7 — attachment ingestion (shipped with migration 20260709000002)
+
+- After a capture returns `matched` / `cc_journaled`, the transport may store
+  the original attachment bytes:
+  `POST /accounts/{id}/interactions/{interactionId}/attachments`
+  `{filename, content_type, data_b64}` — ≤10 MiB decoded per file, ≤10 per
+  message, base64. Idempotent per (interaction, content-hash): retries return
+  the existing row. **Skip on `duplicate`** (the original already carries
+  them) and on `triaged` (nothing journaled; the triage row keeps the
+  provider media URLs).
+- Only provider-verified capture rows accept attachments (400 otherwise);
+  the endpoint is transport-only (403).
+- Members list via GET on the same path and stream bytes from
+  `…/attachments/{attachmentId}/download` (forced Content-Disposition,
+  nosniff, CSP sandbox).
+- Storage: private `comm-attachments` bucket, no authenticated policies —
+  bytes move only through the API; paths are content-addressed per message.
+
+## Known limitations (reviewed 2026-07-06; deliberate, tracked as follow-ups)
+
+- **Address book is first-writer-wins.** Every learning upsert
+  (capture, rebind, triage link) uses on-conflict-do-nothing: an address that
+  already maps to a different party keeps its OLD mapping. Consequence: on a
+  genuinely shared address (a couple sharing one inbox), cold/persona mail
+  attributes to whichever party was learned first, even after a human rebinds
+  or links the other party. Moving to last-human-wins is a cross-cutting
+  decision (it must not let a capture path overwrite a human's mapping).
+- **Shared `tenants.emails` fallback picks the oldest tenant** (stable
+  `created_at` order) and the learning step makes that sticky. Same root as
+  above.
+- **A landlord CC addressed to multiple known recipients journals into ONE
+  thread** (most-recently-active binding wins); the other recipients' threads
+  carry no record of that mail. Multi-thread fan-out of a single CC capture is
+  a deliberate follow-up, not v1.
+- **The CC arm requires `landlord_user` email identities.** They are created
+  when a landlord makes an email thread with an explicit address, on rebind,
+  or by ops. Until an account has one, that landlord's CCs land in triage
+  (they are never acked — the stranger ack suppresses recognized landlords
+  and, defensively, anyone until identities exist means: unknown senders only).
+- **Attachment filenames are printable-ASCII only** (rejected otherwise):
+  the value is rendered into download response headers. The transport should
+  transliterate or generically rename non-ASCII filenames before upload.
+- **`channel_identities.address` is trusted-lowercase, not enforced.** All
+  in-repo writers normalize; a future writer that stores mixed case would
+  silently miss the exact-hit lookups. A normalization trigger is a candidate
+  hardening.

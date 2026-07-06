@@ -558,7 +558,246 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
-  // (8) Guards
+  // (8) Unknown-sender triage (phase 6)
+  // =========================================================================
+  let triageRowId = '';
+  const LATER_EMAIL = `later-${SUFFIX}@somewhere.test`;
+
+  await check('triaged capture returns unmatched_id; replay returns the same id', async () => {
+    const msgId = `PS-triage-${rnd()}`;
+    const r = await personaCapture({
+      provider_msg_id: msgId, from_address: LATER_EMAIL,
+      from_display_name: 'Lena Later', subject: 'About unit 4B',
+      body: 'former tenant here, new address',
+    });
+    const res = assertStatus(r, 200, 'triage capture') as CaptureShape;
+    assert(res.disposition === 'triaged', `disposition: ${res.disposition}`);
+    assert(res.unmatched_id !== null, 'unmatched_id returned');
+    triageRowId = res.unmatched_id!;
+
+    const replay = assertStatus(await personaCapture({
+      provider_msg_id: msgId, from_address: LATER_EMAIL,
+      from_display_name: 'Lena Later', subject: 'About unit 4B',
+      body: 'former tenant here, new address',
+    }), 200, 'triage replay') as CaptureShape;
+    assert(replay.disposition === 'triaged' && replay.unmatched_id === triageRowId,
+      `replay resolves the same triage row: ${replay.unmatched_id}`);
+
+    // The fire-and-forget ack stamps auto_acked_at on the triage row — the
+    // FE's "we already replied" signal. Poll briefly like the ack checks.
+    let acked: string | null = null;
+    for (let i = 0; i < 20 && acked === null; i++) {
+      await sleep(150);
+      const { data } = await admin
+        .from('comm_unmatched_inbound')
+        .select('auto_acked_at')
+        .eq('id', triageRowId)
+        .maybeSingle();
+      acked = (data?.auto_acked_at as string | null) ?? null;
+    }
+    assert(acked !== null, 'auto_acked_at stamped on the triage row');
+  });
+
+  await check('the triage queue lists pending rows with their stored copy + reason', async () => {
+    const r = await api('GET', `${base}/unmatched?status=pending&limit=100`, { token: landlordToken });
+    const rows = (assertStatus(r, 200, 'unmatched list') as { data: {
+      id: string; from_address: string; subject: string | null; reason: string; status: string;
+    }[] }).data;
+    const mine = rows.find((x) => x.id === triageRowId);
+    assert(mine, 'the new row is in the queue');
+    assert(mine!.from_address === LATER_EMAIL && mine!.subject === 'About unit 4B',
+      `stored copy: ${JSON.stringify(mine)}`);
+    assert(mine!.reason === 'unknown_sender', `reason: ${mine!.reason}`);
+    // The KNOWN-sender DMARC failure from (3) is flagged as the suspicious kind.
+    assert(rows.some((x) => x.from_address === T1_EMAIL.toLowerCase() && x.reason === 'auth_failed'),
+      'the known-sender DMARC failure carries reason=auth_failed');
+  });
+
+  await check('detail computes suggestions at read time (email_exact for a late-added tenant)', async () => {
+    // The tenant is created AFTER the capture — stored-at-capture suggestions
+    // would miss her; read-time ones must not.
+    const lenaId = await createTenant('Lena Later', LATER_EMAIL);
+    const r = await api('GET', `${base}/unmatched/${triageRowId}`, { token: landlordToken });
+    const d = assertStatus(r, 200, 'unmatched detail') as {
+      suggestions: { party_type: string; party_id: string; source: string }[];
+    };
+    assert(
+      d.suggestions.some((s) => s.party_id === lenaId && s.source === 'email_exact'),
+      `email_exact suggestion present: ${JSON.stringify(d.suggestions)}`,
+    );
+
+    // Link it: journals the STORED original + learns the address.
+    const link = await api('POST', `${base}/unmatched/${triageRowId}/link`, {
+      token: landlordToken, body: { party_type: 'tenant', party_id: lenaId },
+    });
+    const res = assertStatus(link, 200, 'link') as { thread_id: string; interaction_id: string };
+
+    const { data: j } = await admin
+      .from('interactions')
+      .select('direction, party_type, party_id, attestation, body, thread_id')
+      .eq('id', res.interaction_id)
+      .single();
+    assert(j!.direction === 'inbound' && j!.party_type === 'tenant' && j!.party_id === lenaId,
+      `linked journal attribution: ${JSON.stringify(j)}`);
+    assert(j!.attestation === 'provider_verified', `stored DMARC passed → ${j!.attestation}`);
+    assert(j!.body === 'former tenant here, new address', 'journals the STORED original');
+    assert(j!.thread_id === res.thread_id, 'journaled into the created thread');
+
+    const { data: row } = await admin
+      .from('comm_unmatched_inbound')
+      .select('status, linked_interaction_id, linked_party_id')
+      .eq('id', triageRowId)
+      .single();
+    assert(row!.status === 'linked' && row!.linked_interaction_id === res.interaction_id
+      && row!.linked_party_id === lenaId, `row resolved: ${JSON.stringify(row)}`);
+
+    // The learning step: her NEXT mail auto-resolves into the same thread.
+    const next = assertStatus(await personaCapture({
+      from_address: LATER_EMAIL, body: 'thanks for finding me',
+    }), 200, 'post-link capture') as CaptureShape;
+    assert(next.disposition === 'matched', `post-link disposition: ${next.disposition}`);
+    assert(next.thread_id === res.thread_id, `same thread: ${next.thread_id}`);
+  });
+
+  await check('linking a resolved row → 409; dismiss is idempotent; agent → 403', async () => {
+    const again = await api('POST', `${base}/unmatched/${triageRowId}/link`, {
+      token: landlordToken, body: { party_type: 'tenant', party_id: t1Id },
+    });
+    assertStatus(again, 409, 'double link');
+
+    // A fresh stranger row to dismiss.
+    const r = assertStatus(await personaCapture({
+      from_address: `dismiss-${SUFFIX}@somewhere.test`, body: 'spamish',
+    }), 200, 'dismissable capture') as CaptureShape;
+    const one = await api('POST', `${base}/unmatched/${r.unmatched_id}/dismiss`, { token: landlordToken });
+    const dismissed = assertStatus(one, 200, 'dismiss') as { status: string };
+    assert(dismissed.status === 'dismissed', `status: ${dismissed.status}`);
+    const two = await api('POST', `${base}/unmatched/${r.unmatched_id}/dismiss`, { token: landlordToken });
+    assertStatus(two, 200, 'dismiss replay');
+
+    const agentList = await api('GET', `${base}/unmatched`, { token: agentToken });
+    assertStatus(agentList, 403, 'agent list');
+    const agentLink = await api('POST', `${base}/unmatched/${triageRowId}/link`, {
+      token: agentToken, body: { party_type: 'tenant', party_id: t1Id },
+    });
+    assertStatus(agentLink, 403, 'agent link');
+  });
+
+  await check('linking an auth_failed row journals as attested (human vouches, provider could not)', async () => {
+    const { data: failRow } = await admin
+      .from('comm_unmatched_inbound')
+      .select('id')
+      .eq('account_id', accountId)
+      .eq('from_address', T1_EMAIL.toLowerCase())
+      .eq('reason', 'auth_failed')
+      .eq('status', 'pending')
+      .limit(1)
+      .maybeSingle();
+    assert(failRow, 'the auth_failed row from (3) is pending');
+    const link = await api('POST', `${base}/unmatched/${failRow!.id}/link`, {
+      token: landlordToken, body: { party_type: 'tenant', party_id: t1Id },
+    });
+    const res = assertStatus(link, 200, 'link auth_failed') as { interaction_id: string };
+    const { data: j } = await admin
+      .from('interactions')
+      .select('attestation')
+      .eq('id', res.interaction_id)
+      .single();
+    assert(j!.attestation === 'attested', `attestation: ${j!.attestation}`);
+  });
+
+  // =========================================================================
+  // (9) Attachment ingestion (phase 7)
+  // =========================================================================
+  const FILE_BYTES = new TextEncoder().encode(`fake-pdf-bytes-${SUFFIX}`);
+  const FILE_B64 = Buffer.from(FILE_BYTES).toString('base64');
+  let attachmentId = '';
+
+  await check('transport stores an attachment on a persona-captured row; retry is idempotent', async () => {
+    const path = `/v1/accounts/${accountId}/interactions/${t1FirstIid}/attachments`;
+    const r = await api('POST', path, {
+      token: agentToken,
+      body: { filename: 'deposit-photos.pdf', content_type: 'application/pdf', data_b64: FILE_B64 },
+    });
+    const row = assertStatus(r, 201, 'attachment upload') as {
+      id: string; filename: string | null; mime_type: string | null; content_hash: string;
+    };
+    assert(row.filename === 'deposit-photos.pdf', `filename: ${row.filename}`);
+    assert(row.mime_type === 'application/pdf', `mime: ${row.mime_type}`);
+    assert(/^[a-f0-9]{64}$/.test(row.content_hash), `hash: ${row.content_hash}`);
+    attachmentId = row.id;
+
+    const retry = await api('POST', path, {
+      token: agentToken,
+      body: { filename: 'deposit-photos.pdf', content_type: 'application/pdf', data_b64: FILE_B64 },
+    });
+    const again = assertStatus(retry, 201, 'attachment retry') as { id: string };
+    assert(again.id === attachmentId, `retry returns the existing row: ${again.id}`);
+  });
+
+  await check('members list + download the stored bytes (headers forced)', async () => {
+    const list = await api('GET', `/v1/accounts/${accountId}/interactions/${t1FirstIid}/attachments`, {
+      token: landlordToken,
+    });
+    const rows = (assertStatus(list, 200, 'attachment list') as { data: { id: string }[] }).data;
+    assert(rows.length === 1 && rows[0]!.id === attachmentId, `list: ${JSON.stringify(rows)}`);
+
+    const res = await app.fetch(new Request(
+      `http://test/v1/accounts/${accountId}/interactions/${t1FirstIid}/attachments/${attachmentId}/download`,
+      { headers: { authorization: `Bearer ${landlordToken}` } },
+    ));
+    assert(res.status === 200, `download status: ${res.status}`);
+    const got = new Uint8Array(await res.arrayBuffer());
+    assert(Buffer.from(got).equals(Buffer.from(FILE_BYTES)), 'bytes round-trip');
+    assert(res.headers.get('content-type') === 'application/pdf', `ct: ${res.headers.get('content-type')}`);
+    const disposition = res.headers.get('content-disposition') ?? '';
+    assert(disposition.startsWith('attachment;'), `disposition attachment: ${disposition}`);
+    assert(disposition.includes('deposit-photos.pdf'), 'disposition filename');
+    assert(res.headers.get('x-content-type-options') === 'nosniff', 'nosniff forced');
+    assert(res.headers.get('cache-control') === 'private, no-store', `cache-control: ${res.headers.get('cache-control')}`);
+    assert(
+      (res.headers.get('content-security-policy') ?? '').includes('sandbox'),
+      `csp sandbox: ${res.headers.get('content-security-policy')}`,
+    );
+  });
+
+  await check('attachments are refused on non-capture rows and non-transport callers', async () => {
+    // A manually-journaled row (actor user:*, attestation attested) takes none.
+    const manual = await api('POST', `/v1/accounts/${accountId}/interactions`, {
+      token: landlordToken,
+      body: {
+        kind: 'communication', channel: 'email', direction: 'inbound',
+        party_type: 'tenant', party_id: t1Id, body: 'manual note of a call',
+        occurred_at: iso(),
+      },
+    });
+    const manualRow = assertStatus(manual, 201, 'manual journal') as { id: string };
+    const refused = await api('POST', `/v1/accounts/${accountId}/interactions/${manualRow.id}/attachments`, {
+      token: agentToken,
+      body: { filename: 'x.pdf', content_type: 'application/pdf', data_b64: FILE_B64 },
+    });
+    assertStatus(refused, 400, 'non-capture upload');
+
+    const landlordUpload = await api('POST', `/v1/accounts/${accountId}/interactions/${t1FirstIid}/attachments`, {
+      token: landlordToken,
+      body: { filename: 'x.pdf', content_type: 'application/pdf', data_b64: FILE_B64 },
+    });
+    assertStatus(landlordUpload, 403, 'landlord upload');
+  });
+
+  await check('control characters in filename → 400', async () => {
+    // A CR/LF in the filename would be rendered into the download's
+    // content-disposition header; undici throws on such a value. Reject at
+    // ingest rather than store an un-downloadable attachment.
+    const r = await api('POST', `/v1/accounts/${accountId}/interactions/${t1FirstIid}/attachments`, {
+      token: agentToken,
+      body: { filename: 'evil\r\nx.pdf', content_type: 'application/pdf', data_b64: FILE_B64 },
+    });
+    assertStatus(r, 400, 'control-char filename');
+  });
+
+  // =========================================================================
+  // (10) Guards
   // =========================================================================
   await check('landlord calling the persona endpoint → 403 (transport only)', async () => {
     const r = await api('POST', `${base}/inbound-persona`, {

@@ -206,6 +206,20 @@ begin
     (v_acc_a, v_int_a, 'sender', 'tenant', v_tenant_a, null, 'Tenant A', 'backfill'),
     (v_acc_b, v_int_b, 'sender', 'tenant', v_tenant_b, null, 'Tenant B', 'backfill');
 
+  -- Triage rows (20260709000001): one per account so the isolation suite gets
+  -- its own>0 / cross==0 check on comm_unmatched_inbound. Seeded directly
+  -- (superuser) — client roles have no INSERT on this table by design.
+  insert into public.comm_unmatched_inbound (
+    account_id, provider, provider_msg_id, persona_address, from_address,
+    subject, body, spf, dkim, dmarc, reason, received_at
+  ) values
+    (v_acc_a, 'ses', 'seed-unmatched-a', 'riley@seed-a.mail.test',
+     'strangera@somewhere.test', 'Hello A', 'seed body A',
+     'pass', 'pass', 'pass', 'unknown_sender', '2026-02-01T10:00:00Z'),
+    (v_acc_b, 'ses', 'seed-unmatched-b', 'riley@seed-b.mail.test',
+     'strangerb@somewhere.test', 'Hello B', 'seed body B',
+     'pass', 'pass', 'pass', 'unknown_sender', '2026-02-01T10:00:00Z');
+
   -- Notices & scheduled tasks
   v_notice_a := gen_random_uuid(); v_notice_b := gen_random_uuid();
   insert into public.notices (

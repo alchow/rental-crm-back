@@ -18,6 +18,11 @@ import {
   MAX_EVIDENCE_BYTES,
 } from '../admin/evidence';
 import { queuePersonaAck } from '../admin/persona-ack';
+import {
+  downloadCommAttachment,
+  MAX_COMM_ATTACHMENTS_PER_MESSAGE,
+  storeCommAttachment,
+} from '../admin/comm-attachments';
 
 // ---------------------------------------------------------------------------
 // Communications ledger contract (comms build, core repo; ADR-0007 revived).
@@ -1033,6 +1038,250 @@ const createThreadMessage = createRoute({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Comm attachments — durable blobs for captured mail (phase 7).
+// ---------------------------------------------------------------------------
+
+const CommAttachment = z
+  .object({
+    id: z.string().uuid(),
+    /** Sender-supplied display name ("lease.pdf"). */
+    filename: z.string().nullable(),
+    mime_type: z.string().nullable(),
+    size_bytes: z.number().int().nullable(),
+    /** sha256 (lowercase hex) of the stored bytes. */
+    content_hash: z.string(),
+    created_at: z.string(),
+  })
+  .openapi('CommAttachment');
+
+// header-injection-adjacent: `filename` and `content_type` are rendered into
+// the download response's content-disposition / content-type headers, and
+// undici THROWS on a header value containing C0 controls or DEL — so a stored
+// CR/LF/NUL would make the attachment permanently un-downloadable (500).
+// Reject those bytes at ingest: `[ -~]` accepts only printable ASCII (0x20
+// space … 0x7e tilde), which excludes every C0 control and DEL. (A literal
+// control-char range would trip eslint no-control-regex.)
+const UploadCommAttachmentBody = z
+  .object({
+    filename: z
+      .string()
+      .min(1)
+      .max(255)
+      .regex(/^[ -~]+$/, 'must not contain control characters'),
+    content_type: z
+      .string()
+      .min(1)
+      .max(200)
+      .regex(/^[ -~]+$/, 'must not contain control characters'),
+    /** The attachment bytes, base64. Max 10 MiB decoded; at most 10
+     *  attachments per message. */
+    data_b64: z
+      .string()
+      .min(1)
+      .max(14_400_000)
+      .regex(/^[A-Za-z0-9+/]*={0,2}$/),
+  })
+  .openapi('UploadCommAttachmentBody');
+
+const CommAttachmentListResponse = z
+  .object({ data: z.array(CommAttachment) })
+  .openapi('CommAttachmentListResponse');
+
+const InteractionAttachmentParams = z.object({
+  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  interactionId: z.string().uuid().openapi({ param: { name: 'interactionId', in: 'path' } }),
+});
+
+const uploadInteractionAttachment = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/interactions/{interactionId}/attachments',
+  tags: ['comms'],
+  summary:
+    'Attach original file bytes to a comm-captured journal row (transport). ' +
+    'Only rows written by the verified capture paths accept attachments; the ' +
+    'transport uploads AFTER capture using the returned interaction_id (skip ' +
+    'on duplicate). Idempotent per (interaction, content): a retry returns ' +
+    'the existing attachment.',
+  request: {
+    params: InteractionAttachmentParams,
+    body: { content: { 'application/json': { schema: UploadCommAttachmentBody } }, required: true },
+  },
+  responses: {
+    201: { description: 'stored attachment', content: { 'application/json': { schema: CommAttachment } } },
+    ...errorResponses,
+  },
+});
+
+const listInteractionAttachments = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/interactions/{interactionId}/attachments',
+  tags: ['comms'],
+  summary:
+    "An interaction's stored attachments (any member). Bytes stream from " +
+    'GET …/attachments/{attachmentId}/download.',
+  request: { params: InteractionAttachmentParams },
+  responses: {
+    200: { description: 'attachments', content: { 'application/json': { schema: CommAttachmentListResponse } } },
+    ...errorResponses,
+  },
+});
+
+// Actors whose journal rows may carry stored attachments: the verified
+// capture paths only (a manually-journaled row has no provider-delivered
+// bytes to vouch for).
+const COMM_CAPTURE_ACTORS = ['system:comm-inbound', 'system:comm-persona', 'system:comm-persona-cc'];
+
+// ---------------------------------------------------------------------------
+// Unknown-sender triage — the persona front door's holding pen (phase 6).
+// ---------------------------------------------------------------------------
+
+const CommUnmatchedInbound = z
+  .object({
+    id: z.string().uuid(),
+    account_id: z.string().uuid(),
+    provider: z.string(),
+    provider_msg_id: z.string(),
+    rfc822_message_id: z.string().nullable(),
+    persona_address: z.string(),
+    from_address: z.string(),
+    from_display_name: z.string().nullable(),
+    to_addresses: z.array(z.string()),
+    cc_addresses: z.array(z.string()),
+    subject: z.string().nullable(),
+    body: z.string().nullable(),
+    media: z.array(CommInboundMedia),
+    spf: z.string().nullable(),
+    dkim: z.string().nullable(),
+    dmarc: z.string().nullable(),
+    /** unknown_sender: nobody recognizes the address. auth_failed: a
+     *  RECOGNIZED identity (tenant/vendor/landlord) whose mail failed DMARC —
+     *  the suspicious kind; never attributable without a human. */
+    reason: z.enum(['unknown_sender', 'auth_failed']),
+    received_at: z.string(),
+    status: z.enum(['pending', 'linked', 'dismissed']),
+    resolved_by: z.string().uuid().nullable(),
+    resolved_at: z.string().nullable(),
+    linked_thread_id: z.string().uuid().nullable(),
+    linked_interaction_id: z.string().uuid().nullable(),
+    linked_party_type: z.string().nullable(),
+    linked_party_id: z.string().uuid().nullable(),
+    auto_acked_at: z.string().nullable(),
+    created_at: z.string(),
+    updated_at: z.string(),
+  })
+  .openapi('CommUnmatchedInbound');
+
+/** A candidate identity for a pending triage row, computed at READ time (a
+ *  tenant added after capture must still match). */
+const UnmatchedSuggestion = z
+  .object({
+    party_type: z.enum(['tenant', 'vendor']),
+    party_id: z.string().uuid(),
+    title: z.string(),
+    subtitle: z.string().nullable(),
+    /** email_exact: the sender address appears VERBATIM (case-sensitive) in
+     *  the party's contact emails. address_match: trigram match of the sender
+     *  address against the party's searchable text — catches case variants
+     *  the verbatim probe misses (capture matching is case-insensitive, so
+     *  these parties would auto-resolve on capture). name_match: trigram
+     *  match of the From display name. */
+    source: z.enum(['email_exact', 'address_match', 'name_match']),
+  })
+  .openapi('CommUnmatchedSuggestion');
+
+const UnmatchedListResponse = z
+  .object({ data: z.array(CommUnmatchedInbound), next_cursor: z.string().nullable() })
+  .openapi('CommUnmatchedListResponse');
+
+const UnmatchedDetailResponse = CommUnmatchedInbound.extend({
+  suggestions: z.array(UnmatchedSuggestion),
+}).openapi('CommUnmatchedDetailResponse');
+
+const LinkUnmatchedBody = z
+  .object({
+    party_type: z.enum(['tenant', 'vendor']),
+    party_id: z.string().uuid(),
+  })
+  .openapi('LinkCommUnmatchedBody');
+
+const LinkUnmatchedResponse = z
+  .object({
+    thread_id: z.string().uuid(),
+    interaction_id: z.string().uuid(),
+  })
+  .openapi('LinkCommUnmatchedResponse');
+
+const listUnmatched = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/comms/unmatched',
+  tags: ['comms'],
+  summary:
+    'The unknown-sender triage queue (landlord, owner|manager): persona mail ' +
+    'core could not attribute, newest first. Rows carry their own copy of ' +
+    'the message — they outlive the raw-tier retention prune.',
+  request: {
+    params: AccountParam,
+    query: z.object({
+      cursor: z.string().optional(),
+      limit: z.coerce.number().int().positive().max(100).default(50),
+      status: z.enum(['pending', 'linked', 'dismissed']).optional(),
+    }),
+  },
+  responses: {
+    200: { description: 'page', content: { 'application/json': { schema: UnmatchedListResponse } } },
+    ...errorResponses,
+  },
+});
+
+const getUnmatched = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/comms/unmatched/{id}',
+  tags: ['comms'],
+  summary:
+    'One triage row with resolution suggestions (computed at read: exact ' +
+    'contact-email hits, then trigram name matches on the From display name).',
+  request: { params: AccountAndIdParam },
+  responses: {
+    200: { description: 'row + suggestions', content: { 'application/json': { schema: UnmatchedDetailResponse } } },
+    ...errorResponses,
+  },
+});
+
+const linkUnmatched = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/comms/unmatched/{id}/link',
+  tags: ['comms'],
+  summary:
+    '"This was tenant/vendor X" (owner|manager): journals the STORED original ' +
+    'into their email thread (created atomically when none exists), learns ' +
+    'the sender address so future mail auto-resolves, and marks the row ' +
+    'linked. Attestation: provider_verified when the stored DMARC passed, ' +
+    'else attested.',
+  request: {
+    params: AccountAndIdParam,
+    body: { content: { 'application/json': { schema: LinkUnmatchedBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'journaled + linked', content: { 'application/json': { schema: LinkUnmatchedResponse } } },
+    ...errorResponses,
+  },
+});
+
+const dismissUnmatched = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/comms/unmatched/{id}/dismiss',
+  tags: ['comms'],
+  summary:
+    'Not relevant (owner|manager). No side effects — dismissing never ' +
+    'registers an opt-out. Idempotent.',
+  request: { params: AccountAndIdParam },
+  responses: {
+    200: { description: 'dismissed row', content: { 'application/json': { schema: CommUnmatchedInbound } } },
+    ...errorResponses,
+  },
+});
+
 const RebindBody = z
   .object({
     /** The counterparty's NEW address for this leg. Email bindings only. */
@@ -1874,7 +2123,7 @@ commsApp.openapi(capturePersonaInbound, async (c) => {
   // inside. A recognized landlord (e.g. CCing about a counterparty core doesn't
   // know) or a self-addressed persona loop must NEVER receive the tenant-
   // oriented receipt. Fire-and-forget so ack latency/failures never couple to
-  // capture.
+  // capture. The triage row id rides along so the ack stamps auto_acked_at.
   if (
     result.disposition === 'triaged' &&
     body.auth_results.dmarc === 'pass' &&
@@ -1891,7 +2140,7 @@ commsApp.openapi(capturePersonaInbound, async (c) => {
     // Fail closed: an identity-read failure must never cause a mis-targeted
     // email, and a recognized landlord identity is never a stranger.
     if (!identityErr && !landlordIdentity) {
-      queuePersonaAck(accountId, fromAddress);
+      queuePersonaAck(accountId, fromAddress, result.unmatched_id ?? undefined);
     }
   }
 
@@ -2703,6 +2952,249 @@ commsApp.openapi(createThreadMessage, async (c) => {
     .select('*');
   if (error) throw commDbError(error);
   return c.json({ data: (rows ?? []) as OutboxRow[] }, 201);
+});
+
+// ---------------------------------------------------------------------------
+// Comm attachments (phase 7)
+// ---------------------------------------------------------------------------
+
+commsApp.openapi(uploadInteractionAttachment, async (c) => {
+  requireTransport(c);
+  const { accountId, interactionId } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+
+  if (body.data_b64.length % 4 !== 0) {
+    throw new ApiError(400, 'invalid_request', 'data_b64 is not valid base64', {
+      fieldErrors: { data_b64: ['not valid base64 (length not a multiple of 4)'] },
+    });
+  }
+  const bytes = Buffer.from(body.data_b64, 'base64');
+
+  // Only verified comm captures accept attachments.
+  const { data: interaction, error } = await sb
+    .from('interactions')
+    .select('id, actor, attestation')
+    .eq('account_id', accountId)
+    .eq('id', interactionId)
+    .maybeSingle();
+  if (error) throw commDbError(error);
+  if (!interaction) throw new ApiError(404, 'not_found', 'not found');
+  if (
+    !COMM_CAPTURE_ACTORS.includes(interaction.actor as string) ||
+    interaction.attestation !== 'provider_verified'
+  ) {
+    throw new ApiError(
+      400,
+      'invalid_request',
+      'attachments may only be stored on provider-verified comm captures',
+    );
+  }
+
+  const { count, error: cntErr } = await sb
+    .from('attachments')
+    .select('id', { count: 'exact', head: true })
+    .eq('account_id', accountId)
+    .eq('entity_type', 'interactions')
+    .eq('entity_id', interactionId)
+    .is('deleted_at', null);
+  if (cntErr) throw commDbError(cntErr);
+  if ((count ?? 0) >= MAX_COMM_ATTACHMENTS_PER_MESSAGE) {
+    throw new ApiError(
+      400,
+      'invalid_request',
+      `a message carries at most ${MAX_COMM_ATTACHMENTS_PER_MESSAGE} stored attachments`,
+    );
+  }
+
+  const row = await storeCommAttachment(
+    accountId,
+    interactionId,
+    body.filename,
+    body.content_type,
+    bytes,
+  );
+  return c.json(row, 201);
+});
+
+commsApp.openapi(listInteractionAttachments, async (c) => {
+  const { accountId, interactionId } = c.req.valid('param');
+  const sb = getSb(c);
+  const { data, error } = await sb
+    .from('attachments')
+    .select('id, filename, mime_type, size_bytes, content_hash, created_at')
+    .eq('account_id', accountId)
+    .eq('entity_type', 'interactions')
+    .eq('entity_id', interactionId)
+    .is('deleted_at', null)
+    .order('created_at', { ascending: true });
+  if (error) throw commDbError(error);
+  return c.json({ data: (data ?? []) as z.infer<typeof CommAttachment>[] }, 200);
+});
+
+// Binary download proxy (NOT openapi — mirrors the documents/inspection
+// pattern): forced Content-Disposition, nosniff, CSP sandbox. The account
+// middleware stack (auth + membership) has already run for /accounts/*; the
+// admin module re-checks the row's account before touching the bucket.
+commsApp.get(
+  '/accounts/:accountId/interactions/:interactionId/attachments/:attachmentId/download',
+  async (c) => {
+    const accountId = c.req.param('accountId');
+    const interactionId = c.req.param('interactionId');
+    const attachmentId = c.req.param('attachmentId');
+    const dl = await downloadCommAttachment(accountId, interactionId, attachmentId);
+    return new Response(dl.bytes, {
+      status: 200,
+      headers: {
+        'content-type': dl.mimeType,
+        'content-disposition': `attachment; filename="${dl.filename.replace(/"/g, '')}"`,
+        'content-length': String(dl.bytes.byteLength),
+        'cache-control': 'private, no-store',
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'none'; sandbox",
+      },
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Unknown-sender triage (landlord, owner|manager)
+// ---------------------------------------------------------------------------
+
+type UnmatchedRow = z.infer<typeof CommUnmatchedInbound>;
+
+commsApp.openapi(listUnmatched, async (c) => {
+  requireManager(c);
+  const { accountId } = c.req.valid('param');
+  const { cursor, limit, status } = c.req.valid('query');
+  const sb = getSb(c);
+  let q = sb.from('comm_unmatched_inbound').select('*').eq('account_id', accountId);
+  if (status !== undefined) q = q.eq('status', status);
+  const { items, next_cursor } = await keysetPage<UnmatchedRow>(q, {
+    cursor,
+    limit,
+    column: 'received_at',
+    descending: true,
+  });
+  return c.json({ data: items, next_cursor }, 200);
+});
+
+commsApp.openapi(getUnmatched, async (c) => {
+  requireManager(c);
+  const { accountId, id } = c.req.valid('param');
+  const sb = getSb(c);
+  const { data, error } = await sb
+    .from('comm_unmatched_inbound')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw commDbError(error);
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  const row = data as UnmatchedRow;
+
+  // Suggestions, computed at read so late-added parties still match.
+  const suggestions: z.infer<typeof UnmatchedSuggestion>[] = [];
+  const seen = new Set<string>();
+
+  // (1) Exact contact-email hit (verbatim; the address book normalizes over
+  // time via capture's learning step, so this is best-effort by design).
+  const { data: exact, error: exErr } = await sb
+    .from('tenants')
+    .select('id, full_name')
+    .eq('account_id', accountId)
+    .is('deleted_at', null)
+    .contains('emails', [row.from_address])
+    .limit(5);
+  if (exErr) throw commDbError(exErr);
+  for (const t of (exact ?? []) as { id: string; full_name: string }[]) {
+    suggestions.push({
+      party_type: 'tenant', party_id: t.id, title: t.full_name, subtitle: null,
+      source: 'email_exact',
+    });
+    seen.add(t.id);
+  }
+
+  // (2) Trigram match of the sender ADDRESS against searchable party text
+  // (tenant search text includes contact emails): catches the case variants
+  // the verbatim probe misses — capture matching is case-insensitive, so a
+  // mixed-case stored email that capture WOULD auto-resolve must still be
+  // suggested here. (3) Trigram name match on the From display name.
+  const probes: { q: string | null; source: 'address_match' | 'name_match' }[] = [
+    { q: row.from_address, source: 'address_match' },
+    { q: row.from_display_name, source: 'name_match' },
+  ];
+  for (const probe of probes) {
+    if (!probe.q) continue;
+    const { data: hits, error: sErr } = await sb.rpc('search_entities', {
+      p_account_id: accountId,
+      p_q: probe.q,
+      p_types: ['tenant', 'vendor'],
+      p_exclude: null,
+      p_limit: 5,
+    });
+    if (sErr) throw commDbError(sErr);
+    for (const h of (hits ?? []) as {
+      entity_type: string; entity_id: string; title: string; subtitle: string | null;
+    }[]) {
+      if (seen.has(h.entity_id)) continue;
+      if (h.entity_type !== 'tenant' && h.entity_type !== 'vendor') continue;
+      suggestions.push({
+        party_type: h.entity_type, party_id: h.entity_id,
+        title: h.title, subtitle: h.subtitle, source: probe.source,
+      });
+      seen.add(h.entity_id);
+    }
+  }
+
+  return c.json({ ...row, suggestions }, 200);
+});
+
+commsApp.openapi(linkUnmatched, async (c) => {
+  requireManager(c);
+  const { accountId, id } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+
+  // Linking may create a thread (mints tokens): derive the receiving domain
+  // exactly like the persona capture path.
+  const { data: account, error: acctErr } = await sb
+    .from('accounts')
+    .select('email_subdomain')
+    .eq('id', accountId)
+    .maybeSingle();
+  if (acctErr) throw commDbError(acctErr);
+  const env = loadEnv();
+  const replyDomain =
+    brandedReplyDomain((account?.email_subdomain ?? null) as string | null, env.EMAIL_PLATFORM_PARENT_DOMAIN) ??
+    env.EMAIL_REPLY_DOMAIN;
+  if (replyDomain === null) {
+    throw new ApiError(503, 'service_unavailable', 'email threads are not configured (no receiving domain)');
+  }
+
+  const { data, error } = await sb.rpc('link_unmatched_inbound', {
+    p_account_id: accountId,
+    p_unmatched_id: id,
+    p_party_type: body.party_type,
+    p_party_id: body.party_id,
+    p_reply_domain: replyDomain,
+  });
+  if (error) throw commDbError(error);
+  const result = (data as { thread_id: string; interaction_id: string }[])[0];
+  if (!result) throw new ApiError(500, 'internal_error', 'link returned no result');
+  return c.json(result, 200);
+});
+
+commsApp.openapi(dismissUnmatched, async (c) => {
+  requireManager(c);
+  const { accountId, id } = c.req.valid('param');
+  const sb = getSb(c);
+  const { data, error } = await sb.rpc('dismiss_unmatched_inbound', {
+    p_account_id: accountId,
+    p_unmatched_id: id,
+  });
+  if (error) throw commDbError(error);
+  return c.json(data as UnmatchedRow, 200);
 });
 
 // ---------------------------------------------------------------------------

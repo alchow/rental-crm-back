@@ -59,6 +59,10 @@ DECLARE
     -- persona capture (20260708000001): same agent-role self-defense shape
     -- as capture_inbound
     'capture_persona_inbound',
+    -- persona triage resolution (20260709000001): owner|manager self-defense
+    -- inside (the agent principal may not resolve identity doubt)
+    'link_unmatched_inbound',
+    'dismiss_unmatched_inbound',
     'record_opt_out',
     'list_account_opt_outs',
     -- comms evidence (20260703000004): agent-role member of p_account_id,
