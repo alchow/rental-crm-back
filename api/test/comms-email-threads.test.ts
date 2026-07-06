@@ -1034,6 +1034,81 @@ async function main(): Promise<void> {
     assert(gd.sender_display_name === 'Brand Co', `sender_display_name on read: ${gd.sender_display_name}`);
   });
 
+  // =========================================================================
+  // (15) Mismatch hygiene (persona plan, phase 5): the unresolved-sender
+  // queue + rebind. Runs LAST — rebinding tenant1's leg to the stranger
+  // changes capture semantics for every later T1_EMAIL send.
+  // =========================================================================
+  await check("interactions ?party_type=unspecified lists the sender_mismatch rows", async () => {
+    const r = await api(
+      'GET',
+      `/v1/accounts/${fx.accountId}/interactions?party_type=unspecified&limit=100`,
+      { token: fx.landlordToken },
+    );
+    const rows = (assertStatus(r, 200, 'unspecified list') as {
+      data: { party_type: string; party_label: string | null }[];
+    }).data;
+    assert(rows.length > 0, 'at least the mismatch row');
+    assert(rows.every((x) => x.party_type === 'unspecified'), 'filter holds');
+    assert(rows.some((x) => x.party_label === STRANGER), 'the stranger mismatch is in the queue');
+  });
+
+  await check('rebind the tenant leg to the new address → future replies verify; identity learned', async () => {
+    const d = await threadDetail(thread1Id);
+    const tenantBinding = d.bindings.find(
+      (b) => b.channel === 'email' && b.participant_address === T1_EMAIL.toLowerCase(),
+    );
+    assert(tenantBinding, 'tenant binding present');
+
+    const r = await api(
+      'POST',
+      `${base}/threads/${thread1Id}/bindings/${tenantBinding!.id}/rebind`,
+      { token: fx.landlordToken, body: { address: STRANGER.toUpperCase() } },
+    );
+    const updated = assertStatus(r, 200, 'rebind') as { participant_address: string; reply_address: string | null };
+    assert(updated.participant_address === STRANGER, `rebound address: ${updated.participant_address}`);
+    assert(updated.reply_address === tenantBinding!.reply_address, 'reply token untouched');
+
+    // The formerly-mismatching sender now verifies on the same token.
+    const cap = await capture({
+      provider: 'resend', provider_msg_id: `IN-rebind-${rnd()}`, to_number: tenant1Token,
+      from_address: STRANGER, channel: 'email', body: 'me again, new address', received_at: iso(),
+    });
+    const res = assertStatus(cap, 200, 'post-rebind capture') as CaptureShape;
+    assert(res.disposition === 'matched', `post-rebind disposition: ${res.disposition}`);
+    assert(res.participant?.id === tenant1ParticipantId, 'attributed to the tenant participant');
+
+    // Learned account-wide.
+    const { data: ident } = await admin
+      .from('channel_identities')
+      .select('party_id, party_type')
+      .eq('account_id', fx.accountId).eq('channel', 'email').eq('address', STRANGER)
+      .maybeSingle();
+    assert(ident?.party_type === 'tenant' && ident.party_id === fx.tenant1Id,
+      `identity learned: ${JSON.stringify(ident)}`);
+  });
+
+  await check('rebind guards: sms binding → 400; agent principal → 403', async () => {
+    const sms = await threadDetail(smsThreadId);
+    const smsBinding = sms.bindings.find((b) => b.channel === 'sms');
+    assert(smsBinding, 'sms binding present');
+    const bad = await api(
+      'POST',
+      `${base}/threads/${smsThreadId}/bindings/${smsBinding!.id}/rebind`,
+      { token: fx.landlordToken, body: { address: 'x@y.test' } },
+    );
+    assertStatus(bad, 400, 'sms rebind');
+
+    const d = await threadDetail(thread1Id);
+    const anyBinding = d.bindings[0]!;
+    const agent = await api(
+      'POST',
+      `${base}/threads/${thread1Id}/bindings/${anyBinding.id}/rebind`,
+      { token: fx.agentToken, body: { address: 'x@y.test' } },
+    );
+    assertStatus(agent, 403, 'agent rebind');
+  });
+
   // --- summary ---------------------------------------------------------------
   console.info('');
   if (failures.length > 0) {

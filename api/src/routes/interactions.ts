@@ -414,6 +414,11 @@ const ListQuery = z.object({
   /** 'true' returns only chain heads (the collapsed view). Default: the
    *  full set, so clients and the evidence export can reconstruct chains. */
   latest_only: z.enum(['true', 'false']).optional(),
+  /** Filter by counterparty attribution. party_type='unspecified' is the
+   *  unresolved-sender queue: comm rows whose sender did not verify
+   *  (sender_mismatch captures) waiting for a human classify. */
+  party_type: PartyType.optional(),
+  direction: Direction.optional(),
 });
 const ListResponse = z
   .object({ data: z.array(Interaction), next_cursor: z.string().nullable() })
@@ -491,7 +496,8 @@ export const interactionsApp = newApiApp();
 
 interactionsApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
-  const { cursor, limit, tenancy_id, maintenance_request_id, latest_only } = c.req.valid('query');
+  const { cursor, limit, tenancy_id, maintenance_request_id, latest_only, party_type, direction } =
+    c.req.valid('query');
   const sb = getSb(c);
   let q = sb
     .from('interactions_with_chain')
@@ -501,6 +507,8 @@ interactionsApp.openapi(list, async (c) => {
   if (tenancy_id) q = q.eq('tenancy_id', tenancy_id);
   if (maintenance_request_id) q = q.eq('maintenance_request_id', maintenance_request_id);
   if (latest_only === 'true') q = q.eq('is_head', true);
+  if (party_type) q = q.eq('party_type', party_type);
+  if (direction) q = q.eq('direction', direction);
   const { items, next_cursor: nextCursor } = await keysetPage(q, {
     cursor,
     limit,

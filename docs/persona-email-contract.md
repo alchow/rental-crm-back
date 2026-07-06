@@ -159,3 +159,16 @@ inbound rcpt <addr>:
 Nothing new mechanically — same endpoint, same rule: relay only on
 `matched`. The practical upshot for rendering/UX: landlords can be told
 "CC riley@… from your own inbox and it lands in the file."
+
+## Phase 5 — mismatch hygiene (no migration; FE/landlord-facing)
+
+- `GET /accounts/{id}/interactions?party_type=unspecified` is the
+  unresolved-sender queue (sender_mismatch captures awaiting a human
+  classify); `direction` filter added alongside.
+- `POST /accounts/{id}/comms/threads/{threadId}/bindings/{bindingId}/rebind
+  {address}` (owner|manager, email bindings only): after a human confirms a
+  mismatch was really the participant on a new address, rebinding stops every
+  FUTURE reply from mismatching. Reply token untouched; the address is
+  learned into `channel_identities` (so persona capture recognizes it too).
+- Transport impact: none — capture verification just starts passing for the
+  rebound address.

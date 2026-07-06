@@ -1033,6 +1033,37 @@ const createThreadMessage = createRoute({
   },
 });
 
+const RebindBody = z
+  .object({
+    /** The counterparty's NEW address for this leg. Email bindings only. */
+    address: z.string().min(3).max(320),
+  })
+  .openapi('RebindCommBindingBody');
+
+const rebindBinding = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/comms/threads/{threadId}/bindings/{bindingId}/rebind',
+  tags: ['comms'],
+  summary:
+    'Point an email binding at a new counterparty address (landlord, ' +
+    'owner|manager). The mismatch-hygiene half of a classify: after a human ' +
+    'confirms a sender_mismatch was really the participant writing from a new ' +
+    'address, rebinding stops every FUTURE reply from mismatching. The reply ' +
+    'token is untouched; the new address is learned into the address book.',
+  request: {
+    params: z.object({
+      accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+      threadId: z.string().uuid().openapi({ param: { name: 'threadId', in: 'path' } }),
+      bindingId: z.string().uuid().openapi({ param: { name: 'bindingId', in: 'path' } }),
+    }),
+    body: { content: { 'application/json': { schema: RebindBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'updated binding', content: { 'application/json': { schema: CommThreadBinding } } },
+    ...errorResponses,
+  },
+});
+
 const listPolicies = createRoute({
   method: 'get',
   path: '/accounts/{accountId}/comms/policies',
@@ -2672,6 +2703,79 @@ commsApp.openapi(createThreadMessage, async (c) => {
     .select('*');
   if (error) throw commDbError(error);
   return c.json({ data: (rows ?? []) as OutboxRow[] }, 201);
+});
+
+// ---------------------------------------------------------------------------
+// POST /comms/threads/{threadId}/bindings/{bindingId}/rebind (landlord)
+// ---------------------------------------------------------------------------
+
+commsApp.openapi(rebindBinding, async (c) => {
+  requireManager(c);
+  const { accountId, threadId, bindingId } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+
+  const { data, error: bErr } = await sb
+    .from('thread_channel_bindings')
+    .select(BINDING_COLS)
+    .eq('account_id', accountId)
+    .eq('thread_id', threadId)
+    .eq('id', bindingId)
+    .maybeSingle();
+  if (bErr) throw commDbError(bErr);
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  const binding = data as unknown as z.infer<typeof CommThreadBinding>;
+  if (binding.channel !== 'email') {
+    throw new ApiError(400, 'invalid_request', 'only email bindings can be rebound (sms routes by platform number)');
+  }
+  if (!binding.active) {
+    throw new ApiError(409, 'conflict', 'the binding is inactive');
+  }
+
+  const address = normalizeAddress('email', body.address);
+  if (address === binding.participant_address) {
+    // Idempotent: rebinding to the current address returns it unchanged.
+    return c.json(binding, 200);
+  }
+
+  const { data: updated, error: uErr } = await sb
+    .from('thread_channel_bindings')
+    .update({ participant_address: address })
+    .eq('account_id', accountId)
+    .eq('id', bindingId)
+    .select(BINDING_COLS)
+    .single();
+  if (uErr) throw commDbError(uErr);
+
+  // Learn the new address so attribution/resolution (incl. persona capture)
+  // recognizes it account-wide, not just on this leg.
+  const { data: participant, error: pErr } = await sb
+    .from('comm_thread_participants')
+    .select('party_type, party_id')
+    .eq('account_id', accountId)
+    .eq('id', binding.participant_id)
+    .maybeSingle();
+  if (pErr) throw commDbError(pErr);
+  if (
+    participant?.party_id &&
+    ['tenant', 'vendor', 'landlord_user'].includes(participant.party_type as string)
+  ) {
+    const { error: idErr } = await sb
+      .from('channel_identities')
+      .upsert(
+        {
+          account_id: accountId,
+          party_type: participant.party_type,
+          party_id: participant.party_id,
+          channel: 'email',
+          address,
+        },
+        { onConflict: 'account_id,channel,address', ignoreDuplicates: true },
+      );
+    if (idErr) throw commDbError(idErr);
+  }
+
+  return c.json(updated as z.infer<typeof CommThreadBinding>, 200);
 });
 
 // ---------------------------------------------------------------------------
