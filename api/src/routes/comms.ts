@@ -1838,11 +1838,30 @@ commsApp.openapi(capturePersonaInbound, async (c) => {
   }[])[0];
   if (!result) throw new ApiError(500, 'internal_error', 'capture returned no result');
 
-  // Friendly front door: a first-touch unknown sender gets ONE ack — only on
-  // provider-verified mail (DMARC), rate-capped inside. Fire-and-forget so
-  // ack latency/failures never couple to capture.
-  if (result.disposition === 'triaged' && body.auth_results.dmarc === 'pass') {
-    queuePersonaAck(accountId, fromAddress);
+  // Friendly front door: the ack is for STRANGERS only. A first-touch unknown
+  // sender gets ONE ack — only on provider-verified mail (DMARC), rate-capped
+  // inside. A recognized landlord (e.g. CCing about a counterparty core doesn't
+  // know) or a self-addressed persona loop must NEVER receive the tenant-
+  // oriented receipt. Fire-and-forget so ack latency/failures never couple to
+  // capture.
+  if (
+    result.disposition === 'triaged' &&
+    body.auth_results.dmarc === 'pass' &&
+    fromAddress !== lower(body.persona_address)
+  ) {
+    const { data: landlordIdentity, error: identityErr } = await sb
+      .from('channel_identities')
+      .select('id')
+      .eq('account_id', accountId)
+      .eq('channel', 'email')
+      .eq('party_type', 'landlord_user')
+      .eq('address', fromAddress)
+      .maybeSingle();
+    // Fail closed: an identity-read failure must never cause a mis-targeted
+    // email, and a recognized landlord identity is never a stranger.
+    if (!identityErr && !landlordIdentity) {
+      queuePersonaAck(accountId, fromAddress);
+    }
   }
 
   let participant: ParticipantRow | null = null;

@@ -10,20 +10,29 @@
 // Guard rails, in order:
 //   * AUTH: the caller (the comms route) only invokes this on a DMARC pass —
 //     acking unauthenticated mail is backscatter/amplification.
-//   * RATE: at most 1 ack per sender per day and 20 per account per day, via
-//     the shared sliding-window bucket (service-role only, hence this module
-//     lives in the admin quarantine).
+//   * RATE: at most 1 ack per account+sender per day and 20 per account per
+//     day, via the shared sliding-window bucket (service-role only, hence this
+//     module lives in the admin quarantine).
 //   * OPT-OUT: the comm_outbox BEFORE-INSERT trigger refuses opted-out
 //     destinations (P0004) — logged as compliant, never thrown.
 //
 // Fire-and-forget: capture latency and ack failures must never couple.
 
+import { createHash } from 'node:crypto';
 import { getAdminClient } from './supabase-admin';
 import { getLogger } from '../log';
 
 const SENDER_SCOPE = 'persona_ack';
 const ACCOUNT_SCOPE = 'persona_ack_acct';
 const WINDOW_SEC = 86_400;
+// Caps are per account+sender per day: the sender bucket is keyed by
+// sha256(`${accountId}:${senderAddress}`) so one account's traffic can't
+// suppress another account's first-touch ack (a bare-address key would be
+// global across accounts — a cheap cross-tenant griefing lever). Hashed
+// because ip_rate_buckets.ip is CHECK-capped at 64 chars (uuid + ':' +
+// address doesn't fit) — sha256 hex is exactly 64, deterministic, and keeps
+// raw addresses out of the infra table. The account-wide bucket below is
+// unchanged (a uuid fits as-is).
 const SENDER_DAILY_CAP = 1;
 const ACCOUNT_DAILY_CAP = 20;
 
@@ -33,8 +42,11 @@ export function queuePersonaAck(accountId: string, senderAddress: string): void 
     try {
       const admin = getAdminClient();
 
+      const senderKey = createHash('sha256')
+        .update(`${accountId}:${senderAddress}`)
+        .digest('hex');
       const { data: senderCount, error: sErr } = await admin.rpc('bump_ip_rate_bucket', {
-        p_ip: senderAddress,
+        p_ip: senderKey,
         p_scope: SENDER_SCOPE,
         p_window_sec: WINDOW_SEC,
       });
