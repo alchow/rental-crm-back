@@ -412,6 +412,14 @@ jobs:
         # member-column write guard.
         run: pnpm --filter ./api test:auto-charge
 
+      - name: Run instrument-anchored rent-change checks
+        # Lease/notice-anchored rent changes (change_tenancy_rent): schedule
+        # swap + provenance, prior-lease supersede, draft-anchor activation,
+        # validation (no anchor / cross-tenancy / ended / future conflict),
+        # generator interplay (bills the new amount), the lease rent-immutability
+        # guard, drift detection + reconciliation, RLS isolation, notices CRUD.
+        run: pnpm --filter ./api test:rent-changes
+
       - name: Stop Supabase stack
         if: always()
         working-directory: db

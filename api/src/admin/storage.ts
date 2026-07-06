@@ -65,17 +65,31 @@ export const ALLOWED_ENTITY_TYPES = new Set<string>([
   'inspection_report',
   'interactions',
   'document_versions',
+  // Rent-change instruments: a signed renewal-lease PDF or a served-notice
+  // scan. content_hash + received_at on the attachment make them evidence-grade
+  // (the same chain-of-custody every other attachment gets). Both tables carry
+  // id + account_id + deleted_at, so the generic entity-existence check in the
+  // upload path scopes them correctly under RLS.
+  'leases',
+  'notices',
 ]);
 
 function mimeToExt(mime: string): string {
   switch (mime) {
-    case 'image/jpeg': return 'jpg';
-    case 'image/png':  return 'png';
-    case 'image/webp': return 'webp';
-    case 'image/heic': return 'heic';
-    case 'image/heif': return 'heif';
-    case 'application/pdf': return 'pdf';
-    default: return 'bin';
+    case 'image/jpeg':
+      return 'jpg';
+    case 'image/png':
+      return 'png';
+    case 'image/webp':
+      return 'webp';
+    case 'image/heic':
+      return 'heic';
+    case 'image/heif':
+      return 'heif';
+    case 'application/pdf':
+      return 'pdf';
+    default:
+      return 'bin';
   }
 }
 
@@ -153,8 +167,8 @@ export async function processAndStoreBytes(
     if (heicSupported() === false) {
       getLogger().warn(
         `[WARN][heic] HEIC upload landed (sha=${createHash('sha256').update(bytes).digest('hex').slice(0, 12)}…) ` +
-        `but libheif is unavailable on this host; NO JPEG derivative was created. ` +
-        `The inspection-report PDF will placeholder this photo.`,
+          `but libheif is unavailable on this host; NO JPEG derivative was created. ` +
+          `The inspection-report PDF will placeholder this photo.`,
       );
     } else {
       try {
@@ -176,8 +190,8 @@ export async function processAndStoreBytes(
         const sha12 = createHash('sha256').update(bytes).digest('hex').slice(0, 12);
         getLogger().warn(
           `[WARN][heic] HEIC decode FAILED for upload (sha=${sha12}…). ` +
-          `Original is stored; derivative skipped; PDF will placeholder. ` +
-          `sharp error: ${e instanceof Error ? e.message : String(e)}`,
+            `Original is stored; derivative skipped; PDF will placeholder. ` +
+            `sharp error: ${e instanceof Error ? e.message : String(e)}`,
         );
       }
     }
@@ -196,11 +210,9 @@ async function uploadBytes(
   const ext = mimeToExt(mimeType);
   const storagePath = `${accountId}/${hash}.${ext}`;
 
-  const { error: upErr } = await admin.storage.from(BUCKET).upload(
-    storagePath,
-    bytes,
-    { contentType: mimeType, upsert: true },
-  );
+  const { error: upErr } = await admin.storage
+    .from(BUCKET)
+    .upload(storagePath, bytes, { contentType: mimeType, upsert: true });
   if (upErr) {
     throw new ApiError(500, 'database_error', `storage upload failed: ${upErr.message}`);
   }
@@ -327,9 +339,15 @@ export async function uploadAttachment(input: UploadInput): Promise<UploadResult
       const won = await findLiveAttachmentByContent(admin, input, stored.primary.hash);
       if (won) return { ...won, deduped: true };
     }
-    await admin.storage.from(BUCKET).remove([stored.primary.storagePath]).catch(() => {});
+    await admin.storage
+      .from(BUCKET)
+      .remove([stored.primary.storagePath])
+      .catch(() => {});
     if (stored.derivative) {
-      await admin.storage.from(BUCKET).remove([stored.derivative.storagePath]).catch(() => {});
+      await admin.storage
+        .from(BUCKET)
+        .remove([stored.derivative.storagePath])
+        .catch(() => {});
     }
     if (insErr?.code === '23503') {
       throw new ApiError(404, 'not_found', 'referenced entity not found in this account');
@@ -337,7 +355,11 @@ export async function uploadAttachment(input: UploadInput): Promise<UploadResult
     // Post-completion attachment lock (Phase 27): the parent inspection/item is
     // frozen, so a new photo is rejected by the BEFORE INSERT trigger.
     if (insErr?.code === '23514' && /completed/i.test(insErr.message)) {
-      throw new ApiError(409, 'conflict', 'parent inspection is completed; attachments are immutable');
+      throw new ApiError(
+        409,
+        'conflict',
+        'parent inspection is completed; attachments are immutable',
+      );
     }
     throw new ApiError(500, 'database_error', insErr?.message ?? 'no row returned');
   }
@@ -404,7 +426,11 @@ export async function downloadAttachment(
     .from(BUCKET)
     .download(row.storage_path as string);
   if (dlErr || !blob) {
-    throw new ApiError(500, 'database_error', `storage download failed: ${dlErr?.message ?? 'no data'}`);
+    throw new ApiError(
+      500,
+      'database_error',
+      `storage download failed: ${dlErr?.message ?? 'no data'}`,
+    );
   }
   const buf = new Uint8Array(await blob.arrayBuffer());
   const mime = (row.mime_type as string | null) ?? 'application/octet-stream';
@@ -477,5 +503,8 @@ export async function removeOrphanStoredObject(
     .is('deleted_at', null)
     .limit(1);
   if (data && data.length > 0) return;
-  await admin.storage.from(BUCKET).remove([storagePath]).catch(() => {});
+  await admin.storage
+    .from(BUCKET)
+    .remove([storagePath])
+    .catch(() => {});
 }

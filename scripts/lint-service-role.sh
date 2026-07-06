@@ -78,6 +78,13 @@ EXCLUDES=(
   #     actually stored (period timing, opt-in gate, idempotency, the tenancy-end
   #     cascade). TEST code, never a shipped client constructor.
   ':!api/test/auto-charge.test.ts'
+  #   - api/test/rent-changes.test.ts: instrument-anchored rent-change
+  #     integration test (same shape as auto-charge.test.ts) -- assigns
+  #     process.env from supabase status and uses the admin client to seed
+  #     users/accounts and call detect_rent_drift / generate_rent_charges to
+  #     verify what change_tenancy_rent stored. TEST code, never a shipped
+  #     client constructor.
+  ':!api/test/rent-changes.test.ts'
   ':!api/test/phase10.test.ts'
   ':!api/test/phase11.test.ts'
   ':!api/test/phase12.test.ts'

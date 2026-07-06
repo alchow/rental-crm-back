@@ -14,6 +14,26 @@ import { keysetPage } from './_lib/cursor';
 const LeaseStatus = z.enum(['draft', 'active', 'expired', 'superseded']);
 const CurrencyCode = z.string().length(3); // ISO 4217-shaped; trust the DB check
 
+// The rent-change migration (20260706000001) adds BEFORE triggers that reject
+// resurrecting a superseded lease and soft-deleting a lease that anchors a live
+// rent schedule -- the instrument-of-record precedent, mirroring the
+// completed-inspection reject trigger the inspections route maps to 409. Those
+// triggers raise the shared check_violation errcode (same as the coherence
+// checks that map to 400), so -- exactly like inspections.ts -- we tell them
+// apart by matching the raised MESSAGE. The API pre-checks handle the normal
+// case; this fallback covers the race where the status/anchor changed between
+// our read and the write.
+function isRentInstrumentReject(msg: string): boolean {
+  // The triggers raise 'lease <id> is anchored to a rent schedule and cannot
+  // be deleted' / 'a superseded lease is a historical record; ...'; keep the
+  // anchor pattern tolerant of both phrasings.
+  return (
+    /anchor(s|ed to) a (live )?rent[_ ]schedule/i.test(msg) ||
+    /superseded lease/i.test(msg) ||
+    /superseded and cannot/i.test(msg)
+  );
+}
+
 const Lease = z
   .object({
     id: z.string().uuid(),
@@ -38,7 +58,11 @@ export const CreateLeaseBody = z
   .object({
     tenancy_id: z.string().uuid(),
     term_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    term_end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+    term_end: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable()
+      .optional(),
     rent_amount_cents: z.number().int().nonnegative(),
     rent_currency: CurrencyCode,
     deposit_amount_cents: z.number().int().nonnegative().optional(),
@@ -46,17 +70,24 @@ export const CreateLeaseBody = z
     document: z.record(z.unknown()).optional(),
     status: LeaseStatus,
   })
-  .refine(
-    (b) => (b.deposit_amount_cents ?? 0) === 0 || b.deposit_currency !== undefined,
-    { message: 'deposit_currency is required when deposit_amount_cents > 0' },
-  )
+  .refine((b) => (b.deposit_amount_cents ?? 0) === 0 || b.deposit_currency !== undefined, {
+    message: 'deposit_currency is required when deposit_amount_cents > 0',
+  })
   .openapi('CreateLeaseBody');
 
+// Rent terms (rent_amount_cents / rent_currency) are IMMUTABLE on a lease: the
+// contracted figure is evidence of what was agreed, and a rent change is a new
+// instrument (a renewal lease or a served notice), not an edit. Those two fields
+// are intentionally absent here; the handler additionally rejects them loudly
+// (zod would otherwise strip unknown keys and silently no-op an old client's
+// rent edit). deposit_* stay patchable.
 const PatchLeaseBody = z
   .object({
-    term_end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
-    rent_amount_cents: z.number().int().nonnegative().optional(),
-    rent_currency: CurrencyCode.optional(),
+    term_end: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable()
+      .optional(),
     deposit_amount_cents: z.number().int().nonnegative().optional(),
     deposit_currency: CurrencyCode.nullable().optional(),
     document: z.record(z.unknown()).optional(),
@@ -66,11 +97,20 @@ const PatchLeaseBody = z
   .openapi('PatchLeaseBody');
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 const AccountAndIdParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
 });
 
 const ListQuery = z.object({
@@ -152,11 +192,7 @@ leasesApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit, tenancy_id, status } = c.req.valid('query');
   const sb = getSb(c);
-  let q = sb
-    .from('leases')
-    .select('*')
-    .eq('account_id', accountId)
-    .is('deleted_at', null);
+  let q = sb.from('leases').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (tenancy_id) q = q.eq('tenancy_id', tenancy_id);
   if (status) q = q.eq('status', status);
   const { items, next_cursor: nextCursor } = await keysetPage(q, { cursor, limit });
@@ -214,11 +250,76 @@ leasesApp.openapi(patch, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
+
+  // zod already stripped rent_amount_cents / rent_currency out of `body`
+  // (they're not in PatchLeaseBody). Re-read the raw body (Hono caches the
+  // parsed JSON, so this doesn't re-consume the stream) so we can distinguish a
+  // real rent EDIT from a harmless echo-back.
+  const raw = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const sentAmount = Object.prototype.hasOwnProperty.call(raw, 'rent_amount_cents');
+  const sentCurrency = Object.prototype.hasOwnProperty.call(raw, 'rent_currency');
+
+  // Fetch the current row ONCE and reuse it for both guards below: the rent
+  // echo-back tolerance (needs the stored rent to compare against) and the
+  // superseded-resurrection guard (needs the stored status). Only fetch when a
+  // guard actually needs it.
+  let current: { rent_amount_cents: number; rent_currency: string; status: string } | null = null;
+  if (sentAmount || sentCurrency || body.status !== undefined) {
+    const cur = await sb
+      .from('leases')
+      .select('rent_amount_cents, rent_currency, status')
+      .eq('account_id', accountId)
+      .eq('id', id)
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (cur.error) throw new ApiError(500, 'database_error', cur.error.message);
+    if (!cur.data) throw new ApiError(404, 'not_found', 'not found');
+    current = cur.data as { rent_amount_cents: number; rent_currency: string; status: string };
+  }
+
+  // Rent terms (rent_amount_cents/rent_currency) are IMMUTABLE on a lease -- a
+  // rent change is a new instrument, not an edit. But a read-modify-write client
+  // that GETs the lease and PATCHes the whole object back re-sends the UNCHANGED
+  // rent values; echoed state is not an edit, so we tolerate it. Compare each
+  // sent key against the stored value (raw JSON number vs PostgREST's
+  // number-typed bigint -> strict ===; currency is a plain string): all sent
+  // values equal to stored -> ignore them and proceed; ANY difference -> 400
+  // pointing the caller at the rent-change flow.
+  if ((sentAmount || sentCurrency) && current) {
+    const amountEchoed = !sentAmount || raw.rent_amount_cents === current.rent_amount_cents;
+    const currencyEchoed = !sentCurrency || raw.rent_currency === current.rent_currency;
+    if (!amountEchoed || !currencyEchoed) {
+      throw new ApiError(
+        400,
+        'invalid_request',
+        'rent terms are immutable on a lease; use POST /accounts/{accountId}/tenancies/{tenancyId}/rent-changes (fixed-term renewals supersede the lease)',
+      );
+    }
+  }
+
+  // A superseded lease is a historical record: a rent change replaced it with a
+  // successor contract. Any transition OUT of superseded (resurrecting it to
+  // active/draft/expired) is refused with a clean 409 -- create a new lease
+  // instead. The DB trigger backstops active-resurrection specifically; this
+  // API check gives the clean message and covers every transition off
+  // superseded.
+  if (
+    current &&
+    current.status === 'superseded' &&
+    body.status !== undefined &&
+    body.status !== 'superseded'
+  ) {
+    throw new ApiError(
+      409,
+      'conflict',
+      'a superseded lease is a historical record; create a new lease instead',
+    );
+  }
+
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (body.term_end !== undefined) update.term_end = body.term_end;
-  if (body.rent_amount_cents !== undefined) update.rent_amount_cents = body.rent_amount_cents;
-  if (body.rent_currency !== undefined) update.rent_currency = body.rent_currency;
-  if (body.deposit_amount_cents !== undefined) update.deposit_amount_cents = body.deposit_amount_cents;
+  if (body.deposit_amount_cents !== undefined)
+    update.deposit_amount_cents = body.deposit_amount_cents;
   if (body.deposit_currency !== undefined) update.deposit_currency = body.deposit_currency;
   if (body.document !== undefined) update.document = body.document;
   if (body.status !== undefined) update.status = body.status;
@@ -231,6 +332,15 @@ leasesApp.openapi(patch, async (c) => {
     .select('*')
     .maybeSingle();
   if (error) {
+    // Race backstop for the superseded-resurrection trigger (see
+    // isRentInstrumentReject); checked before the coherence 23514 -> 400 path.
+    if (isRentInstrumentReject(error.message)) {
+      throw new ApiError(
+        409,
+        'conflict',
+        'a superseded lease is a historical record; create a new lease instead',
+      );
+    }
     if (error.code === '23514') {
       throw new ApiError(400, 'invalid_request', error.message);
     }
@@ -243,6 +353,30 @@ leasesApp.openapi(patch, async (c) => {
 leasesApp.openapi(remove, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const sb = getSb(c);
+
+  // A lease that anchors a live rent schedule is the instrument of record for
+  // that billing era -- deleting it would orphan the successor schedule's
+  // provenance. Refuse the soft-delete with a clean 409. The source_lease_id
+  // column arrives with migration 20260706000001; on a not-yet-migrated DB
+  // (code may lead schema in the deploy window) this filter errors on an unknown
+  // column -- treat that as "no anchor" (no schedule can be anchored before the
+  // feature is live) and fall through, exactly as the create handler tolerates
+  // the same window. The DB trigger is the authoritative backstop.
+  const anchored = await sb
+    .from('rent_schedules')
+    .select('id')
+    .eq('account_id', accountId)
+    .eq('source_lease_id', id)
+    .is('deleted_at', null)
+    .limit(1);
+  if (!anchored.error && (anchored.data?.length ?? 0) > 0) {
+    throw new ApiError(
+      409,
+      'conflict',
+      'lease anchors a rent schedule; it is the instrument of record and cannot be deleted',
+    );
+  }
+
   const { data, error } = await sb
     .from('leases')
     .update({ deleted_at: new Date().toISOString() })
@@ -251,7 +385,17 @@ leasesApp.openapi(remove, async (c) => {
     .is('deleted_at', null)
     .select('id')
     .maybeSingle();
-  if (error) throw new ApiError(500, 'database_error', error.message);
+  if (error) {
+    // Race backstop for the anchored-lease delete trigger.
+    if (isRentInstrumentReject(error.message)) {
+      throw new ApiError(
+        409,
+        'conflict',
+        'lease anchors a rent schedule; it is the instrument of record and cannot be deleted',
+      );
+    }
+    throw new ApiError(500, 'database_error', error.message);
+  }
   if (!data) throw new ApiError(404, 'not_found', 'not found');
   return c.body(null, 204);
 });

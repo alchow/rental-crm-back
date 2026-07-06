@@ -17,6 +17,7 @@
     "test:documents": "tsx test/documents.test.ts",
     "test:phase9": "tsx test/phase9.test.ts",
     "test:auto-charge": "tsx test/auto-charge.test.ts",
+    "test:rent-changes": "tsx test/rent-changes.test.ts",
     "test:phase10": "tsx test/phase10.test.ts",
     "test:phase11": "tsx test/phase11.test.ts",
     "test:phase12": "tsx test/phase12.test.ts",
