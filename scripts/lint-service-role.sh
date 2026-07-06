@@ -72,6 +72,12 @@ EXCLUDES=(
   ':!api/test/condition-reports.test.ts'
   ':!api/test/intake.test.ts'
   ':!api/test/phase9.test.ts'
+  #   - api/test/auto-charge.test.ts: auto-rent-charging integration test (same
+  #     shape as phase9.test.ts) -- assigns process.env from supabase status and
+  #     reads rows back via the admin client to verify what generate_rent_charges
+  #     actually stored (period timing, opt-in gate, idempotency, the tenancy-end
+  #     cascade). TEST code, never a shipped client constructor.
+  ':!api/test/auto-charge.test.ts'
   ':!api/test/phase10.test.ts'
   ':!api/test/phase11.test.ts'
   ':!api/test/phase12.test.ts'

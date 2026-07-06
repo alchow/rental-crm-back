@@ -218,6 +218,14 @@ async function main(): Promise<void> {
     }).select('id').single();
     if (schedRes.error || !schedRes.data) throw new Error(`seed schedule: ${schedRes.error?.message}`);
 
+    // generate_rent_charges is OPT-IN (migration 20260704000002): it returns
+    // empty unless the account has auto_charge_enabled=true. Flip it on for A.
+    const optIn = await admin
+      .from('accounts')
+      .update({ auto_charge_enabled: true })
+      .eq('id', A.accountId);
+    if (optIn.error) throw new Error(`opt-in A: ${optIn.error.message}`);
+
     const asOf = '2026-06-15T00:00:00Z';
     const r1 = await admin.rpc('generate_rent_charges', {
       p_account_id: A.accountId,
@@ -230,13 +238,15 @@ async function main(): Promise<void> {
     });
     if (r2.error) throw new Error(`run2: ${r2.error.message}`);
 
-    // Count charges from this schedule for period_start = 2026-06-01.
+    // Count charges from this schedule. generate_rent_charges bills in ADVANCE
+    // (migration 20260704000002): as_of day-of-month 15 > due_day 1, so it emits
+    // the NEXT period -> period_start 2026-07-01, not the current 2026-06-01.
     const { data: charges, error } = await admin
       .from('charges')
       .select('id, period_start, source_schedule_id')
       .eq('account_id', A.accountId)
       .eq('source_schedule_id', schedRes.data.id)
-      .eq('period_start', '2026-06-01');
+      .eq('period_start', '2026-07-01');
     if (error) throw new Error(`count: ${error.message}`);
     if ((charges ?? []).length !== 1) {
       throw new Error(`expected exactly 1 charge, got ${(charges ?? []).length}`);
@@ -254,7 +264,7 @@ async function main(): Promise<void> {
       .from('charges')
       .select('id')
       .eq('account_id', A.accountId)
-      .eq('period_start', '2026-06-01')
+      .eq('period_start', '2026-07-01')
       .limit(1);
     if (!charges || charges.length === 0) throw new Error('no seed charge');
     const chargeId = charges[0]!.id as string;
@@ -545,6 +555,13 @@ async function main(): Promise<void> {
         start_date: '2026-02-01',
       }).select('id').single();
       if (sched.error || !sched.data) throw new Error(`race schedule: ${sched.error?.message}`);
+
+      // Ensure A is opted in (idempotent — an earlier case may have set it).
+      const optIn = await admin
+        .from('accounts')
+        .update({ auto_charge_enabled: true })
+        .eq('id', A.accountId);
+      if (optIn.error) throw new Error(`opt-in A (race): ${optIn.error.message}`);
 
       const asOf = '2026-05-20T00:00:00Z';
       const [r1, r2] = await Promise.all([

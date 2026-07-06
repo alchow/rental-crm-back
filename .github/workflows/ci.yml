@@ -405,6 +405,13 @@ jobs:
         # openapi.json AND reachable via the generated SDK over a real HTTP round trip.
         run: pnpm --filter ./api test:phase12
 
+      - name: Run automatic rent-charging checks
+        # Opt-in gate, advance timing (period_start derivation), idempotent
+        # re-runs, schedule/ended-tenancy exclusion, holdover still billed,
+        # tenancy-extend keeps billing, the end-cascade, and the accounts
+        # member-column write guard.
+        run: pnpm --filter ./api test:auto-charge
+
       - name: Stop Supabase stack
         if: always()
         working-directory: db

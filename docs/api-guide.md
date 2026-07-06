@@ -334,7 +334,7 @@ What's **owed** (`charges`) and what's **received** (`payments`) are separate. T
 
 ### Rent schedules
 
-Define a recurring charge. You cannot PATCH or DELETE a schedule — to change rent, end the current schedule and start a new one. The cron job reads active schedules and generates the monthly charge rows automatically.
+Define a recurring charge. You cannot PATCH or DELETE a schedule — to change rent, end the current schedule and start a new one. Creating a schedule does **not** by itself bill anyone: automatic charge generation is **opt-in per account** (see the note below).
 
 | Method | Path | Body / Notes |
 |---|---|---|
@@ -343,7 +343,7 @@ Define a recurring charge. You cannot PATCH or DELETE a schedule — to change r
 | `GET` | `/rent-schedules/{id}` | |
 | `POST` | `/rent-schedules/{id}/end` | `end_date` (required). Sets `end_date`; the schedule stops generating charges after that date. |
 
-> The server-side cron calls `generate_rent_charges()` daily. If you prefer to create charge rows yourself, do so via `POST /charges`. A schedule-generated and a manually created charge are identical — both are plain `Charge` rows.
+> **Automatic charge generation is opt-in.** A Render cron service (`rent-charge-generator` in `render.yaml`) runs the `charges:generate` script once daily. It generates charges **only for accounts that have set `auto_charge_enabled = true`** — flip it with `PATCH /accounts/{accountId}/settings` (owner/manager only). For an opted-in account it creates **next period's** charge the day *after* the current period's due date, so the tenant has the invoice in hand before it is due; it is idempotent (a missed or retried run never double-bills). Accounts that have not opted in are never touched. If you prefer to create charge rows yourself, do so via `POST /charges` at any time — a schedule-generated and a manually created charge are identical, both plain `Charge` rows.
 
 ### Charges
 
@@ -1056,14 +1056,16 @@ const tenancy = await post(`/v1/accounts/${accountId}/tenancies`,
 await post(`/v1/accounts/${accountId}/tenancies/${tenancy.id}/members`,
   { tenant_id: tenant.id, role: "primary" });
 
-// 4. Rent schedule (cron generates charges automatically)
+// 4. Rent schedule (only auto-charges if the account opted in via
+//    PATCH /accounts/{accountId}/settings { auto_charge_enabled: true })
 await post(`/v1/accounts/${accountId}/rent-schedules`, {
   tenancy_id: tenancy.id, kind: "rent",
   amount_cents: 120000, currency: "USD",
   due_day: 1, start_date: "2026-06-01"
 });
 
-// 5. Record a charge and partial payment manually (if not using cron)
+// 5. Record a charge and partial payment manually (always available; the
+//    row is identical to a cron-generated one)
 const charge = await post(`/v1/accounts/${accountId}/charges`, {
   tenancy_id: tenancy.id, type: "rent",
   amount_cents: 120000, currency: "USD",
