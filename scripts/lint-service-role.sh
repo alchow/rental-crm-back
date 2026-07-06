@@ -125,6 +125,12 @@ EXCLUDES=(
   #     non-granted columns (name/deleted_at) and reserved subdomains are fenced.
   #     TEST code, never shipped.
   ':!api/test/accounts-branding.test.ts'
+  #   - api/test/comms-persona-resolve.test.ts: persona-address resolution
+  #     integration test (same shape as accounts-branding.test.ts). Assigns
+  #     process.env from supabase status so the app under test sees the CI env,
+  #     and uses the admin client only for agent-role membership fixtures the
+  #     API does not expose. TEST code, never shipped.
+  ':!api/test/comms-persona-resolve.test.ts'
   #   - api/test/comms-evidence.test.ts: EV-A/EV-B evidence-hardening
   #     integration test (same shape as comms.test.ts). Assigns process.env
   #     from supabase status and uses the admin client for ops-tier fixtures
