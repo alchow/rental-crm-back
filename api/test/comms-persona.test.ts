@@ -419,7 +419,146 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
-  // (7) Guards
+  // (7) CC capture — journal-only landlord mail (phase 4)
+  // =========================================================================
+  const LL_EMAIL = `dave-${SUFFIX}@landlord.test`;
+  {
+    // The landlord's email identity: the CC arm's sender-recognition input.
+    const { error } = await admin.from('channel_identities').insert({
+      account_id: accountId, party_type: 'landlord_user', party_id: sub.user.id,
+      channel: 'email', address: LL_EMAIL,
+    });
+    if (error) throw new Error(`landlord identity: ${error.message}`);
+  }
+
+  await check('landlord CCs the persona on mail To a threaded tenant → cc_journaled outbound into the thread', async () => {
+    const r = await personaCapture({
+      from_address: LL_EMAIL,
+      to_addresses: [T1_EMAIL],
+      body: 'direct from my gmail',
+      subject: 'Re: Deposit for unit 4B',
+      rfc822_message_id: `<CC-${SUFFIX}@gmail>`,
+    });
+    const res = assertStatus(r, 200, 'cc capture') as CaptureShape;
+    assert(res.disposition === 'cc_journaled', `disposition: ${res.disposition}`);
+    assert(res.thread_id === t1ThreadId, `into the existing thread: ${res.thread_id}`);
+    assert(res.participant?.party_id === t1Id, `participant = the counterparty: ${res.participant?.party_id}`);
+
+    const { data: row, error } = await admin
+      .from('interactions')
+      .select('direction, author_type, party_type, party_id, actor, attestation')
+      .eq('id', res.interaction_id!)
+      .single();
+    if (error) throw new Error(`cc journal read: ${error.message}`);
+    assert(row.direction === 'outbound', `direction: ${row.direction}`);
+    assert(row.author_type === 'landlord', `author_type: ${row.author_type}`);
+    assert(row.party_type === 'tenant' && row.party_id === t1Id,
+      `party = counterparty: ${row.party_type}/${row.party_id}`);
+    assert(row.actor === 'system:comm-persona-cc', `actor: ${row.actor}`);
+    assert(row.attestation === 'provider_verified', `attestation: ${row.attestation}`);
+
+    // Cast: sender = landlord (his real address), recipient = the tenant's
+    // real address, cc = the persona as the platform leg.
+    const { data: cast } = await admin
+      .from('interaction_participants')
+      .select('role, party_type, address')
+      .eq('interaction_id', res.interaction_id!);
+    const roles = (cast ?? []) as { role: string; party_type: string; address: string | null }[];
+    assert(roles.some((c) => c.role === 'sender' && c.party_type === 'landlord_user' && c.address === LL_EMAIL),
+      `sender cast: ${JSON.stringify(roles)}`);
+    assert(roles.some((c) => c.role === 'recipient' && c.party_type === 'tenant' && c.address === T1_EMAIL.toLowerCase()),
+      `recipient cast: ${JSON.stringify(roles)}`);
+    assert(roles.some((c) => c.role === 'cc' && c.party_type === 'platform' && c.address === PERSONA),
+      `persona cc cast: ${JSON.stringify(roles)}`);
+  });
+
+  await check('reply-all two-door: the tenant reply-alls (token To + persona CC) → one journal + one duplicate', async () => {
+    const rfcId = `ReplyAll-${SUFFIX}@sender`;
+    // Door 1: her token (token capture path).
+    const d = assertStatus(
+      await api('GET', `${base}/threads/${t1ThreadId}`, { token: landlordToken }),
+      200, 'thread read',
+    ) as { bindings: { participant_address: string; reply_address: string | null }[] };
+    const token = d.bindings.find((b) => b.participant_address === T1_EMAIL.toLowerCase())?.reply_address;
+    const door1 = assertStatus(await api('POST', `${base}/inbound`, {
+      token: agentToken,
+      body: {
+        provider: 'ses', provider_msg_id: `PS-ra1-${rnd()}`, to_number: token,
+        from_address: T1_EMAIL, channel: 'email', body: 'reply all', received_at: iso(),
+        rfc822_message_id: `<${rfcId}>`,
+      },
+    }), 200, 'token door') as CaptureShape;
+    assert(door1.disposition === 'matched', `token door: ${door1.disposition}`);
+
+    // Door 2: the persona CC copy of the same email (sender = the tenant).
+    const door2 = assertStatus(await personaCapture({
+      from_address: T1_EMAIL, cc_addresses: [LL_EMAIL],
+      body: 'reply all', rfc822_message_id: `<${rfcId}>`,
+    }), 200, 'persona door') as CaptureShape;
+    assert(door2.disposition === 'duplicate', `persona door: ${door2.disposition}`);
+    assert(door2.interaction_id === door1.interaction_id, 'points at the token-journaled original');
+  });
+
+  await check('landlord CC about a known-but-unthreaded tenant → outbound-cold thread created', async () => {
+    const freshEmail = `fresh-${SUFFIX}@tenant.test`;
+    const freshId = await createTenant('Fresh Tenant', freshEmail);
+    const r = await personaCapture({
+      from_address: LL_EMAIL, to_addresses: [freshEmail],
+      subject: 'Welcome!', body: 'welcome aboard',
+    });
+    const res = assertStatus(r, 200, 'outbound-cold cc') as CaptureShape;
+    assert(res.disposition === 'cc_journaled', `disposition: ${res.disposition}`);
+    assert(res.thread_id !== null && res.thread_id !== t1ThreadId, 'a new thread');
+    assert(res.participant?.party_id === freshId, `counterparty: ${res.participant?.party_id}`);
+
+    // The initiating landlord is the thread's landlord participant, BOUND
+    // with his own address (core knows it — it authenticated the mail).
+    const d = assertStatus(
+      await api('GET', `${base}/threads/${res.thread_id}`, { token: landlordToken }),
+      200, 'cold-cc thread detail',
+    ) as {
+      participants: { party_type: string; party_id: string | null }[];
+      bindings: { participant_address: string; reply_address: string | null }[];
+    };
+    assert(d.participants.some((p) => p.party_type === 'landlord_user' && p.party_id === sub.user.id),
+      'initiating landlord is the participant');
+    assert(d.bindings.some((b) => b.participant_address === LL_EMAIL && b.reply_address?.startsWith('t-')),
+      `landlord bound with a minted token: ${JSON.stringify(d.bindings)}`);
+    assert(d.bindings.some((b) => b.participant_address === freshEmail), 'tenant bound');
+  });
+
+  await check('landlord sender with DMARC fail → triaged, never landlord-attributed', async () => {
+    const r = await personaCapture({
+      from_address: LL_EMAIL, to_addresses: [T1_EMAIL],
+      body: 'forged?', auth_results: AUTH_FAIL,
+    });
+    const res = assertStatus(r, 200, 'forged landlord') as CaptureShape;
+    assert(res.disposition === 'triaged', `disposition: ${res.disposition}`);
+    assert(res.interaction_id === null, 'nothing journaled');
+  });
+
+  await check('landlord CC about an unknown counterparty → triaged, and the landlord is NEVER acked', async () => {
+    const r = await personaCapture({
+      from_address: LL_EMAIL, to_addresses: [`nobody-${SUFFIX}@unknown.test`],
+      body: 'who is this even about',
+    });
+    const res = assertStatus(r, 200, 'unknown-counterparty cc') as CaptureShape;
+    assert(res.disposition === 'triaged', `disposition: ${res.disposition}`);
+
+    // The stranger ack is for strangers: a recognized landlord landing in
+    // triage (DMARC pass and all) must not receive the tenant-oriented
+    // receipt. Poll-wait like the positive ack checks, then assert absence.
+    await sleep(600);
+    const { count } = await admin
+      .from('comm_outbox')
+      .select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId).eq('to_address', LL_EMAIL)
+      .eq('approval_ref', 'system:persona_ack');
+    assert((count ?? 0) === 0, `no ack to the landlord: ${count}`);
+  });
+
+  // =========================================================================
+  // (8) Guards
   // =========================================================================
   await check('landlord calling the persona endpoint → 403 (transport only)', async () => {
     const r = await api('POST', `${base}/inbound-persona`, {

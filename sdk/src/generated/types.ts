@@ -6542,6 +6542,8 @@ export interface paths {
                     tenancy_id?: string;
                     maintenance_request_id?: string;
                     latest_only?: "true" | "false";
+                    party_type?: "tenant" | "vendor" | "inspector" | "other" | "none" | "unspecified";
+                    direction?: "inbound" | "outbound" | "mutual" | "unspecified" | "none";
                 };
                 header?: never;
                 path: {
@@ -8157,6 +8159,102 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["CommThreadMessageResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/comms/threads/{threadId}/bindings/{bindingId}/rebind": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Point an email binding at a new counterparty address (landlord, owner|manager). The mismatch-hygiene half of a classify: after a human confirms a sender_mismatch was really the participant writing from a new address, rebinding stops every FUTURE reply from mismatching. The reply token is untouched; the new address is learned into the address book. */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    threadId: string;
+                    bindingId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RebindCommBindingBody"];
+                };
+            };
+            responses: {
+                /** @description updated binding */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CommThreadBinding"];
                     };
                 };
                 /** @description invalid request */
@@ -15848,6 +15946,9 @@ export interface components {
             body: string;
             /** Format: date-time */
             not_before?: string;
+        };
+        RebindCommBindingBody: {
+            address: string;
         };
         CommQuietHours: {
             /** @example 21:00 */
