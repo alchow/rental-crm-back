@@ -2749,6 +2749,15 @@ commsApp.openapi(rebindBinding, async (c) => {
 
   // Learn the new address so attribution/resolution (incl. persona capture)
   // recognizes it account-wide, not just on this leg.
+  //
+  // KNOWN LIMITATION (review, deliberate): ignoreDuplicates means an address
+  // that ALREADY maps to a different party keeps its OLD mapping — the
+  // address book stays first-writer-wins (same semantics as the capture
+  // paths' learning upserts). The binding update above is still the primary
+  // outcome (replies on THIS leg verify), but future cold/persona mail from
+  // a shared address may attribute to the previously-mapped party. Changing
+  // the book to last-human-wins is a cross-cutting decision tracked in
+  // docs/persona-email-contract.md § Known limitations.
   const { data: participant, error: pErr } = await sb
     .from('comm_thread_participants')
     .select('party_type, party_id')
