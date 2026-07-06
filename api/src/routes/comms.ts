@@ -1055,10 +1055,25 @@ const CommAttachment = z
   })
   .openapi('CommAttachment');
 
+// header-injection-adjacent: `filename` and `content_type` are rendered into
+// the download response's content-disposition / content-type headers, and
+// undici THROWS on a header value containing C0 controls or DEL — so a stored
+// CR/LF/NUL would make the attachment permanently un-downloadable (500).
+// Reject those bytes at ingest: `[ -~]` accepts only printable ASCII (0x20
+// space … 0x7e tilde), which excludes every C0 control and DEL. (A literal
+// control-char range would trip eslint no-control-regex.)
 const UploadCommAttachmentBody = z
   .object({
-    filename: z.string().min(1).max(255),
-    content_type: z.string().min(1).max(200),
+    filename: z
+      .string()
+      .min(1)
+      .max(255)
+      .regex(/^[ -~]+$/, 'must not contain control characters'),
+    content_type: z
+      .string()
+      .min(1)
+      .max(200)
+      .regex(/^[ -~]+$/, 'must not contain control characters'),
     /** The attachment bytes, base64. Max 10 MiB decoded; at most 10
      *  attachments per message. */
     data_b64: z

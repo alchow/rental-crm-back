@@ -98,6 +98,11 @@ export async function storeCommAttachment(
         .eq('entity_type', 'interactions')
         .eq('entity_id', interactionId)
         .eq('content_hash', sha256)
+        // The content-idempotency unique index is PARTIAL on `deleted_at is
+        // null`, so after a soft-delete + re-upload of identical bytes a
+        // tombstone and a live row coexist for this (interaction, content);
+        // filtering to the live row keeps `.single()` matching exactly one.
+        .is('deleted_at', null)
         .single();
       if (exErr) throw new ApiError(500, 'database_error', exErr.message);
       return existing as CommAttachmentRow;

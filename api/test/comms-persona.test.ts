@@ -750,8 +750,15 @@ async function main(): Promise<void> {
     const got = new Uint8Array(await res.arrayBuffer());
     assert(Buffer.from(got).equals(Buffer.from(FILE_BYTES)), 'bytes round-trip');
     assert(res.headers.get('content-type') === 'application/pdf', `ct: ${res.headers.get('content-type')}`);
-    assert((res.headers.get('content-disposition') ?? '').includes('deposit-photos.pdf'), 'disposition filename');
+    const disposition = res.headers.get('content-disposition') ?? '';
+    assert(disposition.startsWith('attachment;'), `disposition attachment: ${disposition}`);
+    assert(disposition.includes('deposit-photos.pdf'), 'disposition filename');
     assert(res.headers.get('x-content-type-options') === 'nosniff', 'nosniff forced');
+    assert(res.headers.get('cache-control') === 'private, no-store', `cache-control: ${res.headers.get('cache-control')}`);
+    assert(
+      (res.headers.get('content-security-policy') ?? '').includes('sandbox'),
+      `csp sandbox: ${res.headers.get('content-security-policy')}`,
+    );
   });
 
   await check('attachments are refused on non-capture rows and non-transport callers', async () => {
@@ -776,6 +783,17 @@ async function main(): Promise<void> {
       body: { filename: 'x.pdf', content_type: 'application/pdf', data_b64: FILE_B64 },
     });
     assertStatus(landlordUpload, 403, 'landlord upload');
+  });
+
+  await check('control characters in filename → 400', async () => {
+    // A CR/LF in the filename would be rendered into the download's
+    // content-disposition header; undici throws on such a value. Reject at
+    // ingest rather than store an un-downloadable attachment.
+    const r = await api('POST', `/v1/accounts/${accountId}/interactions/${t1FirstIid}/attachments`, {
+      token: agentToken,
+      body: { filename: 'evil\r\nx.pdf', content_type: 'application/pdf', data_b64: FILE_B64 },
+    });
+    assertStatus(r, 400, 'control-char filename');
   });
 
   // =========================================================================
