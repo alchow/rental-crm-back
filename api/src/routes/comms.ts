@@ -1033,6 +1033,152 @@ const createThreadMessage = createRoute({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Unknown-sender triage — the persona front door's holding pen (phase 6).
+// ---------------------------------------------------------------------------
+
+const CommUnmatchedInbound = z
+  .object({
+    id: z.string().uuid(),
+    account_id: z.string().uuid(),
+    provider: z.string(),
+    provider_msg_id: z.string(),
+    rfc822_message_id: z.string().nullable(),
+    persona_address: z.string(),
+    from_address: z.string(),
+    from_display_name: z.string().nullable(),
+    to_addresses: z.array(z.string()),
+    cc_addresses: z.array(z.string()),
+    subject: z.string().nullable(),
+    body: z.string().nullable(),
+    media: z.array(CommInboundMedia),
+    spf: z.string().nullable(),
+    dkim: z.string().nullable(),
+    dmarc: z.string().nullable(),
+    /** unknown_sender: nobody recognizes the address. auth_failed: a
+     *  RECOGNIZED identity (tenant/vendor/landlord) whose mail failed DMARC —
+     *  the suspicious kind; never attributable without a human. */
+    reason: z.enum(['unknown_sender', 'auth_failed']),
+    received_at: z.string(),
+    status: z.enum(['pending', 'linked', 'dismissed']),
+    resolved_by: z.string().uuid().nullable(),
+    resolved_at: z.string().nullable(),
+    linked_thread_id: z.string().uuid().nullable(),
+    linked_interaction_id: z.string().uuid().nullable(),
+    linked_party_type: z.string().nullable(),
+    linked_party_id: z.string().uuid().nullable(),
+    auto_acked_at: z.string().nullable(),
+    created_at: z.string(),
+    updated_at: z.string(),
+  })
+  .openapi('CommUnmatchedInbound');
+
+/** A candidate identity for a pending triage row, computed at READ time (a
+ *  tenant added after capture must still match). */
+const UnmatchedSuggestion = z
+  .object({
+    party_type: z.enum(['tenant', 'vendor']),
+    party_id: z.string().uuid(),
+    title: z.string(),
+    subtitle: z.string().nullable(),
+    /** email_exact: the sender address appears verbatim in the party's
+     *  contact emails. name_match: trigram match of the From display name. */
+    source: z.enum(['email_exact', 'name_match']),
+  })
+  .openapi('CommUnmatchedSuggestion');
+
+const UnmatchedListResponse = z
+  .object({ data: z.array(CommUnmatchedInbound), next_cursor: z.string().nullable() })
+  .openapi('CommUnmatchedListResponse');
+
+const UnmatchedDetailResponse = CommUnmatchedInbound.extend({
+  suggestions: z.array(UnmatchedSuggestion),
+}).openapi('CommUnmatchedDetailResponse');
+
+const LinkUnmatchedBody = z
+  .object({
+    party_type: z.enum(['tenant', 'vendor']),
+    party_id: z.string().uuid(),
+  })
+  .openapi('LinkCommUnmatchedBody');
+
+const LinkUnmatchedResponse = z
+  .object({
+    thread_id: z.string().uuid(),
+    interaction_id: z.string().uuid(),
+  })
+  .openapi('LinkCommUnmatchedResponse');
+
+const listUnmatched = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/comms/unmatched',
+  tags: ['comms'],
+  summary:
+    'The unknown-sender triage queue (landlord, owner|manager): persona mail ' +
+    'core could not attribute, newest first. Rows carry their own copy of ' +
+    'the message — they outlive the raw-tier retention prune.',
+  request: {
+    params: AccountParam,
+    query: z.object({
+      cursor: z.string().optional(),
+      limit: z.coerce.number().int().positive().max(100).default(50),
+      status: z.enum(['pending', 'linked', 'dismissed']).optional(),
+    }),
+  },
+  responses: {
+    200: { description: 'page', content: { 'application/json': { schema: UnmatchedListResponse } } },
+    ...errorResponses,
+  },
+});
+
+const getUnmatched = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/comms/unmatched/{id}',
+  tags: ['comms'],
+  summary:
+    'One triage row with resolution suggestions (computed at read: exact ' +
+    'contact-email hits, then trigram name matches on the From display name).',
+  request: { params: AccountAndIdParam },
+  responses: {
+    200: { description: 'row + suggestions', content: { 'application/json': { schema: UnmatchedDetailResponse } } },
+    ...errorResponses,
+  },
+});
+
+const linkUnmatched = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/comms/unmatched/{id}/link',
+  tags: ['comms'],
+  summary:
+    '"This was tenant/vendor X" (owner|manager): journals the STORED original ' +
+    'into their email thread (created atomically when none exists), learns ' +
+    'the sender address so future mail auto-resolves, and marks the row ' +
+    'linked. Attestation: provider_verified when the stored DMARC passed, ' +
+    'else attested.',
+  request: {
+    params: AccountAndIdParam,
+    body: { content: { 'application/json': { schema: LinkUnmatchedBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'journaled + linked', content: { 'application/json': { schema: LinkUnmatchedResponse } } },
+    ...errorResponses,
+  },
+});
+
+const dismissUnmatched = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/comms/unmatched/{id}/dismiss',
+  tags: ['comms'],
+  summary:
+    'Not relevant (owner|manager). No side effects — dismissing never ' +
+    'registers an opt-out. Idempotent.',
+  request: { params: AccountAndIdParam },
+  responses: {
+    200: { description: 'dismissed row', content: { 'application/json': { schema: CommUnmatchedInbound } } },
+    ...errorResponses,
+  },
+});
+
 const RebindBody = z
   .object({
     /** The counterparty's NEW address for this leg. Email bindings only. */
@@ -2703,6 +2849,138 @@ commsApp.openapi(createThreadMessage, async (c) => {
     .select('*');
   if (error) throw commDbError(error);
   return c.json({ data: (rows ?? []) as OutboxRow[] }, 201);
+});
+
+// ---------------------------------------------------------------------------
+// Unknown-sender triage (landlord, owner|manager)
+// ---------------------------------------------------------------------------
+
+type UnmatchedRow = z.infer<typeof CommUnmatchedInbound>;
+
+commsApp.openapi(listUnmatched, async (c) => {
+  requireManager(c);
+  const { accountId } = c.req.valid('param');
+  const { cursor, limit, status } = c.req.valid('query');
+  const sb = getSb(c);
+  let q = sb.from('comm_unmatched_inbound').select('*').eq('account_id', accountId);
+  if (status !== undefined) q = q.eq('status', status);
+  const { items, next_cursor } = await keysetPage<UnmatchedRow>(q, {
+    cursor,
+    limit,
+    column: 'received_at',
+    descending: true,
+  });
+  return c.json({ data: items, next_cursor }, 200);
+});
+
+commsApp.openapi(getUnmatched, async (c) => {
+  requireManager(c);
+  const { accountId, id } = c.req.valid('param');
+  const sb = getSb(c);
+  const { data, error } = await sb
+    .from('comm_unmatched_inbound')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw commDbError(error);
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  const row = data as UnmatchedRow;
+
+  // Suggestions, computed at read so late-added parties still match.
+  const suggestions: z.infer<typeof UnmatchedSuggestion>[] = [];
+  const seen = new Set<string>();
+
+  // (1) Exact contact-email hit (verbatim; the address book normalizes over
+  // time via capture's learning step, so this is best-effort by design).
+  const { data: exact, error: exErr } = await sb
+    .from('tenants')
+    .select('id, full_name')
+    .eq('account_id', accountId)
+    .is('deleted_at', null)
+    .contains('emails', [row.from_address])
+    .limit(5);
+  if (exErr) throw commDbError(exErr);
+  for (const t of (exact ?? []) as { id: string; full_name: string }[]) {
+    suggestions.push({
+      party_type: 'tenant', party_id: t.id, title: t.full_name, subtitle: null,
+      source: 'email_exact',
+    });
+    seen.add(t.id);
+  }
+
+  // (2) Trigram name match on the From display name (the entity-search RPC —
+  // returns unit/property context as the subtitle for disambiguation).
+  if (row.from_display_name) {
+    const { data: hits, error: sErr } = await sb.rpc('search_entities', {
+      p_account_id: accountId,
+      p_q: row.from_display_name,
+      p_types: ['tenant', 'vendor'],
+      p_exclude: null,
+      p_limit: 5,
+    });
+    if (sErr) throw commDbError(sErr);
+    for (const h of (hits ?? []) as {
+      entity_type: string; entity_id: string; title: string; subtitle: string | null;
+    }[]) {
+      if (seen.has(h.entity_id)) continue;
+      if (h.entity_type !== 'tenant' && h.entity_type !== 'vendor') continue;
+      suggestions.push({
+        party_type: h.entity_type, party_id: h.entity_id,
+        title: h.title, subtitle: h.subtitle, source: 'name_match',
+      });
+      seen.add(h.entity_id);
+    }
+  }
+
+  return c.json({ ...row, suggestions }, 200);
+});
+
+commsApp.openapi(linkUnmatched, async (c) => {
+  requireManager(c);
+  const { accountId, id } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+
+  // Linking may create a thread (mints tokens): derive the receiving domain
+  // exactly like the persona capture path.
+  const { data: account, error: acctErr } = await sb
+    .from('accounts')
+    .select('email_subdomain')
+    .eq('id', accountId)
+    .maybeSingle();
+  if (acctErr) throw commDbError(acctErr);
+  const env = loadEnv();
+  const replyDomain =
+    brandedReplyDomain((account?.email_subdomain ?? null) as string | null, env.EMAIL_PLATFORM_PARENT_DOMAIN) ??
+    env.EMAIL_REPLY_DOMAIN;
+  if (replyDomain === null) {
+    throw new ApiError(503, 'service_unavailable', 'email threads are not configured (no receiving domain)');
+  }
+
+  const { data, error } = await sb.rpc('link_unmatched_inbound', {
+    p_account_id: accountId,
+    p_unmatched_id: id,
+    p_party_type: body.party_type,
+    p_party_id: body.party_id,
+    p_reply_domain: replyDomain,
+  });
+  if (error) throw commDbError(error);
+  const result = (data as { thread_id: string; interaction_id: string }[])[0];
+  if (!result) throw new ApiError(500, 'internal_error', 'link returned no result');
+  return c.json(result, 200);
+});
+
+commsApp.openapi(dismissUnmatched, async (c) => {
+  requireManager(c);
+  const { accountId, id } = c.req.valid('param');
+  const sb = getSb(c);
+  const { data, error } = await sb.rpc('dismiss_unmatched_inbound', {
+    p_account_id: accountId,
+    p_unmatched_id: id,
+  });
+  if (error) throw commDbError(error);
+  return c.json(data as UnmatchedRow, 200);
 });
 
 // ---------------------------------------------------------------------------

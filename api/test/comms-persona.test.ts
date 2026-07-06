@@ -558,7 +558,142 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
-  // (8) Guards
+  // (8) Unknown-sender triage (phase 6)
+  // =========================================================================
+  let triageRowId = '';
+  const LATER_EMAIL = `later-${SUFFIX}@somewhere.test`;
+
+  await check('triaged capture returns unmatched_id; replay returns the same id', async () => {
+    const msgId = `PS-triage-${rnd()}`;
+    const r = await personaCapture({
+      provider_msg_id: msgId, from_address: LATER_EMAIL,
+      from_display_name: 'Lena Later', subject: 'About unit 4B',
+      body: 'former tenant here, new address',
+    });
+    const res = assertStatus(r, 200, 'triage capture') as CaptureShape;
+    assert(res.disposition === 'triaged', `disposition: ${res.disposition}`);
+    assert(res.unmatched_id !== null, 'unmatched_id returned');
+    triageRowId = res.unmatched_id!;
+
+    const replay = assertStatus(await personaCapture({
+      provider_msg_id: msgId, from_address: LATER_EMAIL,
+      from_display_name: 'Lena Later', subject: 'About unit 4B',
+      body: 'former tenant here, new address',
+    }), 200, 'triage replay') as CaptureShape;
+    assert(replay.disposition === 'triaged' && replay.unmatched_id === triageRowId,
+      `replay resolves the same triage row: ${replay.unmatched_id}`);
+  });
+
+  await check('the triage queue lists pending rows with their stored copy + reason', async () => {
+    const r = await api('GET', `${base}/unmatched?status=pending&limit=100`, { token: landlordToken });
+    const rows = (assertStatus(r, 200, 'unmatched list') as { data: {
+      id: string; from_address: string; subject: string | null; reason: string; status: string;
+    }[] }).data;
+    const mine = rows.find((x) => x.id === triageRowId);
+    assert(mine, 'the new row is in the queue');
+    assert(mine!.from_address === LATER_EMAIL && mine!.subject === 'About unit 4B',
+      `stored copy: ${JSON.stringify(mine)}`);
+    assert(mine!.reason === 'unknown_sender', `reason: ${mine!.reason}`);
+    // The KNOWN-sender DMARC failure from (3) is flagged as the suspicious kind.
+    assert(rows.some((x) => x.from_address === T1_EMAIL.toLowerCase() && x.reason === 'auth_failed'),
+      'the known-sender DMARC failure carries reason=auth_failed');
+  });
+
+  await check('detail computes suggestions at read time (email_exact for a late-added tenant)', async () => {
+    // The tenant is created AFTER the capture — stored-at-capture suggestions
+    // would miss her; read-time ones must not.
+    const lenaId = await createTenant('Lena Later', LATER_EMAIL);
+    const r = await api('GET', `${base}/unmatched/${triageRowId}`, { token: landlordToken });
+    const d = assertStatus(r, 200, 'unmatched detail') as {
+      suggestions: { party_type: string; party_id: string; source: string }[];
+    };
+    assert(
+      d.suggestions.some((s) => s.party_id === lenaId && s.source === 'email_exact'),
+      `email_exact suggestion present: ${JSON.stringify(d.suggestions)}`,
+    );
+
+    // Link it: journals the STORED original + learns the address.
+    const link = await api('POST', `${base}/unmatched/${triageRowId}/link`, {
+      token: landlordToken, body: { party_type: 'tenant', party_id: lenaId },
+    });
+    const res = assertStatus(link, 200, 'link') as { thread_id: string; interaction_id: string };
+
+    const { data: j } = await admin
+      .from('interactions')
+      .select('direction, party_type, party_id, attestation, body, thread_id')
+      .eq('id', res.interaction_id)
+      .single();
+    assert(j!.direction === 'inbound' && j!.party_type === 'tenant' && j!.party_id === lenaId,
+      `linked journal attribution: ${JSON.stringify(j)}`);
+    assert(j!.attestation === 'provider_verified', `stored DMARC passed → ${j!.attestation}`);
+    assert(j!.body === 'former tenant here, new address', 'journals the STORED original');
+    assert(j!.thread_id === res.thread_id, 'journaled into the created thread');
+
+    const { data: row } = await admin
+      .from('comm_unmatched_inbound')
+      .select('status, linked_interaction_id, linked_party_id')
+      .eq('id', triageRowId)
+      .single();
+    assert(row!.status === 'linked' && row!.linked_interaction_id === res.interaction_id
+      && row!.linked_party_id === lenaId, `row resolved: ${JSON.stringify(row)}`);
+
+    // The learning step: her NEXT mail auto-resolves into the same thread.
+    const next = assertStatus(await personaCapture({
+      from_address: LATER_EMAIL, body: 'thanks for finding me',
+    }), 200, 'post-link capture') as CaptureShape;
+    assert(next.disposition === 'matched', `post-link disposition: ${next.disposition}`);
+    assert(next.thread_id === res.thread_id, `same thread: ${next.thread_id}`);
+  });
+
+  await check('linking a resolved row → 409; dismiss is idempotent; agent → 403', async () => {
+    const again = await api('POST', `${base}/unmatched/${triageRowId}/link`, {
+      token: landlordToken, body: { party_type: 'tenant', party_id: t1Id },
+    });
+    assertStatus(again, 409, 'double link');
+
+    // A fresh stranger row to dismiss.
+    const r = assertStatus(await personaCapture({
+      from_address: `dismiss-${SUFFIX}@somewhere.test`, body: 'spamish',
+    }), 200, 'dismissable capture') as CaptureShape;
+    const one = await api('POST', `${base}/unmatched/${r.unmatched_id}/dismiss`, { token: landlordToken });
+    const dismissed = assertStatus(one, 200, 'dismiss') as { status: string };
+    assert(dismissed.status === 'dismissed', `status: ${dismissed.status}`);
+    const two = await api('POST', `${base}/unmatched/${r.unmatched_id}/dismiss`, { token: landlordToken });
+    assertStatus(two, 200, 'dismiss replay');
+
+    const agentList = await api('GET', `${base}/unmatched`, { token: agentToken });
+    assertStatus(agentList, 403, 'agent list');
+    const agentLink = await api('POST', `${base}/unmatched/${triageRowId}/link`, {
+      token: agentToken, body: { party_type: 'tenant', party_id: t1Id },
+    });
+    assertStatus(agentLink, 403, 'agent link');
+  });
+
+  await check('linking an auth_failed row journals as attested (human vouches, provider could not)', async () => {
+    const { data: failRow } = await admin
+      .from('comm_unmatched_inbound')
+      .select('id')
+      .eq('account_id', accountId)
+      .eq('from_address', T1_EMAIL.toLowerCase())
+      .eq('reason', 'auth_failed')
+      .eq('status', 'pending')
+      .limit(1)
+      .maybeSingle();
+    assert(failRow, 'the auth_failed row from (3) is pending');
+    const link = await api('POST', `${base}/unmatched/${failRow!.id}/link`, {
+      token: landlordToken, body: { party_type: 'tenant', party_id: t1Id },
+    });
+    const res = assertStatus(link, 200, 'link auth_failed') as { interaction_id: string };
+    const { data: j } = await admin
+      .from('interactions')
+      .select('attestation')
+      .eq('id', res.interaction_id)
+      .single();
+    assert(j!.attestation === 'attested', `attestation: ${j!.attestation}`);
+  });
+
+  // =========================================================================
+  // (9) Guards
   // =========================================================================
   await check('landlord calling the persona endpoint → 403 (transport only)', async () => {
     const r = await api('POST', `${base}/inbound-persona`, {

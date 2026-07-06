@@ -172,3 +172,22 @@ Nothing new mechanically — same endpoint, same rule: relay only on
   learned into `channel_identities` (so persona capture recognizes it too).
 - Transport impact: none — capture verification just starts passing for the
   rebound address.
+
+## Phase 6 — unknown-sender triage (shipped with migration 20260709000001)
+
+- `triaged` persona captures now land in a durable, member-visible store
+  (`comm_unmatched_inbound`) carrying their own copy of the message — they
+  outlive the raw-tier prune. `unmatched_id` in the persona capture response
+  is now real (and stable across replays).
+- `reason` distinguishes `unknown_sender` from `auth_failed` (a RECOGNIZED
+  tenant/vendor/landlord identity whose mail failed DMARC — the suspicious
+  kind).
+- Landlord surface (owner|manager): `GET /accounts/{id}/comms/unmatched`
+  (queue, status filter), `GET …/unmatched/{id}` (detail + read-time
+  suggestions: exact contact-email hits, trigram name matches),
+  `POST …/unmatched/{id}/link {party_type, party_id}` (journals the stored
+  original into the party's thread — created atomically if needed;
+  `provider_verified` when the stored DMARC passed, else `attested`; learns
+  the address so future mail auto-resolves), `POST …/unmatched/{id}/dismiss`.
+- Transport impact: none beyond reading `unmatched_id` if useful for
+  logging. A linked sender's future mail starts resolving as `matched`.
