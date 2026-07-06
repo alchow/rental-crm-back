@@ -372,6 +372,15 @@ jobs:
         # (RLS + role fences, same posture as resolve-reply-address).
         run: pnpm --filter ./api test:comms-persona-resolve
 
+      - name: Run persona inbound-capture checks
+        # POST /comms/inbound-persona: sender-routed cold capture — known
+        # tenant (contact-book fallback + identity learning, exact-hit path)
+        # journals into a found-or-created thread with minted tokens; DMARC
+        # gates all attribution (fail → triaged, never journaled); unknown
+        # senders triage with ONE rate-capped system:persona_ack intent;
+        # persona-first two-door duplicate detection; opt-out parity.
+        run: pnpm --filter ./api test:comms-persona
+
       - name: Run comms evidence-hardening checks (EV-A/EV-B)
         # Participants cast + attestation (sender/platform/cc shapes per
         # channel, group headline = joined display names, cast insert-only
