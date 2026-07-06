@@ -355,12 +355,26 @@
               "string",
               "null"
             ]
+          },
+          "persona_local_part": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "persona_address": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "email_subdomain",
           "sender_display_name",
-          "reply_domain"
+          "reply_domain",
+          "persona_local_part",
+          "persona_address"
         ]
       },
       "PatchAccountEmailBrandingBody": {
@@ -373,6 +387,12 @@
             ]
           },
           "sender_display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "persona_local_part": {
             "type": [
               "string",
               "null"
@@ -5483,6 +5503,18 @@
           "account_id",
           "thread_id",
           "participant_id"
+        ]
+      },
+      "CommResolvePersonaAddressResponse": {
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "account_id"
         ]
       },
       "OwnerPhoneResponse": {
@@ -20646,6 +20678,87 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CommResolveReplyAddressResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/comms/resolve-persona-address": {
+      "get": {
+        "tags": [
+          "comms"
+        ],
+        "summary": "Resolve a persona address (<local>@<subdomain>.<parent>) to its account — transport only, account-agnostic like resolve-reply-address (a cold inbound email carries nothing but the address). 404 for anything but a configured persona in an account the caller transports (uniform: unknown local parts, unknown subdomains, and foreign accounts are indistinguishable).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 5,
+              "maxLength": 320
+            },
+            "required": true,
+            "name": "address",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "persona account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommResolvePersonaAddressResponse"
                 }
               }
             }

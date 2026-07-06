@@ -5,7 +5,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   brandedReplyDomain,
+  personaAddress,
   validateEmailSubdomain,
+  validatePersonaLocalPart,
   validateSenderDisplayName,
 } from '../src/routes/_lib/subdomain';
 
@@ -143,5 +145,72 @@ describe('brandedReplyDomain', () => {
 
   it('returns null when both are unset', () => {
     expect(brandedReplyDomain(null, null)).toBeNull();
+  });
+});
+
+// Keep in lockstep with RESERVED_LOCAL_PARTS in subdomain.ts (and the
+// accounts_persona_local_part_reserved DB CHECK, 20260707000001).
+const RESERVED_LOCALS = [
+  'postmaster', 'abuse', 'mailer-daemon', 'hostmaster', 'webmaster',
+  'admin', 'administrator', 'root',
+  'noreply', 'no-reply', 'reply',
+  'bounce', 'bounces', 'unsubscribe',
+  'mail', 'email', 'smtp', 'imap', 'pop',
+  'support', 'help', 'info', 'billing', 'security',
+  'spam', 'dmarc', 'spf',
+];
+
+describe('validatePersonaLocalPart', () => {
+  it('accepts a plain lowercase local part', () => {
+    expect(validatePersonaLocalPart('riley')).toEqual({ ok: true, value: 'riley' });
+  });
+
+  it('trims and lowercases before validating', () => {
+    expect(validatePersonaLocalPart('  Riley  ')).toEqual({ ok: true, value: 'riley' });
+  });
+
+  it('accepts interior dots, hyphens, and underscores', () => {
+    expect(validatePersonaLocalPart('front.desk')).toEqual({ ok: true, value: 'front.desk' });
+    expect(validatePersonaLocalPart('dave_office-1')).toEqual({ ok: true, value: 'dave_office-1' });
+  });
+
+  it('rejects leading/trailing punctuation and spaces', () => {
+    expect(validatePersonaLocalPart('.riley').ok).toBe(false);
+    expect(validatePersonaLocalPart('riley.').ok).toBe(false);
+    expect(validatePersonaLocalPart('front desk').ok).toBe(false);
+  });
+
+  it('rejects the reply-token namespace (t- prefix)', () => {
+    expect(validatePersonaLocalPart('t-riley').ok).toBe(false);
+    expect(validatePersonaLocalPart('t-0123456789abcdef0123456789abcdef').ok).toBe(false);
+  });
+
+  it('rejects every reserved local part', () => {
+    for (const name of RESERVED_LOCALS) {
+      expect(validatePersonaLocalPart(name).ok, name).toBe(false);
+    }
+  });
+
+  it('rejects empty input and over-length input', () => {
+    expect(validatePersonaLocalPart('').ok).toBe(false);
+    expect(validatePersonaLocalPart('a'.repeat(65)).ok).toBe(false);
+  });
+});
+
+describe('personaAddress', () => {
+  it('composes <local>@<subdomain>.<parent> when all three are set', () => {
+    expect(personaAddress('riley', 'acme', 'mail.example.com')).toBe('riley@acme.mail.example.com');
+  });
+
+  it('returns null when the local part is unset', () => {
+    expect(personaAddress(null, 'acme', 'mail.example.com')).toBeNull();
+  });
+
+  it('returns null when the subdomain is unset (persona is branded-only)', () => {
+    expect(personaAddress('riley', null, 'mail.example.com')).toBeNull();
+  });
+
+  it('returns null when the parent domain is unset', () => {
+    expect(personaAddress('riley', 'acme', null)).toBeNull();
   });
 });

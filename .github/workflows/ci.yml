@@ -356,13 +356,21 @@ jobs:
         run: pnpm --filter ./api test:comms-email-threads
 
       - name: Run per-account email-branding checks
-        # Branded reply subdomains + sender display name: GET/PATCH
-        # /accounts/{id}/email-branding (owner/manager write, viewer 403, any
-        # member reads), RFC-1035 label + reserved-word validation (422), the
-        # global-uniqueness conflict (409), and null-clears — all under real
-        # PostgREST RLS. Pairs with the branded-minting assertions folded into
-        # the comms email-threads suite above.
+        # Branded reply subdomains + sender display name + persona local part:
+        # GET/PATCH /accounts/{id}/email-branding (owner/manager write, viewer
+        # 403, any member reads), RFC-1035 label + reserved-word validation
+        # (422), the global-uniqueness conflict (409), null-clears, the signup
+        # display-name default, and the persona CHECK backstops — all under
+        # real PostgREST RLS. Pairs with the branded-minting assertions folded
+        # into the comms email-threads suite above.
         run: pnpm --filter ./api test:accounts-branding
+
+      - name: Run persona-address resolution checks
+        # GET /comms/resolve-persona-address: the transport's cold-inbound
+        # directory lookup — agent resolves <local>@<sub>.<parent> to its
+        # account; unknown/foreign/probing callers all get uniform 404s
+        # (RLS + role fences, same posture as resolve-reply-address).
+        run: pnpm --filter ./api test:comms-persona-resolve
 
       - name: Run comms evidence-hardening checks (EV-A/EV-B)
         # Participants cast + attestation (sender/platform/cc shapes per

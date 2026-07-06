@@ -108,3 +108,72 @@ export function brandedReplyDomain(
   if (!emailSubdomain || !platformParentDomain) return null;
   return `${emailSubdomain}.${platformParentDomain}`.toLowerCase();
 }
+
+// A conservative lowercase email local part: 1..64 chars, starts and ends
+// alphanumeric, dots/hyphens/underscores allowed in the interior. Same regex
+// the accounts_persona_local_part_format DB CHECK enforces.
+const LOCAL_PART_RE = /^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?$/;
+
+// Reserved persona local parts: RFC-mandated mailboxes (postmaster, abuse),
+// mail infrastructure, and support/ops names a landlord must not claim on a
+// receiving domain. MIRRORED by the accounts_persona_local_part_reserved DB
+// CHECK (migration 20260707000001) — the unbypassable backstop for direct
+// column-granted PostgREST writes. Keep the two lists identical; evolving the
+// list means a migration and an API change together.
+const RESERVED_LOCAL_PARTS: readonly string[] = [
+  'postmaster', 'abuse', 'mailer-daemon', 'hostmaster', 'webmaster',
+  'admin', 'administrator', 'root',
+  'noreply', 'no-reply', 'reply',
+  'bounce', 'bounces', 'unsubscribe',
+  'mail', 'email', 'smtp', 'imap', 'pop',
+  'support', 'help', 'info', 'billing', 'security',
+  'spam', 'dmarc', 'spf',
+];
+
+/**
+ * Validate a candidate persona local part. Trims and lowercases first, then
+ * enforces the local-part format, rejects the reply-token namespace (`t-`
+ * prefix — minted tokens are `t-<32hex>@…` and the two namespaces must stay
+ * disjoint forever), and rejects reserved names. Returns the canonical value
+ * on success; a machine-usable reason on failure (caller maps to a 422 field
+ * error).
+ */
+export function validatePersonaLocalPart(raw: string): SubdomainValidation {
+  const value = raw.trim().toLowerCase();
+  if (value.length === 0) {
+    return { ok: false, reason: 'must not be empty' };
+  }
+  if (value.length > 64) {
+    return { ok: false, reason: 'must be at most 64 characters' };
+  }
+  if (!LOCAL_PART_RE.test(value)) {
+    return {
+      ok: false,
+      reason:
+        'must be a lowercase email local part (a-z, 0-9, dot, hyphen, underscore; no leading/trailing punctuation)',
+    };
+  }
+  if (value.startsWith('t-')) {
+    return { ok: false, reason: "must not start with 't-' (reserved for reply tokens)" };
+  }
+  if (RESERVED_LOCAL_PARTS.includes(value)) {
+    return { ok: false, reason: 'is a reserved name' };
+  }
+  return { ok: true, value };
+}
+
+/**
+ * Compute the account's full persona address, or null when the persona is
+ * off. Active only when the local part, the branded subdomain, AND the
+ * platform parent domain are all set — a persona on the shared reply domain
+ * would be ambiguous across accounts, so it is branded-subdomain-only.
+ */
+export function personaAddress(
+  personaLocalPart: string | null,
+  emailSubdomain: string | null,
+  platformParentDomain: string | null,
+): string | null {
+  const domain = brandedReplyDomain(emailSubdomain, platformParentDomain);
+  if (!personaLocalPart || !domain) return null;
+  return `${personaLocalPart}@${domain}`.toLowerCase();
+}

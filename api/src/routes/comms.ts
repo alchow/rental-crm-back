@@ -1013,6 +1013,36 @@ const resolveReplyAddress = createRoute({
   },
 });
 
+const ResolvePersonaAddressResponse = z
+  .object({
+    account_id: z.string().uuid(),
+  })
+  .openapi('CommResolvePersonaAddressResponse');
+
+const resolvePersonaAddress = createRoute({
+  method: 'get',
+  path: '/comms/resolve-persona-address',
+  tags: ['comms'],
+  middleware: [requireAuth()] as const,
+  summary:
+    'Resolve a persona address (<local>@<subdomain>.<parent>) to its account — ' +
+    'transport only, account-agnostic like resolve-reply-address (a cold ' +
+    'inbound email carries nothing but the address). 404 for anything but a ' +
+    'configured persona in an account the caller transports (uniform: unknown ' +
+    'local parts, unknown subdomains, and foreign accounts are ' +
+    'indistinguishable).',
+  request: {
+    query: z.object({
+      /** The full persona address; matched trim+lowercased. */
+      address: z.string().min(5).max(320),
+    }),
+  },
+  responses: {
+    200: { description: 'persona account', content: { 'application/json': { schema: ResolvePersonaAddressResponse } } },
+    ...errorResponses,
+  },
+});
+
 export const commsApp = newApiApp();
 
 // ---------------------------------------------------------------------------
@@ -2534,4 +2564,58 @@ commsApp.openapi(resolveReplyAddress, async (c) => {
     },
     200,
   );
+});
+
+// ---------------------------------------------------------------------------
+// GET /comms/resolve-persona-address — persona directory lookup
+// ---------------------------------------------------------------------------
+// Same two-layer uniform-404 fencing as resolve-reply-address above:
+//   1. RLS: the accounts read runs as the caller (member SELECT policy), so a
+//      persona belonging to an account this transport does not serve resolves
+//      to nothing.
+//   2. Role: the caller must hold role='agent' in the resolved account.
+// The persona is branded-subdomain-only: the address must decompose as
+// <local>@<label>.<EMAIL_PLATFORM_PARENT_DOMAIN>. With the parent env unset
+// nothing can resolve — uniform 404, not 503, so probes learn nothing about
+// platform configuration.
+
+commsApp.openapi(resolvePersonaAddress, async (c) => {
+  const { address } = c.req.valid('query');
+  const sb = getSb(c);
+  const parent = loadEnv().EMAIL_PLATFORM_PARENT_DOMAIN?.toLowerCase() ?? null;
+
+  const canonical = address.trim().toLowerCase();
+  const at = canonical.lastIndexOf('@');
+  const local = at > 0 ? canonical.slice(0, at) : '';
+  const domain = at > 0 ? canonical.slice(at + 1) : '';
+  // The domain must be exactly one label under the platform parent.
+  const label =
+    parent !== null && domain.endsWith('.' + parent)
+      ? domain.slice(0, domain.length - parent.length - 1)
+      : '';
+  if (local === '' || label === '' || label.includes('.')) {
+    throw new ApiError(404, 'not_found', 'not found');
+  }
+
+  const { data: account, error } = await sb
+    .from('accounts')
+    .select('id')
+    .eq('email_subdomain', label)
+    .eq('persona_local_part', local)
+    .maybeSingle();
+  if (error) throw commDbError(error);
+  if (!account) throw new ApiError(404, 'not_found', 'not found');
+
+  const { data: membership, error: mErr } = await sb
+    .from('account_members')
+    .select('role')
+    .eq('account_id', account.id)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (mErr) throw commDbError(mErr);
+  if (!membership || membership.role !== 'agent') {
+    throw new ApiError(404, 'not_found', 'not found');
+  }
+
+  return c.json({ account_id: account.id as string }, 200);
 });
