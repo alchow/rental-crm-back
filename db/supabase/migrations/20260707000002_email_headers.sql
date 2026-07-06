@@ -93,10 +93,19 @@ alter table public.inbound_raw
 -- ============================================================================
 -- RFC 5322 Message-IDs conventionally arrive wrapped in angle brackets and
 -- with arbitrary case. Dedupe is string equality, so every writer (capture,
--- complete) canonicalizes identically: trim, strip ONE layer of <>, lowercase,
--- and collapse empty to null. (Case-sensitivity purists note: lowercasing is
--- technically lossy, but it is applied uniformly on both sides of every
--- comparison, which is all equality needs.)
+-- complete) canonicalizes identically: trim, strip ONE layer of <>, lowercase.
+-- (Case-sensitivity purists note: lowercasing is technically lossy, but it is
+-- applied uniformly on both sides of every comparison, which is all equality
+-- needs.)
+--
+-- Degrade-to-null rule: the destination columns CHECK length(NORMALIZED)
+-- between 3 and 998, while the API validates min(3) on the RAW value (brackets
+-- included) — so a well-formed-looking '<a>' passes the API but normalizes to a
+-- 1-char 'a' the CHECK would reject, aborting the whole capture. Dedupe is
+-- BEST-EFFORT and a bad Message-ID must NEVER fail the evidentiary capture
+-- path, so any normalized result whose length falls outside 3..998 (the empty
+-- string included) collapses to null: the message still journals, it simply
+-- does not participate in dedupe.
 
 create or replace function public._comm_normalize_msgid(p_raw text)
 returns text
@@ -104,10 +113,10 @@ language sql
 immutable
 set search_path = public
 as $$
-  select nullif(
-           lower(regexp_replace(btrim(coalesce(p_raw, '')), '^<(.*)>$', '\1')),
-           ''
-         );
+  with n as (
+    select lower(regexp_replace(btrim(coalesce(p_raw, '')), '^<(.*)>$', '\1')) as v
+  )
+  select case when length(v) between 3 and 998 then v else null end from n;
 $$;
 
 revoke execute on function public._comm_normalize_msgid(text) from public;
@@ -163,7 +172,12 @@ declare
   v_group_thread uuid;
   v_matched      boolean := false;
   v_mismatch     boolean := false;
-  v_msgid        text := public._comm_normalize_msgid(p_rfc822_message_id);
+  -- Self-enforcing (defense in depth): the header fields are email-only. Only
+  -- normalize/keep the Message-ID on an email capture so a direct PostgREST
+  -- caller cannot smuggle one onto an sms/group message past the API tier.
+  v_msgid        text := case when p_channel = 'email'
+                              then public._comm_normalize_msgid(p_rfc822_message_id)
+                              else null end;
   v_dup_id       uuid;
   r              record;
 begin
@@ -212,15 +226,21 @@ begin
         'channel', p_channel, 'body', p_body, 'media', coalesce(p_media, '[]'::jsonb),
         'cc', coalesce(to_jsonb(p_cc), '[]'::jsonb),
         'account_id', p_account_id,
-        'subject', p_subject,
+        -- Header fields are email-only: null them on non-email channels so a
+        -- direct PostgREST caller can't attach headers past the API tier.
+        'subject', case when p_channel = 'email' then p_subject else null end,
         'rfc822_message_id', v_msgid,
-        'in_reply_to', public._comm_normalize_msgid(p_in_reply_to),
-        'references', coalesce(
+        'in_reply_to', case when p_channel = 'email'
+                            then public._comm_normalize_msgid(p_in_reply_to)
+                            else null end,
+        'references', case when p_channel = 'email' then coalesce(
           (select jsonb_agg(public._comm_normalize_msgid(x))
              from unnest(p_references) x
             where public._comm_normalize_msgid(x) is not null),
-          '[]'::jsonb),
-        'auth_results', coalesce(p_auth_results, 'null'::jsonb)
+          '[]'::jsonb) else '[]'::jsonb end,
+        'auth_results', case when p_channel = 'email'
+                             then coalesce(p_auth_results, 'null'::jsonb)
+                             else 'null'::jsonb end
       ),
       p_received_at,
       p_account_id,
@@ -312,7 +332,14 @@ begin
   -- routes to — the "two-door" delivery (token + persona/CC copies of one
   -- send). Cache the ORIGINAL ids on the raw row so replays answer
   -- identically; write nothing else.
-  if v_msgid is not null then
+  --
+  -- Gated on a VERIFIED sender (not v_mismatch): a mismatched sender must
+  -- ALWAYS journal as sender_mismatch, even when citing an already-journaled
+  -- Message-ID — otherwise an attacker replying from a wrong address with a
+  -- known thread Message-ID gets 'duplicate' and the durable sender_mismatch
+  -- row the unresolved-sender queue depends on is never written. Evidence
+  -- beats dedupe.
+  if v_msgid is not null and not v_mismatch then
     select i.id into v_dup_id
       from public.interactions i
      where i.account_id = p_account_id

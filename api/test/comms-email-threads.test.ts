@@ -695,6 +695,42 @@ async function main(): Promise<void> {
     assert(a.interaction_id !== b.interaction_id, 'distinct journal rows without a Message-ID');
   });
 
+  await check('too-short Message-ID degrades to null (capture still journals)', async () => {
+    // '<a>' is raw length 3 (passes the API's min(3) on the bracketed value) but
+    // normalizes to a 1-char 'a' the destination CHECK (3..998) would reject —
+    // it must degrade to null, never abort the evidentiary capture.
+    const r = await capture({
+      provider: 'resend', provider_msg_id: `IN-short-${rnd()}`, to_number: tenant1Token,
+      from_address: T1_EMAIL, channel: 'email', body: 'short id', received_at: iso(),
+      rfc822_message_id: '<a>',
+    });
+    const res = assertStatus(r, 200, 'too-short id capture') as CaptureShape;
+    assert(res.disposition === 'matched', `disposition: ${res.disposition}`);
+    assert(res.interaction_id !== null, 'still journaled');
+    const { data: row, error } = await admin
+      .from('interactions')
+      .select('rfc822_message_id')
+      .eq('id', res.interaction_id!)
+      .single();
+    if (error) throw new Error(`journal read: ${error.message}`);
+    assert(row.rfc822_message_id === null, `degraded to null on the journal: ${row.rfc822_message_id}`);
+  });
+
+  await check('a mismatched sender citing a known Message-ID still journals as sender_mismatch', async () => {
+    // The stranger cites RFC_ID (already journaled earlier) but from the wrong
+    // address: the sender_mismatch evidence MUST win over dedupe, else the
+    // unresolved-sender queue never sees the attempt.
+    const r = await capture({
+      provider: 'resend', provider_msg_id: `IN-mm-hdr-${rnd()}`, to_number: tenant1Token,
+      from_address: STRANGER, channel: 'email', body: 'stranger cites a known id', received_at: iso(),
+      rfc822_message_id: `<${RFC_ID}>`,
+    });
+    const res = assertStatus(r, 200, 'mismatch citing known id') as CaptureShape;
+    assert(res.disposition === 'sender_mismatch', `disposition (mismatch beats dedupe): ${res.disposition}`);
+    assert(res.interaction_id !== null, 'evidence journaled');
+    assert(res.interaction_id !== msgidInboundIid, `distinct from the original journal row: ${res.interaction_id}`);
+  });
+
   await check('header fields on an sms capture → 400 (email-only)', async () => {
     const r = await capture({
       provider: 'telnyx', provider_msg_id: `IN-sms-${rnd()}`, to_number: PLATFORM_A,
