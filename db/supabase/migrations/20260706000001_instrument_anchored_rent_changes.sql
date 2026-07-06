@@ -115,10 +115,29 @@ create index rent_schedules_source_notice_id_idx
 -- period on/after effective_date to the new amount with NO gap and NO overlap.
 -- Because the successor is a NEW row with a NEW id, its (source_schedule_id,
 -- period_start) key space is disjoint from the old era's, so idempotency is
--- preserved per era -- the generator can never double-bill across the seam.
+-- preserved PER ERA.
+--
+-- Per-era idempotency is NOT per-period idempotency across the seam, though.
+-- The generator bills IN ADVANCE (20260704000002): a run after this month's due
+-- day already inserted NEXT period's charge under the OLD schedule's id. If the
+-- change takes effect in that already-billed period, the successor's first run
+-- re-bills the SAME period under its NEW id -- ON CONFLICT cannot dedupe across
+-- two different source_schedule_id values, so the seam has a per-period
+-- double-bill hole the disjoint-keyspace argument does NOT close. Step 9b
+-- (below) closes it by VOIDING the old era's advance charges for periods the
+-- successor now owns; the next generator run then re-emits exactly one open
+-- charge per period at the new amount.
 --
 -- ALL error messages use the stable prefixes `not_found: `, `conflict: `,
 -- `invalid: ` -- the API maps prefix -> HTTP status (404 / 409 / 400).
+--
+-- DROP-then-CREATE (not CREATE OR REPLACE): this revision adds an OUT column
+-- (o_voided_charge_ids) to the RETURNS TABLE. Changing a function's OUT columns
+-- changes its return type, which CREATE OR REPLACE refuses ("cannot change
+-- return type of existing function"), so the prior definition is dropped first.
+-- The IN-argument signature is unchanged, so the revoke/grant lines (which key
+-- off the IN args) below still match and re-run correctly after CREATE.
+drop function if exists public.change_tenancy_rent(uuid, uuid, bigint, text, date, int, uuid, uuid, text, text);
 create or replace function public.change_tenancy_rent(
   p_account_id       uuid,
   p_tenancy_id       uuid,
@@ -134,7 +153,8 @@ create or replace function public.change_tenancy_rent(
 returns table (
   o_schedule_id          uuid,
   o_ended_schedule_ids   uuid[],
-  o_superseded_lease_ids uuid[]
+  o_superseded_lease_ids uuid[],
+  o_voided_charge_ids    uuid[]
 )
 language plpgsql
 security invoker
@@ -143,11 +163,13 @@ as $$
 declare
   v_tenancy     record;
   v_lease       record;
-  v_notice_id   uuid;
+  v_notice      record;
   v_rec         record;
   v_ended       uuid[] := '{}';
   v_superseded  uuid[] := '{}';
+  v_voided      uuid[] := '{}';
   v_inherit_due int;
+  v_inherit_end date;
   v_due_day     int;
   v_schedule_id uuid;
 begin
@@ -217,17 +239,23 @@ begin
     end if;
   end if;
 
-  -- 6. Notice anchor: must belong to this account AND this tenancy, not deleted.
+  -- 6. Notice anchor: must belong to this account AND this tenancy, not deleted,
+  --    AND be SERVED. An unserved (draft) notice is not yet a legal instrument,
+  --    so it cannot authorize a rent change -- served_at must be set first. The
+  --    not_found path still covers a missing / cross-tenancy / deleted notice.
   if p_source_notice_id is not null then
-    select id
-      into v_notice_id
+    select id, served_at
+      into v_notice
       from public.notices
      where account_id = p_account_id
        and id         = p_source_notice_id
        and tenancy_id = p_tenancy_id
        and deleted_at is null;
-    if v_notice_id is null then
+    if v_notice.id is null then
       raise exception 'not_found: source notice';
+    end if;
+    if v_notice.served_at is null then
+      raise exception 'conflict: source notice has not been served (set served_at first)';
     end if;
   end if;
 
@@ -240,7 +268,7 @@ begin
   --    effective_date-1 (that would invert its date range); it signals an
   --    already-planned future change that must be resolved by a human first.
   for v_rec in
-    select id, start_date, due_day
+    select id, start_date, due_day, end_date
       from public.rent_schedules
      where account_id = p_account_id
        and tenancy_id = p_tenancy_id
@@ -260,7 +288,15 @@ begin
        and id         = v_rec.id;
     v_ended := v_ended || v_rec.id;
     if v_inherit_due is null then
-      v_inherit_due := v_rec.due_day;  -- most-recently-started ended schedule
+      -- Inherit both due_day AND the (possibly bounded) end_date from the SAME
+      -- most-recently-started ended schedule -- captured from v_rec here BEFORE
+      -- the update above overwrites the row's end_date. Inheriting end_date
+      -- keeps a bounded predecessor's planned end (e.g. a fixed-term move-out)
+      -- from silently becoming open-ended on the successor. The open-set filter
+      -- above guarantees v_inherit_end is null or >= p_effective_date, so the
+      -- successor's [effective_date, v_inherit_end] range is always valid.
+      v_inherit_due := v_rec.due_day;
+      v_inherit_end := v_rec.end_date;
     end if;
   end loop;
 
@@ -271,7 +307,9 @@ begin
     raise exception 'invalid: due_day is required when no open schedule exists to inherit it from';
   end if;
 
-  -- 9. Append the successor schedule (start_date = effective_date, open-ended).
+  -- 9. Append the successor schedule (start_date = effective_date). end_date is
+  --    v_inherit_end: the predecessor's planned end when one was inherited (F2),
+  --    else null (open-ended) for a fresh era with an explicit due_day.
   --    currency is stored EXACTLY as passed -- the table only length-checks it
   --    and existing rows come from the API un-folded, so we do not case-fold.
   insert into public.rent_schedules
@@ -279,8 +317,32 @@ begin
      start_date, end_date, source_lease_id, source_notice_id, change_reason)
   values
     (p_account_id, p_tenancy_id, p_kind, p_amount_cents, p_currency, v_due_day,
-     p_effective_date, null, p_source_lease_id, p_source_notice_id, p_change_reason)
+     p_effective_date, v_inherit_end, p_source_lease_id, p_source_notice_id, p_change_reason)
   returning id into v_schedule_id;
+
+  -- 9b. Close the advance-generation double-bill hole across the era seam (see
+  --     the GENERATOR COMPATIBILITY note in the header). generate_rent_charges
+  --     bills IN ADVANCE, so periods on/after effective_date may already have a
+  --     charge under one of the just-ended schedules' ids. Those charges belong
+  --     to the OLD amount for a period the successor now owns, and ON CONFLICT
+  --     cannot dedupe them (different source_schedule_id). VOID them (never
+  --     delete -- the house rule; a voided charge with allocations falls its
+  --     payment back to unapplied credit, per test:ledger) so the next generator
+  --     run re-emits exactly one open charge per period at the new amount.
+  --     Nothing is voided when no schedule was ended (v_ended is empty).
+  with voided as (
+    update public.charges
+       set voided_at   = now(),
+           void_reason = 'superseded by rent change (schedule ' || v_schedule_id || ')',
+           updated_at  = now()
+     where account_id         = p_account_id
+       and source_schedule_id = any(v_ended)
+       and period_start      >= p_effective_date
+       and voided_at is null
+       and deleted_at is null
+    returning id
+  )
+  select coalesce(array_agg(id), '{}') into v_voided from voided;
 
   -- 10. Lease-anchored change supersedes the OTHER active leases of this
   --     tenancy (the one we anchored to is the new contract of record).
@@ -307,7 +369,7 @@ begin
   --     action.
 
   -- 12. Return exactly one summary row.
-  return query select v_schedule_id, v_ended, v_superseded;
+  return query select v_schedule_id, v_ended, v_superseded, v_voided;
 end;
 $$;
 
@@ -415,3 +477,188 @@ grant  execute on function public.change_tenancy_rent(uuid, uuid, bigint, text, 
 
 revoke all on function public.detect_rent_drift(uuid) from public, anon;
 grant  execute on function public.detect_rent_drift(uuid) to authenticated, service_role;
+
+-- ============================================================================
+-- (5) rent_schedules write guard -- serialize with the RPC + tenancy-match FKs
+-- ============================================================================
+--
+-- change_tenancy_rent takes an advisory lock and reads the open schedule set
+-- under that lock, but the DIRECT PostgREST paths (POST /rent-schedules,
+-- POST /rent-schedules/{id}/end) take NO lock. A bare create racing the RPC
+-- could open a second same-kind era for one tenancy -- two open schedules that
+-- the monthly generator would then BOTH bill (double-billing). And the composite
+-- FKs on source_lease_id / source_notice_id only prove SAME-ACCOUNT parentage,
+-- not SAME-TENANCY: a schedule for tenancy A could still cite tenancy B's lease.
+--
+-- This BEFORE-row trigger backstops both, on EVERY write to rent_schedules:
+--
+--   (1) It takes the SAME advisory key the RPC takes
+--       (hashtextextended('rent_change:' || tenancy_id, 0)), so a direct write
+--       and an in-flight RPC for one tenancy serialize instead of racing.
+--       pg_advisory_xact_lock is re-entrant within a session, so when the RPC's
+--       own step-7 UPDATEs / step-9 INSERT fire this trigger the re-acquire is a
+--       no-op -- no self-deadlock. The tenancy-end cascade in 20260704000002
+--       (which UPDATEs rent_schedules) now also takes this lock; that extra
+--       serialization is desirable, not a problem.
+--
+--   (2) It rejects a source_lease_id / source_notice_id that does not name a
+--       row of the SAME tenancy (and same account, not soft-deleted). It raises
+--       errcode check_violation (SQLSTATE 23514) -- the same code the coherence
+--       triggers use -- which the rent_schedules create/end routes already map
+--       to 400 invalid_request (not a 500). Any status is accepted (a draft
+--       renewal lease is a legitimate anchor); only deleted_at is required null.
+--
+-- BEFORE, not AFTER: a BEFORE trigger that raises aborts the write before the
+-- AFTER rent_schedules_audit trigger records a (bogus) event, and it lets the
+-- lock be held for the rest of the transaction. SECURITY INVOKER (default): a
+-- member reads their own-account leases/notices under RLS so the check resolves
+-- for the PostgREST path; service_role bypasses RLS and sees everything.
+create or replace function public._rent_schedules_guard()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  -- (1) serialize every schedule write for this tenancy with the RPC.
+  perform pg_advisory_xact_lock(hashtextextended('rent_change:' || NEW.tenancy_id::text, 0));
+
+  -- (2a) lease anchor must belong to the SAME tenancy (composite FK only proves
+  --      same account). check_violation -> route maps to 400 invalid_request.
+  if NEW.source_lease_id is not null then
+    if not exists (
+      select 1
+        from public.leases l
+       where l.account_id = NEW.account_id
+         and l.id         = NEW.source_lease_id
+         and l.tenancy_id = NEW.tenancy_id
+         and l.deleted_at is null
+    ) then
+      raise exception 'source_lease_id must reference a lease of the same tenancy'
+        using errcode = 'check_violation';
+    end if;
+  end if;
+
+  -- (2b) notice anchor must belong to the SAME tenancy.
+  if NEW.source_notice_id is not null then
+    if not exists (
+      select 1
+        from public.notices n
+       where n.account_id = NEW.account_id
+         and n.id         = NEW.source_notice_id
+         and n.tenancy_id = NEW.tenancy_id
+         and n.deleted_at is null
+    ) then
+      raise exception 'source_notice_id must reference a notice of the same tenancy'
+        using errcode = 'check_violation';
+    end if;
+  end if;
+
+  return NEW;
+end;
+$$;
+
+drop trigger if exists rent_schedules_guard on public.rent_schedules;
+create trigger rent_schedules_guard
+  before insert or update on public.rent_schedules
+  for each row execute function public._rent_schedules_guard();
+
+-- ============================================================================
+-- (6) Anchored notices are evidence: block mutation / soft-delete
+-- ============================================================================
+--
+-- Once a served notice anchors a LIVE (non-soft-deleted) rent_schedule it is the
+-- legal instrument the billing rests on -- EVIDENCE. This mirrors the
+-- completed-inspection precedent (_reject_completed_inspection_update,
+-- 20260628000001): a probative record is write-blocked while the fields that
+-- matter stay frozen. We reject with errcode check_violation and a message
+-- shaped like that trigger's ("<entity> ... cannot be modified"), so the notices
+-- route can map it to 409 the way inspections.ts maps "/inspection .* is
+-- completed/i" to a 409 conflict (inspections.ts inspPatch handler).
+--
+-- Blocked while anchored: soft-delete (deleted_at null -> not null) and any edit
+-- to the probative fields served_at / served_method / body / document /
+-- notice_type. A notice that anchors nothing stays fully mutable.
+create or replace function public._reject_anchored_notice_mutation()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if exists (
+    select 1
+      from public.rent_schedules s
+     where s.account_id       = OLD.account_id
+       and s.source_notice_id = OLD.id
+       and s.deleted_at is null
+  ) then
+    if (OLD.deleted_at is null and NEW.deleted_at is not null)
+       or NEW.served_at     is distinct from OLD.served_at
+       or NEW.served_method is distinct from OLD.served_method
+       or NEW.body          is distinct from OLD.body
+       or NEW.document      is distinct from OLD.document
+       or NEW.notice_type   is distinct from OLD.notice_type
+    then
+      raise exception 'notice % is anchored to a rent schedule and cannot be modified', OLD.id
+        using errcode = 'check_violation';
+    end if;
+  end if;
+  return NEW;
+end;
+$$;
+
+drop trigger if exists notices_reject_anchored_mutation on public.notices;
+create trigger notices_reject_anchored_mutation
+  before update on public.notices
+  for each row execute function public._reject_anchored_notice_mutation();
+
+-- ============================================================================
+-- (7) Anchored leases are evidence; a superseded lease is history
+-- ============================================================================
+--
+-- Two rules on the lease UPDATE path, same reject idiom (check_violation +
+-- "<entity> ... cannot be ..." message, 409-mappable) as (6):
+--
+--   * F7: a lease that anchors a LIVE rent_schedule cannot be SOFT-DELETED --
+--     it is the contract the billing era rests on. (Lease FIELD edits are
+--     already constrained at the API -- rent terms immutable, etc. -- so only
+--     the soft-delete is blocked here.)
+--   * F9: a 'superseded' lease is a closed historical record; it can never be
+--     reactivated (status superseded -> active). This applies to ALL leases,
+--     anchored or not -- reviving a superseded contract instead of writing a new
+--     one would falsify the lease history. Other transitions are untouched, and
+--     change_tenancy_rent's own active -> superseded (step 10) and draft ->
+--     active (step 5) are both allowed.
+create or replace function public._reject_anchored_lease_mutation()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  -- F9: superseded is terminal -- no reactivation. All leases.
+  if OLD.status = 'superseded' and NEW.status = 'active' then
+    raise exception 'a superseded lease is a historical record; create a new lease instead'
+      using errcode = 'check_violation';
+  end if;
+
+  -- F7: an anchored lease cannot be soft-deleted.
+  if OLD.deleted_at is null and NEW.deleted_at is not null
+     and exists (
+       select 1
+         from public.rent_schedules s
+        where s.account_id      = OLD.account_id
+          and s.source_lease_id = OLD.id
+          and s.deleted_at is null
+     )
+  then
+    raise exception 'lease % is anchored to a rent schedule and cannot be deleted', OLD.id
+      using errcode = 'check_violation';
+  end if;
+
+  return NEW;
+end;
+$$;
+
+drop trigger if exists leases_reject_anchored_mutation on public.leases;
+create trigger leases_reject_anchored_mutation
+  before update on public.leases
+  for each row execute function public._reject_anchored_lease_mutation();

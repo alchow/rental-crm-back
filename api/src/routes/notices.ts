@@ -11,6 +11,20 @@ import { keysetPage } from './_lib/cursor';
 // anchors a month-to-month rent change hangs off (the other is a renewal
 // lease); see the rent-changes endpoint in rent-schedules.ts.
 
+// A notice that anchors a live rent_schedule (migration 20260706000001) has
+// crossed from tamper-evident to WRITE-BLOCKED: once it authorises a billing
+// era it is evidence of the increase, so it becomes immutable and undeletable
+// -- the completed-inspection precedent (see inspections.ts), where anchoring
+// an instrument locks the record. This matches the trigger MESSAGE (the DB
+// triggers raise the shared check_violation errcode, like the coherence checks
+// that map to 400, so message-matching is how the two are told apart) for the
+// race where a schedule anchors the notice between our pre-check and the write.
+function isRentInstrumentReject(msg: string): boolean {
+  // The trigger raises 'notice <id> is anchored to a rent schedule and cannot
+  // be modified'; keep the pattern tolerant of both phrasings.
+  return /anchor(s|ed to) a (live )?rent[_ ]schedule/i.test(msg);
+}
+
 const Notice = z
   .object({
     id: z.string().uuid(),
@@ -197,6 +211,29 @@ noticesApp.openapi(patch, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
+
+  // A notice that anchors a live rent schedule is immutable: PATCH is blocked
+  // ENTIRELY (not just for served_at) because the notice is now the evidence
+  // that authorised a billing increase. The source_notice_id column arrives with
+  // migration 20260706000001; on a not-yet-migrated DB this filter errors on the
+  // unknown column -- treat that as "no anchor" (nothing can be anchored before
+  // the feature ships) and fall through. The DB trigger is the authoritative
+  // backstop; the error branch below maps a racing trigger fire to the same 409.
+  const anchored = await sb
+    .from('rent_schedules')
+    .select('id')
+    .eq('account_id', accountId)
+    .eq('source_notice_id', id)
+    .is('deleted_at', null)
+    .limit(1);
+  if (!anchored.error && (anchored.data?.length ?? 0) > 0) {
+    throw new ApiError(
+      409,
+      'conflict',
+      'notice anchors a rent schedule; it is the instrument of record — create a new notice instead',
+    );
+  }
+
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (body.served_at !== undefined) update.served_at = body.served_at;
   if (body.served_method !== undefined) update.served_method = body.served_method;
@@ -211,6 +248,13 @@ noticesApp.openapi(patch, async (c) => {
     .select('*')
     .maybeSingle();
   if (error) {
+    if (isRentInstrumentReject(error.message)) {
+      throw new ApiError(
+        409,
+        'conflict',
+        'notice anchors a rent schedule; it is the instrument of record — create a new notice instead',
+      );
+    }
     if (error.code === '23514') {
       throw new ApiError(400, 'invalid_request', error.message);
     }
@@ -223,6 +267,25 @@ noticesApp.openapi(patch, async (c) => {
 noticesApp.openapi(remove, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const sb = getSb(c);
+
+  // A notice that anchors a live rent schedule cannot be deleted -- it is the
+  // instrument of record for the billing era. Deploy-window handling mirrors the
+  // PATCH pre-check above; the DB trigger is the authoritative backstop.
+  const anchored = await sb
+    .from('rent_schedules')
+    .select('id')
+    .eq('account_id', accountId)
+    .eq('source_notice_id', id)
+    .is('deleted_at', null)
+    .limit(1);
+  if (!anchored.error && (anchored.data?.length ?? 0) > 0) {
+    throw new ApiError(
+      409,
+      'conflict',
+      'notice anchors a rent schedule; it is the instrument of record and cannot be deleted',
+    );
+  }
+
   const { data, error } = await sb
     .from('notices')
     .update({ deleted_at: new Date().toISOString() })
@@ -231,7 +294,16 @@ noticesApp.openapi(remove, async (c) => {
     .is('deleted_at', null)
     .select('id')
     .maybeSingle();
-  if (error) throw new ApiError(500, 'database_error', error.message);
+  if (error) {
+    if (isRentInstrumentReject(error.message)) {
+      throw new ApiError(
+        409,
+        'conflict',
+        'notice anchors a rent schedule; it is the instrument of record and cannot be deleted',
+      );
+    }
+    throw new ApiError(500, 'database_error', error.message);
+  }
   if (!data) throw new ApiError(404, 'not_found', 'not found');
   return c.body(null, 204);
 });

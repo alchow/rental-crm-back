@@ -69,33 +69,59 @@ row-level answer. Nullable because imports and legacy rows predate the flow.
 **2. One atomic verb: `change_tenancy_rent` (SECURITY INVOKER).**
 `POST /accounts/{accountId}/tenancies/{tenancyId}/rent-changes` calls a single
 RPC that, in one transaction under a per-tenancy advisory lock: validates the
-anchor (≥1 of lease/notice, same account _and_ tenancy), ends open same-kind
-schedules at `effective_date − 1`, inserts the successor schedule
-(`start_date = effective_date`) carrying the provenance, supersedes other
-active leases when lease-anchored, and activates a `draft` anchor lease.
-INVOKER, not DEFINER: every statement runs under the caller's RLS, so
-membership is enforced by the same `*_member_all` policies as direct writes and
-the audit chain attributes the change to the caller's JWT. Generator
-compatibility falls out of the era split: the successor has a new id, so
-ON CONFLICT `(source_schedule_id, period_start)` idempotency is preserved per
-era; periods ≥ effective date belong to the new amount with no gap or overlap.
+anchor (≥1 of lease/notice, same account _and_ tenancy; a notice anchor must
+have `served_at` set — an unserved notice is not yet an instrument), ends open
+same-kind schedules at `effective_date − 1`, inserts the successor schedule
+(`start_date = effective_date`, inheriting the ended era's future `end_date`
+bound so a deliberately bounded schedule never silently becomes open-ended)
+carrying the provenance, supersedes other active leases when lease-anchored,
+and activates a `draft` anchor lease. INVOKER, not DEFINER: every statement
+runs under the caller's RLS, so membership is enforced by the same
+`*_member_all` policies as direct writes and the audit chain attributes the
+change to the caller's JWT.
+
+Generator compatibility needs two halves. The era split gives per-era
+idempotency (the successor has a new id, so ON CONFLICT
+`(source_schedule_id, period_start)` never double-bills within an era) — but
+ADR-0011's generator bills **in advance**, so the old era may already have
+emitted the charge for a period the successor now owns. The RPC therefore
+**voids** (never deletes) old-era charges with `period_start ≥ effective_date`
+and returns their ids (`voided_charge_ids`); the ledger already treats a
+payment against a voided charge as unapplied credit. Without this, any change
+applied after the prior period's due day — the common mid-month renewal —
+would bill the effective period twice.
+
+Because the RPC's no-overlap guarantee must also hold against the direct
+schedule write paths (`POST /rent-schedules`, `/end`, imports), a BEFORE
+INSERT/UPDATE trigger on `rent_schedules` takes the same per-tenancy advisory
+lock on every write and validates that any supplied anchor belongs to the
+row's own tenancy — closing both the racing-create overlap and cross-tenancy
+provenance corruption at the layer that catches every path.
 
 **3. Drift is detected, never blocked.** `detect_rent_drift(account_id)`
 reports tenancies whose active-lease rent ≠ the sum of open `kind='rent'`
-schedules (or whose currencies mismatch). The cron runner (ADR-0011) calls it
-per opted-in account after generating and logs `rent_drift_detected` loud — for
-auto-charge accounts, drift _is_ wrong invoices. It is not a constraint because
+schedules (or whose currencies mismatch). The cron runner (ADR-0011) sweeps
+**every** account after the billing pass — not just the opted-in ones, since
+the detector is the backstop for whatever bypasses the verb and
+manually-billing accounts drift too — and logs `rent_drift_detected` loud
+(rows carry `auto_charge_enabled` so operators can rank: auto-charge drift is
+wrong invoices, manual drift is a wrong ledger). It is not a constraint because
 legitimate divergence exists: NY legal-vs-preferential rent, rent+parking
 decomposition across schedule kinds, no-lease tenancies. A hard equality
 constraint would also force update-ordering choreography across two aggregates
 — exactly the coupling ADR-0004 declined for routes, here at the data layer.
 
 **4. Lease rent terms become immutable via PATCH.** `rent_amount_cents` /
-`rent_currency` are removed from the PATCH contract and explicitly rejected
-with a 400 pointing at the rent-changes endpoint (explicit rejection, not
-zod-strip, so an old client's rent edit fails loudly instead of silently
-no-oping). Deposits stay patchable. A mistyped lease is corrected the append
-way: soft-delete + recreate — never billed, never load-bearing.
+`rent_currency` are removed from the PATCH contract and an actual rent _edit_
+is explicitly rejected with a 400 pointing at the rent-changes endpoint
+(explicit rejection, not zod-strip, so an old client's rent edit fails loudly
+instead of silently no-oping). Echoed-back **unchanged** values are tolerated —
+read-modify-write clients that PATCH the whole object with the stored rent
+intact are saving state, not editing rent. Deposits stay patchable, but a
+`superseded` lease is a historical record: transitions out of `superseded` are
+rejected (a resurrected second "active" contract would poison both the
+supersede semantics and the drift signal). A mistyped lease is corrected the
+append way: soft-delete + recreate — never billed, never load-bearing.
 
 **5. Instruments take attachments; documents stay optional.** `leases` and
 `notices` join the attachments allowlist, so a signed renewal PDF or a
@@ -106,11 +132,17 @@ mandatory upload would push landlords who served a paper notice back outside
 the system, destroying the trail entirely. Completeness ("no document attached
 to this instrument") is an evidence-export concern, not an entry gate.
 
-**6. Notices get a minimal CRUD API.** The table predates this ADR; the flow
-makes it load-bearing, so it gets list/get/create/patch/soft-delete, shaped
-like leases. `served_at`/`served_method` are plain audited columns —
-set-once triggers (the `logged_at` treatment) are a deliberate non-goal until
-serving workflows firm up.
+**6. Notices get a minimal CRUD API — and anchoring locks the instrument.**
+The table predates this ADR; the flow makes it load-bearing, so it gets
+list/get/create/patch/soft-delete, shaped like leases. A free-floating notice
+stays fully editable (drafting is normal). But the moment an instrument —
+notice _or_ lease — anchors a live rent schedule, it crosses from
+tamper-evident to **write-blocked**: PATCH and soft-delete are rejected (409 at
+the API, backstopped by DB reject triggers in the completed-inspection idiom).
+An instrument that authorises live billing is evidence; letting it be edited
+or erased afterwards would let an operator retroactively rewrite the legal
+basis of a rent increase while the new amount keeps billing. To supersede it,
+serve a new notice (or sign a new lease) and change rent again.
 
 **Corrections policy** (the typo case): never billed → soft-delete the schedule
 and recreate against the _same_ instrument; already billed → void the wrong
@@ -134,18 +166,28 @@ altered records, not corrected ones.
 
 ## Consequences
 
-- **Contract break (deliberate):** lease PATCH no longer accepts
-  `rent_amount_cents`/`rent_currency`; clients get an explicit 400 with the
-  replacement flow. Front-end must move rent edits to the rent-changes
-  endpoint.
-- **Migration before deploy, additive:** the migration is nullable columns +
-  two INVOKER functions — safe to apply to prod ahead of the code deploy
-  (nothing reads the new objects until the new code ships). Same order as
+- **Contract break (deliberate):** lease PATCH no longer accepts a rent
+  _change_; clients get an explicit 400 with the replacement flow (unchanged
+  echoed values still save). Anchored instruments and superseded leases gain
+  409s. Front-end must move rent edits to the rent-changes endpoint.
+- **A rent change can void charges.** If the generator already advance-billed
+  a period the change now re-prices, those charges are voided by the RPC and
+  reported in `voided_charge_ids`; a payment already allocated to one falls
+  back to unapplied credit (existing ledger semantics). Operators see the
+  void + the replacement charge, not a silent mutation.
+- **Migration before deploy, additive:** nullable columns + INVOKER
+  functions + guard/reject triggers — safe to apply to prod ahead of the code
+  deploy (nothing reads the new objects until the new code ships; the guard
+  trigger only constrains writes that were previously corrupt). Same order as
   every migration here: schema first, code second. A human runs prod
-  `migrate`/`db push`.
+  `migrate`/`db push`. The create endpoint additionally sends the new columns
+  only when supplied, so the old contract keeps working even if code ever
+  leads schema.
 - **The blessed path is optional by design.** Direct schedule create/end
-  remains (imports, edge cases) and now carries optional provenance; the drift
-  detector is the backstop for whatever bypasses the verb.
+  remains (imports, edge cases) and now carries optional provenance — but
+  every schedule write serializes on the per-tenancy lock and cross-tenancy
+  anchors are rejected at the DB; the drift sweep (all accounts) is the
+  backstop for whatever else bypasses the verb.
 - **Jurisdictional compliance is out of scope, on purpose.** Notice-period
   math (30/60/90/180 days), increase caps, first-year freezes, prescribed
   forms: policy-layer material, per-jurisdiction, needs counsel — not schema.

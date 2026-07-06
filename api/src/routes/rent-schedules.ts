@@ -98,6 +98,11 @@ const RentChangeResult = z
     rent_schedule: RentSchedule,
     ended_schedule_ids: z.array(z.string().uuid()),
     superseded_lease_ids: z.array(z.string().uuid()),
+    // Charges the generator had already advance-created off the OLD era for
+    // periods on/after effective_date are voided by change_tenancy_rent (the
+    // successor era re-bills them at the new amount); their ids are returned so
+    // the caller can reconcile any downstream invoice it had emitted.
+    voided_charge_ids: z.array(z.string().uuid()),
   })
   .openapi('RentChangeResult');
 
@@ -188,6 +193,12 @@ const rentChange = createRoute({
   path: '/accounts/{accountId}/tenancies/{tenancyId}/rent-changes',
   tags: ['rent_schedules'],
   summary: 'Apply an instrument-anchored rent change (renewal lease or served notice)',
+  description:
+    'Ends the open same-kind schedule at effective_date−1 and opens the successor ' +
+    'anchored to the renewal lease and/or served notice. Any charges the generator ' +
+    'had already advance-created off the old era for periods on/after effective_date ' +
+    'are voided automatically (returned in voided_charge_ids); the successor era ' +
+    're-bills those periods at the new amount.',
   request: {
     params: AccountAndTenancyParam,
     body: { content: { 'application/json': { schema: RentChangeBody } }, required: true },
@@ -229,23 +240,27 @@ rentSchedulesApp.openapi(create, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
-  const { data, error } = await sb
-    .from('rent_schedules')
-    .insert({
-      account_id: accountId,
-      tenancy_id: body.tenancy_id,
-      kind: body.kind,
-      amount_cents: body.amount_cents,
-      currency: body.currency,
-      due_day: body.due_day,
-      start_date: body.start_date,
-      end_date: body.end_date ?? null,
-      source_lease_id: body.source_lease_id ?? null,
-      source_notice_id: body.source_notice_id ?? null,
-      change_reason: body.change_reason ?? null,
-    })
-    .select('*')
-    .single();
+  // The source_*/change_reason columns arrive with migration 20260706000001.
+  // Schema-first is the deploy policy, but code MUST also survive leading the
+  // schema: include these three keys ONLY when the caller supplied them, so a
+  // plain create (the overwhelming majority, from clients that never send them)
+  // never references a not-yet-created column -- PostgREST 500s on an unknown
+  // column even for a null value. Same conditional-spread the rent-change
+  // handler uses for its RPC params.
+  const insert: Record<string, unknown> = {
+    account_id: accountId,
+    tenancy_id: body.tenancy_id,
+    kind: body.kind,
+    amount_cents: body.amount_cents,
+    currency: body.currency,
+    due_day: body.due_day,
+    start_date: body.start_date,
+    end_date: body.end_date ?? null,
+  };
+  if (body.source_lease_id !== undefined) insert.source_lease_id = body.source_lease_id;
+  if (body.source_notice_id !== undefined) insert.source_notice_id = body.source_notice_id;
+  if (body.change_reason !== undefined) insert.change_reason = body.change_reason;
+  const { data, error } = await sb.from('rent_schedules').insert(insert).select('*').single();
   if (error) {
     if (error.code === '23503') {
       // Any of tenancy_id / source_lease_id / source_notice_id can trip the FK
@@ -319,7 +334,12 @@ rentSchedulesApp.openapi(rentChange, async (c) => {
 
   // The function RETURNS TABLE, so supabase-js hands back a one-row array.
   const row = (Array.isArray(data) ? data[0] : data) as
-    | { o_schedule_id: string; o_ended_schedule_ids: string[]; o_superseded_lease_ids: string[] }
+    | {
+        o_schedule_id: string;
+        o_ended_schedule_ids: string[];
+        o_superseded_lease_ids: string[];
+        o_voided_charge_ids: string[];
+      }
     | null
     | undefined;
   if (!row) throw new ApiError(500, 'database_error', 'rent change returned no row');
@@ -342,6 +362,7 @@ rentSchedulesApp.openapi(rentChange, async (c) => {
       rent_schedule: schedule as z.infer<typeof RentSchedule>,
       ended_schedule_ids: row.o_ended_schedule_ids ?? [],
       superseded_lease_ids: row.o_superseded_lease_ids ?? [],
+      voided_charge_ids: row.o_voided_charge_ids ?? [],
     } as z.infer<typeof RentChangeResult>,
     201,
   );

@@ -4631,7 +4631,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Apply an instrument-anchored rent change (renewal lease or served notice) */
+        /**
+         * Apply an instrument-anchored rent change (renewal lease or served notice)
+         * @description Ends the open same-kind schedule at effective_date−1 and opens the successor anchored to the renewal lease and/or served notice. Any charges the generator had already advance-created off the old era for periods on/after effective_date are voided automatically (returned in voided_charge_ids); the successor era re-bills those periods at the new amount.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -14845,6 +14848,7 @@ export interface components {
             rent_schedule: components["schemas"]["RentSchedule"];
             ended_schedule_ids: string[];
             superseded_lease_ids: string[];
+            voided_charge_ids: string[];
         };
         RentChangeBody: {
             amount_cents: number;

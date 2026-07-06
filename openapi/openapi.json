@@ -1925,12 +1925,20 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          "voided_charge_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
           }
         },
         "required": [
           "rent_schedule",
           "ended_schedule_ids",
-          "superseded_lease_ids"
+          "superseded_lease_ids",
+          "voided_charge_ids"
         ]
       },
       "RentChangeBody": {
@@ -15221,6 +15229,7 @@
           "rent_schedules"
         ],
         "summary": "Apply an instrument-anchored rent change (renewal lease or served notice)",
+        "description": "Ends the open same-kind schedule at effective_date−1 and opens the successor anchored to the renewal lease and/or served notice. Any charges the generator had already advance-created off the old era for periods on/after effective_date are voided automatically (returned in voided_charge_ids); the successor era re-bills those periods at the new amount.",
         "parameters": [
           {
             "schema": {
