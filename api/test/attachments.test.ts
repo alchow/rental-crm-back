@@ -69,7 +69,11 @@ await _resetIntakeIpBucketsForTests();
 
 // --- helpers ----------------------------------------------------------------
 
-interface ApiResp { status: number; body: unknown; headers: Record<string, string> }
+interface ApiResp {
+  status: number;
+  body: unknown;
+  headers: Record<string, string>;
+}
 
 async function api(
   method: string,
@@ -92,7 +96,9 @@ async function api(
   }
   const res = await app.fetch(new Request(`http://test${path}`, init));
   const responseHeaders: Record<string, string> = {};
-  res.headers.forEach((v, k) => { responseHeaders[k] = v; });
+  res.headers.forEach((v, k) => {
+    responseHeaders[k] = v;
+  });
   // For binary responses we don't parse as JSON.
   const ctype = res.headers.get('content-type') ?? '';
   if (ctype.includes('application/json') || ctype === '') {
@@ -103,7 +109,9 @@ async function api(
   return { status: res.status, body: buf, headers: responseHeaders };
 }
 
-function rnd(): string { return Math.random().toString(36).slice(2, 10); }
+function rnd(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
 
 interface UserFixture {
   userId: string;
@@ -132,27 +140,32 @@ async function setupUser(label: string): Promise<UserFixture> {
   const accountId = b.account.id;
   const post = async <T>(p: string, body: unknown): Promise<T> => {
     const r = await api('POST', p, { token: accessToken, body });
-    if (r.status !== 201) throw new Error(`setup POST ${p} failed: ${r.status} ${JSON.stringify(r.body)}`);
+    if (r.status !== 201)
+      throw new Error(`setup POST ${p} failed: ${r.status} ${JSON.stringify(r.body)}`);
     return r.body as T;
   };
-  const property = await post<{ id: string }>(
-    `/v1/accounts/${accountId}/properties`,
-    { name: `${label} prop` },
-  );
-  const unitArea = await post<{ id: string }>(
-    `/v1/accounts/${accountId}/areas`,
-    { property_id: property.id, kind: 'unit', name: `${label} unit` },
-  );
-  const tenancy = await post<{ id: string }>(
-    `/v1/accounts/${accountId}/tenancies`,
-    { area_id: unitArea.id, start_date: '2026-01-01', status: 'active' },
-  );
-  const req = await post<{ id: string }>(
-    `/v1/accounts/${accountId}/maintenance-requests`,
-    { area_id: unitArea.id, title: 'leak', severity: 'routine' },
-  );
+  const property = await post<{ id: string }>(`/v1/accounts/${accountId}/properties`, {
+    name: `${label} prop`,
+  });
+  const unitArea = await post<{ id: string }>(`/v1/accounts/${accountId}/areas`, {
+    property_id: property.id,
+    kind: 'unit',
+    name: `${label} unit`,
+  });
+  const tenancy = await post<{ id: string }>(`/v1/accounts/${accountId}/tenancies`, {
+    area_id: unitArea.id,
+    start_date: '2026-01-01',
+    status: 'active',
+  });
+  const req = await post<{ id: string }>(`/v1/accounts/${accountId}/maintenance-requests`, {
+    area_id: unitArea.id,
+    title: 'leak',
+    severity: 'routine',
+  });
   return {
-    userId, accessToken, accountId,
+    userId,
+    accessToken,
+    accountId,
     propertyId: property.id,
     unitAreaId: unitArea.id,
     tenancyId: tenancy.id,
@@ -182,7 +195,8 @@ async function uploadAttachment(
   fd.set('entity_id', entity.id);
   fd.set('file', new File([bytes], 'test.png', { type: mime }));
   const r = await api('POST', `/v1/accounts/${user.accountId}/attachments`, {
-    token: user.accessToken, multipart: fd,
+    token: user.accessToken,
+    multipart: fd,
   });
   if (r.status !== 201) throw new Error(`upload failed: ${r.status} ${JSON.stringify(r.body)}`);
   const body = r.body as {
@@ -196,12 +210,17 @@ async function uploadAttachment(
   };
 }
 
-interface Failure { name: string; detail: string }
+interface Failure {
+  name: string;
+  detail: string;
+}
 const failures: Failure[] = [];
 
 async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try { await fn(); console.info(`  PASS  ${name}`); }
-  catch (e) {
+  try {
+    await fn();
+    console.info(`  PASS  ${name}`);
+  } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     failures.push({ name, detail });
     console.error(`  FAIL  ${name}: ${detail}`);
@@ -209,9 +228,8 @@ async function check(name: string, fn: () => Promise<void>): Promise<void> {
 }
 
 function assertStatus(r: ApiResp, expected: number, ctx: string): unknown {
-  if (r.status !== expected) throw new Error(
-    `${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`,
-  );
+  if (r.status !== expected)
+    throw new Error(`${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`);
   return r.body;
 }
 
@@ -230,7 +248,12 @@ async function main(): Promise<void> {
   let attachmentA = '';
   await check('upload: server-computed content_hash matches sha256(bytes)', async () => {
     const expected = createHash('sha256').update(PNG_1X1).digest('hex');
-    const up = await uploadAttachment(A, { type: 'maintenance_requests', id: A.maintenanceRequestId }, new Uint8Array(PNG_1X1), 'image/png');
+    const up = await uploadAttachment(
+      A,
+      { type: 'maintenance_requests', id: A.maintenanceRequestId },
+      new Uint8Array(PNG_1X1),
+      'image/png',
+    );
     if (up.content_hash !== expected) {
       throw new Error(`hash mismatch: got ${up.content_hash}, expected ${expected}`);
     }
@@ -243,24 +266,33 @@ async function main(): Promise<void> {
   // with a fresh Idempotency-Key. Identical bytes on a DIFFERENT entity still
   // create a new row (201, deduped:false).
   // -----------------------------------------------------------------------
-  await check('upload: identical bytes to the same entity dedupe (200 + deduped, same id)', async () => {
-    const fd = new FormData();
-    fd.set('entity_type', 'maintenance_requests');
-    fd.set('entity_id', A.maintenanceRequestId);
-    fd.set('file', pngFile());
-    const r = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
-      token: A.accessToken, multipart: fd, idempotencyKey: `dedupe-${rnd()}`,
-    });
-    const body = assertStatus(r, 200, 're-upload') as { attachment: { id: string }; deduped: boolean };
-    if (!body.deduped) throw new Error('expected deduped=true on identical re-upload');
-    if (body.attachment.id !== attachmentA) {
-      throw new Error(`expected the existing id ${attachmentA}, got ${body.attachment.id}`);
-    }
-  });
+  await check(
+    'upload: identical bytes to the same entity dedupe (200 + deduped, same id)',
+    async () => {
+      const fd = new FormData();
+      fd.set('entity_type', 'maintenance_requests');
+      fd.set('entity_id', A.maintenanceRequestId);
+      fd.set('file', pngFile());
+      const r = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
+        token: A.accessToken,
+        multipart: fd,
+        idempotencyKey: `dedupe-${rnd()}`,
+      });
+      const body = assertStatus(r, 200, 're-upload') as {
+        attachment: { id: string };
+        deduped: boolean;
+      };
+      if (!body.deduped) throw new Error('expected deduped=true on identical re-upload');
+      if (body.attachment.id !== attachmentA) {
+        throw new Error(`expected the existing id ${attachmentA}, got ${body.attachment.id}`);
+      }
+    },
+  );
 
   await check('upload: identical bytes to a DIFFERENT entity create a new row (201)', async () => {
     const req2 = await api('POST', `/v1/accounts/${A.accountId}/maintenance-requests`, {
-      token: A.accessToken, body: { area_id: A.unitAreaId, title: 'leak 2', severity: 'routine' },
+      token: A.accessToken,
+      body: { area_id: A.unitAreaId, title: 'leak 2', severity: 'routine' },
     });
     const reqId = (assertStatus(req2, 201, 'create req2') as { id: string }).id;
     const fd = new FormData();
@@ -268,9 +300,14 @@ async function main(): Promise<void> {
     fd.set('entity_id', reqId);
     fd.set('file', pngFile());
     const r = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
-      token: A.accessToken, multipart: fd, idempotencyKey: `new-${rnd()}`,
+      token: A.accessToken,
+      multipart: fd,
+      idempotencyKey: `new-${rnd()}`,
     });
-    const body = assertStatus(r, 201, 'new-entity upload') as { attachment: { id: string }; deduped: boolean };
+    const body = assertStatus(r, 201, 'new-entity upload') as {
+      attachment: { id: string };
+      deduped: boolean;
+    };
     if (body.deduped) throw new Error('expected deduped=false for a new entity');
     if (body.attachment.id === attachmentA) throw new Error('expected a fresh attachment id');
   });
@@ -279,11 +316,9 @@ async function main(): Promise<void> {
   // (2) Cross-account read denied. A's attachment ID cannot be fetched by B.
   // -----------------------------------------------------------------------
   await check("download: A's attachment is 404 when B asks for it", async () => {
-    const r = await api(
-      'GET',
-      `/v1/accounts/${B.accountId}/attachments/${attachmentA}/download`,
-      { token: B.accessToken },
-    );
+    const r = await api('GET', `/v1/accounts/${B.accountId}/attachments/${attachmentA}/download`, {
+      token: B.accessToken,
+    });
     if (r.status !== 404) {
       throw new Error(`expected 404, got ${r.status} body=${JSON.stringify(r.body)}`);
     }
@@ -291,11 +326,9 @@ async function main(): Promise<void> {
 
   // Even via the metadata endpoint -- B cannot GET A's attachment row.
   await check("metadata: B cannot GET A's attachment row", async () => {
-    const r = await api(
-      'GET',
-      `/v1/accounts/${B.accountId}/attachments/${attachmentA}`,
-      { token: B.accessToken },
-    );
+    const r = await api('GET', `/v1/accounts/${B.accountId}/attachments/${attachmentA}`, {
+      token: B.accessToken,
+    });
     if (r.status !== 404) throw new Error(`expected 404, got ${r.status}`);
   });
 
@@ -304,11 +337,9 @@ async function main(): Promise<void> {
   // Content-Type + nosniff + CSP. No inline rendering possible.
   // -----------------------------------------------------------------------
   await check('download: forces Content-Disposition: attachment + nosniff + CSP', async () => {
-    const r = await api(
-      'GET',
-      `/v1/accounts/${A.accountId}/attachments/${attachmentA}/download`,
-      { token: A.accessToken },
-    );
+    const r = await api('GET', `/v1/accounts/${A.accountId}/attachments/${attachmentA}/download`, {
+      token: A.accessToken,
+    });
     assertStatus(r, 200, 'download');
     const cd = r.headers['content-disposition'] ?? '';
     if (!cd.toLowerCase().startsWith('attachment')) {
@@ -320,7 +351,9 @@ async function main(): Promise<void> {
     if (!(r.headers['content-security-policy'] ?? '').includes("default-src 'none'")) {
       throw new Error(`CSP missing default-src 'none': ${r.headers['content-security-policy']}`);
     }
-    const got = createHash('sha256').update(r.body as Uint8Array).digest('hex');
+    const got = createHash('sha256')
+      .update(r.body as Uint8Array)
+      .digest('hex');
     const expected = createHash('sha256').update(PNG_1X1).digest('hex');
     if (got !== expected) throw new Error(`download bytes hash mismatch`);
   });
@@ -336,9 +369,11 @@ async function main(): Promise<void> {
     fd.set('entity_id', B.maintenanceRequestId);
     fd.set('file', pngFile());
     const r = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
-      token: A.accessToken, multipart: fd,
+      token: A.accessToken,
+      multipart: fd,
     });
-    if (r.status !== 404) throw new Error(`expected 404, got ${r.status} body=${JSON.stringify(r.body)}`);
+    if (r.status !== 404)
+      throw new Error(`expected 404, got ${r.status} body=${JSON.stringify(r.body)}`);
   });
 
   // -----------------------------------------------------------------------
@@ -378,64 +413,71 @@ async function main(): Promise<void> {
     intakeAttachmentId = subBody.attachment_id;
   });
 
-  await check("intake attachment: lands at TOKEN'S account, audited as tenant:<token>", async () => {
-    if (!intakeAttachmentId) throw new Error('no intake attachment to inspect');
-    const { createClient } = await import('@supabase/supabase-js');
-    const admin = createClient(status.API_URL, status.SERVICE_ROLE_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-    });
-    const { data: row } = await admin
-      .from('attachments')
-      .select('account_id, storage_path, content_hash')
-      .eq('id', intakeAttachmentId).single();
-    if (!row) throw new Error('intake attachment row not found');
-    if (row.account_id !== A.accountId) {
-      throw new Error(`landed in wrong account: ${row.account_id}`);
-    }
-    if (!String(row.storage_path).startsWith(`${A.accountId}/`)) {
-      throw new Error(`storage_path doesn't start with token's account: ${row.storage_path}`);
-    }
-    if (row.content_hash !== createHash('sha256').update(PNG_1X1).digest('hex')) {
-      throw new Error('server-side hash mismatch on intake attachment');
-    }
-    // Provenance: the audit event for the attachment INSERT must show
-    // actor='tenant:<token_id>'. With the Phase 8 two-step flow this row
-    // was 'system' -- Phase 9 closes that gap.
-    const { data: evt } = await admin
-      .from('events')
-      .select('actor, event_type')
-      .eq('account_id', A.accountId)
-      .eq('entity_type', 'attachments')
-      .eq('entity_id', intakeAttachmentId)
-      .eq('event_type', 'inserted')
-      .maybeSingle();
-    if (!evt) throw new Error('no audit event for intake attachment');
-    if (!String(evt.actor).startsWith('tenant:')) {
-      throw new Error(`audit actor should be tenant:<id>, got: ${evt.actor}`);
-    }
-  });
+  await check(
+    "intake attachment: lands at TOKEN'S account, audited as tenant:<token>",
+    async () => {
+      if (!intakeAttachmentId) throw new Error('no intake attachment to inspect');
+      const { createClient } = await import('@supabase/supabase-js');
+      const admin = createClient(status.API_URL, status.SERVICE_ROLE_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      });
+      const { data: row } = await admin
+        .from('attachments')
+        .select('account_id, storage_path, content_hash')
+        .eq('id', intakeAttachmentId)
+        .single();
+      if (!row) throw new Error('intake attachment row not found');
+      if (row.account_id !== A.accountId) {
+        throw new Error(`landed in wrong account: ${row.account_id}`);
+      }
+      if (!String(row.storage_path).startsWith(`${A.accountId}/`)) {
+        throw new Error(`storage_path doesn't start with token's account: ${row.storage_path}`);
+      }
+      if (row.content_hash !== createHash('sha256').update(PNG_1X1).digest('hex')) {
+        throw new Error('server-side hash mismatch on intake attachment');
+      }
+      // Provenance: the audit event for the attachment INSERT must show
+      // actor='tenant:<token_id>'. With the Phase 8 two-step flow this row
+      // was 'system' -- Phase 9 closes that gap.
+      const { data: evt } = await admin
+        .from('events')
+        .select('actor, event_type')
+        .eq('account_id', A.accountId)
+        .eq('entity_type', 'attachments')
+        .eq('entity_id', intakeAttachmentId)
+        .eq('event_type', 'inserted')
+        .maybeSingle();
+      if (!evt) throw new Error('no audit event for intake attachment');
+      if (!String(evt.actor).startsWith('tenant:')) {
+        throw new Error(`audit actor should be tenant:<id>, got: ${evt.actor}`);
+      }
+    },
+  );
 
-  await check('intake atomicity: title+area dedupe links new photo to existing request', async () => {
-    // Submitting a SECOND identical title against the same area MUST dedupe
-    // onto the existing open request (Phase 7.1 behaviour) -- but the new
-    // photo still lands and points at that same request_id.
-    const fd = new FormData();
-    fd.set('area_id', A.unitAreaId);
-    fd.set('title', 'attachment-test'); // same title as above
-    fd.set('severity', 'routine');
-    fd.set('file', pngFile());
-    const sub = await api('POST', `/v1/intake/${mintedToken}`, { multipart: fd });
-    const body = assertStatus(sub, 201, 'second intake (dedupe)') as {
-      maintenance_request_id: string;
-      attachment_id: string | null;
-      deduped_onto_existing: boolean;
-    };
-    if (!body.deduped_onto_existing) throw new Error('expected deduped_onto_existing=true');
-    if (body.maintenance_request_id !== intakeRequestId) {
-      throw new Error('deduped onto a different request id');
-    }
-    if (!body.attachment_id) throw new Error('expected attachment_id on deduped submit');
-  });
+  await check(
+    'intake atomicity: title+area dedupe links new photo to existing request',
+    async () => {
+      // Submitting a SECOND identical title against the same area MUST dedupe
+      // onto the existing open request (Phase 7.1 behaviour) -- but the new
+      // photo still lands and points at that same request_id.
+      const fd = new FormData();
+      fd.set('area_id', A.unitAreaId);
+      fd.set('title', 'attachment-test'); // same title as above
+      fd.set('severity', 'routine');
+      fd.set('file', pngFile());
+      const sub = await api('POST', `/v1/intake/${mintedToken}`, { multipart: fd });
+      const body = assertStatus(sub, 201, 'second intake (dedupe)') as {
+        maintenance_request_id: string;
+        attachment_id: string | null;
+        deduped_onto_existing: boolean;
+      };
+      if (!body.deduped_onto_existing) throw new Error('expected deduped_onto_existing=true');
+      if (body.maintenance_request_id !== intakeRequestId) {
+        throw new Error('deduped onto a different request id');
+      }
+      if (!body.attachment_id) throw new Error('expected attachment_id on deduped submit');
+    },
+  );
 
   // -----------------------------------------------------------------------
   // (6) Inspection completion: PDF is byte-deterministic, stored as an
@@ -443,11 +485,10 @@ async function main(): Promise<void> {
   // -----------------------------------------------------------------------
   let inspectionId = '';
   await check('inspection: create + add items + a photo, then complete', async () => {
-    const insp = await api(
-      'POST',
-      `/v1/accounts/${A.accountId}/inspections`,
-      { token: A.accessToken, body: { area_id: A.unitAreaId, performed_at: '2026-04-01T10:00:00Z', notes: 'test' } },
-    );
+    const insp = await api('POST', `/v1/accounts/${A.accountId}/inspections`, {
+      token: A.accessToken,
+      body: { area_id: A.unitAreaId, performed_at: '2026-04-01T10:00:00Z', notes: 'test' },
+    });
     const inspBody = assertStatus(insp, 201, 'create inspection') as { id: string };
     inspectionId = inspBody.id;
     // One item.
@@ -463,7 +504,8 @@ async function main(): Promise<void> {
     fd.set('entity_id', inspectionId);
     fd.set('file', pngFile());
     const photo = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
-      token: A.accessToken, multipart: fd,
+      token: A.accessToken,
+      multipart: fd,
     });
     assertStatus(photo, 201, 'inspection photo upload');
     // Complete.
@@ -492,7 +534,9 @@ async function main(): Promise<void> {
       `/v1/accounts/${A.accountId}/attachments?entity_type=inspection_report&entity_id=${inspectionId}`,
       { token: A.accessToken },
     );
-    const lb = assertStatus(list, 200, 'list inspection_report') as { data: Array<{ id: string; content_hash: string }> };
+    const lb = assertStatus(list, 200, 'list inspection_report') as {
+      data: Array<{ id: string; content_hash: string }>;
+    };
     if (lb.data.length !== 1) throw new Error(`expected 1 report, got ${lb.data.length}`);
     reportContentHash = lb.data[0]!.content_hash;
     const dl = await api(
@@ -504,7 +548,9 @@ async function main(): Promise<void> {
     if (dl.headers['content-type'] !== 'application/pdf') {
       throw new Error(`expected content-type application/pdf, got ${dl.headers['content-type']}`);
     }
-    const got = createHash('sha256').update(dl.body as Uint8Array).digest('hex');
+    const got = createHash('sha256')
+      .update(dl.body as Uint8Array)
+      .digest('hex');
     if (got !== reportContentHash) {
       throw new Error(`downloaded PDF hash != stored content_hash`);
     }
@@ -521,10 +567,12 @@ async function main(): Promise<void> {
   await check('inspection PDF: same inputs -> byte-identical PDF (deterministic)', async () => {
     const { generateAndStoreInspectionReport } = await import('../src/admin/pdf');
     const r1 = await generateAndStoreInspectionReport({
-      accountId: A.accountId, inspectionId,
+      accountId: A.accountId,
+      inspectionId,
     });
     const r2 = await generateAndStoreInspectionReport({
-      accountId: A.accountId, inspectionId,
+      accountId: A.accountId,
+      inspectionId,
     });
     if (r1.content_hash !== r2.content_hash) {
       throw new Error(
@@ -542,22 +590,20 @@ async function main(): Promise<void> {
   // (8) Completed inspection: PATCH rejected. Item INSERT rejected.
   // -----------------------------------------------------------------------
   await check('completed inspection: PATCH rejected with 409', async () => {
-    const r = await api(
-      'PATCH',
-      `/v1/accounts/${A.accountId}/inspections/${inspectionId}`,
-      { token: A.accessToken, body: { notes: 'late edit' } },
-    );
+    const r = await api('PATCH', `/v1/accounts/${A.accountId}/inspections/${inspectionId}`, {
+      token: A.accessToken,
+      body: { notes: 'late edit' },
+    });
     if (r.status !== 409) {
       throw new Error(`expected 409 conflict, got ${r.status} body=${JSON.stringify(r.body)}`);
     }
   });
 
   await check('completed inspection: item INSERT rejected with 409', async () => {
-    const r = await api(
-      'POST',
-      `/v1/accounts/${A.accountId}/inspections/${inspectionId}/items`,
-      { token: A.accessToken, body: { label: 'late item' } },
-    );
+    const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/${inspectionId}/items`, {
+      token: A.accessToken,
+      body: { label: 'late item' },
+    });
     if (r.status !== 409) {
       throw new Error(`expected 409 conflict, got ${r.status} body=${JSON.stringify(r.body)}`);
     }
@@ -570,12 +616,72 @@ async function main(): Promise<void> {
     const fd = new FormData();
     fd.set('entity_type', 'maintenance_requests');
     fd.set('entity_id', A.maintenanceRequestId);
-    fd.set('file', new File([new Uint8Array([60, 33, 100, 111, 99])], 'evil.html', { type: 'text/html' }));
+    fd.set(
+      'file',
+      new File([new Uint8Array([60, 33, 100, 111, 99])], 'evil.html', { type: 'text/html' }),
+    );
     const r = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
-      token: A.accessToken, multipart: fd,
+      token: A.accessToken,
+      multipart: fd,
     });
     if (r.status !== 400) throw new Error(`expected 400, got ${r.status}`);
   });
+
+  // -----------------------------------------------------------------------
+  // (10) Rent-change instruments as attachment entities (migration
+  // 20260706000001 added 'leases' + 'notices' to the allowlist): a signed
+  // renewal PDF and a served-notice scan are evidence-grade. Uploading to
+  // either succeeds; a bogus entity_type is still rejected 400.
+  // -----------------------------------------------------------------------
+  await check(
+    "upload: entity_type 'leases' and 'notices' succeed; a bogus type is 400",
+    async () => {
+      // Create a lease + a notice on A's tenancy to attach to.
+      const lease = await api('POST', `/v1/accounts/${A.accountId}/leases`, {
+        token: A.accessToken,
+        body: {
+          tenancy_id: A.tenancyId,
+          term_start: '2026-01-01',
+          rent_amount_cents: 200000,
+          rent_currency: 'USD',
+          status: 'active',
+        },
+      });
+      const leaseId = (assertStatus(lease, 201, 'create lease') as { id: string }).id;
+      const notice = await api('POST', `/v1/accounts/${A.accountId}/notices`, {
+        token: A.accessToken,
+        body: { tenancy_id: A.tenancyId, notice_type: 'entry_notice' },
+      });
+      const noticeId = (assertStatus(notice, 201, 'create notice') as { id: string }).id;
+
+      const upLease = await uploadAttachment(
+        A,
+        { type: 'leases', id: leaseId },
+        new Uint8Array(PNG_1X1),
+        'image/png',
+      );
+      if (!upLease.id) throw new Error('lease attachment upload returned no id');
+      const upNotice = await uploadAttachment(
+        A,
+        { type: 'notices', id: noticeId },
+        new Uint8Array(PNG_1X1),
+        'image/png',
+      );
+      if (!upNotice.id) throw new Error('notice attachment upload returned no id');
+
+      // Bogus entity_type -> rejected before any bytes are touched.
+      const fd = new FormData();
+      fd.set('entity_type', 'not_a_real_table');
+      fd.set('entity_id', leaseId);
+      fd.set('file', pngFile());
+      const bogus = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
+        token: A.accessToken,
+        multipart: fd,
+      });
+      if (bogus.status !== 400)
+        throw new Error(`expected 400 for bogus entity_type, got ${bogus.status}`);
+    },
+  );
 
   // --- summary ---
   if (failures.length > 0) {

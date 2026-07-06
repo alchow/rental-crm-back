@@ -38,7 +38,11 @@ export const CreateLeaseBody = z
   .object({
     tenancy_id: z.string().uuid(),
     term_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    term_end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+    term_end: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable()
+      .optional(),
     rent_amount_cents: z.number().int().nonnegative(),
     rent_currency: CurrencyCode,
     deposit_amount_cents: z.number().int().nonnegative().optional(),
@@ -46,17 +50,24 @@ export const CreateLeaseBody = z
     document: z.record(z.unknown()).optional(),
     status: LeaseStatus,
   })
-  .refine(
-    (b) => (b.deposit_amount_cents ?? 0) === 0 || b.deposit_currency !== undefined,
-    { message: 'deposit_currency is required when deposit_amount_cents > 0' },
-  )
+  .refine((b) => (b.deposit_amount_cents ?? 0) === 0 || b.deposit_currency !== undefined, {
+    message: 'deposit_currency is required when deposit_amount_cents > 0',
+  })
   .openapi('CreateLeaseBody');
 
+// Rent terms (rent_amount_cents / rent_currency) are IMMUTABLE on a lease: the
+// contracted figure is evidence of what was agreed, and a rent change is a new
+// instrument (a renewal lease or a served notice), not an edit. Those two fields
+// are intentionally absent here; the handler additionally rejects them loudly
+// (zod would otherwise strip unknown keys and silently no-op an old client's
+// rent edit). deposit_* stay patchable.
 const PatchLeaseBody = z
   .object({
-    term_end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
-    rent_amount_cents: z.number().int().nonnegative().optional(),
-    rent_currency: CurrencyCode.optional(),
+    term_end: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable()
+      .optional(),
     deposit_amount_cents: z.number().int().nonnegative().optional(),
     deposit_currency: CurrencyCode.nullable().optional(),
     document: z.record(z.unknown()).optional(),
@@ -66,11 +77,20 @@ const PatchLeaseBody = z
   .openapi('PatchLeaseBody');
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 const AccountAndIdParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
 });
 
 const ListQuery = z.object({
@@ -152,11 +172,7 @@ leasesApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit, tenancy_id, status } = c.req.valid('query');
   const sb = getSb(c);
-  let q = sb
-    .from('leases')
-    .select('*')
-    .eq('account_id', accountId)
-    .is('deleted_at', null);
+  let q = sb.from('leases').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (tenancy_id) q = q.eq('tenancy_id', tenancy_id);
   if (status) q = q.eq('status', status);
   const { items, next_cursor: nextCursor } = await keysetPage(q, { cursor, limit });
@@ -213,12 +229,27 @@ leasesApp.openapi(create, async (c) => {
 leasesApp.openapi(patch, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
+  // Reject a rent edit LOUDLY. zod already stripped rent_amount_cents /
+  // rent_currency out of `body` (they're not in PatchLeaseBody), so without
+  // this an old client's rent PATCH would silently no-op. Re-read the raw body
+  // (Hono caches the parsed JSON, so this doesn't re-consume the stream) and
+  // 400 if either key was present, pointing the caller at the rent-change flow.
+  const raw = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  if (
+    Object.prototype.hasOwnProperty.call(raw, 'rent_amount_cents') ||
+    Object.prototype.hasOwnProperty.call(raw, 'rent_currency')
+  ) {
+    throw new ApiError(
+      400,
+      'invalid_request',
+      'rent terms are immutable on a lease; use POST /accounts/{accountId}/tenancies/{tenancyId}/rent-changes (fixed-term renewals supersede the lease)',
+    );
+  }
   const sb = getSb(c);
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (body.term_end !== undefined) update.term_end = body.term_end;
-  if (body.rent_amount_cents !== undefined) update.rent_amount_cents = body.rent_amount_cents;
-  if (body.rent_currency !== undefined) update.rent_currency = body.rent_currency;
-  if (body.deposit_amount_cents !== undefined) update.deposit_amount_cents = body.deposit_amount_cents;
+  if (body.deposit_amount_cents !== undefined)
+    update.deposit_amount_cents = body.deposit_amount_cents;
   if (body.deposit_currency !== undefined) update.deposit_currency = body.deposit_currency;
   if (body.document !== undefined) update.document = body.document;
   if (body.status !== undefined) update.status = body.status;

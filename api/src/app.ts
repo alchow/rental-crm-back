@@ -12,6 +12,7 @@ import { unitDetailsApp } from './routes/unit-details';
 import { tenanciesApp } from './routes/tenancies';
 import { tenancyMembersApp } from './routes/tenancy-members';
 import { leasesApp } from './routes/leases';
+import { noticesApp } from './routes/notices';
 import { assetsApp } from './routes/assets';
 import { rentSchedulesApp } from './routes/rent-schedules';
 import { chargesApp } from './routes/charges';
@@ -213,6 +214,7 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', tenanciesApp);
   app.route('/v1', tenancyMembersApp);
   app.route('/v1', leasesApp);
+  app.route('/v1', noticesApp);
   app.route('/v1', assetsApp);
   app.route('/v1', rentSchedulesApp);
   app.route('/v1', chargesApp);

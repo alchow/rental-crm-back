@@ -1,0 +1,237 @@
+import { createRoute, z } from '@hono/zod-openapi';
+import { newApiApp } from './_lib/app';
+import { getSb } from '../supabase/request-client';
+import { ApiError, errorResponses } from './_lib/error';
+import { keysetPage } from './_lib/cursor';
+
+// A notice is a served instrument (entry notice, rent-increase notice,
+// termination notice, ...). It attaches to a tenancy and, like a lease, is a
+// RECORD of something that happened -- served_at / served_method / body /
+// document capture what was delivered and how. Notices are one of the two
+// anchors a month-to-month rent change hangs off (the other is a renewal
+// lease); see the rent-changes endpoint in rent-schedules.ts.
+
+const Notice = z
+  .object({
+    id: z.string().uuid(),
+    account_id: z.string().uuid(),
+    tenancy_id: z.string().uuid(),
+    notice_type: z.string(),
+    served_at: z.string().nullable(),
+    served_method: z.string().nullable(),
+    body: z.string().nullable(),
+    document: z.record(z.unknown()),
+    created_at: z.string(),
+    updated_at: z.string(),
+    deleted_at: z.string().nullable(),
+  })
+  .openapi('Notice');
+
+const CreateNoticeBody = z
+  .object({
+    tenancy_id: z.string().uuid(),
+    notice_type: z.string().min(1).max(100),
+    served_at: z.string().datetime().optional(),
+    served_method: z.string().min(1).max(100).optional(),
+    body: z.string().max(10000).optional(),
+    document: z.record(z.unknown()).optional(),
+  })
+  .openapi('CreateNoticeBody');
+
+const PatchNoticeBody = z
+  .object({
+    served_at: z.string().datetime().nullable().optional(),
+    served_method: z.string().min(1).max(100).nullable().optional(),
+    body: z.string().max(10000).nullable().optional(),
+    document: z.record(z.unknown()).optional(),
+  })
+  .refine((b) => Object.keys(b).length > 0, { message: 'at least one field is required' })
+  .openapi('PatchNoticeBody');
+
+const AccountParam = z.object({
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+});
+const AccountAndIdParam = z.object({
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
+});
+
+const ListQuery = z.object({
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(100).default(50),
+  tenancy_id: z.string().uuid().optional(),
+});
+
+const ListResponse = z
+  .object({ data: z.array(Notice), next_cursor: z.string().nullable() })
+  .openapi('NoticeListResponse');
+
+const list = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/notices',
+  tags: ['notices'],
+  summary: 'List notices (filterable by tenancy_id)',
+  request: { params: AccountParam, query: ListQuery },
+  responses: {
+    200: { description: 'page', content: { 'application/json': { schema: ListResponse } } },
+    ...errorResponses,
+  },
+});
+const get = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/notices/{id}',
+  tags: ['notices'],
+  summary: 'Get one notice',
+  request: { params: AccountAndIdParam },
+  responses: {
+    200: { description: 'notice', content: { 'application/json': { schema: Notice } } },
+    ...errorResponses,
+  },
+});
+const create = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/notices',
+  tags: ['notices'],
+  summary: 'Create a notice attached to a tenancy',
+  request: {
+    params: AccountParam,
+    body: { content: { 'application/json': { schema: CreateNoticeBody } }, required: true },
+  },
+  responses: {
+    201: { description: 'created', content: { 'application/json': { schema: Notice } } },
+    ...errorResponses,
+  },
+});
+const patch = createRoute({
+  method: 'patch',
+  path: '/accounts/{accountId}/notices/{id}',
+  tags: ['notices'],
+  summary: 'Update a notice (partial)',
+  request: {
+    params: AccountAndIdParam,
+    body: { content: { 'application/json': { schema: PatchNoticeBody } }, required: true },
+  },
+  responses: {
+    200: { description: 'updated', content: { 'application/json': { schema: Notice } } },
+    ...errorResponses,
+  },
+});
+const remove = createRoute({
+  method: 'delete',
+  path: '/accounts/{accountId}/notices/{id}',
+  tags: ['notices'],
+  summary: 'Soft-delete a notice',
+  request: { params: AccountAndIdParam },
+  responses: {
+    204: { description: 'deleted' },
+    ...errorResponses,
+  },
+});
+
+export const noticesApp = newApiApp();
+
+noticesApp.openapi(list, async (c) => {
+  const { accountId } = c.req.valid('param');
+  const { cursor, limit, tenancy_id } = c.req.valid('query');
+  const sb = getSb(c);
+  let q = sb.from('notices').select('*').eq('account_id', accountId).is('deleted_at', null);
+  if (tenancy_id) q = q.eq('tenancy_id', tenancy_id);
+  const { items, next_cursor: nextCursor } = await keysetPage(q, { cursor, limit });
+  return c.json({ data: items, next_cursor: nextCursor } as z.infer<typeof ListResponse>, 200);
+});
+
+noticesApp.openapi(get, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const sb = getSb(c);
+  const { data, error } = await sb
+    .from('notices')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  return c.json(data as z.infer<typeof Notice>, 200);
+});
+
+noticesApp.openapi(create, async (c) => {
+  const { accountId } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  const { data, error } = await sb
+    .from('notices')
+    .insert({
+      account_id: accountId,
+      tenancy_id: body.tenancy_id,
+      notice_type: body.notice_type,
+      served_at: body.served_at ?? null,
+      served_method: body.served_method ?? null,
+      body: body.body ?? null,
+      document: body.document ?? {},
+    })
+    .select('*')
+    .single();
+  if (error) {
+    if (error.code === '23503') {
+      throw new ApiError(404, 'not_found', 'tenancy_id does not belong to this account');
+    }
+    if (error.code === '23514') {
+      throw new ApiError(400, 'invalid_request', error.message);
+    }
+    throw new ApiError(500, 'database_error', error.message);
+  }
+  return c.json(data as z.infer<typeof Notice>, 201);
+});
+
+noticesApp.openapi(patch, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (body.served_at !== undefined) update.served_at = body.served_at;
+  if (body.served_method !== undefined) update.served_method = body.served_method;
+  if (body.body !== undefined) update.body = body.body;
+  if (body.document !== undefined) update.document = body.document;
+  const { data, error } = await sb
+    .from('notices')
+    .update(update)
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .select('*')
+    .maybeSingle();
+  if (error) {
+    if (error.code === '23514') {
+      throw new ApiError(400, 'invalid_request', error.message);
+    }
+    throw new ApiError(500, 'database_error', error.message);
+  }
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  return c.json(data as z.infer<typeof Notice>, 200);
+});
+
+noticesApp.openapi(remove, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const sb = getSb(c);
+  const { data, error } = await sb
+    .from('notices')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .select('id')
+    .maybeSingle();
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  return c.body(null, 204);
+});

@@ -50,6 +50,20 @@ interface GenRow {
   o_amount_cents: number;
 }
 
+// A tenancy whose active-lease contracted rent no longer agrees with the total
+// of its open kind='rent' schedules -- i.e. the billing instruction drifted
+// away from the instrument that authorises it. detect_rent_drift surfaces these
+// so the daily run can flag them loudly; it never blocks billing.
+interface DriftRow {
+  o_tenancy_id: string;
+  o_lease_id: string;
+  o_lease_amount_cents: number;
+  o_lease_currency: string;
+  o_schedule_total_cents: number;
+  o_schedule_currencies: string[];
+  o_auto_charge_enabled: boolean;
+}
+
 /**
  * Generate rent charges for every opted-in account, one per-account RPC at a
  * time. Idempotent and crash-safe by construction (the generator dedupes on
@@ -116,6 +130,42 @@ export async function runRentCharges(now: Date = new Date()): Promise<RentCharge
       { event: 'rent_charges_account_done', account_id: accountId, charges_created: created },
       'rent charges generated for account',
     );
+
+    // Loud, not fatal: after billing an account, check whether its active-lease
+    // rent still agrees with its open rent schedules. Drift means an
+    // instrument-anchored change was skipped (someone edited a schedule out of
+    // band, or a renewal never got applied) -- worth a WARN so an operator
+    // reconciles it, but never a reason to fail the billing run. detect_rent_drift
+    // is SECURITY INVOKER; the service-role admin client sees every account.
+    const { data: driftData, error: driftErr } = await admin.rpc('detect_rent_drift', {
+      p_account_id: accountId,
+    });
+    if (driftErr) {
+      log.warn(
+        { event: 'rent_drift_check_failed', account_id: accountId, err: driftErr.message },
+        'rent drift detection failed for account',
+      );
+    } else {
+      const drift = (driftData as DriftRow[] | null) ?? [];
+      if (drift.length > 0) {
+        log.warn(
+          {
+            event: 'rent_drift_detected',
+            account_id: accountId,
+            count: drift.length,
+            rows: drift.map((d) => ({
+              tenancy_id: d.o_tenancy_id,
+              lease_id: d.o_lease_id,
+              lease_amount_cents: d.o_lease_amount_cents,
+              lease_currency: d.o_lease_currency,
+              schedule_total_cents: d.o_schedule_total_cents,
+              schedule_currencies: d.o_schedule_currencies,
+            })),
+          },
+          'lease rent drifted from open rent schedules',
+        );
+      }
+    }
   }
 
   log.info(
