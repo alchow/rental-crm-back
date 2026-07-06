@@ -77,12 +77,13 @@ grant update (persona_local_part) on public.accounts to authenticated;
 -- ----------------------------------------------------------------------------
 
 -- Backfill existing accounts: display name = account name, stripped of the
--- C0/DEL control characters the header-injection CHECK forbids, capped at 120.
--- nullif guards the degenerate all-control-chars name (stays null rather than
--- violating the 1..120 length CHECK).
+-- C0/DEL control characters the header-injection CHECK forbids PLUS the C1
+-- range the API validator also rejects (parity: a backfilled value must be
+-- re-submittable through PATCH). nullif guards the degenerate
+-- all-control-chars name (stays null rather than violating the 1..120 CHECK).
 update public.accounts
    set sender_display_name = nullif(
-         left(regexp_replace(trim(name), E'[\\x01-\\x1F\\x7F]', '', 'g'), 120),
+         left(regexp_replace(trim(name), E'[\\x01-\\x1F\\x7F\\u0080-\\u009F]', '', 'g'), 120),
          ''
        )
  where sender_display_name is null;
@@ -128,13 +129,14 @@ begin
   on conflict (id) do nothing;
 
   -- (2) new account. sender_display_name defaults to the account name
-  -- (control chars stripped for the header-injection CHECK; landlords PATCH
-  -- it to taste via /email-branding).
+  -- (C0/DEL/C1 control chars stripped — the same set the API validator
+  -- rejects, so the default is always re-submittable through PATCH;
+  -- landlords tune it via /email-branding).
   insert into public.accounts (name, sender_display_name)
        values (
          trim(p_account_name),
          nullif(
-           left(regexp_replace(trim(p_account_name), E'[\\x01-\\x1F\\x7F]', '', 'g'), 120),
+           left(regexp_replace(trim(p_account_name), E'[\\x01-\\x1F\\x7F\\u0080-\\u009F]', '', 'g'), 120),
            ''
          )
        )

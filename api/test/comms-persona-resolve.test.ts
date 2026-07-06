@@ -213,6 +213,22 @@ async function main(): Promise<void> {
     assertStatus(r, 404, 'foreign domain');
   });
 
+  await check('suffix-confusion domain (evil<parent> without the dot) → 404', async () => {
+    // `evilmail-….test` ENDS WITH the parent string but is a different domain;
+    // the resolver must require the '.<parent>' boundary.
+    const r = await api('GET', `${RESOLVE}?address=${encodeURIComponent(`riley@${SUB_A}evil${PARENT}`)}`, { token: agentToken });
+    assertStatus(r, 404, 'suffix confusion');
+    const r2 = await api('GET', `${RESOLVE}?address=${encodeURIComponent(`riley@evil-${PARENT}`)}`, { token: agentToken });
+    assertStatus(r2, 404, 'suffix confusion 2');
+  });
+
+  await check('multiple @ signs never resolve to the wrong account → 404', async () => {
+    const r = await api('GET', `${RESOLVE}?address=${encodeURIComponent(`riley@x.com@${SUB_A}.${PARENT}`)}`, { token: agentToken });
+    assertStatus(r, 404, 'multi-@ (local contains @)');
+    const r2 = await api('GET', `${RESOLVE}?address=${encodeURIComponent(`@${SUB_A}.${PARENT}`)}`, { token: agentToken });
+    assertStatus(r2, 404, 'empty local');
+  });
+
   await check('multi-label subdomain under the parent → 404', async () => {
     const r = await api('GET', `${RESOLVE}?address=${encodeURIComponent(`riley@x.${SUB_A}.${PARENT}`)}`, { token: agentToken });
     assertStatus(r, 404, 'multi-label');
