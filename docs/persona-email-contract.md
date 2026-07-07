@@ -91,6 +91,17 @@ inbound rcpt <addr>:
 - When rendering an email relay leg, set `In-Reply-To:
   <relay_source_rfc822_message_id>` and append it to `References` — relayed
   conversations then thread natively in recipients' mail clients.
+- **Thread-leg sends (native threading, shipped with migration
+  20260710000001):** thread detail messages (`GET .../comms/threads/{id}`)
+  expose `rfc822_message_id` on every email journal row — the sender-stamped
+  id on inbound captures, the id you reported on `complete` for sends (null
+  on non-email rows and rows predating the header work). When rendering a
+  thread leg (landlord-composed reply), derive `In-Reply-To` from the newest
+  prior message that has an id, and `References` from the thread's ids
+  oldest→newest. Keep `References` from growing unbounded (many clients cap
+  it): past ~10 entries, drop ids from the MIDDLE of the chain, keeping the
+  root and the most recent ones. Message-IDs are stored bracket-stripped:
+  re-wrap in `<...>` when emitting headers.
 
 ## Phase 3 — persona capture: known senders + auto-ack (shipped with migration 20260708000001)
 

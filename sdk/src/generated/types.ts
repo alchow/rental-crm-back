@@ -16129,6 +16129,7 @@ export interface components {
             /** @enum {string|null} */
             entry_type: "proposal_created" | "proposal_approved" | "proposal_rejected" | "step_executed" | "proposal_failed" | "proposal_blocked" | "resume_target_dead" | "proposal_superseded" | null;
             external_ref: string | null;
+            rfc822_message_id?: string | null;
             /** Format: uuid */
             corrects_id: string | null;
             /** @enum {string|null} */

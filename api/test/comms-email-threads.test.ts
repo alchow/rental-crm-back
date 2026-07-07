@@ -804,6 +804,45 @@ async function main(): Promise<void> {
     assert(row.approval_ref === self, `approval_ref: ${row.approval_ref}`);
   });
 
+  // Native threading (view refresh 20260710000001): thread detail messages
+  // expose rfc822_message_id on both sides of the conversation — the transport
+  // derives In-Reply-To/References for thread-leg sends from these, reading
+  // the thread as the agent.
+  await check('thread detail messages expose rfc822_message_id (inbound + completed send)', async () => {
+    const make = await api('POST', `${base}/threads/${thread1Id}/messages`, {
+      token: fx.landlordToken, body: { body: 'threaded reply from the app' },
+    });
+    const intent = (assertStatus(make, 201, 'thread message') as { data: OutboxShape[] }).data[0]!;
+    const claim = await api('POST', `${base}/outbox/${intent.id}/delivery`, {
+      token: fx.agentToken, body: { status: 'sending', provider_ts: iso() },
+    });
+    assertStatus(claim, 200, 'claim');
+    const SENT_ID = `thread-sent-${SUFFIX}@resend`; // pre-normalized (lowercase)
+    const done = await api('POST', `${base}/outbox/${intent.id}/complete`, {
+      token: fx.agentToken,
+      body: { provider: 'resend', provider_sid: `em-${rnd()}`, rfc822_message_id: `<${SENT_ID}>` },
+    });
+    const sentIid = (assertStatus(done, 200, 'headed thread complete') as { interaction_id: string })
+      .interaction_id;
+
+    const r = await api('GET', `${base}/threads/${thread1Id}?limit=50`, { token: fx.agentToken });
+    const detail = assertStatus(r, 200, 'thread detail (agent)') as {
+      messages: { id: string; rfc822_message_id?: string | null }[];
+    };
+    const inboundMsg = detail.messages.find((m) => m.id === msgidInboundIid);
+    assert(inboundMsg !== undefined, 'headed inbound present in thread read');
+    assert(
+      inboundMsg!.rfc822_message_id === RFC_ID.toLowerCase(),
+      `inbound Message-ID on thread read: ${inboundMsg!.rfc822_message_id}`,
+    );
+    const sentMsg = detail.messages.find((m) => m.id === sentIid);
+    assert(sentMsg !== undefined, 'completed send present in thread read');
+    assert(
+      sentMsg!.rfc822_message_id === SENT_ID,
+      `sent Message-ID on thread read: ${sentMsg!.rfc822_message_id}`,
+    );
+  });
+
   // =========================================================================
   // (11) sms/email coexistence
   // =========================================================================
