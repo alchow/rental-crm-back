@@ -258,6 +258,23 @@ async function main(): Promise<void> {
     assertStatus(r, 422, 'newline display name');
   });
 
+  await check('punycode label (xn--) → 422', async () => {
+    const r = await api('PATCH', base, {
+      token: owner.token,
+      body: { email_subdomain: 'xn--80ak6aa92e' },
+    });
+    assertStatus(r, 422, 'punycode label');
+    if (errCode(r) !== 'invalid_request') throw new Error(`code: ${errCode(r)}`);
+  });
+
+  await check('display name with a C1 control (U+0085 NEL) → 422', async () => {
+    const r = await api('PATCH', base, {
+      token: owner.token,
+      body: { sender_display_name: 'Acme\u0085Bcc: evil@x' },
+    });
+    assertStatus(r, 422, 'C1 display name');
+  });
+
   // --- persona local part -----------------------------------------------------
   // At this point the account still carries email_subdomain = SUB.
 
