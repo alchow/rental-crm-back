@@ -183,9 +183,12 @@ under:
   the successor, and restore coverage with a **fresh continuation schedule**
   (`POST /rent-schedules`, old terms, `start_date` = the mistaken effective
   date, same anchor or none, `change_reason` noting the undo). The new id
-  gets a fresh dedupe key, so the generator re-bills the voided periods on
-  its next run. Re-opening the predecessor instead would silently skip
-  them — the one month the mistake voided would never bill again.
+  gets a fresh dedupe key, so the generator re-bills a voided period on its
+  next run — while that period's due day is still ahead (no backfill; a
+  later undo re-creates the elapsed period manually with the continuation's
+  provenance). Re-opening the predecessor instead would silently skip the
+  voided periods at _any_ time — the month the mistake voided would never
+  bill again.
 
 The audit chain showing "created wrong, fixed 40 seconds later" is a
 feature — courts distrust altered records, not corrected ones.
@@ -215,9 +218,18 @@ feature — courts distrust altered records, not corrected ones.
   reported in `voided_charge_ids`; a payment already allocated to one falls
   back to unapplied credit (existing ledger semantics). Operators see the
   void + the replacement charge, not a silent mutation. Re-billing is
-  **asynchronous**: the next daily generator run (08:00 UTC) re-emits the
-  voided periods at the new amount for `auto_charge_enabled` accounts;
-  manually-billing accounts re-create charges themselves.
+  **asynchronous and forward-only**: the next daily generator run (08:00
+  UTC) re-emits a voided period at the new amount for `auto_charge_enabled`
+  accounts — but only while that period's due day is still ahead, because
+  the generator bills one window per run and never backfills (deliberate,
+  ADR-0011: a backfilling generator would surprise-bill stacks of
+  back-months on any retroactively-imported schedule). **Known limitation:**
+  a _backdated_ change — applied after the effective period's due day —
+  therefore voids that period's charge with no automatic replacement; the
+  replacement is a manual `POST /charges` at the new amount carrying the
+  successor's provenance. Same window rule bounds the undo recipes'
+  auto-heal. Manually-billing accounts re-create charges themselves in all
+  cases.
 - **Migration before deploy, additive:** nullable columns + INVOKER
   functions + guard/reject triggers — safe to apply to prod ahead of the code
   deploy (nothing reads the new objects until the new code ships; the guard
@@ -240,6 +252,14 @@ feature — courts distrust altered records, not corrected ones.
   boundary changes which _era_ bills a period; it does not split a period.
 
 ## Revisit triggers
+
+- **Backdated changes or late undos prove common** (manual re-billing gets
+  skipped in practice) → synchronous re-emit inside `change_tenancy_rent`:
+  step 9b already knows exactly which periods it voided, so it can insert
+  the successor's replacement charges in the same transaction — no window,
+  idempotent with the generator via the dedupe key. Un-void was evaluated
+  and deferred: `20260703000006`'s allocation-integrity proof assumes
+  un-void does not exist, so it requires a caps-re-asserting guard first.
 
 - **Serving workflows land** (mail-service integration, e-signatures) →
   revisit set-once triggers on `served_at` and a proof-of-service attachment

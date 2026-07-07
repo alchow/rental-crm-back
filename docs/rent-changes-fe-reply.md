@@ -9,6 +9,16 @@ contract changes beyond spec description notes.
 > §1 was corrected — the original re-open-based ending had a silent
 > revenue-loss hole you correctly identified. See §1 and the addendum at the
 > end for what changed and why.
+>
+> **Rev 3 (2026-07-06, after your window finding):** you were right again —
+> "re-bills automatically" holds only until the voided period's own due day
+> (the generator bills one window and never backfills). Verifying that, we
+> found the same window bites the **normal flow too**: a backdated rent
+> change (applied after the effective period's due day) un-bills that period
+> with no automatic replacement. Both are now documented limitations with
+> manual endings — see §1, §4, and the addendum. Deadline rule everywhere:
+> **automatic re-billing reaches only periods whose due day is still
+> ahead.**
 
 ## 1. Correction path for a mistaken rent change (was blocking)
 
@@ -58,6 +68,12 @@ billing; the common catch-it-immediately case):
    successor **before** re-opening, or two open same-kind eras will both
    bill.
 4. If a different change was intended, re-issue it now.
+5. Deadline caveat (same window rule as Case B): if step 1 voided a
+   successor charge whose period's **due day has already passed**, the
+   re-opened predecessor never re-bills it (that period was billed under the
+   successor's id, and the generator never backfills). Re-create it
+   manually: `POST /charges` at the old amount with `source_schedule_id` =
+   the **predecessor** — its key for that period is free in Case A.
 
 **Case B — `voided_charge_ids` was non-empty** (the change voided the
 predecessor's advance-billed period(s)):
@@ -70,8 +86,14 @@ predecessor's advance-billed period(s)):
    `start_date` = the mistaken effective date, optionally the same
    `source_lease_id`/`source_notice_id`, and a `change_reason` noting the
    undo. Fresh id → fresh dedupe keys → the next daily generator run
-   re-bills the voided period(s) automatically at the old amount. Verified
-   end-to-end against the generator.
+   re-bills a voided period automatically at the old amount **only while
+   that period's due day is still ahead** (the generator bills one window,
+   never backfills — verified both directions). For an undo performed after
+   the due day — the late-discovery timeline — re-create the elapsed
+   period(s) manually: `POST /charges` at the old amount with
+   `source_schedule_id` = the **continuation** (its key is fresh, so
+   provenance is preserved; this is the one manual step automation can't
+   cover today).
 4. If a different change was intended, re-issue it on top — the continuation
    schedule is open, so the corrected change ends it and inherits normally.
 
@@ -139,16 +161,34 @@ All ADR-0012 conflicts now return fine-grained `error.code` values, and the
 `conflict` remains the fallback for anything unrecognized — keep a generic
 branch.
 
-## 4. Re-billing after voids: asynchronous
+## 4. Re-billing after voids: asynchronous — and only forward (rev 3)
 
 The rent change only voids. Re-billing happens at the **next daily generator
 run** (08:00 UTC), which re-emits the affected periods at the new amount —
 and only for accounts with `auto_charge_enabled = true`; manually-billing
-accounts re-create charges themselves. Since an advance charge only exists
-once the prior due day has passed, the voided period is re-billed on the very
-next run (within 24h). Suggested result-panel copy, gated on the account
-flag: "N charges were voided and will be re-billed automatically at the next
-daily billing run."
+accounts re-create charges themselves.
+
+**Rev 3 deadline rule:** the generator bills exactly one window per run
+(this month's period, or next month's once the due day passes) and **never
+backfills**. So automatic re-billing reaches a voided period only while its
+due day is still ahead:
+
+- Change applied **before** the voided period's due day (the common
+  forward-dated case): re-billed on the very next run, within 24h.
+- Change applied **after** the voided period's due day — i.e. a **backdated
+  change** ("rent went up on the 1st, I entered it on the 5th"): that
+  period's charge is voided and **never re-created automatically**. The FE
+  should detect this at result time — any entry in `voided_charge_ids` whose
+  `period_start` (== its due date) is before today needs a manual follow-up:
+  `POST /charges` at the **new** amount with `source_schedule_id` = the
+  successor (`rent_schedule.id` from the same response; its key for that
+  period is free). Strongly recommend the result panel surfaces this as an
+  action item rather than a toast.
+
+Suggested result-panel copy, gated on the account flag: "N charges were
+voided; future periods will be re-billed automatically at the next daily
+billing run" + when applicable "M elapsed period(s) need to be re-billed
+manually — create charge now?"
 
 ## 5. served_at as midnight UTC: acceptable, with one rendering rule
 
@@ -207,6 +247,28 @@ conflict-class set); for future reference our error-code policy is
 "add finer codes, never repurpose" — this was the one deliberate exception,
 made because the sole consumer had requested the codes, and we'll flag any
 such swap explicitly from now on.
+
+**3 (rev 3). The window deadline: confirmed — and it's bigger than the undo
+recipe.** Your "next run re-bills automatically holds only while the voided
+period is still in the generation window" is exactly right (verified against
+the generator's period derivation: one window per run, no backfill —
+deliberate since ADR-0011, so retroactively-imported schedules never
+surprise-bill stacks of back-months). While verifying we found the same
+window bites the **normal rent-change flow**: a backdated change voids the
+elapsed period's advance charge and nothing re-creates it (reproduced:
+change entered Sep 15 effective Sep 1 → September never billed at any
+amount). Both are now documented limitations with precise manual endings
+(§1 recipes, §4) rather than engine changes, weighed as follows:
+generator backfill contradicts ADR-0011's no-surprise-billing posture;
+**un-void** is blocked from being a quick fix by a load-bearing ledger
+invariant (the allocation-integrity proof in migration `20260703000006`
+literally assumes "un-voiding is not a supported operation" — resurrection
+of dormant payment allocations could over-apply a payment, so un-void needs
+a caps-re-asserting guard); **synchronous re-emit inside the RPC** (it knows
+what it voided) is the designed fix for the backdated case and the likely
+next step if manual re-billing proves error-prone in practice. Until then:
+branch on `voided_charge_ids` + due-day-passed, and make the manual
+re-charge a first-class UI action.
 
 **Your surviving caveats, confirmed:** `ErrorEnvelope.code` stays
 `type: string` (hand-maintain your union; our regex mapping is pinned by CI
