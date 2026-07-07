@@ -20878,7 +20878,7 @@
         "tags": [
           "comms"
         ],
-        "summary": "Thread detail (landlord): participants, channel bindings, and the journal rows in the thread with their delivery state (cursor/limit page the messages).",
+        "summary": "Thread detail (transport + landlord): participants, channel bindings, and the journal rows in the thread with their delivery state (cursor/limit page the messages).",
         "parameters": [
           {
             "schema": {
@@ -21933,7 +21933,7 @@
         "tags": [
           "comms"
         ],
-        "summary": "List standing communication policies (landlord).",
+        "summary": "List standing communication policies (transport + landlord).",
         "parameters": [
           {
             "schema": {

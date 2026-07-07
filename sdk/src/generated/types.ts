@@ -8140,7 +8140,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Thread detail (landlord): participants, channel bindings, and the journal rows in the thread with their delivery state (cursor/limit page the messages). */
+        /** Thread detail (transport + landlord): participants, channel bindings, and the journal rows in the thread with their delivery state (cursor/limit page the messages). */
         get: {
             parameters: {
                 query?: {
@@ -8910,7 +8910,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List standing communication policies (landlord). */
+        /** List standing communication policies (transport + landlord). */
         get: {
             parameters: {
                 query?: {

@@ -984,9 +984,9 @@ const getThread = createRoute({
   path: '/accounts/{accountId}/comms/threads/{id}',
   tags: ['comms'],
   summary:
-    'Thread detail (landlord): participants, channel bindings, and the journal ' +
-    'rows in the thread with their delivery state (cursor/limit page the ' +
-    'messages).',
+    'Thread detail (transport + landlord): participants, channel bindings, and ' +
+    'the journal rows in the thread with their delivery state (cursor/limit ' +
+    'page the messages).',
   request: {
     params: AccountAndIdParam,
     query: z.object({
@@ -1317,7 +1317,7 @@ const listPolicies = createRoute({
   method: 'get',
   path: '/accounts/{accountId}/comms/policies',
   tags: ['comms'],
-  summary: 'List standing communication policies (landlord).',
+  summary: 'List standing communication policies (transport + landlord).',
   request: {
     params: AccountParam,
     query: z.object({
@@ -1476,6 +1476,21 @@ function requireManager(c: Context): void {
   const role = c.get('account').role;
   if (role !== 'owner' && role !== 'manager') {
     throw new ApiError(403, 'forbidden', 'only an owner or manager may use this endpoint');
+  }
+}
+
+// Reads the transport ALSO needs (thread context for relay legs, standing
+// policies for grant provenance): the agent principal or an owner/manager.
+// Viewers stay denied. Same carve-out shape as createOutbox/getOutbox.
+function requireAgentOrManager(c: Context): void {
+  if (c.get('principal').type === 'agent') return;
+  const role = c.get('account').role;
+  if (role !== 'owner' && role !== 'manager') {
+    throw new ApiError(
+      403,
+      'forbidden',
+      'only the agent transport or an owner/manager may use this endpoint',
+    );
   }
 }
 
@@ -2404,7 +2419,9 @@ async function loadRelayLegs(
 }
 
 commsApp.openapi(getThread, async (c) => {
-  requireManager(c);
+  // Transport + landlord: the transport reads bindings/participants (and the
+  // sender display name below) to address relay legs and thread sends.
+  requireAgentOrManager(c);
   const { accountId, id } = c.req.valid('param');
   const { cursor, limit } = c.req.valid('query');
   const sb = getSb(c);
@@ -3309,7 +3326,9 @@ function validatePolicyParams(kind: string, params: Record<string, unknown>): vo
 }
 
 commsApp.openapi(listPolicies, async (c) => {
-  requireManager(c);
+  // Transport + landlord: the transport reads active grants for send
+  // provenance (grant:<id> approval_ref). Create/revoke stay manager-only.
+  requireAgentOrManager(c);
   const { accountId } = c.req.valid('param');
   const { cursor, limit, status, policy_kind } = c.req.valid('query');
   const sb = getSb(c);
