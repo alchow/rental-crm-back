@@ -168,13 +168,17 @@ charges (`POST /charges/{id}/void`, `void_reason`) and end-and-replace the
 schedule. One permanence rule governs the undo shape: the charge-dedupe key
 counts **voided** rows, so a voided (schedule, period) pair never re-bills
 under the _same_ schedule id. Undoing a mistaken rent _change_ therefore
-never hands a voided period back to the row it was voided under:
+never hands a period _the change voided_ back to the row it was voided
+under:
 
 - **Change voided nothing** (`voided_charge_ids: []` — caught before any
   advance billing): void the successor's charges if it billed, delete the
   successor, **re-open the predecessor** (`end` with `end_date: null`), and
   re-issue correctly if a different change was intended. Re-open is safe
-  here precisely because no period of the predecessor was voided.
+  here precisely because the _change_ voided no period of the predecessor.
+  (A period voided independently beforehand — a waiver — stays unbilled
+  either way; that persistence is the point of the void, and re-open
+  faithfully preserves the pre-change state.)
 - **Change voided advance charges**: void the successor's charges, delete
   the successor, and restore coverage with a **fresh continuation schedule**
   (`POST /rent-schedules`, old terms, `start_date` = the mistaken effective

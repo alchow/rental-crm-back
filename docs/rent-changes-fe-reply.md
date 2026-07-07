@@ -51,9 +51,12 @@ billing; the common catch-it-immediately case):
 2. `DELETE /rent-schedules/{successor_id}` (409 `schedule_has_charges` until
    step 1 is complete).
 3. Re-open the predecessor: `POST /rent-schedules/{predecessor_id}/end` with
-   `{"end_date": null}` — safe here because none of its periods were voided.
-   Order matters: delete the successor **before** re-opening, or two open
-   same-kind eras will both bill.
+   `{"end_date": null}` — safe here because the *change* voided none of its
+   periods. (A period voided manually before the change — a waiver — stays
+   unbilled through the undo; that's the void's purpose, and re-open
+   preserves the exact pre-change state.) Order matters: delete the
+   successor **before** re-opening, or two open same-kind eras will both
+   bill.
 4. If a different change was intended, re-issue it now.
 
 **Case B — `voided_charge_ids` was non-empty** (the change voided the
