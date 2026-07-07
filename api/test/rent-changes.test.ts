@@ -1432,6 +1432,92 @@ async function main(): Promise<void> {
     },
   );
 
+  await check(
+    'known limitation: backdated change un-bills the elapsed period (window rule)',
+    async () => {
+      // PINS DOCUMENTED BEHAVIOR (reply-doc rev 3 / ADR known-limitation): the
+      // generator bills one window per run and never backfills, so a change
+      // applied AFTER the effective period's due day voids that period's
+      // advance charge with NO automatic replacement. The documented recovery
+      // is a manual charge carrying the successor's provenance. If this check
+      // ever FAILS because the period got re-billed automatically, someone
+      // fixed the engine (e.g. synchronous re-emit in change_tenancy_rent per
+      // the ADR revisit trigger) — celebrate, then update the reply doc, ADR,
+      // api-guide, and the route descriptions before flipping the assertions.
+      const en = await admin
+        .from('accounts')
+        .update({ auto_charge_enabled: true })
+        .eq('id', A.accountId);
+      if (en.error) throw new Error(`enable auto_charge: ${en.error.message}`);
+
+      const tid = await newTenancy();
+      await newSchedule(tid, { amount: 200000, dueDay: 1 });
+
+      // Aug 2: September advance-billed at the old amount.
+      const gen1 = await admin.rpc('generate_rent_charges', {
+        p_account_id: A.accountId,
+        p_as_of: '2026-08-02T12:00:00Z',
+      });
+      if (gen1.error) throw new Error(`generate 1: ${gen1.error.message}`);
+
+      // "Sep 15": a backdated change effective Sep 1 (notice served in July;
+      // data entry ran late). Voids September's charge.
+      const nRes = await postA('/notices', {
+        tenancy_id: tid,
+        notice_type: 'rent_increase',
+        served_at: '2026-07-01T00:00:00Z',
+      });
+      const change = await rentChange(tid, {
+        amount_cents: 220000,
+        currency: 'USD',
+        effective_date: '2026-09-01',
+        source_notice_id: (nRes.body as { id: string }).id,
+      });
+      if (change.status !== 201)
+        throw new Error(`change: ${change.status} ${JSON.stringify(change.body)}`);
+      const cBody = change.body as RentChangeResult;
+      if (cBody.voided_charge_ids.length !== 1)
+        throw new Error(`expected 1 voided, got ${cBody.voided_charge_ids.length}`);
+
+      // Every subsequent run is past September's window: October bills, and
+      // September is never revisited (the documented hole).
+      const gen2 = await admin.rpc('generate_rent_charges', {
+        p_account_id: A.accountId,
+        p_as_of: '2026-09-16T12:00:00Z',
+      });
+      if (gen2.error) throw new Error(`generate 2: ${gen2.error.message}`);
+      const { data: sep, error: sepErr } = await admin
+        .from('charges')
+        .select('voided_at')
+        .eq('account_id', A.accountId)
+        .eq('tenancy_id', tid)
+        .eq('period_start', '2026-09-01');
+      if (sepErr) throw new Error(`read september: ${sepErr.message}`);
+      const liveSep = ((sep ?? []) as { voided_at: string | null }[]).filter(
+        (c) => c.voided_at === null,
+      );
+      if (liveSep.length !== 0)
+        throw new Error(
+          `documented limitation changed: September was re-billed automatically (${liveSep.length} live) — update the docs before changing this test`,
+        );
+
+      // The documented recovery: manual charge at the NEW amount carrying the
+      // successor's provenance (its key for the elapsed period is free).
+      const manual = await postA('/charges', {
+        tenancy_id: tid,
+        type: 'rent',
+        amount_cents: 220000,
+        currency: 'USD',
+        due_date: '2026-09-01',
+        period_start: '2026-09-01',
+        period_end: '2026-09-30',
+        source_schedule_id: cBody.rent_schedule.id,
+      });
+      if (manual.status !== 201)
+        throw new Error(`manual recovery: ${manual.status} ${JSON.stringify(manual.body)}`);
+    },
+  );
+
   await check('corrections: deleting the anchoring schedule releases the notice lock', async () => {
     const tid = await newTenancy();
     await newSchedule(tid);
