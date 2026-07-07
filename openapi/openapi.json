@@ -3685,6 +3685,12 @@
               "null"
             ]
           },
+          "rfc822_message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "corrects_id": {
             "type": [
               "string",

@@ -139,6 +139,14 @@ export const Interaction = z
     entry_type: EntryType.nullable(),
     /** Provider-side message id on send-pipeline rows. */
     external_ref: z.string().nullable(),
+    /** Normalized RFC822 Message-ID of the email this row journals: the
+     *  sender-stamped id on inbound captures, the provider-stamped id
+     *  reported via complete on sends (20260707000002). Null on non-email
+     *  rows and rows that predate the column. The transport derives native
+     *  threading (In-Reply-To / References) for thread-leg sends from the
+     *  thread's message ids. Declared contract-first: absent until the
+     *  view-refresh migration (20260710000001) is applied. */
+    rfc822_message_id: z.string().nullable().optional(),
     /** Set on a correcting entry: the id of the entry this row supersedes. */
     corrects_id: z.string().uuid().nullable(),
     correction_kind: CorrectionKind.nullable(),
