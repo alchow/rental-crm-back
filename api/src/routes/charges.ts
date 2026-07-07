@@ -1,7 +1,7 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
-import { ApiError, errorResponses } from './_lib/error';
+import { ApiError, errorResponses, conflictResponse } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 
 // Charges are AMOUNTS OWED. There is no PATCH / DELETE: a mis-entered or
@@ -101,6 +101,11 @@ const create = createRoute({
   method: 'post',
   path: '/accounts/{accountId}/charges',
   tags: ['charges'],
+  description:
+    'One charge per (source_schedule_id, period_start) — voided rows included. A ' +
+    'create naming a schedule+period that already has a row (even a voided one) is ' +
+    'rejected 409; re-billing a voided period manually means omitting ' +
+    'source_schedule_id (or period_start).',
   request: {
     params: AccountParam,
     body: { content: { 'application/json': { schema: CreateChargeBody } }, required: true },
@@ -108,6 +113,7 @@ const create = createRoute({
   responses: {
     201: { description: 'created', content: { 'application/json': { schema: Charge } } },
     ...errorResponses,
+    ...conflictResponse,
   },
 });
 const voidRoute = createRoute({
@@ -178,6 +184,18 @@ chargesApp.openapi(create, async (c) => {
       throw new ApiError(404, 'not_found', 'tenancy_id or source_schedule_id does not belong to this account');
     }
     if (error.code === '23514') throw new ApiError(400, 'invalid_request', error.message);
+    // 23505 = charges_one_per_schedule_period: one row per (schedule, period),
+    // VOIDED ROWS INCLUDED — the cron-idempotency key. Surfacing it as a 409
+    // (was an opaque 500) matters for the manual re-bill path: re-charging a
+    // period whose generated charge was voided must OMIT source_schedule_id,
+    // and this is the error that teaches that.
+    if (error.code === '23505') {
+      throw new ApiError(
+        409,
+        'conflict',
+        'a charge for this schedule and period already exists (possibly voided); omit source_schedule_id to re-bill the period manually',
+      );
+    }
     throw new ApiError(500, 'database_error', error.message);
   }
   return c.json(data as z.infer<typeof Charge>, 201);

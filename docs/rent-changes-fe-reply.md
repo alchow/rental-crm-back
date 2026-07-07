@@ -5,6 +5,11 @@ ship in the same PR that adds this document (regenerate types from
 `openapi/openapi.json` after it deploys). Questions 4–6 are answered without
 contract changes beyond spec description notes.
 
+> **Rev 2 (2026-07-06, after your follow-up analysis):** the undo recipe in
+> §1 was corrected — the original re-open-based ending had a silent
+> revenue-loss hole you correctly identified. See §1 and the addendum at the
+> end for what changed and why.
+
 ## 1. Correction path for a mistaken rent change (was blocking)
 
 You were right that the 409 was a dead end: no schedule delete existed, and
@@ -22,26 +27,54 @@ The blessed path now exists:
   case. Refused with 409 `schedule_has_charges` while any non-voided charge
   references the schedule.
 - **Era that already advance-billed:** void those charges first
-  (`POST /charges/{id}/void` — it already existed), then DELETE. The next
-  daily generator run re-emits the affected periods under whatever schedule
-  then owns them.
+  (`POST /charges/{id}/void` — it already existed), then DELETE. Re-billing
+  then depends on which schedule ends up owning the period — see the
+  permanence rule below; the undo recipe is shaped entirely around it.
 - **`POST /rent-schedules/{id}/end` now accepts `end_date: null`** — re-opens
-  a schedule. You need this when undoing a mistaken rent *change*, because the
-  change also ended the predecessor era at `effective_date − 1`.
+  a schedule. Scope: cancelling a planned end, or undoing a rent change that
+  voided nothing. It is the **wrong tool** when the change voided advance
+  charges (next section).
 
-**Full undo recipe for a mistaken rent change**, in order:
+**The permanence rule that shapes the undo** (rev 2 — this section replaces
+the original recipe): the charge-dedupe key counts **voided** rows, so a
+voided (schedule, period) pair is never re-billed under the **same** schedule
+id, ever — there is no un-void, and the generator's insert silently skips the
+occupied slot. An undo must therefore never hand a voided period back to the
+schedule it was voided under. Branch on `voided_charge_ids` from the mistaken
+change's response:
 
-1. Void any charges the mistaken change's successor era emitted
-   (`voided_charge_ids` from the original response tells you what the change
-   itself voided; `GET /charges?…` filtered on the successor schedule shows
-   what it emitted since).
+**Case A — `voided_charge_ids` was empty** (caught before any advance
+billing; the common catch-it-immediately case):
+
+1. Void any charges the successor era emitted since
+   (`GET /charges?…` filtered on the successor schedule).
 2. `DELETE /rent-schedules/{successor_id}` (409 `schedule_has_charges` until
    step 1 is complete).
 3. Re-open the predecessor: `POST /rent-schedules/{predecessor_id}/end` with
-   `{"end_date": null}` (the `ended_schedule_ids` from the original response
-   identifies it). Order matters: delete the successor **before** re-opening,
-   or two open same-kind eras will both bill.
-4. Re-issue the rent change correctly.
+   `{"end_date": null}` — safe here because none of its periods were voided.
+   Order matters: delete the successor **before** re-opening, or two open
+   same-kind eras will both bill.
+4. If a different change was intended, re-issue it now.
+
+**Case B — `voided_charge_ids` was non-empty** (the change voided the
+predecessor's advance-billed period(s)):
+
+1. Void the successor's charges, as above.
+2. `DELETE /rent-schedules/{successor_id}`.
+3. Do **not** re-open the predecessor — its voided periods are permanently
+   blocked under its id. Instead create a **continuation schedule**:
+   `POST /rent-schedules` with the old amount/due day,
+   `start_date` = the mistaken effective date, optionally the same
+   `source_lease_id`/`source_notice_id`, and a `change_reason` noting the
+   undo. Fresh id → fresh dedupe keys → the next daily generator run
+   re-bills the voided period(s) automatically at the old amount. Verified
+   end-to-end against the generator.
+4. If a different change was intended, re-issue it on top — the continuation
+   schedule is open, so the corrected change ends it and inherits normally.
+
+A correction UI should hard-sequence these steps (never expose
+delete/re-open/create as independent buttons) and pick the case from the
+stored `voided_charge_ids`, not from user judgment.
 
 Lease-state caveat: the recipe undoes the *billing* side only. If the
 mistaken change was lease-anchored it also activated the draft anchor and
@@ -52,11 +85,11 @@ corrected change to it. When the anchor lease was the mistake, delete it
 (possible again once its schedule is gone) and create the lease you meant —
 the superseded predecessor stays superseded as a matter of record.
 
-One permanence rule to be aware of: the charge-dedupe key counts voided rows,
-so a voided (schedule, period) pair is never re-billed under the **same**
-schedule id. The recipe above always ends with a fresh schedule row, so
-re-billing works; "just fix the old schedule in place" can never be made to
-work, which is why it isn't offered.
+Related fix that shipped with rev 2: a manual `POST /charges` naming a
+(schedule, period) that already has a row — voided included — now returns a
+clean **409 `conflict`** telling you to omit `source_schedule_id` (it was an
+opaque 500). Manual re-billing of a voided period is the escape hatch, not
+the blessed path — Case B's continuation schedule makes it unnecessary.
 
 The DB now also enforces the delete rule directly (migration
 `20260706000002`): a schedule with live charges cannot be soft-deleted by any
@@ -143,3 +176,44 @@ you ever prefer a single write path — there is no requirement to move.
   `required` can't express — both fields stay individually optional).
 - `due_day`'s description now states it is required when the tenancy has no
   open same-kind schedule to inherit from (first-time setup case).
+
+## Addendum (rev 2) — responses to your post-adoption analysis
+
+**1. The pure-undo hole: confirmed, reproduced, recipe corrected.** Your
+trace was right on every link — the dedupe index has no voided carve-out,
+`ON CONFLICT DO NOTHING` skips silently, no un-void exists, and rev 1's
+"re-emits under whatever schedule then owns them" was false exactly when the
+owner is the re-opened predecessor. We reproduced it live: advance-billed
+September, mistaken change, rev-1 pure undo → three generator runs across
+September's whole window emitted nothing. The fix is the rev-2 recipe above:
+the undo ends with a **continuation schedule** (fresh id, fresh dedupe key),
+which we verified re-bills the voided period on the next run with no engine
+change. We considered making the generator re-emit past voided rows and
+rejected it: voiding a charge by hand is also how a landlord *waives* a
+month, and that fix would silently re-bill every waived month on open
+schedules. The manual-recharge escape hatch also got its footgun fixed
+(409 instead of 500, message says to omit provenance). If a real operator
+case ever needs enforcement rather than recipe discipline, an un-void
+endpoint with a double-billing guard is the design we'd ship.
+
+**2. The code swap breaking your `code === "conflict"` branches: our miss.**
+Granting fine-grained codes on *already-shipped* 409s was a
+consumer-breaking change and rev 1 should have flagged it; it shipped
+without a heads-up. Your patch is the right one (treat the seven codes as a
+conflict-class set); for future reference our error-code policy is
+"add finer codes, never repurpose" — this was the one deliberate exception,
+made because the sole consumer had requested the codes, and we'll flag any
+such swap explicitly from now on.
+
+**Your surviving caveats, confirmed:** `ErrorEnvelope.code` stays
+`type: string` (hand-maintain your union; our regex mapping is pinned by CI
+tests, and your generic `conflict` fallback should stay forever);
+"never-billed" precisely means *no non-voided charges* (don't grey out
+delete just because charges once existed); anchored notices reject even
+unchanged-echo PATCHes (no read-modify-write on notices); undo is
+billing-side only (superseded stays superseded); hard SQL DELETE bypasses
+the delete guard (nothing app-side issues one — the guard's UPDATE-only
+scope is deliberate: hard deletes cascade from tenancy removal, which must
+not be blocked); and yes, the guard narrows rather than closes the generator
+race (per-account vs per-tenancy locks) — the migration header documents the
+benign residue, and "any path" in rev 1 overstated it.

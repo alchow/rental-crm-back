@@ -73,12 +73,17 @@ export const CreateRentScheduleBody = z
 
 const EndRentScheduleBody = z
   .object({
-    // null RE-OPENS the schedule (clears end_date). This exists for the
-    // corrections flow: undoing a mistaken rent change means deleting the
-    // mistaken successor AND re-opening the predecessor the change ended --
-    // otherwise the next change inherits the stale bound and billing silently
-    // stops at the typo'd date. Re-open the predecessor only AFTER deleting
-    // the successor, or two open same-kind eras will both bill.
+    // null RE-OPENS the schedule (clears end_date) -- cancelling a planned
+    // end, or undoing a rent change that VOIDED NOTHING (voided_charge_ids
+    // was empty). It is the WRONG tool when the change voided advance
+    // charges: the charge-dedupe key counts voided rows, so a re-opened
+    // schedule can never re-bill a period it was voided for -- the month is
+    // silently lost. Undo such a change with a fresh CONTINUATION schedule
+    // instead (delete the successor, then POST a new schedule at the old
+    // terms starting on the mistaken effective date); a new id gets a fresh
+    // dedupe key and the generator re-bills automatically. Either way,
+    // remove the successor BEFORE restoring coverage, or two open same-kind
+    // eras will both bill.
     end_date: z
       .string()
       .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -86,8 +91,11 @@ const EndRentScheduleBody = z
       .openapi({
         description:
           'End date (inclusive). null clears an existing end_date, re-opening the ' +
-          'schedule — the undo half of a mistaken rent change (delete the successor ' +
-          'first, then re-open the predecessor).',
+          'schedule. Only re-open when the ended state was not produced by a rent ' +
+          'change that voided charges (voided_charge_ids non-empty) — a voided ' +
+          '(schedule, period) pair never re-bills under the same schedule id, so a ' +
+          're-opened schedule silently skips those periods. Undo such a change with ' +
+          'a fresh continuation schedule (POST /rent-schedules) instead.',
       }),
   })
   .openapi('EndRentScheduleBody');
@@ -234,11 +242,14 @@ const end = createRoute({
   summary: 'Set or clear the end_date on a schedule (history-preserving end / re-open)',
   description:
     'Sets end_date (inclusive) on the schedule; billing stops after it. Passing ' +
-    'end_date: null clears the bound and RE-OPENS the schedule — used when undoing ' +
-    'a mistaken rent change (delete the mistaken successor first, then re-open the ' +
-    'predecessor the change had ended). A voided (schedule, period) pair is never ' +
-    're-billed under the same schedule id, so re-opening does not resurrect ' +
-    'previously voided charges.',
+    'end_date: null clears the bound and RE-OPENS the schedule — for cancelling a ' +
+    'planned end, or undoing a rent change that voided nothing (voided_charge_ids ' +
+    'was empty). Do NOT re-open to undo a change that voided advance charges: a ' +
+    'voided (schedule, period) pair is never re-billed under the same schedule id, ' +
+    'so the re-opened schedule silently skips those periods. Undo that case with a ' +
+    'fresh continuation schedule instead — delete the mistaken successor, then ' +
+    'POST /rent-schedules with the old terms starting on the mistaken effective ' +
+    'date; the new id re-bills the voided periods on the next generator run.',
   request: {
     params: AccountAndIdParam,
     body: { content: { 'application/json': { schema: EndRentScheduleBody } }, required: true },

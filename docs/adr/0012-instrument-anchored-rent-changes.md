@@ -165,16 +165,26 @@ schedule (corrections, below) releases the lock.
 `schedule_has_charges` while non-voided charges reference the era) and
 recreate against the _same_ instrument; already billed → void the wrong
 charges (`POST /charges/{id}/void`, `void_reason`) and end-and-replace the
-schedule. Undoing a mistaken rent _change_ is the composite: void any
-advance charges → delete the mistaken successor → **re-open the predecessor**
-(`POST /rent-schedules/{id}/end` with `end_date: null` — without this step
-the next change inherits the stale bound the mistake left behind and billing
-silently stops at the typo'd date) → re-issue the change correctly. One
-permanence rule underneath all of it: the charge-dedupe key counts voided
-rows, so a voided (schedule, period) pair never re-bills under the _same_
-schedule id — corrections always mint a new schedule row. The audit chain
-showing "created wrong, fixed 40 seconds later" is a feature — courts
-distrust altered records, not corrected ones.
+schedule. One permanence rule governs the undo shape: the charge-dedupe key
+counts **voided** rows, so a voided (schedule, period) pair never re-bills
+under the _same_ schedule id. Undoing a mistaken rent _change_ therefore
+never hands a voided period back to the row it was voided under:
+
+- **Change voided nothing** (`voided_charge_ids: []` — caught before any
+  advance billing): void the successor's charges if it billed, delete the
+  successor, **re-open the predecessor** (`end` with `end_date: null`), and
+  re-issue correctly if a different change was intended. Re-open is safe
+  here precisely because no period of the predecessor was voided.
+- **Change voided advance charges**: void the successor's charges, delete
+  the successor, and restore coverage with a **fresh continuation schedule**
+  (`POST /rent-schedules`, old terms, `start_date` = the mistaken effective
+  date, same anchor or none, `change_reason` noting the undo). The new id
+  gets a fresh dedupe key, so the generator re-bills the voided periods on
+  its next run. Re-opening the predecessor instead would silently skip
+  them — the one month the mistake voided would never bill again.
+
+The audit chain showing "created wrong, fixed 40 seconds later" is a
+feature — courts distrust altered records, not corrected ones.
 
 ## Rejected alternatives
 
