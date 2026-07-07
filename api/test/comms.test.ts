@@ -380,6 +380,16 @@ async function main(): Promise<void> {
     assert(p.approved_by === fx.landlordId, 'creation is the approval act');
   });
 
+  await check('agent transport can list policies (grant provenance read); viewer 403', async () => {
+    // The rent-reminder workflow reads the active grant before sending under
+    // grant:<id>. Regression: this was requireManager and 403'd the agent.
+    const ra = await api('GET', `${base}/policies?status=active`, { token: fx.agentToken });
+    const page = assertStatus(ra, 200, 'agent policy list') as { data: { id: string }[] };
+    assert(page.data.some((p) => p.id === policyId), 'agent sees the active grant');
+    const rv = await api('GET', `${base}/policies`, { token: fx.viewerToken });
+    assertStatus(rv, 403, 'viewer policy list');
+  });
+
   await check('agent intent under a live grant → 201 with honest provenance', async () => {
     const r = await A({
       channel: 'sms', to_address: TENANT_ADDR, body: 'Rent is due in 3 days.',
@@ -745,6 +755,19 @@ async function main(): Promise<void> {
     const page2 = assertStatus(p2, 200, 'page2') as { messages: { id: string }[] };
     assert(page2.messages.length === 1, 'second page');
     assert(page2.messages[0]!.id !== (page1.messages[0] as { id: string }).id, 'pages advance');
+  });
+
+  await check('thread detail is readable by the agent transport; viewer stays 403', async () => {
+    // The transport reads thread detail on every matched relay (participants +
+    // bindings) and email thread-leg dispatch. Regression: this was
+    // requireManager and 403'd the agent, poison-looping inbound webhooks.
+    const ra = await api('GET', `${base}/threads/${threadId}`, { token: fx.agentToken });
+    const t = assertStatus(ra, 200, 'agent thread detail') as {
+      participants: unknown[]; bindings: unknown[]; sender_display_name: string | null;
+    };
+    assert(t.participants.length === 2 && t.bindings.length === 1, 'agent sees relay structure');
+    const rv = await api('GET', `${base}/threads/${threadId}`, { token: fx.viewerToken });
+    assertStatus(rv, 403, 'viewer thread detail');
   });
 
   await check('thread list filters and gates', async () => {
