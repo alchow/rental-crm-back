@@ -1,7 +1,7 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
-import { ApiError, errorResponses } from './_lib/error';
+import { ApiError, errorResponses, conflictResponse } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 
 // A notice is a served instrument (entry notice, rent-increase notice,
@@ -41,11 +41,24 @@ const Notice = z
   })
   .openapi('Notice');
 
+// served_at convention: when the client only knows the CALENDAR DATE of
+// service (the common landlord-entry case), send midnight UTC
+// (YYYY-MM-DDT00:00:00Z) and always RENDER it back as a UTC calendar date --
+// formatting it in a local timezone shifts the displayed service date by a
+// day for any viewer west of Greenwich. When the actual service moment is
+// known (e-service, certified delivery scan), send the real timestamp.
+const ServedAt = z.string().datetime().openapi({
+  description:
+    'When the notice was served. Date-only knowledge: send midnight UTC ' +
+    '(YYYY-MM-DDT00:00:00Z) and render as a UTC calendar date. Send the real ' +
+    'timestamp when the service moment is known.',
+});
+
 const CreateNoticeBody = z
   .object({
     tenancy_id: z.string().uuid(),
     notice_type: z.string().min(1).max(100),
-    served_at: z.string().datetime().optional(),
+    served_at: ServedAt.optional(),
     served_method: z.string().min(1).max(100).optional(),
     body: z.string().max(10000).optional(),
     document: z.record(z.unknown()).optional(),
@@ -54,7 +67,7 @@ const CreateNoticeBody = z
 
 const PatchNoticeBody = z
   .object({
-    served_at: z.string().datetime().nullable().optional(),
+    served_at: ServedAt.nullable().optional(),
     served_method: z.string().min(1).max(100).nullable().optional(),
     body: z.string().max(10000).nullable().optional(),
     document: z.record(z.unknown()).optional(),
@@ -130,6 +143,11 @@ const patch = createRoute({
   path: '/accounts/{accountId}/notices/{id}',
   tags: ['notices'],
   summary: 'Update a notice (partial)',
+  description:
+    'A free-floating notice is fully editable (drafting is normal). A notice that ' +
+    'anchors a live rent schedule is evidence of the increase and is write-blocked ' +
+    'ENTIRELY: any PATCH is rejected 409 instrument_anchored — serve a new notice ' +
+    'and change rent again, or delete the never-billed schedule to release it.',
   request: {
     params: AccountAndIdParam,
     body: { content: { 'application/json': { schema: PatchNoticeBody } }, required: true },
@@ -137,6 +155,7 @@ const patch = createRoute({
   responses: {
     200: { description: 'updated', content: { 'application/json': { schema: Notice } } },
     ...errorResponses,
+    ...conflictResponse,
   },
 });
 const remove = createRoute({
@@ -144,10 +163,14 @@ const remove = createRoute({
   path: '/accounts/{accountId}/notices/{id}',
   tags: ['notices'],
   summary: 'Soft-delete a notice',
+  description:
+    'Rejected 409 instrument_anchored while the notice anchors a live rent schedule ' +
+    '(it is the instrument of record for that billing era).',
   request: { params: AccountAndIdParam },
   responses: {
     204: { description: 'deleted' },
     ...errorResponses,
+    ...conflictResponse,
   },
 });
 
@@ -229,7 +252,7 @@ noticesApp.openapi(patch, async (c) => {
   if (!anchored.error && (anchored.data?.length ?? 0) > 0) {
     throw new ApiError(
       409,
-      'conflict',
+      'instrument_anchored',
       'notice anchors a rent schedule; it is the instrument of record — create a new notice instead',
     );
   }
@@ -251,7 +274,7 @@ noticesApp.openapi(patch, async (c) => {
     if (isRentInstrumentReject(error.message)) {
       throw new ApiError(
         409,
-        'conflict',
+        'instrument_anchored',
         'notice anchors a rent schedule; it is the instrument of record — create a new notice instead',
       );
     }
@@ -281,7 +304,7 @@ noticesApp.openapi(remove, async (c) => {
   if (!anchored.error && (anchored.data?.length ?? 0) > 0) {
     throw new ApiError(
       409,
-      'conflict',
+      'instrument_anchored',
       'notice anchors a rent schedule; it is the instrument of record and cannot be deleted',
     );
   }
@@ -298,7 +321,7 @@ noticesApp.openapi(remove, async (c) => {
     if (isRentInstrumentReject(error.message)) {
       throw new ApiError(
         409,
-        'conflict',
+        'instrument_anchored',
         'notice anchors a rent schedule; it is the instrument of record and cannot be deleted',
       );
     }

@@ -3363,7 +3363,10 @@ export interface paths {
         };
         put?: never;
         post?: never;
-        /** Soft-delete a lease */
+        /**
+         * Soft-delete a lease
+         * @description Rejected 409 instrument_anchored while the lease anchors a live rent schedule (it is the instrument of record for that billing era). Deleting the schedule first (DELETE /rent-schedules/{id}, never-billed only) releases the block.
+         */
         delete: {
             parameters: {
                 query?: never;
@@ -3406,7 +3409,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -3439,7 +3442,10 @@ export interface paths {
         };
         options?: never;
         head?: never;
-        /** Update a lease (partial) */
+        /**
+         * Update a lease (partial)
+         * @description term_end, deposit_*, document and allowed status transitions stay editable on every lease, including one that anchors a live rent schedule (anchoring blocks only soft-delete). Rent terms are immutable everywhere: a differing rent_amount_cents/rent_currency is rejected 400 (unchanged echoed values are tolerated) — use the rent-changes endpoint. Any transition out of status=superseded is rejected 409 lease_superseded.
+         */
         patch: {
             parameters: {
                 query?: never;
@@ -3488,7 +3494,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -3750,7 +3756,10 @@ export interface paths {
         };
         put?: never;
         post?: never;
-        /** Soft-delete a notice */
+        /**
+         * Soft-delete a notice
+         * @description Rejected 409 instrument_anchored while the notice anchors a live rent schedule (it is the instrument of record for that billing era).
+         */
         delete: {
             parameters: {
                 query?: never;
@@ -3793,7 +3802,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -3826,7 +3835,10 @@ export interface paths {
         };
         options?: never;
         head?: never;
-        /** Update a notice (partial) */
+        /**
+         * Update a notice (partial)
+         * @description A free-floating notice is fully editable (drafting is normal). A notice that anchors a live rent schedule is evidence of the increase and is write-blocked ENTIRELY: any PATCH is rejected 409 instrument_anchored — serve a new notice and change rent again, or delete the never-billed schedule to release it.
+         */
         patch: {
             parameters: {
                 query?: never;
@@ -3875,7 +3887,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -4521,7 +4533,83 @@ export interface paths {
         };
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Soft-delete a never-billed schedule (ADR-0012 corrections path)
+         * @description Removes a mistaken schedule era — the resolution for the rent-change 409 (schedule_conflict) on an already-planned future schedule, and for the "never billed → soft-delete and recreate" correction. Refused with 409 schedule_has_charges while any non-voided charge references the schedule: void those first (POST /charges/{id}/void). A billed era is ended, never deleted. Deleting a schedule releases the write-block on the lease/notice that anchored it.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description deleted */
+                204: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -4536,7 +4624,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Set the end_date on a schedule (history-preserving end) */
+        /**
+         * Set or clear the end_date on a schedule (history-preserving end / re-open)
+         * @description Sets end_date (inclusive) on the schedule; billing stops after it. Passing end_date: null clears the bound and RE-OPENS the schedule — used when undoing a mistaken rent change (delete the mistaken successor first, then re-open the predecessor the change had ended). A voided (schedule, period) pair is never re-billed under the same schedule id, so re-opening does not resurrect previously voided charges.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -4633,7 +4724,7 @@ export interface paths {
         put?: never;
         /**
          * Apply an instrument-anchored rent change (renewal lease or served notice)
-         * @description Ends the open same-kind schedule at effective_date−1 and opens the successor anchored to the renewal lease and/or served notice. Any charges the generator had already advance-created off the old era for periods on/after effective_date are voided automatically (returned in voided_charge_ids); the successor era re-bills those periods at the new amount.
+         * @description Ends the open same-kind schedule at effective_date−1 and opens the successor anchored to the renewal lease and/or served notice. Any charges the generator had already advance-created off the old era for periods on/after effective_date are voided automatically (returned in voided_charge_ids). Re-billing is NOT synchronous: for auto_charge_enabled accounts the next daily generator run (08:00 UTC) re-emits the voided periods at the new amount; manually-billing accounts re-create charges themselves. 409 codes: tenancy_ended, notice_not_served, instrument_not_current (expired/superseded anchor lease), schedule_conflict (a same-kind schedule starts on/after effective_date — delete it via DELETE /rent-schedules/{id} if mistaken, or change on a later date).
          */
         post: {
             parameters: {
@@ -4683,7 +4774,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -15517,7 +15608,10 @@ export interface components {
             /** Format: uuid */
             tenancy_id: string;
             notice_type: string;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description When the notice was served. Date-only knowledge: send midnight UTC (YYYY-MM-DDT00:00:00Z) and render as a UTC calendar date. Send the real timestamp when the service moment is known.
+             */
             served_at?: string;
             served_method?: string;
             body?: string;
@@ -15526,7 +15620,10 @@ export interface components {
             };
         };
         PatchNoticeBody: {
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description When the notice was served. Date-only knowledge: send midnight UTC (YYYY-MM-DDT00:00:00Z) and render as a UTC calendar date. Send the real timestamp when the service moment is known.
+             */
             served_at?: string | null;
             served_method?: string | null;
             body?: string | null;
@@ -15612,7 +15709,8 @@ export interface components {
             change_reason?: string;
         };
         EndRentScheduleBody: {
-            end_date: string;
+            /** @description End date (inclusive). null clears an existing end_date, re-opening the schedule — the undo half of a mistaken rent change (delete the successor first, then re-open the predecessor). */
+            end_date: string | null;
         };
         RentChangeResult: {
             rent_schedule: components["schemas"]["RentSchedule"];
@@ -15624,10 +15722,17 @@ export interface components {
             amount_cents: number;
             currency: string;
             effective_date: string;
+            /** @description Day of month the successor bills on. Optional when an open same-kind schedule exists (inherited from it); REQUIRED (400 otherwise) when there is none — e.g. first-time setup through this endpoint. */
             due_day?: number;
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description Lease anchor (fixed-term changes: renewal/amendment). At least one of source_lease_id / source_notice_id is required (400 otherwise). A draft anchor lease is activated by the change; expired/superseded leases are rejected (409 instrument_not_current).
+             */
             source_lease_id?: string;
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description Served-notice anchor (month-to-month changes). At least one of source_lease_id / source_notice_id is required (400 otherwise). The notice must have served_at set (409 notice_not_served otherwise).
+             */
             source_notice_id?: string;
             change_reason?: string;
             kind?: string;
