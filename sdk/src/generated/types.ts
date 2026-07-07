@@ -4626,7 +4626,7 @@ export interface paths {
         put?: never;
         /**
          * Set or clear the end_date on a schedule (history-preserving end / re-open)
-         * @description Sets end_date (inclusive) on the schedule; billing stops after it. Passing end_date: null clears the bound and RE-OPENS the schedule — used when undoing a mistaken rent change (delete the mistaken successor first, then re-open the predecessor the change had ended). A voided (schedule, period) pair is never re-billed under the same schedule id, so re-opening does not resurrect previously voided charges.
+         * @description Sets end_date (inclusive) on the schedule; billing stops after it. Passing end_date: null clears the bound and RE-OPENS the schedule — for cancelling a planned end, or undoing a rent change that voided nothing (voided_charge_ids was empty). Do NOT re-open to undo a change that voided advance charges: a voided (schedule, period) pair is never re-billed under the same schedule id, so the re-opened schedule silently skips those periods. Undo that case with a fresh continuation schedule instead — delete the mistaken successor, then POST /rent-schedules with the old terms starting on the mistaken effective date; the new id re-bills the voided periods on the next generator run.
          */
         post: {
             parameters: {
@@ -4884,6 +4884,7 @@ export interface paths {
             };
         };
         put?: never;
+        /** @description One charge per (source_schedule_id, period_start) — voided rows included. A create naming a schedule+period that already has a row (even a voided one) is rejected 409; re-billing a voided period manually means omitting source_schedule_id (or period_start). */
         post: {
             parameters: {
                 query?: never;
@@ -4931,7 +4932,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -15709,7 +15710,7 @@ export interface components {
             change_reason?: string;
         };
         EndRentScheduleBody: {
-            /** @description End date (inclusive). null clears an existing end_date, re-opening the schedule — the undo half of a mistaken rent change (delete the successor first, then re-open the predecessor). */
+            /** @description End date (inclusive). null clears an existing end_date, re-opening the schedule. Only re-open when the ended state was not produced by a rent change that voided charges (voided_charge_ids non-empty) — a voided (schedule, period) pair never re-bills under the same schedule id, so a re-opened schedule silently skips those periods. Undo such a change with a fresh continuation schedule (POST /rent-schedules) instead. */
             end_date: string | null;
         };
         RentChangeResult: {

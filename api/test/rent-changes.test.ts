@@ -1187,7 +1187,7 @@ async function main(): Promise<void> {
       throw new Error(`expected delete 204 after void, got ${del.status} ${JSON.stringify(del.body)}`);
   });
 
-  await check('corrections: full undo recipe leaves the successor open-ended', async () => {
+  await check('corrections: undo via re-open (Case A — the change voided nothing)', async () => {
     const en = await admin
       .from('accounts')
       .update({ auto_charge_enabled: true })
@@ -1200,7 +1200,10 @@ async function main(): Promise<void> {
     const v2 = await newLease(tid, { status: 'draft', rent: 260000 });
 
     // The MISTAKEN change: wrong amount + wrong date. Ends schedA at 08-31,
-    // opens schedB at 09-01.
+    // opens schedB at 09-01. CRUCIALLY it voids nothing (no generator run has
+    // happened), which is what makes the re-open ending safe below: none of
+    // schedA's (schedule, period) dedupe keys are burned by voided rows. The
+    // voided-something case must NOT re-open — see the Case B check next.
     const mistake = await rentChange(tid, {
       amount_cents: 260000,
       currency: 'USD',
@@ -1209,6 +1212,8 @@ async function main(): Promise<void> {
     });
     if (mistake.status !== 201)
       throw new Error(`mistaken change: ${mistake.status} ${JSON.stringify(mistake.body)}`);
+    if ((mistake.body as RentChangeResult).voided_charge_ids.length !== 0)
+      throw new Error('precondition: Case A requires the change to have voided nothing');
     const schedB = (mistake.body as RentChangeResult).rent_schedule;
 
     // The generator advance-bills October off schedB before anyone notices.
@@ -1290,6 +1295,142 @@ async function main(): Promise<void> {
     if (live.length !== 1 || live[0]!.source_schedule_id !== schedC.id || live[0]!.amount_cents !== 240000)
       throw new Error(`expected one live Oct charge of 240000 off schedC, got ${JSON.stringify(octRows)}`);
   });
+
+  await check(
+    'corrections: pure undo of an advance-billed change heals via continuation (Case B)',
+    async () => {
+      // The FE-reported revenue hole: the change VOIDS the predecessor's
+      // advance-billed period, and the dedupe key counts voided rows -- so a
+      // PURE undo (no corrected re-issue) that re-opens the predecessor can
+      // never re-bill that period under its id. The blessed ending is a fresh
+      // CONTINUATION schedule: new id, fresh dedupe keys, generator re-bills.
+      const en = await admin
+        .from('accounts')
+        .update({ auto_charge_enabled: true })
+        .eq('id', A.accountId);
+      if (en.error) throw new Error(`enable auto_charge: ${en.error.message}`);
+
+      const tid = await newTenancy();
+      const schedA = await newSchedule(tid, { amount: 200000, dueDay: 1 });
+
+      // Generator advance-bills September under schedA (due_day 1, as_of
+      // 08-02 -> day > due_day -> next month's period).
+      const gen1 = await admin.rpc('generate_rent_charges', {
+        p_account_id: A.accountId,
+        p_as_of: '2026-08-02T12:00:00Z',
+      });
+      if (gen1.error) throw new Error(`generate 1: ${gen1.error.message}`);
+
+      // Mistaken change effective 09-01: voids schedA's September charge (the
+      // Case B precondition the rest of this suite deliberately avoids).
+      const nRes = await postA('/notices', {
+        tenancy_id: tid,
+        notice_type: 'rent_increase',
+        served_at: '2026-07-01T00:00:00Z',
+      });
+      const notice = nRes.body as { id: string };
+      const mistake = await rentChange(tid, {
+        amount_cents: 999900,
+        currency: 'USD',
+        effective_date: '2026-09-01',
+        source_notice_id: notice.id,
+      });
+      if (mistake.status !== 201)
+        throw new Error(`mistaken change: ${mistake.status} ${JSON.stringify(mistake.body)}`);
+      const mBody = mistake.body as RentChangeResult;
+      if (mBody.voided_charge_ids.length !== 1)
+        throw new Error(
+          `precondition: expected 1 voided advance charge, got ${mBody.voided_charge_ids.length}`,
+        );
+
+      // PURE UNDO, rev-2 recipe: delete the successor (never billed), do NOT
+      // re-open schedA, create the continuation at the old terms.
+      const del = await api(
+        'DELETE',
+        `/v1/accounts/${A.accountId}/rent-schedules/${mBody.rent_schedule.id}`,
+        { token: A.accessToken },
+      );
+      if (del.status !== 204)
+        throw new Error(`delete successor: ${del.status} ${JSON.stringify(del.body)}`);
+      const cont = await postA('/rent-schedules', {
+        tenancy_id: tid,
+        kind: 'rent',
+        amount_cents: 200000,
+        currency: 'USD',
+        due_day: 1,
+        start_date: '2026-09-01',
+        change_reason: 'continuation after undoing mistaken rent change',
+      });
+      if (cont.status !== 201)
+        throw new Error(`continuation: ${cont.status} ${JSON.stringify(cont.body)}`);
+      const schedA2 = cont.body as Schedule;
+
+      // Next run re-bills September under the continuation's fresh id...
+      const gen2 = await admin.rpc('generate_rent_charges', {
+        p_account_id: A.accountId,
+        p_as_of: '2026-08-02T12:00:00Z',
+      });
+      if (gen2.error) throw new Error(`generate 2: ${gen2.error.message}`);
+      const { data: sep, error: sepErr } = await admin
+        .from('charges')
+        .select('amount_cents, source_schedule_id, voided_at')
+        .eq('account_id', A.accountId)
+        .eq('tenancy_id', tid)
+        .eq('period_start', '2026-09-01');
+      if (sepErr) throw new Error(`read september: ${sepErr.message}`);
+      const live = ((sep ?? []) as { amount_cents: number; source_schedule_id: string; voided_at: string | null }[]).filter(
+        (c) => c.voided_at === null,
+      );
+      if (live.length !== 1 || live[0]!.source_schedule_id !== schedA2.id || live[0]!.amount_cents !== 200000)
+        throw new Error(
+          `expected September re-billed once at 200000 off the continuation, got ${JSON.stringify(sep)}`,
+        );
+
+      // ...idempotently (a re-run emits nothing new).
+      const gen3 = await admin.rpc('generate_rent_charges', {
+        p_account_id: A.accountId,
+        p_as_of: '2026-08-02T12:00:00Z',
+      });
+      if (gen3.error) throw new Error(`generate 3: ${gen3.error.message}`);
+      if (((gen3.data ?? []) as unknown[]).length !== 0)
+        throw new Error('generator re-run should emit nothing');
+
+      // The manual escape hatch is honest now: re-charging the period WITH the
+      // old schedule's provenance hits the dedupe key (voided row included) and
+      // returns 409 conflict, not the old opaque 500.
+      const manual = await postA('/charges', {
+        tenancy_id: tid,
+        type: 'rent',
+        amount_cents: 200000,
+        currency: 'USD',
+        due_date: '2026-09-01',
+        period_start: '2026-09-01',
+        period_end: '2026-09-30',
+        source_schedule_id: schedA.id,
+      });
+      if (manual.status !== 409)
+        throw new Error(`expected provenance collision 409, got ${manual.status} ${JSON.stringify(manual.body)}`);
+      const mCode = (manual.body as { error?: { code?: string } })?.error?.code;
+      if (mCode !== 'conflict') throw new Error(`expected code conflict, got ${mCode}`);
+
+      // And a later corrected change composes on top of the continuation.
+      const n2 = await postA('/notices', {
+        tenancy_id: tid,
+        notice_type: 'rent_increase',
+        served_at: '2026-08-20T00:00:00Z',
+      });
+      const corrected = await rentChange(tid, {
+        amount_cents: 240000,
+        currency: 'USD',
+        effective_date: '2026-10-01',
+        source_notice_id: (n2.body as { id: string }).id,
+      });
+      if (corrected.status !== 201)
+        throw new Error(`corrected change: ${corrected.status} ${JSON.stringify(corrected.body)}`);
+      if ((corrected.body as RentChangeResult).rent_schedule.end_date !== null)
+        throw new Error('corrected successor should inherit open-ended from the continuation');
+    },
+  );
 
   await check('corrections: deleting the anchoring schedule releases the notice lock', async () => {
     const tid = await newTenancy();
