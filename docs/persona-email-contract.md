@@ -98,10 +98,10 @@ inbound rcpt <addr>:
   on non-email rows and rows predating the header work). When rendering a
   thread leg (landlord-composed reply), derive `In-Reply-To` from the newest
   prior message that has an id, and `References` from the thread's ids
-  oldest→newest (respect RFC 5322 line-length practice — truncate from the
-  MIDDLE of the chain, keeping the root and the most recent ids, if it grows
-  past ~10 entries). Message-IDs are stored bracket-stripped: re-wrap in
-  `<...>` when emitting headers.
+  oldest→newest. Keep `References` from growing unbounded (many clients cap
+  it): past ~10 entries, drop ids from the MIDDLE of the chain, keeping the
+  root and the most recent ones. Message-IDs are stored bracket-stripped:
+  re-wrap in `<...>` when emitting headers.
 
 ## Phase 3 — persona capture: known senders + auto-ack (shipped with migration 20260708000001)
 
