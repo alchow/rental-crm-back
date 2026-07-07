@@ -59,6 +59,18 @@ export const errorResponses = {
   },
 } as const;
 
+// Spread alongside errorResponses on routes that emit domain 409s, so the
+// conflict shows up in the contract instead of being a runtime surprise. The
+// description names the fine-grained codes a route can return; keep each
+// route's own description specific about which apply.
+export const conflictResponse = {
+  409: {
+    description:
+      'conflict — error.code carries a fine-grained reason (see the route description)',
+    content: { 'application/json': { schema: ErrorEnvelope } },
+  },
+} as const;
+
 export type ErrorCode =
   | 'invalid_request'
   | 'unauthenticated'
@@ -96,7 +108,18 @@ export type ErrorCode =
   // comms: the destination address is on the opt-out register; the send was
   // refused BEFORE any intent was recorded (nothing happened, no journal
   // trace). Not retryable until the counterparty opts back in.
-  | 'opted_out';
+  | 'opted_out'
+  // ADR-0012 rent-change conflicts. Fine-grained (invalid_correction_target
+  // precedent) so clients can build recovery UX per cause instead of echoing
+  // message text: each code implies a distinct next action.
+  | 'tenancy_ended'          // rent change on an ended tenancy: nothing to do
+  | 'notice_not_served'      // anchor notice has no served_at: serve it first
+  | 'instrument_not_current' // anchor lease is expired/superseded: pick/create a current one
+  | 'schedule_conflict'      // a same-kind schedule starts on/after effective_date:
+                             // delete it (never-billed) or change on a later date
+  | 'lease_superseded'       // transition out of status=superseded: create a new lease instead
+  | 'instrument_anchored'    // patch/delete of a lease/notice anchoring a live schedule
+  | 'schedule_has_charges';  // DELETE of a schedule with non-voided charges: void them first
 
 export class ApiError extends Error {
   constructor(

@@ -1,15 +1,23 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
-import { ApiError, errorResponses } from './_lib/error';
+import { ApiError, errorResponses, conflictResponse, type ErrorCode } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 
 // A rent schedule is the recurring rule that EMITS periodic charges. It
 // lives on a tenancy (not on a lease) so lease-less tenancies still bill.
-// There is no PATCH / DELETE: "the rent changed mid-tenancy" is recorded
-// by ending the current schedule (set end_date) and creating a new one.
-// That keeps the history honest -- nobody can edit "what the rent was"
-// retroactively.
+// There is no PATCH: "the rent changed mid-tenancy" is recorded by ending
+// the current schedule (set end_date) and creating a new one. That keeps
+// the history honest -- nobody can edit "what the rent was" retroactively.
+//
+// DELETE exists for exactly one purpose (ADR-0012 corrections policy): a
+// NEVER-BILLED mistaken schedule -- the typo'd rent change, the future era
+// that blocks a re-change with "resolve it first" -- is corrected by
+// soft-delete + recreate. A schedule with live (non-voided) charges is a
+// billed era and is NEVER deletable: it gets ENDED, and its wrong charges
+// voided (POST /charges/{id}/void). The DB backstops this (migration
+// 20260706000002) because the FOR ALL member policy makes rent_schedules
+// directly writable through PostgREST too.
 
 const CurrencyCode = z.string().length(3);
 const ScheduleKind = z.string().min(1).max(50); // rent / parking / pet / utility / ...
@@ -65,7 +73,22 @@ export const CreateRentScheduleBody = z
 
 const EndRentScheduleBody = z
   .object({
-    end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    // null RE-OPENS the schedule (clears end_date). This exists for the
+    // corrections flow: undoing a mistaken rent change means deleting the
+    // mistaken successor AND re-opening the predecessor the change ended --
+    // otherwise the next change inherits the stale bound and billing silently
+    // stops at the typo'd date. Re-open the predecessor only AFTER deleting
+    // the successor, or two open same-kind eras will both bill.
+    end_date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable()
+      .openapi({
+        description:
+          'End date (inclusive). null clears an existing end_date, re-opening the ' +
+          'schedule — the undo half of a mistaken rent change (delete the successor ' +
+          'first, then re-open the predecessor).',
+      }),
   })
   .openapi('EndRentScheduleBody');
 
@@ -81,9 +104,39 @@ const RentChangeBody = z
     amount_cents: z.number().int().nonnegative(),
     currency: CurrencyCode,
     effective_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    due_day: z.number().int().min(1).max(28).optional(),
-    source_lease_id: z.string().uuid().optional(),
-    source_notice_id: z.string().uuid().optional(),
+    // due_day is inherited from the schedule being ended; when the tenancy has
+    // no open same-kind schedule there is nothing to inherit and the RPC
+    // rejects with 400 -- so first-time setup through this endpoint must pass
+    // it. Declared in the description because JSON Schema cannot express
+    // "conditionally required".
+    due_day: z
+      .number()
+      .int()
+      .min(1)
+      .max(28)
+      .optional()
+      .openapi({
+        description:
+          'Day of month the successor bills on. Optional when an open same-kind ' +
+          'schedule exists (inherited from it); REQUIRED (400 otherwise) when there ' +
+          'is none — e.g. first-time setup through this endpoint.',
+      }),
+    // Both anchors optional in the schema, but AT LEAST ONE is required -- a
+    // zod refine (below) enforces it at validation, which JSON Schema's
+    // required-list cannot express. Declared here so generated clients see it.
+    source_lease_id: z.string().uuid().optional().openapi({
+      description:
+        'Lease anchor (fixed-term changes: renewal/amendment). At least one of ' +
+        'source_lease_id / source_notice_id is required (400 otherwise). A draft ' +
+        'anchor lease is activated by the change; expired/superseded leases are ' +
+        'rejected (409 instrument_not_current).',
+    }),
+    source_notice_id: z.string().uuid().optional().openapi({
+      description:
+        'Served-notice anchor (month-to-month changes). At least one of ' +
+        'source_lease_id / source_notice_id is required (400 otherwise). The notice ' +
+        'must have served_at set (409 notice_not_served otherwise).',
+    }),
     change_reason: z.string().min(1).max(2000).optional(),
     kind: z.string().min(1).max(50).optional(),
   })
@@ -178,7 +231,14 @@ const end = createRoute({
   method: 'post',
   path: '/accounts/{accountId}/rent-schedules/{id}/end',
   tags: ['rent_schedules'],
-  summary: 'Set the end_date on a schedule (history-preserving end)',
+  summary: 'Set or clear the end_date on a schedule (history-preserving end / re-open)',
+  description:
+    'Sets end_date (inclusive) on the schedule; billing stops after it. Passing ' +
+    'end_date: null clears the bound and RE-OPENS the schedule — used when undoing ' +
+    'a mistaken rent change (delete the mistaken successor first, then re-open the ' +
+    'predecessor the change had ended). A voided (schedule, period) pair is never ' +
+    're-billed under the same schedule id, so re-opening does not resurrect ' +
+    'previously voided charges.',
   request: {
     params: AccountAndIdParam,
     body: { content: { 'application/json': { schema: EndRentScheduleBody } }, required: true },
@@ -186,6 +246,26 @@ const end = createRoute({
   responses: {
     200: { description: 'ended', content: { 'application/json': { schema: RentSchedule } } },
     ...errorResponses,
+  },
+});
+const remove = createRoute({
+  method: 'delete',
+  path: '/accounts/{accountId}/rent-schedules/{id}',
+  tags: ['rent_schedules'],
+  summary: 'Soft-delete a never-billed schedule (ADR-0012 corrections path)',
+  description:
+    'Removes a mistaken schedule era — the resolution for the rent-change 409 ' +
+    '(schedule_conflict) on an already-planned future schedule, and for the ' +
+    '"never billed → soft-delete and recreate" correction. Refused with 409 ' +
+    'schedule_has_charges while any non-voided charge references the schedule: ' +
+    'void those first (POST /charges/{id}/void). A billed era is ended, never ' +
+    'deleted. Deleting a schedule releases the write-block on the lease/notice ' +
+    'that anchored it.',
+  request: { params: AccountAndIdParam },
+  responses: {
+    204: { description: 'deleted' },
+    ...errorResponses,
+    ...conflictResponse,
   },
 });
 const rentChange = createRoute({
@@ -197,8 +277,14 @@ const rentChange = createRoute({
     'Ends the open same-kind schedule at effective_date−1 and opens the successor ' +
     'anchored to the renewal lease and/or served notice. Any charges the generator ' +
     'had already advance-created off the old era for periods on/after effective_date ' +
-    'are voided automatically (returned in voided_charge_ids); the successor era ' +
-    're-bills those periods at the new amount.',
+    'are voided automatically (returned in voided_charge_ids). Re-billing is NOT ' +
+    'synchronous: for auto_charge_enabled accounts the next daily generator run ' +
+    '(08:00 UTC) re-emits the voided periods at the new amount; manually-billing ' +
+    'accounts re-create charges themselves. 409 codes: tenancy_ended, ' +
+    'notice_not_served, instrument_not_current (expired/superseded anchor lease), ' +
+    'schedule_conflict (a same-kind schedule starts on/after effective_date — ' +
+    'delete it via DELETE /rent-schedules/{id} if mistaken, or change on a later ' +
+    'date).',
   request: {
     params: AccountAndTenancyParam,
     body: { content: { 'application/json': { schema: RentChangeBody } }, required: true },
@@ -206,6 +292,7 @@ const rentChange = createRoute({
   responses: {
     201: { description: 'applied', content: { 'application/json': { schema: RentChangeResult } } },
     ...errorResponses,
+    ...conflictResponse,
   },
 });
 
@@ -293,6 +380,56 @@ rentSchedulesApp.openapi(end, async (c) => {
   return c.json(data as z.infer<typeof RentSchedule>, 200);
 });
 
+rentSchedulesApp.openapi(remove, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const sb = getSb(c);
+
+  // A schedule with live (non-voided) charges is a billed era: end it, never
+  // delete it. Pre-check for the clean 409; the DB trigger (migration
+  // 20260706000002) is the authoritative backstop for the check-then-write
+  // race and for direct PostgREST writes.
+  const live = await sb
+    .from('charges')
+    .select('id')
+    .eq('account_id', accountId)
+    .eq('source_schedule_id', id)
+    .is('voided_at', null)
+    .is('deleted_at', null)
+    .limit(1);
+  if (live.error) throw new ApiError(500, 'database_error', live.error.message);
+  if ((live.data?.length ?? 0) > 0) {
+    throw new ApiError(
+      409,
+      'schedule_has_charges',
+      'schedule has non-voided charges; void them (POST /charges/{id}/void) or end the schedule instead',
+    );
+  }
+
+  const { data, error } = await sb
+    .from('rent_schedules')
+    .update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .select('id')
+    .maybeSingle();
+  if (error) {
+    // Race backstop: the trigger raises check_violation with this message when
+    // a charge landed between our pre-check and the write.
+    if (/has live charges and cannot be deleted/i.test(error.message)) {
+      throw new ApiError(
+        409,
+        'schedule_has_charges',
+        'schedule has non-voided charges; void them (POST /charges/{id}/void) or end the schedule instead',
+      );
+    }
+    if (error.code === '23514') throw new ApiError(400, 'invalid_request', error.message);
+    throw new ApiError(500, 'database_error', error.message);
+  }
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  return c.body(null, 204);
+});
+
 rentSchedulesApp.openapi(rentChange, async (c) => {
   const { accountId, tenancyId } = c.req.valid('param');
   const body = c.req.valid('json');
@@ -324,7 +461,21 @@ rentSchedulesApp.openapi(rentChange, async (c) => {
       throw new ApiError(404, 'not_found', msg.slice('not_found:'.length).trim());
     }
     if (msg.startsWith('conflict:')) {
-      throw new ApiError(409, 'conflict', msg.slice('conflict:'.length).trim());
+      const detail = msg.slice('conflict:'.length).trim();
+      // Fine-grained 409 codes (branch-on-code-never-message, per the FE
+      // contract). Keyed off the RPC's stable messages -- test:rent-changes
+      // pins each pairing, so a reworded RAISE fails loudly there instead of
+      // silently degrading to the generic code.
+      const code: ErrorCode = /tenancy already ended/i.test(detail)
+        ? 'tenancy_ended'
+        : /source lease is (expired|superseded)/i.test(detail)
+          ? 'instrument_not_current'
+          : /has not been served/i.test(detail)
+            ? 'notice_not_served'
+            : /conflicts with effective_date/i.test(detail)
+              ? 'schedule_conflict'
+              : 'conflict';
+      throw new ApiError(409, code, detail);
     }
     if (msg.startsWith('invalid:')) {
       throw new ApiError(400, 'invalid_request', msg.slice('invalid:'.length).trim());

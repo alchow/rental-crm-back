@@ -3,11 +3,12 @@
 - **Status:** accepted, 2026-07-06
 - **Context owner:** money subledger (docs/api-guide.md §7) + occupancy (leases,
   notices)
-- **Implements:** migration `20260706000001_instrument_anchored_rent_changes`,
-  routes `api/src/routes/rent-schedules.ts` (rent-changes verb),
-  `api/src/routes/notices.ts` (new), `api/src/routes/leases.ts` (PATCH guard),
-  allowlist `api/src/admin/storage.ts`, runner warning
-  `api/src/admin/rent-charges.ts`.
+- **Implements:** migrations `20260706000001_instrument_anchored_rent_changes`
+  and `20260706000002_rent_schedule_delete_guard`, routes
+  `api/src/routes/rent-schedules.ts` (rent-changes verb, corrections DELETE,
+  re-openable end), `api/src/routes/notices.ts` (new),
+  `api/src/routes/leases.ts` (PATCH guard), allowlist
+  `api/src/admin/storage.ts`, runner warning `api/src/admin/rent-charges.ts`.
 - **Builds on:** ADR-0011 (auto rent charging), ADR-0001/0008 (audit chain),
   ADR-0010 (evidence posture).
 
@@ -135,20 +136,45 @@ to this instrument") is an evidence-export concern, not an entry gate.
 **6. Notices get a minimal CRUD API — and anchoring locks the instrument.**
 The table predates this ADR; the flow makes it load-bearing, so it gets
 list/get/create/patch/soft-delete, shaped like leases. A free-floating notice
-stays fully editable (drafting is normal). But the moment an instrument —
-notice _or_ lease — anchors a live rent schedule, it crosses from
-tamper-evident to **write-blocked**: PATCH and soft-delete are rejected (409 at
-the API, backstopped by DB reject triggers in the completed-inspection idiom).
-An instrument that authorises live billing is evidence; letting it be edited
-or erased afterwards would let an operator retroactively rewrite the legal
-basis of a rent increase while the new amount keeps billing. To supersede it,
-serve a new notice (or sign a new lease) and change rent again.
+stays fully editable (drafting is normal). But the moment an instrument
+anchors a live rent schedule, it crosses from tamper-evident to
+**write-blocked** — with a deliberate asymmetry between the two instrument
+kinds (409 `instrument_anchored` at the API, backstopped by DB reject triggers
+in the completed-inspection idiom):
 
-**Corrections policy** (the typo case): never billed → soft-delete the schedule
-and recreate against the _same_ instrument; already billed → void the wrong
-charges (`void_reason`) and end-and-replace the schedule. The audit chain
-showing "created wrong, fixed 40 seconds later" is a feature — courts distrust
-altered records, not corrected ones.
+- **Anchored notice:** PATCH (entirely) and soft-delete are rejected. The
+  notice's own fields — `served_at`, `served_method`, `body`, `document`,
+  `notice_type` — ARE the record of what was served; there is nothing on a
+  notice that is legitimately editable after it authorises billing.
+- **Anchored lease:** only soft-delete is rejected. The lease's probative
+  field for the _rent change_ — the rent terms — is already immutable on
+  every lease via rule 4, and `term_end` / deposits / `document` / status
+  keep their own legitimate lifecycles (a negotiated early termination, a
+  deposit correction) that a blanket lock would push off-system. The
+  content-hashed **attachment**, not the mutable `document` json, is the
+  evidence-grade artifact.
+
+An instrument that authorises live billing is evidence; letting it be erased
+would let an operator retroactively rewrite the legal basis of a rent
+increase while the new amount keeps billing. To supersede it, serve a new
+notice (or sign a new lease) and change rent again. Deleting the anchored
+schedule (corrections, below) releases the lock.
+
+**Corrections policy** (the typo case): never billed →
+`DELETE /rent-schedules/{id}` (soft-delete; refused with 409
+`schedule_has_charges` while non-voided charges reference the era) and
+recreate against the _same_ instrument; already billed → void the wrong
+charges (`POST /charges/{id}/void`, `void_reason`) and end-and-replace the
+schedule. Undoing a mistaken rent _change_ is the composite: void any
+advance charges → delete the mistaken successor → **re-open the predecessor**
+(`POST /rent-schedules/{id}/end` with `end_date: null` — without this step
+the next change inherits the stale bound the mistake left behind and billing
+silently stops at the typo'd date) → re-issue the change correctly. One
+permanence rule underneath all of it: the charge-dedupe key counts voided
+rows, so a voided (schedule, period) pair never re-bills under the _same_
+schedule id — corrections always mint a new schedule row. The audit chain
+showing "created wrong, fixed 40 seconds later" is a feature — courts
+distrust altered records, not corrected ones.
 
 ## Rejected alternatives
 
@@ -174,7 +200,10 @@ altered records, not corrected ones.
   a period the change now re-prices, those charges are voided by the RPC and
   reported in `voided_charge_ids`; a payment already allocated to one falls
   back to unapplied credit (existing ledger semantics). Operators see the
-  void + the replacement charge, not a silent mutation.
+  void + the replacement charge, not a silent mutation. Re-billing is
+  **asynchronous**: the next daily generator run (08:00 UTC) re-emits the
+  voided periods at the new amount for `auto_charge_enabled` accounts;
+  manually-billing accounts re-create charges themselves.
 - **Migration before deploy, additive:** nullable columns + INVOKER
   functions + guard/reject triggers — safe to apply to prod ahead of the code
   deploy (nothing reads the new objects until the new code ships; the guard

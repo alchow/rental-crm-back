@@ -1,7 +1,7 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
-import { ApiError, errorResponses } from './_lib/error';
+import { ApiError, errorResponses, conflictResponse } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 
 // Leases attach to a tenancy. A tenancy can have zero, one, or many leases
@@ -165,6 +165,13 @@ const patch = createRoute({
   path: '/accounts/{accountId}/leases/{id}',
   tags: ['leases'],
   summary: 'Update a lease (partial)',
+  description:
+    'term_end, deposit_*, document and allowed status transitions stay editable on ' +
+    'every lease, including one that anchors a live rent schedule (anchoring blocks ' +
+    'only soft-delete). Rent terms are immutable everywhere: a differing ' +
+    'rent_amount_cents/rent_currency is rejected 400 (unchanged echoed values are ' +
+    'tolerated) — use the rent-changes endpoint. Any transition out of ' +
+    'status=superseded is rejected 409 lease_superseded.',
   request: {
     params: AccountAndIdParam,
     body: { content: { 'application/json': { schema: PatchLeaseBody } }, required: true },
@@ -172,6 +179,7 @@ const patch = createRoute({
   responses: {
     200: { description: 'updated', content: { 'application/json': { schema: Lease } } },
     ...errorResponses,
+    ...conflictResponse,
   },
 });
 const remove = createRoute({
@@ -179,10 +187,15 @@ const remove = createRoute({
   path: '/accounts/{accountId}/leases/{id}',
   tags: ['leases'],
   summary: 'Soft-delete a lease',
+  description:
+    'Rejected 409 instrument_anchored while the lease anchors a live rent schedule ' +
+    '(it is the instrument of record for that billing era). Deleting the schedule ' +
+    'first (DELETE /rent-schedules/{id}, never-billed only) releases the block.',
   request: { params: AccountAndIdParam },
   responses: {
     204: { description: 'deleted' },
     ...errorResponses,
+    ...conflictResponse,
   },
 });
 
@@ -311,7 +324,7 @@ leasesApp.openapi(patch, async (c) => {
   ) {
     throw new ApiError(
       409,
-      'conflict',
+      'lease_superseded',
       'a superseded lease is a historical record; create a new lease instead',
     );
   }
@@ -334,10 +347,12 @@ leasesApp.openapi(patch, async (c) => {
   if (error) {
     // Race backstop for the superseded-resurrection trigger (see
     // isRentInstrumentReject); checked before the coherence 23514 -> 400 path.
+    // Only the F9 trigger can fire on PATCH (F7 needs a deleted_at transition,
+    // which this handler never writes), so the code is always lease_superseded.
     if (isRentInstrumentReject(error.message)) {
       throw new ApiError(
         409,
-        'conflict',
+        'lease_superseded',
         'a superseded lease is a historical record; create a new lease instead',
       );
     }
@@ -372,7 +387,7 @@ leasesApp.openapi(remove, async (c) => {
   if (!anchored.error && (anchored.data?.length ?? 0) > 0) {
     throw new ApiError(
       409,
-      'conflict',
+      'instrument_anchored',
       'lease anchors a rent schedule; it is the instrument of record and cannot be deleted',
     );
   }
@@ -390,7 +405,7 @@ leasesApp.openapi(remove, async (c) => {
     if (isRentInstrumentReject(error.message)) {
       throw new ApiError(
         409,
-        'conflict',
+        'instrument_anchored',
         'lease anchors a rent schedule; it is the instrument of record and cannot be deleted',
       );
     }

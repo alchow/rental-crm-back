@@ -467,6 +467,8 @@ async function main(): Promise<void> {
     });
     if (r.status !== 409)
       throw new Error(`expected 409, got ${r.status} ${JSON.stringify(r.body)}`);
+    const code = (r.body as { error?: { code?: string } })?.error?.code;
+    if (code !== 'tenancy_ended') throw new Error(`expected code tenancy_ended, got ${code}`);
   });
 
   await check('validation: future-dated conflicting schedule -> 409', async () => {
@@ -488,7 +490,16 @@ async function main(): Promise<void> {
       .select('id')
       .single();
     if (future.error) throw new Error(`seed future schedule: ${future.error.message}`);
-    const nRes = await postA('/notices', { tenancy_id: tid, notice_type: 'rent_increase' });
+    // The notice must be SERVED: the RPC validates the anchor (step 6) before
+    // it walks the schedule set (step 7), so an unserved notice would 409 as
+    // notice_not_served and this check would never reach the conflict it is
+    // about. (Latent in the original version of this test -- both paths were
+    // indistinguishable while every conflict shared the generic code.)
+    const nRes = await postA('/notices', {
+      tenancy_id: tid,
+      notice_type: 'rent_increase',
+      served_at: '2026-07-01T00:00:00Z',
+    });
     const notice = nRes.body as { id: string };
     const r = await rentChange(tid, {
       amount_cents: 230000,
@@ -499,6 +510,8 @@ async function main(): Promise<void> {
     });
     if (r.status !== 409)
       throw new Error(`expected 409, got ${r.status} ${JSON.stringify(r.body)}`);
+    const code = (r.body as { error?: { code?: string } })?.error?.code;
+    if (code !== 'schedule_conflict') throw new Error(`expected code schedule_conflict, got ${code}`);
   });
 
   // =========================================================================
@@ -904,6 +917,8 @@ async function main(): Promise<void> {
     const msg = (r.body as { error?: { message?: string } })?.error?.message ?? '';
     if (!/has not been served/i.test(msg))
       throw new Error(`expected 'has not been served' message, got: ${msg}`);
+    const code = (r.body as { error?: { code?: string } })?.error?.code;
+    if (code !== 'notice_not_served') throw new Error(`expected code notice_not_served, got ${code}`);
   });
 
   // =========================================================================
@@ -930,12 +945,18 @@ async function main(): Promise<void> {
     const patched = await patchA(`/notices/${notice.id}`, { body: 'amended after billing' });
     if (patched.status !== 409)
       throw new Error(`expected PATCH 409, got ${patched.status} ${JSON.stringify(patched.body)}`);
+    const patchCode = (patched.body as { error?: { code?: string } })?.error?.code;
+    if (patchCode !== 'instrument_anchored')
+      throw new Error(`expected PATCH code instrument_anchored, got ${patchCode}`);
 
     const del = await api('DELETE', `/v1/accounts/${A.accountId}/notices/${notice.id}`, {
       token: A.accessToken,
     });
     if (del.status !== 409)
       throw new Error(`expected DELETE 409, got ${del.status} ${JSON.stringify(del.body)}`);
+    const delCode = (del.body as { error?: { code?: string } })?.error?.code;
+    if (delCode !== 'instrument_anchored')
+      throw new Error(`expected DELETE code instrument_anchored, got ${delCode}`);
   });
 
   // =========================================================================
@@ -981,6 +1002,9 @@ async function main(): Promise<void> {
       throw new Error(
         `expected resurrect 409, got ${resurrect.status} ${JSON.stringify(resurrect.body)}`,
       );
+    const resCode = (resurrect.body as { error?: { code?: string } })?.error?.code;
+    if (resCode !== 'lease_superseded')
+      throw new Error(`expected resurrect code lease_superseded, got ${resCode}`);
 
     // v2 now anchors the successor schedule; it is the instrument of record and
     // cannot be deleted.
@@ -989,6 +1013,9 @@ async function main(): Promise<void> {
     });
     if (del.status !== 409)
       throw new Error(`expected delete 409, got ${del.status} ${JSON.stringify(del.body)}`);
+    const delCode = (del.body as { error?: { code?: string } })?.error?.code;
+    if (delCode !== 'instrument_anchored')
+      throw new Error(`expected delete code instrument_anchored, got ${delCode}`);
   });
 
   // =========================================================================
@@ -1035,6 +1062,264 @@ async function main(): Promise<void> {
     const after = await getLease(lease.id);
     if (after.rent_amount_cents !== 200000)
       throw new Error(`rent mutated: ${after.rent_amount_cents}`);
+  });
+
+  // =========================================================================
+  // (I) Corrections path (schedule DELETE + re-openable /end, migration
+  // 20260706000002). The blessed resolution for the schedule_conflict 409 and
+  // for undoing a mistaken rent change.
+  // =========================================================================
+  const codeOf = (r: ApiResp): string | undefined =>
+    (r.body as { error?: { code?: string } })?.error?.code;
+  const delSchedule = (id: string): Promise<ApiResp> =>
+    api('DELETE', `/v1/accounts/${A.accountId}/rent-schedules/${id}`, { token: A.accessToken });
+
+  await check('codes: expired/superseded anchor lease -> instrument_not_current', async () => {
+    const tid = await newTenancy();
+    await newSchedule(tid);
+    const expired = await newLease(tid, { status: 'expired', rent: 210000 });
+    const r = await rentChange(tid, {
+      amount_cents: 210000,
+      currency: 'USD',
+      effective_date: '2026-09-01',
+      source_lease_id: expired.id,
+    });
+    if (r.status !== 409)
+      throw new Error(`expected 409, got ${r.status} ${JSON.stringify(r.body)}`);
+    if (codeOf(r) !== 'instrument_not_current')
+      throw new Error(`expected code instrument_not_current, got ${codeOf(r)}`);
+  });
+
+  await check('corrections: DELETE resolves schedule_conflict at the original date', async () => {
+    const tid = await newTenancy();
+    await newSchedule(tid, { start: '2026-01-01' });
+    // A mistaken future era (never billed) blocking a change at its own start.
+    const future = await admin
+      .from('rent_schedules')
+      .insert({
+        account_id: A.accountId,
+        tenancy_id: tid,
+        kind: 'rent',
+        amount_cents: 999900,
+        currency: 'USD',
+        due_day: 1,
+        start_date: '2026-09-01',
+      })
+      .select('id')
+      .single();
+    if (future.error) throw new Error(`seed future schedule: ${future.error.message}`);
+    const nRes = await postA('/notices', {
+      tenancy_id: tid,
+      notice_type: 'rent_increase',
+      served_at: '2026-07-01T00:00:00Z',
+    });
+    const notice = nRes.body as { id: string };
+    const change = {
+      amount_cents: 230000,
+      currency: 'USD',
+      effective_date: '2026-09-01',
+      due_day: 1,
+      source_notice_id: notice.id,
+    };
+    const blocked = await rentChange(tid, change);
+    if (blocked.status !== 409 || codeOf(blocked) !== 'schedule_conflict')
+      throw new Error(
+        `expected 409 schedule_conflict, got ${blocked.status} ${JSON.stringify(blocked.body)}`,
+      );
+
+    const del = await delSchedule((future.data as { id: string }).id);
+    if (del.status !== 204)
+      throw new Error(`expected delete 204, got ${del.status} ${JSON.stringify(del.body)}`);
+
+    // Same change, same effective_date: now applies cleanly.
+    const retry = await rentChange(tid, change);
+    if (retry.status !== 201)
+      throw new Error(`expected retry 201, got ${retry.status} ${JSON.stringify(retry.body)}`);
+  });
+
+  await check('corrections: live charges block DELETE until voided; DB backstop', async () => {
+    const en = await admin
+      .from('accounts')
+      .update({ auto_charge_enabled: true })
+      .eq('id', A.accountId);
+    if (en.error) throw new Error(`enable auto_charge: ${en.error.message}`);
+
+    const tid = await newTenancy();
+    const sched = await newSchedule(tid, { amount: 200000, dueDay: 1 });
+    const gen = await admin.rpc('generate_rent_charges', {
+      p_account_id: A.accountId,
+      p_as_of: '2026-08-02T12:00:00Z',
+    });
+    if (gen.error) throw new Error(`generate: ${gen.error.message}`);
+
+    // Billed era: DELETE refused with the fine-grained code.
+    const blocked = await delSchedule(sched.id);
+    if (blocked.status !== 409 || codeOf(blocked) !== 'schedule_has_charges')
+      throw new Error(
+        `expected 409 schedule_has_charges, got ${blocked.status} ${JSON.stringify(blocked.body)}`,
+      );
+
+    // The DB trigger holds on a direct write too (service-role bypasses RLS
+    // but not triggers) -- the backstop for the FOR ALL member policy path.
+    const direct = await admin
+      .from('rent_schedules')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('id', sched.id);
+    if (!direct.error || !/has live charges and cannot be deleted/i.test(direct.error.message))
+      throw new Error(
+        `expected trigger reject on direct soft-delete, got ${JSON.stringify(direct.error)}`,
+      );
+
+    // Void the charge (the corrections flow), then DELETE succeeds.
+    const { data: charges, error: cErr } = await admin
+      .from('charges')
+      .select('id')
+      .eq('account_id', A.accountId)
+      .eq('source_schedule_id', sched.id)
+      .is('voided_at', null);
+    if (cErr) throw new Error(`read charges: ${cErr.message}`);
+    for (const ch of (charges ?? []) as { id: string }[]) {
+      const v = await postA(`/charges/${ch.id}/void`, { void_reason: 'mistaken schedule' });
+      if (v.status !== 200) throw new Error(`void: ${v.status} ${JSON.stringify(v.body)}`);
+    }
+    const del = await delSchedule(sched.id);
+    if (del.status !== 204)
+      throw new Error(`expected delete 204 after void, got ${del.status} ${JSON.stringify(del.body)}`);
+  });
+
+  await check('corrections: full undo recipe leaves the successor open-ended', async () => {
+    const en = await admin
+      .from('accounts')
+      .update({ auto_charge_enabled: true })
+      .eq('id', A.accountId);
+    if (en.error) throw new Error(`enable auto_charge: ${en.error.message}`);
+
+    const tid = await newTenancy();
+    await newLease(tid, { status: 'active', rent: 200000 });
+    const schedA = await newSchedule(tid, { amount: 200000, dueDay: 1 });
+    const v2 = await newLease(tid, { status: 'draft', rent: 260000 });
+
+    // The MISTAKEN change: wrong amount + wrong date. Ends schedA at 08-31,
+    // opens schedB at 09-01.
+    const mistake = await rentChange(tid, {
+      amount_cents: 260000,
+      currency: 'USD',
+      effective_date: '2026-09-01',
+      source_lease_id: v2.id,
+    });
+    if (mistake.status !== 201)
+      throw new Error(`mistaken change: ${mistake.status} ${JSON.stringify(mistake.body)}`);
+    const schedB = (mistake.body as RentChangeResult).rent_schedule;
+
+    // The generator advance-bills October off schedB before anyone notices.
+    const gen1 = await admin.rpc('generate_rent_charges', {
+      p_account_id: A.accountId,
+      p_as_of: '2026-09-02T12:00:00Z',
+    });
+    if (gen1.error) throw new Error(`generate 1: ${gen1.error.message}`);
+
+    // UNDO, in the documented order:
+    // 1. void schedB's charges,
+    const { data: bCharges, error: bErr } = await admin
+      .from('charges')
+      .select('id')
+      .eq('account_id', A.accountId)
+      .eq('source_schedule_id', schedB.id)
+      .is('voided_at', null);
+    if (bErr) throw new Error(`read schedB charges: ${bErr.message}`);
+    if ((bCharges ?? []).length === 0) throw new Error('precondition: schedB should have billed');
+    for (const ch of (bCharges ?? []) as { id: string }[]) {
+      const v = await postA(`/charges/${ch.id}/void`, { void_reason: 'undo mistaken change' });
+      if (v.status !== 200) throw new Error(`void: ${v.status} ${JSON.stringify(v.body)}`);
+    }
+    // 2. delete the mistaken successor,
+    const del = await delSchedule(schedB.id);
+    if (del.status !== 204)
+      throw new Error(`delete schedB: ${del.status} ${JSON.stringify(del.body)}`);
+    // 3. re-open the predecessor (end_date: null),
+    const reopen = await postA(`/rent-schedules/${schedA.id}/end`, { end_date: null });
+    if (reopen.status !== 200)
+      throw new Error(`re-open: ${reopen.status} ${JSON.stringify(reopen.body)}`);
+    if ((reopen.body as Schedule).end_date !== null)
+      throw new Error(`re-open left end_date ${(reopen.body as Schedule).end_date}`);
+    // 4. re-issue correctly (right amount, right date).
+    const correct = await rentChange(tid, {
+      amount_cents: 240000,
+      currency: 'USD',
+      effective_date: '2026-10-01',
+      source_lease_id: v2.id,
+    });
+    if (correct.status !== 201)
+      throw new Error(`correct change: ${correct.status} ${JSON.stringify(correct.body)}`);
+    const schedC = (correct.body as RentChangeResult).rent_schedule;
+
+    // THE POINT of step 3: the mistake left schedA ended at 08-31. Without the
+    // re-open that stale bound bites either way the correction goes: correcting
+    // to a LATER date (this fixture) leaves schedA out of the open set -- the
+    // change 400s (due_day required, nothing to inherit) and September gaps;
+    // correcting to an EARLIER date has schedA still in the open set and the
+    // successor INHERITS the stale 08-31 bound, silently stopping billing at
+    // the typo'd date. After the re-open the chain is contiguous and inherited:
+    // schedA [.., 09-30], schedC [10-01, null] -- note the correct change above
+    // passes NO due_day; its 201 is itself proof schedA was back in the open
+    // set to inherit from.
+    if (schedC.end_date !== null)
+      throw new Error(`schedC should be open-ended, got ${schedC.end_date}`);
+    const schedAAfter = await getSchedule(schedA.id);
+    if (schedAAfter.end_date !== '2026-09-30')
+      throw new Error(`schedA end ${schedAAfter.end_date} != 2026-09-30`);
+
+    // Re-billing: October re-emits off schedC at the corrected amount. The
+    // voided schedB (schedule, period) row does not block it -- different
+    // schedule id.
+    const gen2 = await admin.rpc('generate_rent_charges', {
+      p_account_id: A.accountId,
+      p_as_of: '2026-09-02T12:00:00Z',
+    });
+    if (gen2.error) throw new Error(`generate 2: ${gen2.error.message}`);
+    const { data: octRows, error: octErr } = await admin
+      .from('charges')
+      .select('amount_cents, source_schedule_id, voided_at')
+      .eq('account_id', A.accountId)
+      .eq('tenancy_id', tid)
+      .eq('period_start', '2026-10-01');
+    if (octErr) throw new Error(`read october: ${octErr.message}`);
+    const live = ((octRows ?? []) as { amount_cents: number; source_schedule_id: string; voided_at: string | null }[]).filter(
+      (x) => x.voided_at === null,
+    );
+    if (live.length !== 1 || live[0]!.source_schedule_id !== schedC.id || live[0]!.amount_cents !== 240000)
+      throw new Error(`expected one live Oct charge of 240000 off schedC, got ${JSON.stringify(octRows)}`);
+  });
+
+  await check('corrections: deleting the anchoring schedule releases the notice lock', async () => {
+    const tid = await newTenancy();
+    await newSchedule(tid);
+    const nRes = await postA('/notices', {
+      tenancy_id: tid,
+      notice_type: 'rent_increase',
+      served_at: '2026-08-01T00:00:00Z',
+    });
+    const notice = nRes.body as { id: string };
+    const r = await rentChange(tid, {
+      amount_cents: 215000,
+      currency: 'USD',
+      effective_date: '2026-09-01',
+      source_notice_id: notice.id,
+    });
+    if (r.status !== 201) throw new Error(`rent-change: ${r.status} ${JSON.stringify(r.body)}`);
+    const successor = (r.body as RentChangeResult).rent_schedule;
+
+    const locked = await patchA(`/notices/${notice.id}`, { body: 'still locked' });
+    if (locked.status !== 409 || codeOf(locked) !== 'instrument_anchored')
+      throw new Error(`expected 409 instrument_anchored, got ${locked.status} ${codeOf(locked)}`);
+
+    const del = await delSchedule(successor.id);
+    if (del.status !== 204)
+      throw new Error(`delete successor: ${del.status} ${JSON.stringify(del.body)}`);
+
+    const unlocked = await patchA(`/notices/${notice.id}`, { body: 'editable again' });
+    if (unlocked.status !== 200)
+      throw new Error(`expected 200 after release, got ${unlocked.status} ${JSON.stringify(unlocked.body)}`);
   });
 
   // --- summary ---
