@@ -2,9 +2,11 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { getUserClient } from '../supabase/user-client';
+import { asJson } from '../supabase/db-types';
 import { enqueue } from '../admin/job-runner';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage, keysetPageIndexed } from './_lib/cursor';
+import { softDeleteStamp } from './_lib/soft-delete';
 import {
   parseImportFile,
   extFromFilename,
@@ -16,7 +18,12 @@ import {
 import { recognizeAndSuggest, chat, type ChatTurn } from '../admin/import-llm';
 import { uploadImportSource } from '../admin/import-storage';
 import { runImport } from '../admin/import-executor';
-import { BLOCKER_CODES, ENTITY_ORDER, computeRequirements, type RegionEntityMapping } from '../admin/import-catalog';
+import {
+  BLOCKER_CODES,
+  ENTITY_ORDER,
+  computeRequirements,
+  type RegionEntityMapping,
+} from '../admin/import-catalog';
 
 // ============================================================================
 // Onboarding import — upload an arbitrary Excel/CSV, recognize it, map it to
@@ -94,9 +101,7 @@ const RecognitionSchema = z
   .object({
     region_index: z.number().int(),
     importable: z.boolean(),
-    entity_types: z.array(
-      z.object({ entity_type: z.enum(ENTITY_ORDER), confidence: z.number() }),
-    ),
+    entity_types: z.array(z.object({ entity_type: z.enum(ENTITY_ORDER), confidence: z.number() })),
     summary: z.string(),
     header: z.object({ present: z.boolean(), row_index: z.number().int() }),
   })
@@ -192,18 +197,29 @@ const ImportRow = z
     // Raw cell values keyed by column name; the parser stores strings only.
     raw: z.record(z.string()),
     excluded: z.boolean(),
-    blockers: z.array(z.object({ field: z.string().nullable(), code: BlockerCodeSchema, message: z.string() })),
+    blockers: z.array(
+      z.object({ field: z.string().nullable(), code: BlockerCodeSchema, message: z.string() }),
+    ),
     created_at: z.string(),
     updated_at: z.string(),
   })
   .openapi('ImportRow');
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 const SessionParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  sessionId: z.string().uuid().openapi({ param: { name: 'sessionId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  sessionId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'sessionId', in: 'path' } }),
 });
 
 const ListQuery = z.object({
@@ -225,7 +241,9 @@ const RowsListResponse = z
 const UploadBody = z
   .object({ file: z.any().describe('binary spreadsheet/CSV file (multipart)') })
   .openapi('ImportUploadBody');
-const MappingBody = z.object({ mapping: z.array(RegionEntityMappingSchema) }).openapi('ImportMappingBody');
+const MappingBody = z
+  .object({ mapping: z.array(RegionEntityMappingSchema) })
+  .openapi('ImportMappingBody');
 const ParentsBody = z
   .object({ parent_resolutions: ParentResolutionsSchema })
   .openapi('ImportParentsBody');
@@ -242,7 +260,9 @@ const RowsPatchBody = z
     updates: z.array(z.object({ id: z.string().uuid(), excluded: z.boolean() })).min(1),
   })
   .openapi('ImportRowsPatchBody');
-const RowsPatchResponse = z.object({ updated: z.number().int() }).openapi('ImportRowsPatchResponse');
+const RowsPatchResponse = z
+  .object({ updated: z.number().int() })
+  .openapi('ImportRowsPatchResponse');
 const RunResponse = z
   .object({ result: ExecutionResultSchema, session: ImportSession })
   .openapi('ImportRunResponse');
@@ -259,7 +279,10 @@ const upload = createRoute({
     body: { content: { 'multipart/form-data': { schema: UploadBody } }, required: true },
   },
   responses: {
-    201: { description: 'session created', content: { 'application/json': { schema: ImportSession } } },
+    201: {
+      description: 'session created',
+      content: { 'application/json': { schema: ImportSession } },
+    },
     ...errorResponses,
   },
 });
@@ -402,7 +425,11 @@ export const importsApp = newApiApp();
 
 type Sb = ReturnType<typeof getSb>;
 
-async function loadSession(sb: Sb, accountId: string, sessionId: string): Promise<Record<string, unknown>> {
+async function loadSession(
+  sb: Sb,
+  accountId: string,
+  sessionId: string,
+): Promise<Record<string, unknown>> {
   const { data, error } = await sb
     .from('import_sessions')
     .select('*')
@@ -442,7 +469,11 @@ function chunk<T>(arr: T[], size: number): T[][] {
  *  Reads stay open; mutations 409 until the job reaches a terminal status. */
 function assertNotParsing(session: Record<string, unknown>): void {
   if (session.status === 'parsing') {
-    throw new ApiError(409, 'conflict', 'recognition in progress; poll the session until it leaves status=parsing');
+    throw new ApiError(
+      409,
+      'conflict',
+      'recognition in progress; poll the session until it leaves status=parsing',
+    );
   }
 }
 
@@ -460,7 +491,12 @@ importsApp.openapi(upload, async (c) => {
   }
   const filename = ((file as File).name || 'upload').slice(0, 400);
   const ext = extFromFilename(filename);
-  if (!ext) throw new ApiError(400, 'invalid_request', 'unsupported file type (expected .xlsx, .xls, or .csv)');
+  if (!ext)
+    throw new ApiError(
+      400,
+      'invalid_request',
+      'unsupported file type (expected .xlsx, .xls, or .csv)',
+    );
   const size = (file as File).size;
   if (size <= 0 || size > MAX_FILE_BYTES) {
     throw new ApiError(400, 'invalid_request', `file size out of range (${size})`);
@@ -472,10 +508,17 @@ importsApp.openapi(upload, async (c) => {
   //    resource the client can inspect and delete.
   const { data: created, error: insErr } = await sb
     .from('import_sessions')
-    .insert({ account_id: accountId, status: 'parsing', source_filename: filename, source_mime: mime, source_bytes: size })
+    .insert({
+      account_id: accountId,
+      status: 'parsing',
+      source_filename: filename,
+      source_mime: mime,
+      source_bytes: size,
+    })
     .select('*')
     .single();
-  if (insErr || !created) throw new ApiError(500, 'database_error', insErr?.message ?? 'could not create import session');
+  if (insErr || !created)
+    throw new ApiError(500, 'database_error', insErr?.message ?? 'could not create import session');
   const sessionId = (created as { id: string }).id;
 
   // 2. Archive the raw bytes (service-role; audit artifact). Kept IN-REQUEST:
@@ -531,7 +574,11 @@ importsApp.openapi(upload, async (c) => {
       if (regions.length === 0) {
         await jsb
           .from('import_sessions')
-          .update({ regions: [], status: 'no_importable_data', updated_at: new Date().toISOString() })
+          .update({
+            regions: [],
+            status: 'no_importable_data',
+            updated_at: new Date().toISOString(),
+          })
           .eq('account_id', accountId)
           .eq('id', sessionId);
         return;
@@ -555,7 +602,7 @@ importsApp.openapi(upload, async (c) => {
         await jsb
           .from('import_sessions')
           .update({
-            regions: regions.map(regionMeta),
+            regions: asJson(regions.map(regionMeta)),
             status: 'failed',
             error: `recognition failed: ${msg}`,
             updated_at: new Date().toISOString(),
@@ -567,10 +614,22 @@ importsApp.openapi(upload, async (c) => {
 
       // 5. Persist full rows to our DB (chunked), from the FINAL (possibly
       //    re-sliced) regions. Raw values stay here.
-      const rowsPayload: { account_id: string; session_id: string; region_index: number; row_index: number; raw: Record<string, string> }[] = [];
+      const rowsPayload: {
+        account_id: string;
+        session_id: string;
+        region_index: number;
+        row_index: number;
+        raw: Record<string, string>;
+      }[] = [];
       finalRegions.forEach((r, ri) =>
         r.rows.forEach((raw, idx) =>
-          rowsPayload.push({ account_id: accountId, session_id: sessionId, region_index: ri, row_index: idx, raw }),
+          rowsPayload.push({
+            account_id: accountId,
+            session_id: sessionId,
+            region_index: ri,
+            row_index: idx,
+            raw,
+          }),
         ),
       );
       for (const part of chunk(rowsPayload, 1000)) {
@@ -582,9 +641,9 @@ importsApp.openapi(upload, async (c) => {
       const { error: updErr } = await jsb
         .from('import_sessions')
         .update({
-          regions: finalRegions.map(regionMeta),
-          recognition,
-          mapping,
+          regions: asJson(finalRegions.map(regionMeta)),
+          recognition: asJson(recognition),
+          mapping: asJson(mapping),
           status: importable ? 'awaiting_mapping' : 'no_importable_data',
           updated_at: new Date().toISOString(),
         })
@@ -684,7 +743,7 @@ importsApp.openapi(postChat, async (c) => {
 
   const { data, error } = await sb
     .from('import_sessions')
-    .update({ chat: newChat, updated_at: new Date().toISOString() })
+    .update({ chat: asJson(newChat), updated_at: new Date().toISOString() })
     .eq('account_id', accountId)
     .eq('id', sessionId)
     .is('deleted_at', null)
@@ -695,7 +754,9 @@ importsApp.openapi(postChat, async (c) => {
   return c.json(
     {
       reply: result.reply,
-      proposed_mapping: result.proposed_mapping as z.infer<typeof RegionEntityMappingSchema>[] | null,
+      proposed_mapping: result.proposed_mapping as
+        | z.infer<typeof RegionEntityMappingSchema>[]
+        | null,
       session: sessionOut(data as Record<string, unknown>),
     },
     200,
@@ -805,12 +866,10 @@ importsApp.openapi(confirm, async (c) => {
   }
   const refreshed = await loadSession(sb, accountId, sessionId);
   if (!result.committed) {
-    throw new ApiError(
-      409,
-      'conflict',
-      'import has unresolved blockers; resolve them and retry',
-      { result, session: sessionOut(refreshed as Record<string, unknown>) },
-    );
+    throw new ApiError(409, 'conflict', 'import has unresolved blockers; resolve them and retry', {
+      result,
+      session: sessionOut(refreshed as Record<string, unknown>),
+    });
   }
   return c.json({ result, session: sessionOut(refreshed as Record<string, unknown>) }, 200);
 });
@@ -821,7 +880,7 @@ importsApp.openapi(remove, async (c) => {
   const sb = getSb(c);
   const { data, error } = await sb
     .from('import_sessions')
-    .update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('id', sessionId)
     .is('deleted_at', null)

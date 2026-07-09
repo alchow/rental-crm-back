@@ -1,7 +1,9 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import type { DbTableInsert } from '../supabase/db-types';
 import { ApiError, errorResponses } from './_lib/error';
+import { PutUnitDetailsBody } from '../schemas/importable';
 
 // 1:1 sub-resource on areas: unit-only attributes (bedrooms, bathrooms, sqft).
 // The DB-side trigger `unit_details_area_kind_check` raises if you try to
@@ -24,18 +26,15 @@ const UnitDetails = z
   })
   .openapi('UnitDetails');
 
-// Exported for reuse by the onboarding-import executor (same-schema validation).
-export const PutUnitDetailsBody = z
-  .object({
-    bedrooms: z.number().int().nonnegative().nullable().optional(),
-    bathrooms: z.number().nonnegative().nullable().optional(),
-    sqft: z.number().int().nonnegative().nullable().optional(),
-  })
-  .openapi('PutUnitDetailsBody');
-
 const ParamShape = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  areaId: z.string().uuid().openapi({ param: { name: 'areaId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  areaId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'areaId', in: 'path' } }),
 });
 
 const get = createRoute({
@@ -77,7 +76,12 @@ unitDetailsApp.openapi(get, async (c) => {
     .eq('area_id', areaId)
     .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
-  if (!data) throw new ApiError(404, 'not_found', 'no unit_details for this area (may not be a unit-kind area, or none set)');
+  if (!data)
+    throw new ApiError(
+      404,
+      'not_found',
+      'no unit_details for this area (may not be a unit-kind area, or none set)',
+    );
   return c.json(data as z.infer<typeof UnitDetails>, 200);
 });
 
@@ -87,7 +91,7 @@ unitDetailsApp.openapi(put, async (c) => {
   const sb = getSb(c);
 
   // Upsert: on (area_id) conflict, replace the row.
-  const row: Record<string, unknown> = {
+  const row: DbTableInsert<'unit_details'> = {
     area_id: areaId,
     account_id: accountId,
     updated_at: new Date().toISOString(),

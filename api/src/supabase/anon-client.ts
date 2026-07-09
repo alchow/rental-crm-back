@@ -1,16 +1,17 @@
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js';
 import { loadEnv } from '../env';
+import type { AppSupabaseClient, Database } from './db-types';
 
 // Anonymous Supabase client. Used for the unauthenticated leg of /v1/auth/*:
 // signup, login, refresh, logout. RLS still applies (the anon role gets no
 // privileges beyond the policies grant), so this client cannot read or write
 // domain data -- only call auth endpoints.
-let cached: SupabaseClient | null = null;
+let cached: AppSupabaseClient | null = null;
 
-export function getAnonClient(): SupabaseClient {
+export function getAnonClient(): AppSupabaseClient {
   if (cached) return cached;
   const env = loadEnv();
-  cached = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+  cached = createClient<Database>(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,

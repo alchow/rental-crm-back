@@ -1,8 +1,11 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import type { DbTableUpdate } from '../supabase/db-types';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
+import { softDeleteStamp } from './_lib/soft-delete';
+import { AreaKind, CreateAreaBody } from '../schemas/importable';
 
 // Areas are the model's central abstraction: a unit is just an `area` whose
 // kind = 'unit'. Common areas (hallway, basement_mechanical, …) live in the
@@ -12,19 +15,6 @@ import { keysetPage } from './_lib/cursor';
 //
 // The composite FK on (account_id, property_id) makes a cross-account
 // property_id rejected by the DB, not just by RLS. The route relies on that.
-
-export const AreaKind = z.enum([
-  'unit',
-  'entrance',
-  'hallway',
-  'stairwell',
-  'basement_mechanical',
-  'laundry',
-  'parking',
-  'roof',
-  'exterior_grounds',
-  'common_other',
-]);
 
 const Area = z
   .object({
@@ -39,15 +29,6 @@ const Area = z
   })
   .openapi('Area');
 
-// Exported for reuse by the onboarding-import executor (same-schema validation).
-export const CreateAreaBody = z
-  .object({
-    property_id: z.string().uuid(),
-    kind: AreaKind,
-    name: z.string().min(1).max(200),
-  })
-  .openapi('CreateAreaBody');
-
 // kind is intentionally NOT patchable. Changing an area's kind would orphan
 // unit_details (which is keyed on a unit-kind area) and break any operational
 // rows that assumed the prior kind. To change kind, soft-delete + create new.
@@ -61,11 +42,20 @@ const PatchAreaBody = z
   .openapi('PatchAreaBody');
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 const AccountAndIdParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
 });
 
 const ListQuery = z.object({
@@ -147,11 +137,7 @@ areasApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit, property_id, kind } = c.req.valid('query');
   const sb = getSb(c);
-  let q = sb
-    .from('areas')
-    .select('*')
-    .eq('account_id', accountId)
-    .is('deleted_at', null);
+  let q = sb.from('areas').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (property_id) q = q.eq('property_id', property_id);
   if (kind) q = q.eq('kind', kind);
   const { items, next_cursor: nextCursor } = await keysetPage(q, { cursor, limit });
@@ -202,7 +188,7 @@ areasApp.openapi(patch, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
-  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  const update: DbTableUpdate<'areas'> = { updated_at: new Date().toISOString() };
   if (body.name !== undefined) update.name = body.name;
   const { data, error } = await sb
     .from('areas')
@@ -222,7 +208,7 @@ areasApp.openapi(remove, async (c) => {
   const sb = getSb(c);
   const { data, error } = await sb
     .from('areas')
-    .update({ deleted_at: new Date().toISOString() })
+    .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)

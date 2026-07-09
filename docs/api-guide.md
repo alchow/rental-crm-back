@@ -148,7 +148,7 @@ await authedFetch(`/v1/accounts/${accountId}/properties`, {
   }),
 });
 // A retry with the SAME key + body replays the original response — no duplicate row.
-// A retry with the SAME key + DIFFERENT body → 409 idempotency_key_reuse.
+// A retry with the SAME key + DIFFERENT body → 409 idempotency_conflict.
 ```
 
 Completed keys are retained 30 days (the replay window). An _abandoned_ in-flight key — one whose original timed out or whose completion write was lost — is reclaimed ~90 seconds later (just past the server's request budget), so a same-key retry **re-executes** instead of wedging on `409 idempotency_in_flight`. Because reclaim re-executes, reuse a key only for operations that tolerate a redo if the first attempt committed. For file uploads, prefer a **fresh key per attempt** and rely on content-dedup: identical bytes are collapsed server-side (the re-upload returns the existing record with `200` + `deduped: true`), so retries can't create duplicates.
@@ -186,7 +186,7 @@ async function* listAll<T>(path: string): AsyncGenerator<T> {
 | 401  | `unauthenticated`                                                                          | Missing/expired token — refresh and retry.                                                                                                                                        |
 | 403  | `forbidden`                                                                                | Authenticated but not a member of this account.                                                                                                                                   |
 | 404  | `not_found`                                                                                | Resource absent, soft-deleted, or belongs to another account (no existence oracle).                                                                                               |
-| 409  | `conflict`, `idempotency_key_reuse`, `invalid_status_transition`, `duplicate_active_token` | State conflict.                                                                                                                                                                   |
+| 409  | `conflict`, `idempotency_conflict`, `idempotency_in_flight`, `invalid_status_transition`, `duplicate_active_token` | State conflict.                                                                                                                                                                   |
 | 422  | `allocation_exceeds_payment`, `cross_tenancy_allocation`, `currency_mismatch`              | Money-integrity rejections.                                                                                                                                                       |
 | 429  | `rate_limited`                                                                             | Public intake throttle (per-token or per-IP).                                                                                                                                     |
 | 500  | `internal_error`, `database_error`                                                         | Server fault.                                                                                                                                                                     |

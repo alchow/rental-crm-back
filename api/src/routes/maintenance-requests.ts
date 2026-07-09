@@ -1,6 +1,7 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import type { DbTableUpdate } from '../supabase/db-types';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 
@@ -18,16 +19,16 @@ import { keysetPage } from './_lib/cursor';
 // emergency: heat in winter, flood, gas). urgent = today/tomorrow.
 // routine = schedule.
 const Severity = z.enum(['emergency', 'urgent', 'routine']);
-const Status   = z.enum(['open', 'triaged', 'in_progress', 'resolved', 'closed']);
+const Status = z.enum(['open', 'triaged', 'in_progress', 'resolved', 'closed']);
 
 // Allowed forward transitions. 'closed' is terminal. There's no path from
 // terminal back to non-terminal; reopen = create a new request.
 const ALLOWED: Record<z.infer<typeof Status>, ReadonlyArray<z.infer<typeof Status>>> = {
-  open:        ['triaged', 'in_progress', 'closed'],
-  triaged:     ['in_progress', 'closed'],
+  open: ['triaged', 'in_progress', 'closed'],
+  triaged: ['in_progress', 'closed'],
   in_progress: ['resolved', 'closed'],
-  resolved:    ['closed'],
-  closed:      [],
+  resolved: ['closed'],
+  closed: [],
 };
 
 const MaintenanceRequest = z
@@ -69,11 +70,20 @@ const PatchBody = z
   .openapi('PatchMaintenanceRequestBody');
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 const AccountAndIdParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
 });
 const ListQuery = z.object({
   cursor: z.string().optional(),
@@ -101,7 +111,10 @@ const get = createRoute({
   tags: ['maintenance_requests'],
   request: { params: AccountAndIdParam },
   responses: {
-    200: { description: 'request', content: { 'application/json': { schema: MaintenanceRequest } } },
+    200: {
+      description: 'request',
+      content: { 'application/json': { schema: MaintenanceRequest } },
+    },
     ...errorResponses,
   },
 });
@@ -114,7 +127,10 @@ const create = createRoute({
     body: { content: { 'application/json': { schema: CreateBody } }, required: true },
   },
   responses: {
-    201: { description: 'created', content: { 'application/json': { schema: MaintenanceRequest } } },
+    201: {
+      description: 'created',
+      content: { 'application/json': { schema: MaintenanceRequest } },
+    },
     ...errorResponses,
   },
 });
@@ -128,7 +144,10 @@ const patch = createRoute({
     body: { content: { 'application/json': { schema: PatchBody } }, required: true },
   },
   responses: {
-    200: { description: 'updated', content: { 'application/json': { schema: MaintenanceRequest } } },
+    200: {
+      description: 'updated',
+      content: { 'application/json': { schema: MaintenanceRequest } },
+    },
     ...errorResponses,
   },
 });
@@ -139,7 +158,11 @@ maintenanceRequestsApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit, area_id, status } = c.req.valid('query');
   const sb = getSb(c);
-  let q = sb.from('maintenance_requests').select('*').eq('account_id', accountId).is('deleted_at', null);
+  let q = sb
+    .from('maintenance_requests')
+    .select('*')
+    .eq('account_id', accountId)
+    .is('deleted_at', null);
   if (area_id) q = q.eq('area_id', area_id);
   if (status) q = q.eq('status', status);
   const { items, next_cursor: nextCursor } = await keysetPage(q, { cursor, limit });
@@ -218,7 +241,7 @@ maintenanceRequestsApp.openapi(patch, async (c) => {
     }
   }
 
-  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  const update: DbTableUpdate<'maintenance_requests'> = { updated_at: new Date().toISOString() };
   if (body.description !== undefined) update.description = body.description;
   if (body.severity !== undefined) update.severity = body.severity;
   if (body.status !== undefined) update.status = body.status;

@@ -1,5 +1,6 @@
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js';
 import { loadEnv } from '../env';
+import type { AppSupabaseClient, Database } from './db-types';
 
 // Per-request Supabase client carrying the caller's access token. PostgREST
 // receives the JWT and applies RLS under the caller's identity. The anon key
@@ -7,9 +8,9 @@ import { loadEnv } from '../env';
 // Authorization header is what RLS actually keys off.
 //
 // Do NOT cache this client across requests -- the token differs per call.
-export function getUserClient(accessToken: string): SupabaseClient {
+export function getUserClient(accessToken: string): AppSupabaseClient {
   const env = loadEnv();
-  return createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+  return createClient<Database>(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
     global: {
       headers: { Authorization: `Bearer ${accessToken}` },
     },

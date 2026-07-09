@@ -1,8 +1,11 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import type { DbFunctionArgs, DbTableInsert } from '../supabase/db-types';
 import { ApiError, errorResponses, conflictResponse, type ErrorCode } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
+import { softDeleteStamp } from './_lib/soft-delete';
+import { CreateRentScheduleBody, CurrencyCode, ScheduleKind } from '../schemas/importable';
 
 // A rent schedule is the recurring rule that EMITS periodic charges. It
 // lives on a tenancy (not on a lease) so lease-less tenancies still bill.
@@ -18,9 +21,6 @@ import { keysetPage } from './_lib/cursor';
 // voided (POST /charges/{id}/void). The DB backstops this (migration
 // 20260706000002) because the FOR ALL member policy makes rent_schedules
 // directly writable through PostgREST too.
-
-const CurrencyCode = z.string().length(3);
-const ScheduleKind = z.string().min(1).max(50); // rent / parking / pet / utility / ...
 
 const RentSchedule = z
   .object({
@@ -46,30 +46,6 @@ const RentSchedule = z
     deleted_at: z.string().nullable(),
   })
   .openapi('RentSchedule');
-
-// Exported for reuse by the onboarding-import executor (same-schema validation).
-export const CreateRentScheduleBody = z
-  .object({
-    tenancy_id: z.string().uuid(),
-    kind: ScheduleKind,
-    amount_cents: z.number().int().nonnegative(),
-    currency: CurrencyCode,
-    due_day: z.number().int().min(1).max(28),
-    start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    end_date: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/)
-      .nullable()
-      .optional(),
-    // Optional provenance (see the RentSchedule schema). Pass one when the
-    // schedule is being written to record a lease/notice-anchored change
-    // directly; the rent-changes endpoint is the higher-level path that also
-    // ends the prior schedule and supersedes the anchored lease atomically.
-    source_lease_id: z.string().uuid().optional(),
-    source_notice_id: z.string().uuid().optional(),
-    change_reason: z.string().min(1).max(2000).optional(),
-  })
-  .openapi('CreateRentScheduleBody');
 
 const EndRentScheduleBody = z
   .object({
@@ -134,19 +110,27 @@ const RentChangeBody = z
     // Both anchors optional in the schema, but AT LEAST ONE is required -- a
     // zod refine (below) enforces it at validation, which JSON Schema's
     // required-list cannot express. Declared here so generated clients see it.
-    source_lease_id: z.string().uuid().optional().openapi({
-      description:
-        'Lease anchor (fixed-term changes: renewal/amendment). At least one of ' +
-        'source_lease_id / source_notice_id is required (400 otherwise). A draft ' +
-        'anchor lease is activated by the change; expired/superseded leases are ' +
-        'rejected (409 instrument_not_current).',
-    }),
-    source_notice_id: z.string().uuid().optional().openapi({
-      description:
-        'Served-notice anchor (month-to-month changes). At least one of ' +
-        'source_lease_id / source_notice_id is required (400 otherwise). The notice ' +
-        'must have served_at set (409 notice_not_served otherwise).',
-    }),
+    source_lease_id: z
+      .string()
+      .uuid()
+      .optional()
+      .openapi({
+        description:
+          'Lease anchor (fixed-term changes: renewal/amendment). At least one of ' +
+          'source_lease_id / source_notice_id is required (400 otherwise). A draft ' +
+          'anchor lease is activated by the change; expired/superseded leases are ' +
+          'rejected (409 instrument_not_current).',
+      }),
+    source_notice_id: z
+      .string()
+      .uuid()
+      .optional()
+      .openapi({
+        description:
+          'Served-notice anchor (month-to-month changes). At least one of ' +
+          'source_lease_id / source_notice_id is required (400 otherwise). The notice ' +
+          'must have served_at set (409 notice_not_served otherwise).',
+      }),
     change_reason: z.string().min(1).max(2000).optional(),
     kind: z.string().min(1).max(50).optional(),
   })
@@ -355,7 +339,7 @@ rentSchedulesApp.openapi(create, async (c) => {
   // never references a not-yet-created column -- PostgREST 500s on an unknown
   // column even for a null value. Same conditional-spread the rent-change
   // handler uses for its RPC params.
-  const insert: Record<string, unknown> = {
+  const insert: DbTableInsert<'rent_schedules'> = {
     account_id: accountId,
     tenancy_id: body.tenancy_id,
     kind: body.kind,
@@ -428,7 +412,7 @@ rentSchedulesApp.openapi(remove, async (c) => {
 
   const { data, error } = await sb
     .from('rent_schedules')
-    .update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)
@@ -459,7 +443,7 @@ rentSchedulesApp.openapi(rentChange, async (c) => {
   // Only forward the optionals the caller actually supplied so the SQL
   // DEFAULTs apply (kind -> 'rent', due_day/source ids/change_reason -> null).
   // supabase-js JSON-serialises the params, so an omitted key is simply absent.
-  const params: Record<string, unknown> = {
+  const params: DbFunctionArgs<'change_tenancy_rent'> = {
     p_account_id: accountId,
     p_tenancy_id: tenancyId,
     p_amount_cents: body.amount_cents,

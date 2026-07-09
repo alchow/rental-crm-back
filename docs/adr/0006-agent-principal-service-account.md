@@ -1,7 +1,13 @@
 # ADR-0006: Agent principal is a service-account user, not a static API token
 
-- **Status:** accepted, 2026-06-12
+- **Status:** accepted, 2026-06-12; superseded by ADR-0009 for the live
+  multi-tenant agent identity model
 - **Context owner:** agent-facing API plan (docs/agent-api-plan.md, Workstream B)
+
+> Current-state note: `AGENT_USER_ID` was retired by ADR-0009. The live API
+> classifies an agent from the scoped account membership role (`role='agent'`),
+> not from an environment variable match. The decision text below is preserved
+> as historical context for the June 12, 2026 design.
 
 ## Context
 

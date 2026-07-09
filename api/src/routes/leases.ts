@@ -1,8 +1,11 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import { asJson, type DbTableUpdate } from '../supabase/db-types';
 import { ApiError, errorResponses, conflictResponse } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
+import { softDeleteStamp } from './_lib/soft-delete';
+import { CreateLeaseBody, CurrencyCode, LeaseStatus } from '../schemas/importable';
 
 // Leases attach to a tenancy. A tenancy can have zero, one, or many leases
 // (handshake / month-to-month / holdover are first-class -- they're tenancies
@@ -10,9 +13,6 @@ import { keysetPage } from './_lib/cursor';
 // what actually gets billed comes from rent_schedules in Phase 6. We keep
 // them separate so a rent change mid-lease (concession, addendum) writes a
 // new schedule without falsifying the lease record.
-
-const LeaseStatus = z.enum(['draft', 'active', 'expired', 'superseded']);
-const CurrencyCode = z.string().length(3); // ISO 4217-shaped; trust the DB check
 
 // The rent-change migration (20260706000001) adds BEFORE triggers that reject
 // resurrecting a superseded lease and soft-deleting a lease that anchors a live
@@ -52,28 +52,6 @@ const Lease = z
     deleted_at: z.string().nullable(),
   })
   .openapi('Lease');
-
-// Exported for reuse by the onboarding-import executor (same-schema validation).
-export const CreateLeaseBody = z
-  .object({
-    tenancy_id: z.string().uuid(),
-    term_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    term_end: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/)
-      .nullable()
-      .optional(),
-    rent_amount_cents: z.number().int().nonnegative(),
-    rent_currency: CurrencyCode,
-    deposit_amount_cents: z.number().int().nonnegative().optional(),
-    deposit_currency: CurrencyCode.optional(),
-    document: z.record(z.unknown()).optional(),
-    status: LeaseStatus,
-  })
-  .refine((b) => (b.deposit_amount_cents ?? 0) === 0 || b.deposit_currency !== undefined, {
-    message: 'deposit_currency is required when deposit_amount_cents > 0',
-  })
-  .openapi('CreateLeaseBody');
 
 // Rent terms (rent_amount_cents / rent_currency) are IMMUTABLE on a lease: the
 // contracted figure is evidence of what was agreed, and a rent change is a new
@@ -242,7 +220,7 @@ leasesApp.openapi(create, async (c) => {
       rent_currency: body.rent_currency,
       deposit_amount_cents: body.deposit_amount_cents ?? 0,
       deposit_currency: body.deposit_currency ?? null,
-      document: body.document ?? {},
+      document: asJson(body.document ?? {}),
       status: body.status,
     })
     .select('*')
@@ -329,12 +307,12 @@ leasesApp.openapi(patch, async (c) => {
     );
   }
 
-  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  const update: DbTableUpdate<'leases'> = { updated_at: new Date().toISOString() };
   if (body.term_end !== undefined) update.term_end = body.term_end;
   if (body.deposit_amount_cents !== undefined)
     update.deposit_amount_cents = body.deposit_amount_cents;
   if (body.deposit_currency !== undefined) update.deposit_currency = body.deposit_currency;
-  if (body.document !== undefined) update.document = body.document;
+  if (body.document !== undefined) update.document = asJson(body.document);
   if (body.status !== undefined) update.status = body.status;
   const { data, error } = await sb
     .from('leases')
@@ -394,7 +372,7 @@ leasesApp.openapi(remove, async (c) => {
 
   const { data, error } = await sb
     .from('leases')
-    .update({ deleted_at: new Date().toISOString() })
+    .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)

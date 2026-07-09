@@ -46,10 +46,66 @@ services:
       # transport's webhook (ops).
       - key: EMAIL_REPLY_DOMAIN
         sync: false
+      # Optional parent domain for per-account branded reply subdomains
+      # (<local>@<label>.<parent>). Unset -> accounts use EMAIL_REPLY_DOMAIN.
+      - key: EMAIL_PLATFORM_PARENT_DOMAIN
+        sync: false
       # Cutover flag for core-originated transactional email. ON -> the renewal
       # email is written to the comms outbox (transport dials); OFF/unset ->
       # the legacy in-core mailer sends directly.
       - key: COMMS_EMAIL_PIPELINE
+        sync: false
+
+  # ==========================================================================
+  # Comms evidence retention (cron)
+  # ==========================================================================
+  # Removes archived provider-webhook blobs after the configured horizon while
+  # preserving the audit-anchored provenance rows. Legal holds skip destruction.
+  # Keeping this in Render IaC makes the retention policy executable, not just
+  # prose in docs/comms-evidence.md.
+  - type: cron
+    name: evidence-retention
+    runtime: node
+    region: oregon
+    schedule: "30 3 * * *"
+    buildCommand: npm install -g pnpm@11.1.2 && pnpm install --prod=false && pnpm --filter ./api build
+    startCommand: pnpm --filter ./api retention:evidence
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+
+  # ==========================================================================
+  # Maintenance janitors (cron)
+  # ==========================================================================
+  # Reviewable schedule for the SQL janitors that used to live only as
+  # migration comments/runbook notes: tenancy status advancement, inbound raw
+  # retention, idempotency-key pruning, IP rate bucket pruning, and audit-chain
+  # sweep alerts.
+  - type: cron
+    name: maintenance-janitors
+    runtime: node
+    region: oregon
+    schedule: "45 3 * * *"
+    buildCommand: npm install -g pnpm@11.1.2 && pnpm install --prod=false && pnpm --filter ./api build
+    startCommand: pnpm --filter ./api janitors:maintenance
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
 
   # ==========================================================================

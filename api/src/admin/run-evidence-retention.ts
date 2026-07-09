@@ -1,6 +1,6 @@
 // Operational entry point for the comms evidence retention janitor
-// (admin/evidence.ts). Scheduled outside the API process (Render cron /
-// ops runbook), same convention as prune_inbound_raw's pg_cron schedule:
+// (admin/evidence.ts). Scheduled by the Render cron `evidence-retention`
+// (render.yaml), and still safe to run manually:
 //
 //   pnpm --filter ./api retention:evidence
 //

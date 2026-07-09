@@ -4,6 +4,8 @@ import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { paginated } from './_lib/list-response';
+import { softDeleteStamp } from './_lib/soft-delete';
+import { AddMemberBody, MemberRole } from '../schemas/importable';
 
 // Sub-resource of tenancies: the people occupying a tenancy, with a role.
 // One tenant can hold multiple roles in the same tenancy (the unique key is
@@ -14,8 +16,6 @@ import { paginated } from './_lib/list-response';
 // and the underlying composite FK rejects a tenancy in another account, so
 // even if the URL was crafted to point at another account's tenancy the
 // query returns nothing.
-
-const MemberRole = z.enum(['primary', 'occupant', 'guarantor']);
 
 const TenancyMember = z
   .object({
@@ -30,17 +30,7 @@ const TenancyMember = z
   })
   .openapi('TenancyMember');
 
-// Exported for reuse by the onboarding-import executor (same-schema validation).
-export const AddMemberBody = z
-  .object({
-    tenant_id: z.string().uuid(),
-    role: MemberRole,
-  })
-  .openapi('AddTenancyMemberBody');
-
-const PatchMemberBody = z
-  .object({ role: MemberRole })
-  .openapi('PatchTenancyMemberBody');
+const PatchMemberBody = z.object({ role: MemberRole }).openapi('PatchTenancyMemberBody');
 
 const ListResponse = paginated(TenancyMember).openapi('TenancyMemberListResponse');
 
@@ -50,13 +40,28 @@ const ListQuery = z.object({
 });
 
 const TenancyParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  tenancyId: z.string().uuid().openapi({ param: { name: 'tenancyId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  tenancyId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'tenancyId', in: 'path' } }),
 });
 const MemberParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  tenancyId: z.string().uuid().openapi({ param: { name: 'tenancyId', in: 'path' } }),
-  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  tenancyId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'tenancyId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
 });
 
 const list = createRoute({
@@ -123,7 +128,10 @@ tenancyMembersApp.openapi(list, async (c) => {
     .eq('tenancy_id', tenancyId)
     .is('deleted_at', null);
   // Oldest-first, keyset-paginated on created_at.
-  const { items, next_cursor } = await keysetPage<z.infer<typeof TenancyMember>>(q, { cursor, limit });
+  const { items, next_cursor } = await keysetPage<z.infer<typeof TenancyMember>>(q, {
+    cursor,
+    limit,
+  });
   return c.json({ data: items, next_cursor }, 200);
 });
 
@@ -182,7 +190,7 @@ tenancyMembersApp.openapi(remove, async (c) => {
   const sb = getSb(c);
   const { data, error } = await sb
     .from('tenancy_tenants')
-    .update({ deleted_at: new Date().toISOString() })
+    .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('tenancy_id', tenancyId)
     .eq('id', id)

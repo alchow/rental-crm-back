@@ -58,13 +58,13 @@ so each call takes the migration's per-account advisory lock and commits a
 short, contiguous audit-chain transaction rather than one fleet-wide megatxn.
 
 **4. Tenancy-end cascade.** An `after update` trigger on `tenancies` writes the
-end date onto the tenancy's still-open `rent_schedules` when the tenancy flips
-to `ended` or gains an `end_date`. The generator already refuses to bill an
-ended tenancy at runtime; the cascade makes the stop **durable and visible** —
-the schedule reads "ended <date>" in the ledger/UI instead of being silently
-skipped by the cron. It only ever *shortens* schedules and never resurrects
-them (re-opening a tenancy does not re-extend billing — that would be a second
-kind of surprise bill).
+end date onto the tenancy's still-open `rent_schedules` only when the tenancy
+status flips to `ended`; editing `end_date` alone does not mutate schedules.
+The generator already refuses to bill an ended tenancy at runtime; the cascade
+makes the stop **durable and visible** — the schedule reads "ended <date>" in
+the ledger/UI instead of being silently skipped by the cron. It only ever
+*shortens* schedules and never resurrects them (re-opening a tenancy does not
+re-extend billing — that would be a second kind of surprise bill).
 
 **5. Defense-in-depth flag check.** The opt-in flag is re-checked in the two —
 and only two — places that can trigger billing: the cron **runner** (enumerates

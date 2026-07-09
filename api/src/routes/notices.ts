@@ -1,8 +1,10 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import { asJson, type DbTableUpdate } from '../supabase/db-types';
 import { ApiError, errorResponses, conflictResponse } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
+import { softDeleteStamp } from './_lib/soft-delete';
 
 // A notice is a served instrument (entry notice, rent-increase notice,
 // termination notice, ...). It attaches to a tenancy and, like a lease, is a
@@ -47,12 +49,15 @@ const Notice = z
 // formatting it in a local timezone shifts the displayed service date by a
 // day for any viewer west of Greenwich. When the actual service moment is
 // known (e-service, certified delivery scan), send the real timestamp.
-const ServedAt = z.string().datetime().openapi({
-  description:
-    'When the notice was served. Date-only knowledge: send midnight UTC ' +
-    '(YYYY-MM-DDT00:00:00Z) and render as a UTC calendar date. Send the real ' +
-    'timestamp when the service moment is known.',
-});
+const ServedAt = z
+  .string()
+  .datetime()
+  .openapi({
+    description:
+      'When the notice was served. Date-only knowledge: send midnight UTC ' +
+      '(YYYY-MM-DDT00:00:00Z) and render as a UTC calendar date. Send the real ' +
+      'timestamp when the service moment is known.',
+  });
 
 const CreateNoticeBody = z
   .object({
@@ -214,7 +219,7 @@ noticesApp.openapi(create, async (c) => {
       served_at: body.served_at ?? null,
       served_method: body.served_method ?? null,
       body: body.body ?? null,
-      document: body.document ?? {},
+      document: asJson(body.document ?? {}),
     })
     .select('*')
     .single();
@@ -257,11 +262,11 @@ noticesApp.openapi(patch, async (c) => {
     );
   }
 
-  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  const update: DbTableUpdate<'notices'> = { updated_at: new Date().toISOString() };
   if (body.served_at !== undefined) update.served_at = body.served_at;
   if (body.served_method !== undefined) update.served_method = body.served_method;
   if (body.body !== undefined) update.body = body.body;
-  if (body.document !== undefined) update.document = body.document;
+  if (body.document !== undefined) update.document = asJson(body.document);
   const { data, error } = await sb
     .from('notices')
     .update(update)
@@ -311,7 +316,7 @@ noticesApp.openapi(remove, async (c) => {
 
   const { data, error } = await sb
     .from('notices')
-    .update({ deleted_at: new Date().toISOString() })
+    .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)

@@ -1,6 +1,7 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import { asJson, nullableRpcArg } from '../supabase/db-types';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 
@@ -21,7 +22,13 @@ import { keysetPage } from './_lib/cursor';
 // filters them out via the payment.voided_at check.
 
 const PaymentMethod = z.enum([
-  'cash', 'check', 'ach', 'card', 'zelle_venmo', 'money_order', 'other',
+  'cash',
+  'check',
+  'ach',
+  'card',
+  'zelle_venmo',
+  'money_order',
+  'other',
 ]);
 const CurrencyCode = z.string().length(3);
 
@@ -88,11 +95,20 @@ const VoidPaymentBody = z
   .openapi('VoidPaymentBody');
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 const AccountAndIdParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
 });
 const ListQuery = z.object({
   cursor: z.string().optional(),
@@ -141,7 +157,10 @@ const create = createRoute({
     body: { content: { 'application/json': { schema: CreatePaymentBody } }, required: true },
   },
   responses: {
-    201: { description: 'created', content: { 'application/json': { schema: PaymentWithAllocations } } },
+    201: {
+      description: 'created',
+      content: { 'application/json': { schema: PaymentWithAllocations } },
+    },
     ...errorResponses,
   },
 });
@@ -216,35 +235,38 @@ paymentsApp.openapi(create, async (c) => {
   // Without this, an allocation that trips the integrity trigger would
   // leave a phantom payment row (money in limbo). The RPC takes both pieces
   // and lets postgres roll back the lot on any failure.
-  const { data: rpcData, error: rpcErr } = await sb.rpc(
-    'create_payment_with_allocations',
-    {
-      p_account_id:      accountId,
-      p_tenancy_id:      body.tenancy_id,
-      p_amount_cents:    body.amount_cents,
-      p_currency:        body.currency,
-      p_received_at:     body.received_at,
-      p_method:          body.method,
-      p_reference:       body.reference ?? null,
-      p_payer_tenant_id: body.payer_tenant_id ?? null,
-      p_notes:           body.notes ?? null,
-      p_allocations:     body.allocations ?? [],
-    },
-  );
+  const { data: rpcData, error: rpcErr } = await sb.rpc('create_payment_with_allocations', {
+    p_account_id: accountId,
+    p_tenancy_id: body.tenancy_id,
+    p_amount_cents: body.amount_cents,
+    p_currency: body.currency,
+    p_received_at: body.received_at,
+    p_method: body.method,
+    p_reference: nullableRpcArg(body.reference ?? null),
+    p_payer_tenant_id: nullableRpcArg(body.payer_tenant_id ?? null),
+    p_notes: nullableRpcArg(body.notes ?? null),
+    p_allocations: asJson(body.allocations ?? []),
+  });
   if (rpcErr) {
     // Map the trigger / FK / membership errors the function can raise to
     // the right HTTP status. Anything else is a real 500.
     if (rpcErr.code === '42501' || rpcErr.code === '28000') {
       throw new ApiError(404, 'not_found', 'not found');
     }
-    if (/cross-tenancy|cross-account|account mismatch|currency mismatch|voided/i.test(rpcErr.message)) {
+    if (
+      /cross-tenancy|cross-account|account mismatch|currency mismatch|voided/i.test(rpcErr.message)
+    ) {
       throw new ApiError(400, 'invalid_request', rpcErr.message);
     }
     if (/exceed (payment|charge) amount/i.test(rpcErr.message)) {
       throw new ApiError(400, 'invalid_request', rpcErr.message);
     }
     if (rpcErr.code === '23503') {
-      throw new ApiError(404, 'not_found', 'a referenced row (tenancy / charge / tenant) does not belong to this account');
+      throw new ApiError(
+        404,
+        'not_found',
+        'a referenced row (tenancy / charge / tenant) does not belong to this account',
+      );
     }
     if (rpcErr.code === '23514') {
       throw new ApiError(400, 'invalid_request', rpcErr.message);
@@ -253,15 +275,16 @@ paymentsApp.openapi(create, async (c) => {
   }
 
   // RPC returns a setof; supabase-js gives us an array.
-  const row = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as
-    | { payment: unknown; allocations: unknown }
-    | null;
+  const row = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as {
+    payment: unknown;
+    allocations: unknown;
+  } | null;
   if (!row || !row.payment) {
     throw new ApiError(500, 'database_error', 'RPC returned no payment row');
   }
   return c.json(
     {
-      payment:     row.payment     as z.infer<typeof Payment>,
+      payment: row.payment as z.infer<typeof Payment>,
       allocations: row.allocations as z.infer<typeof PaymentAllocation>[],
     },
     201,
@@ -274,7 +297,11 @@ paymentsApp.openapi(voidRoute, async (c) => {
   const sb = getSb(c);
   const { data, error } = await sb
     .from('payments')
-    .update({ voided_at: new Date().toISOString(), void_reason, updated_at: new Date().toISOString() })
+    .update({
+      voided_at: new Date().toISOString(),
+      void_reason,
+      updated_at: new Date().toISOString(),
+    })
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)
@@ -301,7 +328,9 @@ paymentsApp.openapi(addAllocation, async (c) => {
     .select('*')
     .single();
   if (error) {
-    if (/cross-tenancy|cross-account|account mismatch|currency mismatch|voided/i.test(error.message)) {
+    if (
+      /cross-tenancy|cross-account|account mismatch|currency mismatch|voided/i.test(error.message)
+    ) {
       throw new ApiError(400, 'invalid_request', error.message);
     }
     if (/exceed (payment|charge) amount/i.test(error.message)) {

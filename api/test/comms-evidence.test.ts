@@ -79,10 +79,16 @@ const { _resetAdminClientForTests, getAdminClient } = await import('../src/admin
 _resetAdminClientForTests();
 const admin = getAdminClient();
 
-async function createAuthUser(label: string): Promise<{ id: string; email: string; password: string }> {
+async function createAuthUser(
+  label: string,
+): Promise<{ id: string; email: string; password: string }> {
   const email = `commsev-${label}-${crypto.randomUUID()}@internal.test`;
   const password = `pw-${crypto.randomUUID()}`;
-  const { data, error } = await admin.auth.admin.createUser({ email, password, email_confirm: true });
+  const { data, error } = await admin.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+  });
   if (error || !data?.user) throw new Error(`createUser ${label}: ${error?.message}`);
   return { id: data.user.id, email, password };
 }
@@ -101,7 +107,11 @@ const app = buildApp();
 
 // --- helpers ----------------------------------------------------------------
 
-interface ApiResp { status: number; body: unknown; headers: Record<string, string> }
+interface ApiResp {
+  status: number;
+  body: unknown;
+  headers: Record<string, string>;
+}
 
 async function api(
   method: string,
@@ -121,27 +131,35 @@ async function api(
   }
   const res = await app.fetch(new Request(`http://test${path}`, init));
   const responseHeaders: Record<string, string> = {};
-  res.headers.forEach((v, k) => { responseHeaders[k] = v; });
+  res.headers.forEach((v, k) => {
+    responseHeaders[k] = v;
+  });
   const text = await res.text();
   return { status: res.status, body: text ? JSON.parse(text) : null, headers: responseHeaders };
 }
 
-function rnd(): string { return Math.random().toString(36).slice(2, 10); }
+function rnd(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
 
-interface Failure { name: string; detail: string }
+interface Failure {
+  name: string;
+  detail: string;
+}
 const failures: Failure[] = [];
 async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try { await fn(); console.info(`  PASS  ${name}`); }
-  catch (e) {
+  try {
+    await fn();
+    console.info(`  PASS  ${name}`);
+  } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     failures.push({ name, detail });
     console.error(`  FAIL  ${name}: ${detail}`);
   }
 }
 function assertStatus(r: ApiResp, expected: number, ctx: string): unknown {
-  if (r.status !== expected) throw new Error(
-    `${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`,
-  );
+  if (r.status !== expected)
+    throw new Error(`${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`);
   return r.body;
 }
 function assert(cond: unknown, msg: string): void {
@@ -205,7 +223,11 @@ async function setup(platformNumber: string, tag: string): Promise<Fixture> {
     body: { email, password, account_name: 'Comms Evidence Acct' },
   });
   if (su.status !== 200) throw new Error(`signup failed: ${su.status} ${JSON.stringify(su.body)}`);
-  const b = su.body as { user: { id: string }; account: { id: string }; session: { access_token: string } };
+  const b = su.body as {
+    user: { id: string };
+    account: { id: string };
+    session: { access_token: string };
+  };
   const accountId = b.account.id;
   const token = b.session.access_token;
 
@@ -214,19 +236,31 @@ async function setup(platformNumber: string, tag: string): Promise<Fixture> {
     if (r.status !== 201) throw new Error(`setup POST ${p}: ${r.status} ${JSON.stringify(r.body)}`);
     return r.body as T;
   };
-  const tenant1 = await post<{ id: string }>(`/v1/accounts/${accountId}/tenants`, { full_name: 'Tenant One' });
-  const tenant2 = await post<{ id: string }>(`/v1/accounts/${accountId}/tenants`, { full_name: 'Tenant Two' });
+  const tenant1 = await post<{ id: string }>(`/v1/accounts/${accountId}/tenants`, {
+    full_name: 'Tenant One',
+  });
+  const tenant2 = await post<{ id: string }>(`/v1/accounts/${accountId}/tenants`, {
+    full_name: 'Tenant Two',
+  });
 
-  for (const [userId, role] of [[agentAuth.id, 'agent'], [viewerAuth.id, 'viewer']] as const) {
+  for (const [userId, role] of [
+    [agentAuth.id, 'agent'],
+    [viewerAuth.id, 'viewer'],
+  ] as const) {
     const { error } = await admin.from('account_members').insert({
-      account_id: accountId, user_id: userId, role,
+      account_id: accountId,
+      user_id: userId,
+      role,
     });
     if (error) throw new Error(`membership ${role}: ${error.message}`);
   }
 
   {
     const { error } = await admin.from('platform_numbers').insert({
-      account_id: accountId, number: platformNumber, provider: 'test', capabilities: ['sms'],
+      account_id: accountId,
+      number: platformNumber,
+      provider: 'test',
+      capabilities: ['sms'],
     });
     if (error) throw new Error(`platform number: ${error.message}`);
   }
@@ -281,8 +315,14 @@ interface HoldShape {
   set_at: string | null;
   released_at: string | null;
 }
-interface BindingShape { participant_address: string; reply_address: string | null }
-interface ThreadShape { id: string; bindings: BindingShape[] }
+interface BindingShape {
+  participant_address: string;
+  reply_address: string | null;
+}
+interface ThreadShape {
+  id: string;
+  bindings: BindingShape[];
+}
 
 // The cast of one journal row, read under the member's RLS (member SELECT is
 // allowed; writes are revoked — see the immutability checks).
@@ -317,7 +357,10 @@ async function journalRow(
 // match is not unique so a silent mis-cast can't pass.
 function one(cast: Cast[], pred: (c: Cast) => boolean, ctx: string): Cast {
   const hits = cast.filter(pred);
-  if (hits.length !== 1) throw new Error(`${ctx}: expected exactly 1 cast row, got ${hits.length} (cast=${JSON.stringify(cast)})`);
+  if (hits.length !== 1)
+    throw new Error(
+      `${ctx}: expected exactly 1 cast row, got ${hits.length} (cast=${JSON.stringify(cast)})`,
+    );
   return hits[0]!;
 }
 
@@ -365,272 +408,349 @@ async function main(): Promise<void> {
     groupThreadId = (assertStatus(g, 201, 'group create') as ThreadShape).id;
   });
 
-  await check('inbound 1:1 sms casts {sender: tenant, recipient: platform}, provider_verified', async () => {
-    const r = await A('POST', '/inbound', {
-      provider: 'test',
-      provider_msg_id: `ev-${SUFFIX}-in-1to1`,
-      to_number: PLATFORM_A,
-      from_address: M1_A,
-      channel: 'sms',
-      body: 'when is rent due?',
-      received_at: new Date().toISOString(),
-    });
-    const cap = assertStatus(r, 200, 'capture') as CaptureShape;
-    assert(cap.disposition === 'matched', `disposition=${cap.disposition}`);
+  await check(
+    'inbound 1:1 sms casts {sender: tenant, recipient: platform}, provider_verified',
+    async () => {
+      const r = await A('POST', '/inbound', {
+        provider: 'test',
+        provider_msg_id: `ev-${SUFFIX}-in-1to1`,
+        to_number: PLATFORM_A,
+        from_address: M1_A,
+        channel: 'sms',
+        body: 'when is rent due?',
+        received_at: new Date().toISOString(),
+      });
+      const cap = assertStatus(r, 200, 'capture') as CaptureShape;
+      assert(cap.disposition === 'matched', `disposition=${cap.disposition}`);
 
-    const cast = await journalCast(fx, cap.interaction_id!);
-    assert(cast.length === 2, `cast size=${cast.length}`);
-    const sender = one(cast, (c) => c.role === 'sender', 'sender');
-    assert(sender.party_type === 'tenant', `sender party_type=${sender.party_type}`);
-    assert(sender.party_id === fx.tenant1Id, `sender party_id=${sender.party_id}`);
-    assert(sender.address === M1_A, `sender address=${sender.address}`);
-    assert(sender.label === 'Tenant One', `sender label=${sender.label}`);
-    assert(sender.source === 'comms', `sender source=${sender.source}`);
-    const recipient = one(cast, (c) => c.role === 'recipient', 'recipient');
-    assert(recipient.party_type === 'platform', `recipient party_type=${recipient.party_type}`);
-    assert(recipient.party_id === null, `recipient party_id=${recipient.party_id}`);
-    assert(recipient.address === PLATFORM_A, `recipient address=${recipient.address}`);
+      const cast = await journalCast(fx, cap.interaction_id!);
+      assert(cast.length === 2, `cast size=${cast.length}`);
+      const sender = one(cast, (c) => c.role === 'sender', 'sender');
+      assert(sender.party_type === 'tenant', `sender party_type=${sender.party_type}`);
+      assert(sender.party_id === fx.tenant1Id, `sender party_id=${sender.party_id}`);
+      assert(sender.address === M1_A, `sender address=${sender.address}`);
+      assert(sender.label === 'Tenant One', `sender label=${sender.label}`);
+      assert(sender.source === 'comms', `sender source=${sender.source}`);
+      const recipient = one(cast, (c) => c.role === 'recipient', 'recipient');
+      assert(recipient.party_type === 'platform', `recipient party_type=${recipient.party_type}`);
+      assert(recipient.party_id === null, `recipient party_id=${recipient.party_id}`);
+      assert(recipient.address === PLATFORM_A, `recipient address=${recipient.address}`);
 
-    const { attestation } = await journalRow(fx, cap.interaction_id!);
-    assert(attestation === 'provider_verified', `attestation=${attestation}`);
-  });
+      const { attestation } = await journalRow(fx, cap.interaction_id!);
+      assert(attestation === 'provider_verified', `attestation=${attestation}`);
+    },
+  );
 
   let groupInboundInteraction = '';
-  await check('inbound group MMS casts sender + platform + one cc per resolved member', async () => {
-    const r = await A('POST', '/inbound', {
-      provider: 'test',
-      provider_msg_id: `ev-${SUFFIX}-in-group`,
-      to_number: PLATFORM_A,
-      from_address: M1_A,
-      cc: [LL_A, M2_A],
-      channel: 'sms',
-      body: 'pipe fixed',
-      received_at: new Date().toISOString(),
-    });
-    const cap = assertStatus(r, 200, 'capture') as CaptureShape;
-    assert(cap.disposition === 'matched', `disposition=${cap.disposition}`);
-    assert(cap.thread_id === groupThreadId, 'routed to the group thread');
-    groupInboundInteraction = cap.interaction_id!;
-
-    const cast = await journalCast(fx, groupInboundInteraction);
-    // 2 (sender + platform) + one cc per cc member (both resolve via bindings).
-    assert(cast.length === 4, `cast size=${cast.length}`);
-
-    const sender = one(cast, (c) => c.role === 'sender', 'sender');
-    assert(sender.party_type === 'tenant' && sender.party_id === fx.tenant1Id && sender.address === M1_A,
-      `sender=${JSON.stringify(sender)}`);
-    assert(sender.label === 'Tenant One', `sender label=${sender.label}`);
-
-    const recipient = one(cast, (c) => c.role === 'recipient', 'recipient');
-    assert(recipient.party_type === 'platform' && recipient.address === PLATFORM_A,
-      `recipient=${JSON.stringify(recipient)}`);
-
-    const ccRows = cast.filter((c) => c.role === 'cc');
-    assert(ccRows.length === 2, `cc count=${ccRows.length}`);
-    const ccLL = one(ccRows, (c) => c.address === LL_A, 'cc LL');
-    // Landlord resolved via the thread binding: party_type landlord_user, id +
-    // the display-name snapshot (signup set display_name = the landlord email).
-    assert(ccLL.party_type === 'landlord_user' && ccLL.party_id === fx.landlordId,
-      `cc LL party=${JSON.stringify(ccLL)}`);
-    assert(ccLL.label === fx.landlordEmail, `cc LL label=${ccLL.label} expected=${fx.landlordEmail}`);
-    const ccT2 = one(ccRows, (c) => c.address === M2_A, 'cc T2');
-    assert(ccT2.party_type === 'tenant' && ccT2.party_id === fx.tenant2Id && ccT2.label === 'Tenant Two',
-      `cc T2=${JSON.stringify(ccT2)}`);
-
-    // {from} ∪ cc restates the frozen member set.
-    const restated = [sender.address, ...ccRows.map((c) => c.address)].sort();
-    assert(JSON.stringify(restated) === JSON.stringify(groupMembers), `set=${JSON.stringify(restated)}`);
-
-    const { attestation } = await journalRow(fx, groupInboundInteraction);
-    assert(attestation === 'provider_verified', `attestation=${attestation}`);
-  });
-
-  await check('thread detail embeds participants + attestation on messages (contract surface)', async () => {
-    const r = await L('GET', `/threads/${groupThreadId}?limit=10`);
-    const t = assertStatus(r, 200, 'thread detail') as {
-      messages: { id: string; attestation: string | null; participants: Cast[] }[];
-    };
-    const msg = t.messages.find((m) => m.id === groupInboundInteraction);
-    assert(msg, 'group inbound row present in thread detail');
-    assert(msg!.attestation === 'provider_verified', `attestation=${msg!.attestation}`);
-    assert(Array.isArray(msg!.participants) && msg!.participants.length === 4,
-      `participants=${JSON.stringify(msg!.participants)}`);
-    const platform = one(msg!.participants, (c) => c.role === 'recipient', 'thread-detail recipient');
-    assert(platform.party_type === 'platform' && platform.address === PLATFORM_A,
-      `platform leg=${JSON.stringify(platform)}`);
-  });
-
-  await check('outbound 1:1 sms casts {sender: platform, recipient: resolved tenant}, provider_verified', async () => {
-    const cr = await L('POST', '/outbox', {
-      channel: 'sms',
-      to_address: M1_A,
-      body: 'rent is due friday',
-      approval_ref: `self:${fx.landlordId}`,
-    });
-    const row = assertStatus(cr, 201, 'intent') as { id: string };
-    const done = await A('POST', `/outbox/${row.id}/complete`, {
-      provider: 'test', provider_sid: `ev-${SUFFIX}-sid-1to1`,
-    });
-    const c = assertStatus(done, 200, 'complete') as { interaction_id: string };
-
-    const cast = await journalCast(fx, c.interaction_id);
-    assert(cast.length === 2, `cast size=${cast.length}`);
-    // This intent is thread-less (direct /outbox to_address), so there is no
-    // bound platform number: the sender leg is platform with a null address
-    // (label falls back to 'platform').
-    const sender = one(cast, (c2) => c2.role === 'sender', 'sender');
-    assert(sender.party_type === 'platform', `sender party_type=${sender.party_type}`);
-    // Recipient resolves off the channel_identity the bridged-thread fixture
-    // registered for M1_A -> tenant1.
-    const recipient = one(cast, (c2) => c2.role === 'recipient', 'recipient');
-    assert(recipient.party_type === 'tenant' && recipient.party_id === fx.tenant1Id
-      && recipient.address === M1_A && recipient.label === 'Tenant One',
-      `recipient=${JSON.stringify(recipient)}`);
-
-    const { attestation } = await journalRow(fx, c.interaction_id);
-    assert(attestation === 'provider_verified', `attestation=${attestation}`);
-  });
-
-  await check('outbound 1:1 recipient snapshot is frozen at INTENT time (an identity edit after intent does not rewrite the journaled cast)', async () => {
-    // A DEDICATED channel_identity so this drift probe never perturbs the
-    // shared M1_A identity the other outbound checks resolve against. Address
-    // is fresh (unused by any thread/fixture). party_type must be one of
-    // tenant/landlord_user/vendor (channel_identities CHECK).
-    const driftAddr = `+1210${SUFFIX}`;
-    const ins = await admin
-      .from('channel_identities')
-      .insert({
-        account_id: fx.accountId,
-        party_type: 'tenant',
-        party_id: fx.tenant1Id,
+  await check(
+    'inbound group MMS casts sender + platform + one cc per resolved member',
+    async () => {
+      const r = await A('POST', '/inbound', {
+        provider: 'test',
+        provider_msg_id: `ev-${SUFFIX}-in-group`,
+        to_number: PLATFORM_A,
+        from_address: M1_A,
+        cc: [LL_A, M2_A],
         channel: 'sms',
-        address: driftAddr,
-        label: 'Snapshot Tenant One',
-      })
-      .select('id')
-      .single();
-    assert(!ins.error && ins.data, `channel_identity insert: ${ins.error?.message}`);
-    const identityId = (ins.data as { id: string }).id;
+        body: 'pipe fixed',
+        received_at: new Date().toISOString(),
+      });
+      const cap = assertStatus(r, 200, 'capture') as CaptureShape;
+      assert(cap.disposition === 'matched', `disposition=${cap.disposition}`);
+      assert(cap.thread_id === groupThreadId, 'routed to the group thread');
+      groupInboundInteraction = cap.interaction_id!;
 
-    // Intent creation stamps comm_outbox.recipient_snapshot from the identity
-    // as it stands RIGHT NOW (tenant1) — frozen by the guard thereafter.
-    const cr = await L('POST', '/outbox', {
-      channel: 'sms',
-      to_address: driftAddr,
-      body: 'snapshot freeze probe',
-      approval_ref: `self:${fx.landlordId}`,
-    });
-    const row = assertStatus(cr, 201, 'intent') as { id: string };
+      const cast = await journalCast(fx, groupInboundInteraction);
+      // 2 (sender + platform) + one cc per cc member (both resolve via bindings).
+      assert(cast.length === 4, `cast size=${cast.length}`);
 
-    // Edit the identity AFTER intent, BEFORE completion: repoint it at the
-    // OTHER tenant (and rename it). Old behaviour (re-resolve at completion)
-    // would journal tenant2 / 'Tenant Two'; the snapshot must ignore this.
-    const upd = await admin
-      .from('channel_identities')
-      .update({ party_id: fx.tenant2Id, label: 'Edited After Intent' })
-      .eq('id', identityId);
-    assert(!upd.error, `identity edit: ${upd.error?.message}`);
+      const sender = one(cast, (c) => c.role === 'sender', 'sender');
+      assert(
+        sender.party_type === 'tenant' &&
+          sender.party_id === fx.tenant1Id &&
+          sender.address === M1_A,
+        `sender=${JSON.stringify(sender)}`,
+      );
+      assert(sender.label === 'Tenant One', `sender label=${sender.label}`);
 
-    const done = await A('POST', `/outbox/${row.id}/complete`, {
-      provider: 'test', provider_sid: `ev-${SUFFIX}-sid-snapshot`,
-    });
-    const c = assertStatus(done, 200, 'complete') as { interaction_id: string };
+      const recipient = one(cast, (c) => c.role === 'recipient', 'recipient');
+      assert(
+        recipient.party_type === 'platform' && recipient.address === PLATFORM_A,
+        `recipient=${JSON.stringify(recipient)}`,
+      );
 
-    // The journaled cast recipient carries the identity as it was at INTENT
-    // time: party_id = tenant1 (not the edited tenant2) and the snapshot label
-    // = tenant1's display name ('Tenant One', not 'Tenant Two').
-    const cast = await journalCast(fx, c.interaction_id);
-    const recipient = one(cast, (x) => x.role === 'recipient', 'recipient');
-    assert(recipient.party_type === 'tenant', `recipient party_type=${recipient.party_type}`);
-    assert(recipient.party_id === fx.tenant1Id,
-      `recipient party_id=${recipient.party_id} expected the pre-edit tenant1 ${fx.tenant1Id}`);
-    assert(recipient.address === driftAddr, `recipient address=${recipient.address}`);
-    assert(recipient.label === 'Tenant One',
-      `recipient label=${recipient.label} expected the pre-edit snapshot 'Tenant One'`);
-  });
+      const ccRows = cast.filter((c) => c.role === 'cc');
+      assert(ccRows.length === 2, `cc count=${ccRows.length}`);
+      const ccLL = one(ccRows, (c) => c.address === LL_A, 'cc LL');
+      // Landlord resolved via the thread binding: party_type landlord_user, id +
+      // the display-name snapshot (signup set display_name = the landlord email).
+      assert(
+        ccLL.party_type === 'landlord_user' && ccLL.party_id === fx.landlordId,
+        `cc LL party=${JSON.stringify(ccLL)}`,
+      );
+      assert(
+        ccLL.label === fx.landlordEmail,
+        `cc LL label=${ccLL.label} expected=${fx.landlordEmail}`,
+      );
+      const ccT2 = one(ccRows, (c) => c.address === M2_A, 'cc T2');
+      assert(
+        ccT2.party_type === 'tenant' &&
+          ccT2.party_id === fx.tenant2Id &&
+          ccT2.label === 'Tenant Two',
+        `cc T2=${JSON.stringify(ccT2)}`,
+      );
 
-  await check('outbound group send casts platform sender + one recipient per member; party_label is joined names', async () => {
-    const cr = await L('POST', `/threads/${groupThreadId}/messages`, { body: 'thanks all' });
-    const rows = assertStatus(cr, 201, 'group intent') as { data: { id: string }[] };
-    const done = await A('POST', `/outbox/${rows.data[0]!.id}/complete`, {
-      provider: 'test', provider_sid: `ev-${SUFFIX}-sid-group`,
-    });
-    const c = assertStatus(done, 200, 'complete') as { interaction_id: string };
+      // {from} ∪ cc restates the frozen member set.
+      const restated = [sender.address, ...ccRows.map((c) => c.address)].sort();
+      assert(
+        JSON.stringify(restated) === JSON.stringify(groupMembers),
+        `set=${JSON.stringify(restated)}`,
+      );
 
-    const cast = await journalCast(fx, c.interaction_id);
-    // platform sender + one recipient per frozen group address (3 members).
-    assert(cast.length === 4, `cast size=${cast.length}`);
-    const sender = one(cast, (x) => x.role === 'sender', 'sender');
-    assert(sender.party_type === 'platform' && sender.address === PLATFORM_A,
-      `sender=${JSON.stringify(sender)}`);
+      const { attestation } = await journalRow(fx, groupInboundInteraction);
+      assert(attestation === 'provider_verified', `attestation=${attestation}`);
+    },
+  );
 
-    const recipients = cast.filter((x) => x.role === 'recipient');
-    assert(recipients.length === 3, `recipients=${recipients.length}`);
-    const rLL = one(recipients, (x) => x.address === LL_A, 'recipient LL');
-    assert(rLL.party_type === 'landlord_user' && rLL.party_id === fx.landlordId
-      && rLL.label === fx.landlordEmail, `recipient LL=${JSON.stringify(rLL)}`);
-    const rT1 = one(recipients, (x) => x.address === M1_A, 'recipient T1');
-    assert(rT1.party_type === 'tenant' && rT1.party_id === fx.tenant1Id && rT1.label === 'Tenant One',
-      `recipient T1=${JSON.stringify(rT1)}`);
-    const rT2 = one(recipients, (x) => x.address === M2_A, 'recipient T2');
-    assert(rT2.party_type === 'tenant' && rT2.party_id === fx.tenant2Id && rT2.label === 'Tenant Two',
-      `recipient T2=${JSON.stringify(rT2)}`);
+  await check(
+    'thread detail embeds participants + attestation on messages (contract surface)',
+    async () => {
+      const r = await L('GET', `/threads/${groupThreadId}?limit=10`);
+      const t = assertStatus(r, 200, 'thread detail') as {
+        messages: { id: string; attestation: string | null; participants: Cast[] }[];
+      };
+      const msg = t.messages.find((m) => m.id === groupInboundInteraction);
+      assert(msg, 'group inbound row present in thread detail');
+      assert(msg!.attestation === 'provider_verified', `attestation=${msg!.attestation}`);
+      assert(
+        Array.isArray(msg!.participants) && msg!.participants.length === 4,
+        `participants=${JSON.stringify(msg!.participants)}`,
+      );
+      const platform = one(
+        msg!.participants,
+        (c) => c.role === 'recipient',
+        'thread-detail recipient',
+      );
+      assert(
+        platform.party_type === 'platform' && platform.address === PLATFORM_A,
+        `platform leg=${JSON.stringify(platform)}`,
+      );
+    },
+  );
 
-    // party_label is the joined display NAMES, in the frozen group_addresses
-    // order (the sorted member set). The landlord's name is their display_name
-    // (= signup email); the tenants' are their full_names.
-    const nameByAddr: Record<string, string> = {
-      [LL_A]: fx.landlordEmail,
-      [M1_A]: 'Tenant One',
-      [M2_A]: 'Tenant Two',
-    };
-    const expectedLabel = groupMembers.map((a) => nameByAddr[a]).join(', ');
-    const { attestation, party_label } = await journalRow(fx, c.interaction_id);
-    assert(attestation === 'provider_verified', `attestation=${attestation}`);
-    assert(party_label === expectedLabel, `party_label=${JSON.stringify(party_label)} expected=${JSON.stringify(expectedLabel)}`);
-  });
+  await check(
+    'outbound 1:1 sms casts {sender: platform, recipient: resolved tenant}, provider_verified',
+    async () => {
+      const cr = await L('POST', '/outbox', {
+        channel: 'sms',
+        to_address: M1_A,
+        body: 'rent is due friday',
+        approval_ref: `self:${fx.landlordId}`,
+      });
+      const row = assertStatus(cr, 201, 'intent') as { id: string };
+      const done = await A('POST', `/outbox/${row.id}/complete`, {
+        provider: 'test',
+        provider_sid: `ev-${SUFFIX}-sid-1to1`,
+      });
+      const c = assertStatus(done, 200, 'complete') as { interaction_id: string };
 
-  await check('inbound email casts {sender: bound tenant, recipient: platform reply token}, provider_verified', async () => {
-    const llEmail = `ll-${SUFFIX}@example.test`;
-    const tEmail = `tenant1-${SUFFIX}@example.test`;
-    const cr = await L('POST', '/threads', {
-      kind: 'bridged_tenant',
-      channel: 'email',
-      subject: 'Leaky pipe',
-      participants: [
-        { party_type: 'landlord_user', party_id: fx.landlordId, address: llEmail },
-        { party_type: 'tenant', party_id: fx.tenant1Id, address: tEmail },
-      ],
-    });
-    const t = assertStatus(cr, 201, 'email thread create') as ThreadShape;
-    const token = t.bindings.find((b) => b.participant_address === tEmail)?.reply_address;
-    assert(token, 'tenant reply token minted');
-    const r = await A('POST', '/inbound', {
-      provider: 'test-email',
-      provider_msg_id: `ev-${SUFFIX}-in-email`,
-      to_number: token!,
-      from_address: tEmail,
-      channel: 'email',
-      body: 'photo attached of the fixed pipe',
-      received_at: new Date().toISOString(),
-    });
-    const cap = assertStatus(r, 200, 'capture') as CaptureShape;
-    assert(cap.disposition === 'matched', `disposition=${cap.disposition}`);
+      const cast = await journalCast(fx, c.interaction_id);
+      assert(cast.length === 2, `cast size=${cast.length}`);
+      // This intent is thread-less (direct /outbox to_address), so there is no
+      // bound platform number: the sender leg is platform with a null address
+      // (label falls back to 'platform').
+      const sender = one(cast, (c2) => c2.role === 'sender', 'sender');
+      assert(sender.party_type === 'platform', `sender party_type=${sender.party_type}`);
+      // Recipient resolves off the channel_identity the bridged-thread fixture
+      // registered for M1_A -> tenant1.
+      const recipient = one(cast, (c2) => c2.role === 'recipient', 'recipient');
+      assert(
+        recipient.party_type === 'tenant' &&
+          recipient.party_id === fx.tenant1Id &&
+          recipient.address === M1_A &&
+          recipient.label === 'Tenant One',
+        `recipient=${JSON.stringify(recipient)}`,
+      );
 
-    const cast = await journalCast(fx, cap.interaction_id!);
-    // email cc has no v1 semantics: sender + platform-recipient only.
-    assert(cast.length === 2, `cast size=${cast.length}`);
-    const sender = one(cast, (c) => c.role === 'sender', 'sender');
-    assert(sender.party_type === 'tenant' && sender.party_id === fx.tenant1Id
-      && sender.address === tEmail && sender.label === 'Tenant One',
-      `sender=${JSON.stringify(sender)}`);
-    const recipient = one(cast, (c) => c.role === 'recipient', 'recipient');
-    assert(recipient.party_type === 'platform' && recipient.address === token,
-      `recipient=${JSON.stringify(recipient)}`);
+      const { attestation } = await journalRow(fx, c.interaction_id);
+      assert(attestation === 'provider_verified', `attestation=${attestation}`);
+    },
+  );
 
-    const { attestation } = await journalRow(fx, cap.interaction_id!);
-    assert(attestation === 'provider_verified', `attestation=${attestation}`);
-  });
+  await check(
+    'outbound 1:1 recipient snapshot is frozen at INTENT time (an identity edit after intent does not rewrite the journaled cast)',
+    async () => {
+      // A DEDICATED channel_identity so this drift probe never perturbs the
+      // shared M1_A identity the other outbound checks resolve against. Address
+      // is fresh (unused by any thread/fixture). party_type must be one of
+      // tenant/landlord_user/vendor (channel_identities CHECK).
+      const driftAddr = `+1210${SUFFIX}`;
+      const ins = await admin
+        .from('channel_identities')
+        .insert({
+          account_id: fx.accountId,
+          party_type: 'tenant',
+          party_id: fx.tenant1Id,
+          channel: 'sms',
+          address: driftAddr,
+          label: 'Snapshot Tenant One',
+        })
+        .select('id')
+        .single();
+      assert(!ins.error && ins.data, `channel_identity insert: ${ins.error?.message}`);
+      const identityId = (ins.data as { id: string }).id;
+
+      // Intent creation stamps comm_outbox.recipient_snapshot from the identity
+      // as it stands RIGHT NOW (tenant1) — frozen by the guard thereafter.
+      const cr = await L('POST', '/outbox', {
+        channel: 'sms',
+        to_address: driftAddr,
+        body: 'snapshot freeze probe',
+        approval_ref: `self:${fx.landlordId}`,
+      });
+      const row = assertStatus(cr, 201, 'intent') as { id: string };
+
+      // Edit the identity AFTER intent, BEFORE completion: repoint it at the
+      // OTHER tenant (and rename it). Old behaviour (re-resolve at completion)
+      // would journal tenant2 / 'Tenant Two'; the snapshot must ignore this.
+      const upd = await admin
+        .from('channel_identities')
+        .update({ party_id: fx.tenant2Id, label: 'Edited After Intent' })
+        .eq('id', identityId);
+      assert(!upd.error, `identity edit: ${upd.error?.message}`);
+
+      const done = await A('POST', `/outbox/${row.id}/complete`, {
+        provider: 'test',
+        provider_sid: `ev-${SUFFIX}-sid-snapshot`,
+      });
+      const c = assertStatus(done, 200, 'complete') as { interaction_id: string };
+
+      // The journaled cast recipient carries the identity as it was at INTENT
+      // time: party_id = tenant1 (not the edited tenant2) and the snapshot label
+      // = tenant1's display name ('Tenant One', not 'Tenant Two').
+      const cast = await journalCast(fx, c.interaction_id);
+      const recipient = one(cast, (x) => x.role === 'recipient', 'recipient');
+      assert(recipient.party_type === 'tenant', `recipient party_type=${recipient.party_type}`);
+      assert(
+        recipient.party_id === fx.tenant1Id,
+        `recipient party_id=${recipient.party_id} expected the pre-edit tenant1 ${fx.tenant1Id}`,
+      );
+      assert(recipient.address === driftAddr, `recipient address=${recipient.address}`);
+      assert(
+        recipient.label === 'Tenant One',
+        `recipient label=${recipient.label} expected the pre-edit snapshot 'Tenant One'`,
+      );
+    },
+  );
+
+  await check(
+    'outbound group send casts platform sender + one recipient per member; party_label is joined names',
+    async () => {
+      const cr = await L('POST', `/threads/${groupThreadId}/messages`, { body: 'thanks all' });
+      const rows = assertStatus(cr, 201, 'group intent') as { data: { id: string }[] };
+      const done = await A('POST', `/outbox/${rows.data[0]!.id}/complete`, {
+        provider: 'test',
+        provider_sid: `ev-${SUFFIX}-sid-group`,
+      });
+      const c = assertStatus(done, 200, 'complete') as { interaction_id: string };
+
+      const cast = await journalCast(fx, c.interaction_id);
+      // platform sender + one recipient per frozen group address (3 members).
+      assert(cast.length === 4, `cast size=${cast.length}`);
+      const sender = one(cast, (x) => x.role === 'sender', 'sender');
+      assert(
+        sender.party_type === 'platform' && sender.address === PLATFORM_A,
+        `sender=${JSON.stringify(sender)}`,
+      );
+
+      const recipients = cast.filter((x) => x.role === 'recipient');
+      assert(recipients.length === 3, `recipients=${recipients.length}`);
+      const rLL = one(recipients, (x) => x.address === LL_A, 'recipient LL');
+      assert(
+        rLL.party_type === 'landlord_user' &&
+          rLL.party_id === fx.landlordId &&
+          rLL.label === fx.landlordEmail,
+        `recipient LL=${JSON.stringify(rLL)}`,
+      );
+      const rT1 = one(recipients, (x) => x.address === M1_A, 'recipient T1');
+      assert(
+        rT1.party_type === 'tenant' && rT1.party_id === fx.tenant1Id && rT1.label === 'Tenant One',
+        `recipient T1=${JSON.stringify(rT1)}`,
+      );
+      const rT2 = one(recipients, (x) => x.address === M2_A, 'recipient T2');
+      assert(
+        rT2.party_type === 'tenant' && rT2.party_id === fx.tenant2Id && rT2.label === 'Tenant Two',
+        `recipient T2=${JSON.stringify(rT2)}`,
+      );
+
+      // party_label is the joined display NAMES, in the frozen group_addresses
+      // order (the sorted member set). The landlord's name is their display_name
+      // (= signup email); the tenants' are their full_names.
+      const nameByAddr: Record<string, string> = {
+        [LL_A]: fx.landlordEmail,
+        [M1_A]: 'Tenant One',
+        [M2_A]: 'Tenant Two',
+      };
+      const expectedLabel = groupMembers.map((a) => nameByAddr[a]).join(', ');
+      const { attestation, party_label } = await journalRow(fx, c.interaction_id);
+      assert(attestation === 'provider_verified', `attestation=${attestation}`);
+      assert(
+        party_label === expectedLabel,
+        `party_label=${JSON.stringify(party_label)} expected=${JSON.stringify(expectedLabel)}`,
+      );
+    },
+  );
+
+  await check(
+    'inbound email casts {sender: bound tenant, recipient: platform reply token}, provider_verified',
+    async () => {
+      const llEmail = `ll-${SUFFIX}@example.test`;
+      const tEmail = `tenant1-${SUFFIX}@example.test`;
+      const cr = await L('POST', '/threads', {
+        kind: 'bridged_tenant',
+        channel: 'email',
+        subject: 'Leaky pipe',
+        participants: [
+          { party_type: 'landlord_user', party_id: fx.landlordId, address: llEmail },
+          { party_type: 'tenant', party_id: fx.tenant1Id, address: tEmail },
+        ],
+      });
+      const t = assertStatus(cr, 201, 'email thread create') as ThreadShape;
+      const token = t.bindings.find((b) => b.participant_address === tEmail)?.reply_address;
+      assert(token, 'tenant reply token minted');
+      const r = await A('POST', '/inbound', {
+        provider: 'test-email',
+        provider_msg_id: `ev-${SUFFIX}-in-email`,
+        to_number: token!,
+        from_address: tEmail,
+        channel: 'email',
+        body: 'photo attached of the fixed pipe',
+        received_at: new Date().toISOString(),
+      });
+      const cap = assertStatus(r, 200, 'capture') as CaptureShape;
+      assert(cap.disposition === 'matched', `disposition=${cap.disposition}`);
+
+      const cast = await journalCast(fx, cap.interaction_id!);
+      // email cc has no v1 semantics: sender + platform-recipient only.
+      assert(cast.length === 2, `cast size=${cast.length}`);
+      const sender = one(cast, (c) => c.role === 'sender', 'sender');
+      assert(
+        sender.party_type === 'tenant' &&
+          sender.party_id === fx.tenant1Id &&
+          sender.address === tEmail &&
+          sender.label === 'Tenant One',
+        `sender=${JSON.stringify(sender)}`,
+      );
+      const recipient = one(cast, (c) => c.role === 'recipient', 'recipient');
+      assert(
+        recipient.party_type === 'platform' && recipient.address === token,
+        `recipient=${JSON.stringify(recipient)}`,
+      );
+
+      const { attestation } = await journalRow(fx, cap.interaction_id!);
+      assert(attestation === 'provider_verified', `attestation=${attestation}`);
+    },
+  );
 
   await check('cast rows: a member UPDATE is denied (INSERT/UPDATE/DELETE revoked)', async () => {
     const cast = await journalCast(fx, groupInboundInteraction);
@@ -663,59 +783,75 @@ async function main(): Promise<void> {
     const denied = del.status >= 400 || (Array.isArray(del.body) && del.body.length === 0);
     assert(denied, `member DELETE should be denied, got ${del.status} ${JSON.stringify(del.body)}`);
     const after = await journalCast(fx, groupInboundInteraction);
-    assert(after.some((c) => c.id === target.id), 'cast row survived the delete attempt');
-  });
-
-  await check('cast rows: an ADMIN (service-role) UPDATE is denied by the immutability trigger', async () => {
-    // The revoke posture stops the client roles; the BEFORE UPDATE/DELETE
-    // trigger denies EVERYONE the revoke misses — service-role admin included
-    // (belt-and-braces against a future DEFINER bug or service-tier job).
-    const cast = await journalCast(fx, groupInboundInteraction);
-    assert(cast.length > 0, 'need a cast row to tamper with');
-    const target = cast[0]!;
-    const upd = await admin
-      .from('interaction_participants')
-      .update({ label: 'forged-by-admin' })
-      .eq('id', target.id);
-    assert(upd.error, `expected the admin UPDATE to be rejected, got ${JSON.stringify(upd.data)}`);
     assert(
-      /immutable/i.test(upd.error!.message) || upd.error!.code === '23514',
-      `unexpected rejection: code=${upd.error!.code} msg=${upd.error!.message}`,
-    );
-    // And the row is unchanged on re-read.
-    const after = await journalCast(fx, groupInboundInteraction);
-    const still = after.find((c) => c.id === target.id);
-    assert(still && still.label === target.label, `cast row changed: ${JSON.stringify(still)}`);
-  });
-
-  await check("attestation: a direct provider_verified insert is rejected by the forge gate", async () => {
-    // Only the verified comms paths (capture_inbound / complete_send) set the
-    // comm.verified_write GUC; a raw insert — even service-role admin — is
-    // refused by _enforce_attestation_provenance (check_violation, 23514).
-    const { error } = await admin.from('interactions').insert({
-      account_id: fx.accountId,
-      actor: 'system',
-      kind: 'communication',
-      party_type: 'tenant',
-      channel: 'sms',
-      direction: 'inbound',
-      occurred_at: new Date().toISOString(),
-      body: 'forged verified transmission',
-      attestation: 'provider_verified',
-    });
-    assert(error, 'expected the provider_verified insert to be rejected');
-    assert(
-      /verified comms write path/i.test(error!.message) || error!.code === '23514',
-      `unexpected rejection: code=${error!.code} msg=${error!.message}`,
+      after.some((c) => c.id === target.id),
+      'cast row survived the delete attempt',
     );
   });
+
+  await check(
+    'cast rows: an ADMIN (service-role) UPDATE is denied by the immutability trigger',
+    async () => {
+      // The revoke posture stops the client roles; the BEFORE UPDATE/DELETE
+      // trigger denies EVERYONE the revoke misses — service-role admin included
+      // (belt-and-braces against a future DEFINER bug or service-tier job).
+      const cast = await journalCast(fx, groupInboundInteraction);
+      assert(cast.length > 0, 'need a cast row to tamper with');
+      const target = cast[0]!;
+      const upd = await admin
+        .from('interaction_participants')
+        .update({ label: 'forged-by-admin' })
+        .eq('id', target.id);
+      assert(
+        upd.error,
+        `expected the admin UPDATE to be rejected, got ${JSON.stringify(upd.data)}`,
+      );
+      assert(
+        /immutable/i.test(upd.error!.message) || upd.error!.code === '23514',
+        `unexpected rejection: code=${upd.error!.code} msg=${upd.error!.message}`,
+      );
+      // And the row is unchanged on re-read.
+      const after = await journalCast(fx, groupInboundInteraction);
+      const still = after.find((c) => c.id === target.id);
+      assert(still && still.label === target.label, `cast row changed: ${JSON.stringify(still)}`);
+    },
+  );
+
+  await check(
+    'attestation: a direct provider_verified insert is rejected by the forge gate',
+    async () => {
+      // Only the verified comms paths (capture_inbound / complete_send) set the
+      // comm.verified_write GUC; a raw insert — even service-role admin — is
+      // refused by _enforce_attestation_provenance (check_violation, 23514).
+      const { error } = await admin.from('interactions').insert({
+        account_id: fx.accountId,
+        actor: 'system',
+        kind: 'communication',
+        party_type: 'tenant',
+        channel: 'sms',
+        direction: 'inbound',
+        occurred_at: new Date().toISOString(),
+        body: 'forged verified transmission',
+        attestation: 'provider_verified',
+      });
+      assert(error, 'expected the provider_verified insert to be rejected');
+      assert(
+        /verified comms write path/i.test(error!.message) || error!.code === '23514',
+        `unexpected rejection: code=${error!.code} msg=${error!.message}`,
+      );
+    },
+  );
 
   // ==========================================================================
   // EV-B: verbatim-webhook archive
   // ==========================================================================
 
   const rawBody = JSON.stringify({
-    data: { event_type: 'message.received', id: `ev-${SUFFIX}-wh-1`, payload: { text: 'pipe fixed' } },
+    data: {
+      event_type: 'message.received',
+      id: `ev-${SUFFIX}-wh-1`,
+      payload: { text: 'pipe fixed' },
+    },
   });
   const rawSha = sha256Hex(rawBody);
   const msgId1 = `ev-${SUFFIX}-arch-1`;
@@ -749,9 +885,12 @@ async function main(): Promise<void> {
       .eq('entity_type', 'inbound_provenance')
       .eq('entity_id', archived.id);
     assert(!ev.error, `events read: ${ev.error?.message}`);
-    const inserted = (ev.data ?? []).find((e) => (e as { event_type: string }).event_type === 'inserted');
+    const inserted = (ev.data ?? []).find(
+      (e) => (e as { event_type: string }).event_type === 'inserted',
+    );
     assert(inserted, 'inserted audit event exists');
-    const after = (inserted as { payload: { after: { body_sha256: string } } }).payload.after;
+    const after = (inserted as unknown as { payload: { after: { body_sha256: string } } }).payload
+      .after;
     assert(after.body_sha256 === rawSha, 'the body hash is inside the audit chain');
   });
 
@@ -768,28 +907,34 @@ async function main(): Promise<void> {
     assert(row.id === archived!.id, 'same row id');
   });
 
-  await check('evidence archive: a DIFFERENT body for the same msg id is refused (409)', async () => {
-    const r = await A('POST', '/evidence', {
-      provider: 'telnyx',
-      provider_msg_id: msgId1,
-      raw_body_b64: Buffer.from(rawBody + 'tampered', 'utf8').toString('base64'),
-      received_at: new Date().toISOString(),
-    });
-    assertStatus(r, 409, 'conflicting body');
-  });
-
-  await check('evidence archive: account-pinned (another account replaying the id 409s)', async () => {
-    const r = await api('POST', `${baseB}/evidence`, {
-      token: fxB.agentToken,
-      body: {
+  await check(
+    'evidence archive: a DIFFERENT body for the same msg id is refused (409)',
+    async () => {
+      const r = await A('POST', '/evidence', {
         provider: 'telnyx',
         provider_msg_id: msgId1,
-        raw_body_b64: Buffer.from(rawBody, 'utf8').toString('base64'),
+        raw_body_b64: Buffer.from(rawBody + 'tampered', 'utf8').toString('base64'),
         received_at: new Date().toISOString(),
-      },
-    });
-    assertStatus(r, 409, 'foreign-account replay');
-  });
+      });
+      assertStatus(r, 409, 'conflicting body');
+    },
+  );
+
+  await check(
+    'evidence archive: account-pinned (another account replaying the id 409s)',
+    async () => {
+      const r = await api('POST', `${baseB}/evidence`, {
+        token: fxB.agentToken,
+        body: {
+          provider: 'telnyx',
+          provider_msg_id: msgId1,
+          raw_body_b64: Buffer.from(rawBody, 'utf8').toString('base64'),
+          received_at: new Date().toISOString(),
+        },
+      });
+      assertStatus(r, 409, 'foreign-account replay');
+    },
+  );
 
   await check('evidence archive: transport-only (landlord and viewer 403)', async () => {
     const body = {
@@ -822,13 +967,19 @@ async function main(): Promise<void> {
       `inbound_provenance?provider_msg_id=eq.${msgId1}&select=id`,
       fx.landlordToken,
     );
-    assert(mine.status === 200 && (mine.body as unknown[]).length === 1, `own read: ${JSON.stringify(mine.body)}`);
+    assert(
+      mine.status === 200 && (mine.body as unknown[]).length === 1,
+      `own read: ${JSON.stringify(mine.body)}`,
+    );
     const foreign = await pgrest(
       'GET',
       `inbound_provenance?provider_msg_id=eq.${msgId1}&select=id`,
       fxB.landlordToken,
     );
-    assert(foreign.status === 200 && (foreign.body as unknown[]).length === 0, `foreign read: ${JSON.stringify(foreign.body)}`);
+    assert(
+      foreign.status === 200 && (foreign.body as unknown[]).length === 0,
+      `foreign read: ${JSON.stringify(foreign.body)}`,
+    );
   });
 
   // ==========================================================================
@@ -841,18 +992,34 @@ async function main(): Promise<void> {
     assert(h.active === false && h.set_at === null && h.set_by === null, JSON.stringify(h));
   });
 
-  await check('legal hold: agent and viewer PUT are 403; raw agent write is RLS-denied', async () => {
-    const body = { active: true, reason: 'forged' };
-    assertStatus(await api('PUT', `${base}/legal-hold`, { token: fx.agentToken, body }), 403, 'agent');
-    assertStatus(await api('PUT', `${base}/legal-hold`, { token: fx.viewerToken, body }), 403, 'viewer');
-    const raw = await pgrest('POST', 'account_legal_holds', fx.agentToken, {
-      account_id: fx.accountId, active: true, reason: 'forged',
-    });
-    assert(raw.status >= 400, `raw insert should be denied, got ${raw.status}`);
-  });
+  await check(
+    'legal hold: agent and viewer PUT are 403; raw agent write is RLS-denied',
+    async () => {
+      const body = { active: true, reason: 'forged' };
+      assertStatus(
+        await api('PUT', `${base}/legal-hold`, { token: fx.agentToken, body }),
+        403,
+        'agent',
+      );
+      assertStatus(
+        await api('PUT', `${base}/legal-hold`, { token: fx.viewerToken, body }),
+        403,
+        'viewer',
+      );
+      const raw = await pgrest('POST', 'account_legal_holds', fx.agentToken, {
+        account_id: fx.accountId,
+        active: true,
+        reason: 'forged',
+      });
+      assert(raw.status >= 400, `raw insert should be denied, got ${raw.status}`);
+    },
+  );
 
   await check('legal hold: manager set is recorded + audited', async () => {
-    const r = await L('PUT', '/legal-hold', { active: true, reason: 'deposit dispute demand letter' });
+    const r = await L('PUT', '/legal-hold', {
+      active: true,
+      reason: 'deposit dispute demand letter',
+    });
     const h = assertStatus(r, 200, 'set') as HoldShape;
     assert(h.active === true && h.set_by === fx.landlordId && h.set_at !== null, JSON.stringify(h));
     const again = await L('GET', '/legal-hold');
@@ -916,7 +1083,9 @@ async function main(): Promise<void> {
       .select('event_type, payload')
       .eq('entity_type', 'inbound_provenance')
       .eq('entity_id', oldRow!.id);
-    const updated = (ev.data ?? []).find((e) => (e as { event_type: string }).event_type === 'updated');
+    const updated = (ev.data ?? []).find(
+      (e) => (e as { event_type: string }).event_type === 'updated',
+    );
     assert(updated, 'the destruction is an audited event');
   });
 

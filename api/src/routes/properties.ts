@@ -1,27 +1,15 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import { asJson, type DbTableUpdate } from '../supabase/db-types';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
+import { softDeleteStamp } from './_lib/soft-delete';
+import { Address, CreatePropertyBody } from '../schemas/importable';
 
 // =====================================================================
 // schemas
 // =====================================================================
-
-// NOT registered as a named component on purpose. Referencing a registered
-// `.openapi('Address')` schema through `.optional()` / `.nullable()` makes
-// zod-openapi emit `allOf: [{$ref: Address}, {type: object}]`, which
-// openapi-typescript then renders as `Address & Record<string, never>` -- an
-// unsatisfiable type (every key becomes `never`). Inlining keeps the same
-// validation while emitting a plain object schema the SDK can actually use.
-const Address = z.object({
-  line1:   z.string().max(200).optional(),
-  line2:   z.string().max(200).optional(),
-  city:    z.string().max(100).optional(),
-  state:   z.string().max(100).optional(),
-  zip:     z.string().max(20).optional(),
-  country: z.string().max(100).optional(),
-});
 
 const Property = z
   .object({
@@ -35,15 +23,6 @@ const Property = z
   })
   .openapi('Property');
 
-// Exported so the onboarding-import executor validates against the EXACT same
-// schema an HTTP POST would, rather than a hand-rolled parallel copy.
-export const CreatePropertyBody = z
-  .object({
-    name: z.string().min(1).max(200),
-    address: Address.optional(),
-  })
-  .openapi('CreatePropertyBody');
-
 const PatchPropertyBody = z
   .object({
     name: z.string().min(1).max(200).optional(),
@@ -55,12 +34,21 @@ const PatchPropertyBody = z
   .openapi('PatchPropertyBody');
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 
 const AccountAndIdParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
 });
 
 const ListQuery = z.object({
@@ -207,9 +195,9 @@ propertiesApp.openapi(patch, async (c) => {
   const body = c.req.valid('json');
   const sb = getSb(c);
 
-  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  const update: DbTableUpdate<'properties'> = { updated_at: new Date().toISOString() };
   if (body.name !== undefined) update.name = body.name;
-  if (body.address !== undefined) update.address = body.address;
+  if (body.address !== undefined) update.address = asJson(body.address);
 
   const { data, error } = await sb
     .from('properties')
@@ -231,7 +219,7 @@ propertiesApp.openapi(remove, async (c) => {
 
   const { data, error } = await sb
     .from('properties')
-    .update({ deleted_at: new Date().toISOString() })
+    .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)
