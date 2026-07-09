@@ -51,6 +51,9 @@ jobs:
       - name: Admin quarantine (ESLint rule regression)
         run: pnpm lint:admin-quarantine
 
+      - name: Render env drift
+        run: pnpm check:render-env
+
       - name: Unit tests (vitest)
         # JWT middleware (ES256/JWKS, algorithm confusion) + the validation-
         # envelope guard (defaultHook does not inherit across .route()
@@ -81,6 +84,11 @@ jobs:
             echo "and commit the result."
             exit 1
           fi
+
+      - name: Guide drift
+        # docs/api-guide.md is the human contract. This catches docs that
+        # describe an endpoint the typed OpenAPI surface does not expose.
+        run: pnpm check:guide-drift
 
   isolation:
     # Ephemeral Postgres service container; full migrations applied; two
@@ -181,6 +189,11 @@ jobs:
         # event; soft-delete emits a tombstone; logged_at is immutable.
         run: pnpm --filter ./db test:audit
 
+      - name: Run mixed-era audit-chain checks
+        # Historical snapshot rows and newer authorship/capacity rows must
+        # verify through the same chain code; protects upgrade-era evidence.
+        run: pnpm --filter ./db test:chain-mixed-era
+
       - name: Run money-spine DoD checks (Phase 6)
         # Derived balance / reversal-not-mutation / allocation integrity at
         # the DB / per-charge concurrent allocations / deposit segregation.
@@ -264,6 +277,16 @@ jobs:
         # determinism (same input -> same hash); completed-inspection
         # immutability; HTML upload rejected.
         run: pnpm --filter ./api test:attachments
+
+      - name: Run document vault checks
+        # Document CRUD, tenant/member visibility, content idempotency, soft
+        # delete, and document pagination under real API/RLS paths.
+        run: pnpm --filter ./api test:documents
+
+      - name: Run condition-report checks
+        # Inspection-to-condition-report flow, tenant capture tokens, item/photo
+        # linkage, generated documents, and completed-report immutability.
+        run: pnpm --filter ./api test:condition-reports
 
       - name: Run ledger + pagination regression checks
         # Phase 0/1 architecture-plan guards: tenancy-scoped allocation

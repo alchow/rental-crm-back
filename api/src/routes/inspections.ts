@@ -3,6 +3,7 @@ import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
+import { softDeleteStamp } from './_lib/soft-delete';
 import { generateAndStoreInspectionReport } from '../admin/pdf';
 import {
   generateCaptureSecret,
@@ -466,7 +467,7 @@ inspectionTemplatesApp.openapi(tplRemove, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const sb = getSb(c);
   const { data, error } = await sb.from('inspection_templates')
-    .update({ deleted_at: new Date().toISOString() })
+    .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)
@@ -1199,7 +1200,7 @@ inspectionItemsApp.openapi(itemRemove, async (c) => {
   const { accountId, inspectionId, id } = c.req.valid('param');
   const sb = getSb(c);
   const { data, error } = await sb.from('inspection_items')
-    .update({ deleted_at: new Date().toISOString() })
+    .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('inspection_id', inspectionId)
     .eq('id', id)

@@ -43,6 +43,9 @@ PATTERNS=(
 #     constructor in these files.
 #   - openapi/emit.ts: same shape -- assigns a placeholder to process.env so
 #     the env schema parse succeeds at spec-emit time. No client is built.
+#   - scripts/check-render-env-drift.mjs: static Render blueprint drift check;
+#     it mentions the env var name as data, but never reads process.env or
+#     constructs a Supabase client.
 EXCLUDES=(
   ':!api/src/admin/**'
   ':!scripts/lint-service-role.sh'
@@ -169,6 +172,7 @@ EXCLUDES=(
   ':!api/test/ledger.test.ts'
   ':!api/test/bench-import.ts'
   ':!openapi/emit.ts'
+  ':!scripts/check-render-env-drift.mjs'
 )
 
 violations=0

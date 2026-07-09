@@ -3,6 +3,7 @@ import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses, conflictResponse } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
+import { softDeleteStamp } from './_lib/soft-delete';
 
 // Leases attach to a tenancy. A tenancy can have zero, one, or many leases
 // (handshake / month-to-month / holdover are first-class -- they're tenancies
@@ -394,7 +395,7 @@ leasesApp.openapi(remove, async (c) => {
 
   const { data, error } = await sb
     .from('leases')
-    .update({ deleted_at: new Date().toISOString() })
+    .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)

@@ -3,6 +3,7 @@ import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses, conflictResponse, type ErrorCode } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
+import { softDeleteStamp } from './_lib/soft-delete';
 
 // A rent schedule is the recurring rule that EMITS periodic charges. It
 // lives on a tenancy (not on a lease) so lease-less tenancies still bill.
@@ -428,7 +429,7 @@ rentSchedulesApp.openapi(remove, async (c) => {
 
   const { data, error } = await sb
     .from('rent_schedules')
-    .update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)

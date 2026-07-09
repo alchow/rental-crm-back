@@ -3,6 +3,7 @@ import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
+import { softDeleteStamp } from './_lib/soft-delete';
 
 // Assets (water heaters, boilers, smoke detectors, etc.) attach to an area,
 // never directly to a property. That means the basement boiler is an asset
@@ -203,7 +204,7 @@ assetsApp.openapi(remove, async (c) => {
   const sb = getSb(c);
   const { data, error } = await sb
     .from('assets')
-    .update({ deleted_at: new Date().toISOString() })
+    .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)

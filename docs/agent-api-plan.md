@@ -1,5 +1,10 @@
 # Agent-facing API: architecture & implementation plan (Group 1)
 
+- **Historical note:** this plan records the June 12, 2026 single-agent design.
+  ADR-0009 superseded the live identity model on June 13, 2026:
+  `AGENT_USER_ID` is retired, and current agent classification comes from the
+  account membership role `role='agent'`. Treat any `AGENT_USER_ID` setup
+  language below as legacy design context, not current ops guidance.
 - **Status:** EXECUTED 2026-06-12 — PRs 0–6 implemented and green on the full
   suite (migrations 20260616000001–04). NOT yet deployed: prod requires
   migrations pushed BEFORE the code deploy (the interactions insert path

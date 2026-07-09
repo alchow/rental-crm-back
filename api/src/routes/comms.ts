@@ -2447,24 +2447,6 @@ commsApp.openapi(getThread, async (c) => {
   if (thErr) throw commDbError(thErr);
   if (!thread) throw new ApiError(404, 'not_found', 'not found');
 
-  const participants = (await loadParticipants(c, accountId, [id])).get(id) ?? [];
-
-  // Account-level From display name, injected on the detail read (the transport
-  // renders it). One extra indexed read; not on list/THREAD_COLS.
-  const { data: account, error: acctErr } = await sb
-    .from('accounts')
-    .select('sender_display_name')
-    .eq('id', accountId)
-    .maybeSingle();
-  if (acctErr) throw commDbError(acctErr);
-
-  const { data: bindings, error: bErr } = await sb
-    .from('thread_channel_bindings')
-    .select(BINDING_COLS)
-    .eq('account_id', accountId)
-    .eq('thread_id', id);
-  if (bErr) throw commDbError(bErr);
-
   // Journal rows in the thread, newest-first, with derived delivery state
   // from the chain view (outbox join), then per-leg relay fan-out.
   const msgQuery = sb
@@ -2473,12 +2455,28 @@ commsApp.openapi(getThread, async (c) => {
     .eq('account_id', accountId)
     .eq('thread_id', id)
     .is('deleted_at', null);
-  const { items: msgRows, next_cursor: messagesNext } = await keysetPage<Record<string, unknown>>(
-    msgQuery,
-    { cursor, limit, column: 'occurred_at', descending: true },
-  );
-  const legs = await loadRelayLegs(c, accountId, msgRows.map((m) => String(m.id)));
-  const casts = await loadInteractionParticipants(sb, accountId, msgRows.map((m) => String(m.id)));
+
+  // These reads are independent once the thread row exists. Keep them together
+  // so the data flow is obvious: thread detail = metadata + message page.
+  const [participantMap, accountRes, bindingsRes, msgPage] = await Promise.all([
+    loadParticipants(c, accountId, [id]),
+    sb.from('accounts').select('sender_display_name').eq('id', accountId).maybeSingle(),
+    sb.from('thread_channel_bindings').select(BINDING_COLS).eq('account_id', accountId).eq('thread_id', id),
+    keysetPage<Record<string, unknown>>(
+      msgQuery,
+      { cursor, limit, column: 'occurred_at', descending: true },
+    ),
+  ]);
+  if (accountRes.error) throw commDbError(accountRes.error);
+  if (bindingsRes.error) throw commDbError(bindingsRes.error);
+
+  const participants = participantMap.get(id) ?? [];
+  const { items: msgRows, next_cursor: messagesNext } = msgPage;
+  const messageIds = msgRows.map((m) => String(m.id));
+  const [legs, casts] = await Promise.all([
+    loadRelayLegs(c, accountId, messageIds),
+    loadInteractionParticipants(sb, accountId, messageIds),
+  ]);
   const messages = msgRows.map((m) => ({
     ...withResolvedAuthorship(m as { author_type?: string | null; actor: string }),
     relay_legs: legs.get(String(m.id)) ?? [],
@@ -2489,10 +2487,10 @@ commsApp.openapi(getThread, async (c) => {
     {
       ...(thread as z.infer<typeof CommThread>),
       participants,
-      bindings: (bindings ?? []) as z.infer<typeof CommThreadBinding>[],
+      bindings: (bindingsRes.data ?? []) as z.infer<typeof CommThreadBinding>[],
       messages,
       messages_next_cursor: messagesNext,
-      sender_display_name: (account?.sender_display_name ?? null) as string | null,
+      sender_display_name: (accountRes.data?.sender_display_name ?? null) as string | null,
     } as z.infer<typeof CommThreadDetail>,
     200,
   );

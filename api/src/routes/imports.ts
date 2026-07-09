@@ -5,6 +5,7 @@ import { getUserClient } from '../supabase/user-client';
 import { enqueue } from '../admin/job-runner';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage, keysetPageIndexed } from './_lib/cursor';
+import { softDeleteStamp } from './_lib/soft-delete';
 import {
   parseImportFile,
   extFromFilename,
@@ -821,7 +822,7 @@ importsApp.openapi(remove, async (c) => {
   const sb = getSb(c);
   const { data, error } = await sb
     .from('import_sessions')
-    .update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('id', sessionId)
     .is('deleted_at', null)

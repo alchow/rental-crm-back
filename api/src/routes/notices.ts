@@ -3,6 +3,7 @@ import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses, conflictResponse } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
+import { softDeleteStamp } from './_lib/soft-delete';
 
 // A notice is a served instrument (entry notice, rent-increase notice,
 // termination notice, ...). It attaches to a tenancy and, like a lease, is a
@@ -311,7 +312,7 @@ noticesApp.openapi(remove, async (c) => {
 
   const { data, error } = await sb
     .from('notices')
-    .update({ deleted_at: new Date().toISOString() })
+    .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)

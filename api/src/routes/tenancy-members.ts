@@ -4,6 +4,7 @@ import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { paginated } from './_lib/list-response';
+import { softDeleteStamp } from './_lib/soft-delete';
 
 // Sub-resource of tenancies: the people occupying a tenancy, with a role.
 // One tenant can hold multiple roles in the same tenancy (the unique key is
@@ -182,7 +183,7 @@ tenancyMembersApp.openapi(remove, async (c) => {
   const sb = getSb(c);
   const { data, error } = await sb
     .from('tenancy_tenants')
-    .update({ deleted_at: new Date().toISOString() })
+    .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('tenancy_id', tenancyId)
     .eq('id', id)

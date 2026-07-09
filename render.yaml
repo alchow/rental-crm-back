@@ -46,6 +46,10 @@ services:
       # transport's webhook (ops).
       - key: EMAIL_REPLY_DOMAIN
         sync: false
+      # Optional parent domain for per-account branded reply subdomains
+      # (<local>@<label>.<parent>). Unset -> accounts use EMAIL_REPLY_DOMAIN.
+      - key: EMAIL_PLATFORM_PARENT_DOMAIN
+        sync: false
       # Cutover flag for core-originated transactional email. ON -> the renewal
       # email is written to the comms outbox (transport dials); OFF/unset ->
       # the legacy in-core mailer sends directly.

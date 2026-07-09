@@ -3,6 +3,7 @@ import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
+import { softDeleteStamp } from './_lib/soft-delete';
 
 // Areas are the model's central abstraction: a unit is just an `area` whose
 // kind = 'unit'. Common areas (hallway, basement_mechanical, …) live in the
@@ -222,7 +223,7 @@ areasApp.openapi(remove, async (c) => {
   const sb = getSb(c);
   const { data, error } = await sb
     .from('areas')
-    .update({ deleted_at: new Date().toISOString() })
+    .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)
