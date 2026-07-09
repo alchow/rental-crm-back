@@ -1552,15 +1552,24 @@ function normalizeAddress(channel: string, raw: string): string {
   return e164;
 }
 
-// Tiny offset cursor for the opt-out list: the register has no uuid id to
-// keyset on (PK is (channel, address)) and a landlord's slice of it is small.
+// Tiny offset cursor for the opt-out list: the global register has no uuid id
+// to keyset on (PK is channel/address). SQL still applies the limit/offset so
+// a landlord listing one page never pulls the whole visible register into API
+// memory.
 function encodeOffsetCursor(offset: number): string {
   return Buffer.from(JSON.stringify({ o: offset })).toString('base64url');
 }
 function decodeOffsetCursor(s: string): number {
   try {
     const obj = JSON.parse(Buffer.from(s, 'base64url').toString('utf8')) as { o?: unknown };
-    if (typeof obj.o === 'number' && Number.isInteger(obj.o) && obj.o >= 0) return obj.o;
+    if (
+      typeof obj.o === 'number' &&
+      Number.isInteger(obj.o) &&
+      obj.o >= 0 &&
+      obj.o <= 2_147_483_647
+    ) {
+      return obj.o;
+    }
   } catch {
     /* fall through */
   }
@@ -2326,15 +2335,18 @@ commsApp.openapi(listOptOuts, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit, channel } = c.req.valid('query');
   const sb = getSb(c);
+  const offset = cursor !== undefined ? decodeOffsetCursor(cursor) : 0;
   const { data, error } = await sb.rpc('list_account_opt_outs', {
     p_account_id: accountId,
     p_channel: channel ?? null,
+    p_limit: limit + 1,
+    p_offset: offset,
   });
   if (error) throw commDbError(error);
   const rows = (data ?? []) as z.infer<typeof CommOptOut>[];
-  const offset = cursor !== undefined ? decodeOffsetCursor(cursor) : 0;
-  const page = rows.slice(offset, offset + limit);
-  const next = offset + limit < rows.length ? encodeOffsetCursor(offset + limit) : null;
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
+  const next = hasMore ? encodeOffsetCursor(offset + limit) : null;
   return c.json({ data: page, next_cursor: next }, 200);
 });
 

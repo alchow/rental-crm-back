@@ -1,5 +1,11 @@
 # Architecture review & phased improvement plan
 
+- **Current-use note (2026-07-08):** this is a historical plan, not a current
+  architecture snapshot. Several items below have since shipped (validation
+  envelopes, body limits, graceful shutdown, Node 22/dist startup, cursor
+  hardening, contract/SDK gates, and the `xlsx` CDN upgrade). Use this file for
+  decision history only; verify current behavior in code before treating any
+  finding as open.
 - **Status:** Phases 0 and 1 EXECUTED on 2026-06-11 (all items except the
   Phase 1 stretch goal: auth rate limiting, and Sentry — structured
   logging/error trails shipped instead; add a DSN-backed tracker when an

@@ -520,7 +520,7 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   // too and the renderer derives an "opening balance as of from_date"
   // line. Hard date-cuts on ledger queries would silently drop the
   // governing context a dispute usually turns on.
-  const [occRes, leaseRes, schedRes, chargeRes, payRes, allocRes] = await Promise.all([
+  const [occRes, leaseRes, schedRes, chargeRes, payRes] = await Promise.all([
     tenancyId
       ? admin.from('tenancy_tenants').select('*, tenants(*)').eq('account_id', scope.accountId).eq('tenancy_id', tenancyId)
       : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
@@ -536,7 +536,6 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     tenancyId
       ? admin.from('payments').select('*').eq('account_id', scope.accountId).eq('tenancy_id', tenancyId)
       : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
-    admin.from('payment_allocations').select('*').eq('account_id', scope.accountId),
   ]);
   const fromDate = scope.fromDate ?? null;
   const toDate = scope.toDate ?? null;
@@ -545,7 +544,18 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   const rentSchedules: Record<string, unknown>[] = (schedRes.data as Record<string, unknown>[]) ?? [];
   const charges: Record<string, unknown>[] = (chargeRes.data as Record<string, unknown>[]) ?? [];
   const payments: Record<string, unknown>[] = (payRes.data as Record<string, unknown>[]) ?? [];
-  const allocations: Record<string, unknown>[] = (allocRes.data as Record<string, unknown>[]) ?? [];
+  const allocations: Record<string, unknown>[] = [];
+  const chargeIds = charges.map((c) => c.id).filter((id): id is string => typeof id === 'string');
+  for (let i = 0; i < chargeIds.length; i += 200) {
+    const allocRes = await admin
+      .from('payment_allocations')
+      .select('*')
+      .eq('account_id', scope.accountId)
+      .in('charge_id', chargeIds.slice(i, i + 200))
+      .is('deleted_at', null);
+    if (allocRes.error) throw new Error(`payment_allocations query failed: ${allocRes.error.message}`);
+    allocations.push(...((allocRes.data as Record<string, unknown>[]) ?? []));
+  }
 
   // Area-scoped rows.
   let interactions: Record<string, unknown>[] = [];

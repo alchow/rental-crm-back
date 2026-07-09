@@ -63,6 +63,13 @@ import {
   injectServiceUnavailable,
 } from './openapi/idempotency-contract';
 
+const LARGE_BODY_PATH_RE =
+  /^\/v1\/(?:intake\/[^/]+|accounts\/[^/]+\/(?:imports|attachments|documents|interactions\/[^/]+\/attachments)|inspection-capture\/[^/]+\/items\/[^/]+\/photos)\/?$/;
+
+export function usesLargeBodyLimit(path: string): boolean {
+  return LARGE_BODY_PATH_RE.test(path);
+}
+
 // The Hono app, configured but NOT listening. index.ts mounts it on a
 // node-server port; tests call app.fetch(request) directly without binding
 // to a port.
@@ -124,8 +131,9 @@ export function buildApp(): OpenAPIHono {
   // auth + intake legs -- those are exactly where an unbounded body is a
   // memory-DoS). parseBody()/json() buffer the whole body before any
   // application-level size check can run, so the cap must sit here in the
-  // middleware stack. The two file-upload endpoints get headroom above
-  // their 20 MiB application cap; everything else is JSON and gets 1 MiB.
+  // middleware stack. Large upload/capture endpoints get headroom above their
+  // route-level caps (20 MiB files or 10 MiB decoded comm attachments);
+  // everything else is JSON and gets 1 MiB.
   const payloadTooLarge = (c: Context) =>
     c.json(
       { error: { code: 'payload_too_large', message: 'request body exceeds the allowed size' } },
@@ -133,9 +141,8 @@ export function buildApp(): OpenAPIHono {
     );
   const defaultBodyLimit = bodyLimit({ maxSize: 1 * 1024 * 1024, onError: payloadTooLarge });
   const uploadBodyLimit = bodyLimit({ maxSize: 25 * 1024 * 1024, onError: payloadTooLarge });
-  const UPLOAD_PATH_RE = /^\/v1\/(?:intake\/[^/]+|accounts\/[^/]+\/imports|inspection-capture\/[^/]+\/items\/[^/]+\/photos)\/?$/;
   app.use('*', (c, next) =>
-    (UPLOAD_PATH_RE.test(c.req.path) ? uploadBodyLimit : defaultBodyLimit)(c, next),
+    (usesLargeBodyLimit(c.req.path) ? uploadBodyLimit : defaultBodyLimit)(c, next),
   );
 
   // Liveness probe: "the process is up", nothing more. No auth, no DB, no
