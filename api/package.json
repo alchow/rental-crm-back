@@ -34,6 +34,7 @@
     "test:comms-persona": "tsx test/comms-persona.test.ts",
     "test:comms-evidence": "tsx test/comms-evidence.test.ts",
     "retention:evidence": "tsx src/admin/run-evidence-retention.ts",
+    "janitors:maintenance": "tsx src/admin/run-maintenance-janitors.ts",
     "charges:generate": "tsx src/admin/run-rent-charges.ts",
     "test:events-feed": "tsx test/events-feed.test.ts",
     "test:agent-principal": "tsx test/agent-principal.test.ts",
