@@ -408,12 +408,21 @@ export function registerInboundRoutes(app: CommsApp): void {
     const { cursor, limit, channel } = c.req.valid('query');
     const sb = getSb(c);
     const offset = cursor !== undefined ? decodeOffsetCursor(cursor) : 0;
-    const { data, error } = await sb.rpc('list_account_opt_outs', {
+    const pageLimit = limit + 1;
+    let { data, error } = await sb.rpc('list_account_opt_outs', {
       p_account_id: accountId,
-      p_channel: channel,
-      p_limit: limit + 1,
+      p_channel: nullableRpcArg<string>(channel ?? null),
+      p_limit: pageLimit,
       p_offset: offset,
     });
+    if (error && isMissingPaginatedOptOutsRpc(error)) {
+      const fallback = await sb.rpc('list_account_opt_outs', {
+        p_account_id: accountId,
+        p_channel: nullableRpcArg<string>(channel ?? null),
+      });
+      data = fallback.data?.slice(offset, offset + pageLimit) ?? null;
+      error = fallback.error;
+    }
     if (error) throw commDbError(error);
     const rows = (data ?? []) as z.infer<typeof CommOptOut>[];
     const hasMore = rows.length > limit;
@@ -456,4 +465,11 @@ export function registerInboundRoutes(app: CommsApp): void {
       200,
     );
   });
+}
+
+function isMissingPaginatedOptOutsRpc(error: { message?: string }): boolean {
+  return (
+    typeof error.message === 'string' &&
+    error.message.includes('list_account_opt_outs(p_account_id, p_channel, p_limit, p_offset)')
+  );
 }
