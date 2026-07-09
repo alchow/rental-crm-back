@@ -1,9 +1,11 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import type { DbTableUpdate } from '../supabase/db-types';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { softDeleteStamp } from './_lib/soft-delete';
+import { CreateTenancyBody, TenancyStatus } from '../schemas/importable';
 
 // A tenancy is one occupancy period of one unit-kind area. The DB trigger
 // `tenancies_area_kind_check` enforces area.kind = 'unit' (a tenancy on a
@@ -11,8 +13,6 @@ import { softDeleteStamp } from './_lib/soft-delete';
 // We don't allow patching area_id once a tenancy is created -- changing
 // which area a tenancy occupies is a different operation (end the old,
 // start a new) and conflates the records.
-
-const TenancyStatus = z.enum(['upcoming', 'active', 'ended', 'holdover']);
 
 const Tenancy = z
   .object({
@@ -28,19 +28,13 @@ const Tenancy = z
   })
   .openapi('Tenancy');
 
-// Exported for reuse by the onboarding-import executor (same-schema validation).
-export const CreateTenancyBody = z
-  .object({
-    area_id: z.string().uuid(),
-    start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
-    status: TenancyStatus,
-  })
-  .openapi('CreateTenancyBody');
-
 const PatchTenancyBody = z
   .object({
-    end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+    end_date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable()
+      .optional(),
     status: TenancyStatus.optional(),
   })
   .refine((b) => Object.keys(b).length > 0, {
@@ -49,11 +43,20 @@ const PatchTenancyBody = z
   .openapi('PatchTenancyBody');
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 const AccountAndIdParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
 });
 
 const ListQuery = z.object({
@@ -135,11 +138,7 @@ tenanciesApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit, area_id, status } = c.req.valid('query');
   const sb = getSb(c);
-  let q = sb
-    .from('tenancies')
-    .select('*')
-    .eq('account_id', accountId)
-    .is('deleted_at', null);
+  let q = sb.from('tenancies').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (area_id) q = q.eq('area_id', area_id);
   if (status) q = q.eq('status', status);
   const { items, next_cursor: nextCursor } = await keysetPage(q, { cursor, limit });
@@ -203,7 +202,7 @@ tenanciesApp.openapi(patch, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
-  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  const update: DbTableUpdate<'tenancies'> = { updated_at: new Date().toISOString() };
   if (body.end_date !== undefined) update.end_date = body.end_date;
   if (body.status !== undefined) update.status = body.status;
   const { data, error } = await sb

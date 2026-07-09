@@ -1,5 +1,6 @@
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js';
 import { loadEnv } from '../env';
+import type { AppSupabaseClient, Database } from '../supabase/db-types';
 import { loadAdminEnv } from './env';
 
 // PRIVILEGED CLIENT. The service-role JWT bypasses RLS, so this module is
@@ -15,13 +16,13 @@ import { loadAdminEnv } from './env';
 // account + owner-membership row) wrap the call in a helper function
 // elsewhere in src/admin/ and import THAT, not the client itself.
 
-let cached: SupabaseClient | null = null;
+let cached: AppSupabaseClient | null = null;
 
-export function getAdminClient(): SupabaseClient {
+export function getAdminClient(): AppSupabaseClient {
   if (cached) return cached;
   const env = loadEnv();
   const adminEnv = loadAdminEnv();
-  cached = createClient(env.SUPABASE_URL, adminEnv.SUPABASE_SERVICE_ROLE_KEY, {
+  cached = createClient<Database>(env.SUPABASE_URL, adminEnv.SUPABASE_SERVICE_ROLE_KEY, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,

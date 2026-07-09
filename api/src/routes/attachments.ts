@@ -67,12 +67,33 @@ const UploadResponse = z
 
 const ListResponse = paginated(Attachment).openapi('AttachmentListResponse');
 
+const ENTITY_TABLES = [
+  'maintenance_requests',
+  'inspections',
+  'inspection_items',
+  'interactions',
+  'document_versions',
+  'leases',
+  'notices',
+] as const;
+type EntityTable = (typeof ENTITY_TABLES)[number];
+const ENTITY_TABLE_SET = new Set<string>(ENTITY_TABLES);
+
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 const AccountAndIdParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
 });
 
 const ListQuery = z.object({
@@ -163,12 +184,13 @@ attachmentsApp.openapi(upload, async (c) => {
   type BodyVal = string | File | undefined;
   const form = (await c.req.parseBody()) as Record<string, BodyVal>;
   const entityType = typeof form.entity_type === 'string' ? form.entity_type : '';
-  const entityId   = typeof form.entity_id   === 'string' ? form.entity_id   : '';
+  const entityId = typeof form.entity_id === 'string' ? form.entity_id : '';
   const file = form.file;
 
-  if (!entityType || !ALLOWED_ENTITY_TYPES.has(entityType)) {
+  if (!entityType || !ALLOWED_ENTITY_TYPES.has(entityType) || !ENTITY_TABLE_SET.has(entityType)) {
     throw new ApiError(400, 'invalid_request', 'entity_type missing or not allowed');
   }
+  const entityTable = entityType as EntityTable;
   if (!entityId || !/^[0-9a-f-]{36}$/i.test(entityId)) {
     throw new ApiError(400, 'invalid_request', 'entity_id missing or not a uuid');
   }
@@ -190,7 +212,7 @@ attachmentsApp.openapi(upload, async (c) => {
   // hit only when the user actually owns the target row.
   const sb = getSb(c);
   const { data: hit, error: hitErr } = await sb
-    .from(entityType)
+    .from(entityTable)
     .select('id')
     .eq('account_id', accountId)
     .eq('id', entityId)
@@ -229,7 +251,7 @@ attachmentsApp.openapi(list, async (c) => {
   const sb = getSb(c);
   let q = sb.from('attachments').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (entity_type) q = q.eq('entity_type', entity_type);
-  if (entity_id)   q = q.eq('entity_id', entity_id);
+  if (entity_id) q = q.eq('entity_id', entity_id);
   // Oldest-first (ascending), keyset-paginated: an entity's attachments
   // (inspection photos, etc.) can accumulate without bound.
   const { items, next_cursor } = await keysetPage<z.infer<typeof Attachment>>(q, { cursor, limit });

@@ -12,21 +12,22 @@ import {
 } from './import-catalog';
 // The import path validates against the EXACT same Zod schemas the HTTP POST
 // handlers use -- not a parallel copy -- so it can never persist anything an
-// HTTP POST would reject (item 1 of the review). DB constraints/triggers/FKs
-// (name lengths, currency length, amount>=0, due_day, dates, status/kind enums,
-// area.kind, account-scoped composite FKs, immutability) fire on the raw pg
-// connection identically; these schemas add the route-only checks the DB does
-// NOT enforce: tenant email format, phone length, address sub-field lengths.
+// HTTP POST would reject. DB constraints/triggers/FKs fire on the raw pg
+// connection identically; these shared schemas add the route-only checks the DB
+// does NOT enforce: tenant email format, phone length, address sub-field lengths.
 import type { z } from 'zod';
-import { CreatePropertyBody } from '../routes/properties';
-import { AreaKind, CreateAreaBody } from '../routes/areas';
-import { PutUnitDetailsBody } from '../routes/unit-details';
-import { CreateTenantBody } from '../routes/tenants';
-import { CreateTenancyBody } from '../routes/tenancies';
-import { AddMemberBody } from '../routes/tenancy-members';
-import { CreateLeaseBody } from '../routes/leases';
-import { CreateRentScheduleBody } from '../routes/rent-schedules';
-import { CreateInteractionBody } from '../routes/interactions';
+import {
+  AddMemberBody,
+  AreaKind,
+  CreateAreaBody,
+  CreateInteractionBody,
+  CreateLeaseBody,
+  CreatePropertyBody,
+  CreateRentScheduleBody,
+  CreateTenancyBody,
+  CreateTenantBody,
+  PutUnitDetailsBody,
+} from '../schemas/importable';
 
 /** Concise first-issue message from a Zod safeParse error (no z import). */
 function firstIssue(err: { issues?: { path: (string | number)[]; message: string }[] }): string {
@@ -88,7 +89,13 @@ export interface ExecutionResult {
   /** raw->ISO date interpretations (deduped) so a locale misread is visible in
    *  the preview. `ambiguous` flags values like "01/02/2024" that are valid
    *  under both M/D/Y and D/M/Y; the importer reads them as M/D/Y. */
-  date_interpretations: { field: string; raw: string; iso: string; interpreted_as: string; ambiguous: boolean }[];
+  date_interpretations: {
+    field: string;
+    raw: string;
+    iso: string;
+    interpreted_as: string;
+    ambiguous: boolean;
+  }[];
 }
 
 interface ParentResolutions {
@@ -155,7 +162,10 @@ function coerceDecimal(v: string | null): number | null {
  */
 function coerceAreaKind(v: string | null): z.infer<typeof AreaKind> | null {
   if (v == null || v.trim() === '') return 'unit';
-  const normalized = v.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const normalized = v
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
   const parsed = AreaKind.safeParse(normalized);
   return parsed.success ? parsed.data : null;
 }
@@ -169,7 +179,8 @@ function coerceMoney(v: string | null): number | null {
   s = s.replace(/[^0-9.]/g, '');
   if (s === '') return null;
   const parts = s.split('.');
-  const normalized = parts.length > 2 ? parts.slice(0, -1).join('') + '.' + parts[parts.length - 1] : s;
+  const normalized =
+    parts.length > 2 ? parts.slice(0, -1).join('') + '.' + parts[parts.length - 1] : s;
   const val = parseFloat(normalized);
   if (!Number.isFinite(val) || negative) return null;
   return Math.round(val * 100);
@@ -231,8 +242,8 @@ class ExecCtx {
   // id, or AMBIGUOUS when >1 live row shares the key. Rows the run itself
   // creates land in the per-run caches above, which are consulted first.
   private prefetchedProperties = new Map<string, string>(); // lower(name)
-  private prefetchedAreas = new Map<string, string>();      // propertyId::kind::lower(name)
-  private prefetchedTenants = new Map<string, string>();    // lower(full_name), first by created_at
+  private prefetchedAreas = new Map<string, string>(); // propertyId::kind::lower(name)
+  private prefetchedTenants = new Map<string, string>(); // lower(full_name), first by created_at
   // Phase 2.3 provenance buffering: one unnest INSERT per 500 entities
   // instead of one INSERT per entity. runImport flushes after the row loop.
   private provenanceBuf: { et: EntityType; entityId: string; region: number; row: number }[] = [];
@@ -245,7 +256,10 @@ class ExecCtx {
   private counts: Record<string, EntityCounts> = {};
   private createdIds: Record<string, string[]> = {};
   readonly blockers: ExecutionBlocker[] = [];
-  private rowBlockers = new Map<string, { field: string | null; code: BlockerCode; message: string }[]>();
+  private rowBlockers = new Map<
+    string,
+    { field: string | null; code: BlockerCode; message: string }[]
+  >();
   private blockedRowIds = new Set<string>();
   private dateSamples = new Map<string, ExecutionResult['date_interpretations'][number]>();
 
@@ -276,7 +290,9 @@ class ExecCtx {
         const fields = em.get(et);
         if (!fields || fields.length === 0) continue;
         const mapped = new Set(
-          fields.filter((f) => f.source_column || (f.constant != null && f.constant !== '')).map((f) => f.target_field),
+          fields
+            .filter((f) => f.source_column || (f.constant != null && f.constant !== ''))
+            .map((f) => f.target_field),
         );
         const missing = requiredFields(et).filter((r) => !mapped.has(r));
         if (missing.length > 0) {
@@ -297,7 +313,11 @@ class ExecCtx {
     }
   }
 
-  private getValue(fields: FieldMapping[] | undefined, target: string, raw: Record<string, string>): string | null {
+  private getValue(
+    fields: FieldMapping[] | undefined,
+    target: string,
+    raw: Record<string, string>,
+  ): string | null {
     if (!fields) return null;
     const fm = fields.find((f) => f.target_field === target);
     if (!fm) return null;
@@ -384,7 +404,13 @@ class ExecCtx {
     this.dateSamples.set(key, { field, raw, iso, interpreted_as: 'US M/D/Y', ambiguous });
   }
 
-  private blockRow(row: RawImportRow, entity: EntityType, field: string | null, code: BlockerCode, message: string): void {
+  private blockRow(
+    row: RawImportRow,
+    entity: EntityType,
+    field: string | null,
+    code: BlockerCode,
+    message: string,
+  ): void {
     this.blockers.push({
       scope: 'row',
       region_index: row.region_index,
@@ -402,7 +428,10 @@ class ExecCtx {
 
   // -------- per-entity resolvers (cache -> existing DB row -> create) --------
 
-  private buildAddress(fields: FieldMapping[] | undefined, raw: Record<string, string>): Record<string, string> {
+  private buildAddress(
+    fields: FieldMapping[] | undefined,
+    raw: Record<string, string>,
+  ): Record<string, string> {
     const map: Record<string, string> = {};
     const pairs: [string, string][] = [
       ['address_line1', 'line1'],
@@ -438,7 +467,13 @@ class ExecCtx {
   /** Resolve the session-wide default property, verifying account ownership. */
   private async resolveDefaultProperty(row: RawImportRow, id: string): Promise<string | null> {
     if (!(await this.verifyPropertyInAccount(id))) {
-      this.blockRow(row, 'property', 'name', 'parent_not_found', `default property not found in this account: ${id}`);
+      this.blockRow(
+        row,
+        'property',
+        'name',
+        'parent_not_found',
+        `default property not found in this account: ${id}`,
+      );
       return null;
     }
     if (!this.defaultPropertyCounted) {
@@ -448,7 +483,11 @@ class ExecCtx {
     return id;
   }
 
-  private async resolveProperty(row: RawImportRow, name: string, fields: FieldMapping[]): Promise<string | null> {
+  private async resolveProperty(
+    row: RawImportRow,
+    name: string,
+    fields: FieldMapping[],
+  ): Promise<string | null> {
     const key = name.toLowerCase();
     const cached = this.propertyCache.get(key);
     if (cached) return cached;
@@ -457,7 +496,13 @@ class ExecCtx {
     if (override?.mode === 'existing' && override.id) {
       // bind_existing: the id MUST belong to this account (RLS is bypassed here).
       if (!(await this.verifyPropertyInAccount(override.id))) {
-        this.blockRow(row, 'property', 'name', 'parent_not_found', `bound property not found in this account: ${override.id}`);
+        this.blockRow(
+          row,
+          'property',
+          'name',
+          'parent_not_found',
+          `bound property not found in this account: ${override.id}`,
+        );
         return null;
       }
       this.propertyCache.set(key, override.id);
@@ -467,7 +512,13 @@ class ExecCtx {
     if (override?.mode !== 'create') {
       const pre = this.prefetchedProperties.get(key);
       if (pre === AMBIGUOUS) {
-        this.blockRow(row, 'property', 'name', 'ambiguous_match', `ambiguous property "${name}" (multiple matches); resolve via parents`);
+        this.blockRow(
+          row,
+          'property',
+          'name',
+          'ambiguous_match',
+          `ambiguous property "${name}" (multiple matches); resolve via parents`,
+        );
         return null;
       }
       if (pre) {
@@ -504,7 +555,13 @@ class ExecCtx {
 
     const pre = this.prefetchedAreas.get(`${propertyId}::${kind}::${name.toLowerCase()}`);
     if (pre === AMBIGUOUS) {
-      this.blockRow(row, 'area', 'name', 'ambiguous_match', `ambiguous ${kind} "${name}" within its property`);
+      this.blockRow(
+        row,
+        'area',
+        'name',
+        'ambiguous_match',
+        `ambiguous ${kind} "${name}" within its property`,
+      );
       return null;
     }
     if (pre) {
@@ -528,7 +585,11 @@ class ExecCtx {
     return id;
   }
 
-  private async maybeCreateUnitDetails(row: RawImportRow, areaId: string, fields: FieldMapping[]): Promise<void> {
+  private async maybeCreateUnitDetails(
+    row: RawImportRow,
+    areaId: string,
+    fields: FieldMapping[],
+  ): Promise<void> {
     const bedrooms = coerceInt(this.getValue(fields, 'bedrooms', row.raw));
     const bathrooms = coerceDecimal(this.getValue(fields, 'bathrooms', row.raw));
     const sqft = coerceInt(this.getValue(fields, 'sqft', row.raw));
@@ -541,7 +602,13 @@ class ExecCtx {
     const ins = await this.client.query(
       `insert into unit_details (area_id, account_id, bedrooms, bathrooms, sqft)
        values ($1, $2, $3, $4, $5) on conflict (area_id) do nothing returning area_id`,
-      [areaId, this.accountId, v.data.bedrooms ?? null, v.data.bathrooms ?? null, v.data.sqft ?? null],
+      [
+        areaId,
+        this.accountId,
+        v.data.bedrooms ?? null,
+        v.data.bathrooms ?? null,
+        v.data.sqft ?? null,
+      ],
     );
     if (ins.rowCount === 1) {
       this.recordCreated('unit_details', areaId);
@@ -551,7 +618,11 @@ class ExecCtx {
     }
   }
 
-  private async resolveTenant(row: RawImportRow, name: string, fields: FieldMapping[]): Promise<string | null> {
+  private async resolveTenant(
+    row: RawImportRow,
+    name: string,
+    fields: FieldMapping[],
+  ): Promise<string | null> {
     const key = name.toLowerCase();
     const cached = this.tenantCache.get(key);
     if (cached) return cached;
@@ -607,7 +678,12 @@ class ExecCtx {
     }
     const today = todayIso();
     const status = end && end < today ? 'ended' : start > today ? 'upcoming' : 'active';
-    const v = CreateTenancyBody.safeParse({ area_id: areaId, start_date: start, end_date: end ?? null, status });
+    const v = CreateTenancyBody.safeParse({
+      area_id: areaId,
+      start_date: start,
+      end_date: end ?? null,
+      status,
+    });
     if (!v.success) {
       this.blockRow(row, 'tenancy', 'start_date', 'invalid_value', firstIssue(v.error));
       return null;
@@ -727,7 +803,13 @@ class ExecCtx {
     const amountRaw = this.getValue(fields, 'amount', row.raw);
     const amountCents = coerceMoney(amountRaw);
     if (amountCents === null) {
-      this.blockRow(row, 'rent_schedule', 'amount', amountRaw ? 'unparseable_value' : 'missing_required_field', amountRaw ? `unparseable rent amount "${amountRaw}"` : 'missing rent amount');
+      this.blockRow(
+        row,
+        'rent_schedule',
+        'amount',
+        amountRaw ? 'unparseable_value' : 'missing_required_field',
+        amountRaw ? `unparseable rent amount "${amountRaw}"` : 'missing rent amount',
+      );
       return;
     }
     const currency = coerceCurrency(this.getValue(fields, 'currency', row.raw)) ?? 'USD';
@@ -766,7 +848,15 @@ class ExecCtx {
     const ins = await this.client.query(
       `insert into rent_schedules (account_id, tenancy_id, kind, amount_cents, currency, due_day, start_date)
        values ($1, $2, $3, $4, $5, $6, $7) returning id`,
-      [this.accountId, v.data.tenancy_id, v.data.kind, v.data.amount_cents, v.data.currency, v.data.due_day, v.data.start_date],
+      [
+        this.accountId,
+        v.data.tenancy_id,
+        v.data.kind,
+        v.data.amount_cents,
+        v.data.currency,
+        v.data.due_day,
+        v.data.start_date,
+      ],
     );
     const id = ins.rows[0].id as string;
     this.rentScheduleCache.add(cacheKey);
@@ -845,17 +935,25 @@ class ExecCtx {
       propertyId = await this.resolveDefaultProperty(row, this.parents.default_property_id);
     } else if (scope.has('property')) {
       const name = this.getValue(regionMap.get('property'), 'name', row.raw);
-      if (!name) this.blockRow(row, 'property', 'name', 'missing_required_field', 'missing property name');
+      if (!name)
+        this.blockRow(row, 'property', 'name', 'missing_required_field', 'missing property name');
       else propertyId = await this.resolveProperty(row, name, regionMap.get('property')!);
     }
 
     // area (unit or common space) + unit_details
     if (scope.has('area')) {
       if (!propertyId) {
-        this.blockRow(row, 'area', 'name', 'missing_parent_property', 'area needs a property: map a property column or set a default property');
+        this.blockRow(
+          row,
+          'area',
+          'name',
+          'missing_parent_property',
+          'area needs a property: map a property column or set a default property',
+        );
       } else {
         const areaName = this.getValue(regionMap.get('area'), 'name', row.raw);
-        if (!areaName) this.blockRow(row, 'area', 'name', 'missing_required_field', 'missing area label');
+        if (!areaName)
+          this.blockRow(row, 'area', 'name', 'missing_required_field', 'missing area label');
         else {
           const kindRaw = this.getValue(regionMap.get('area'), 'kind', row.raw);
           const kind = coerceAreaKind(kindRaw);
@@ -871,7 +969,14 @@ class ExecCtx {
                   this.getValue(regionMap.get('unit_details'), 'bedrooms', row.raw) ||
                   this.getValue(regionMap.get('unit_details'), 'bathrooms', row.raw) ||
                   this.getValue(regionMap.get('unit_details'), 'sqft', row.raw);
-                if (hasDetails) this.blockRow(row, 'unit_details', null, 'details_on_non_unit', `unit details on a ${kind} area (units only)`);
+                if (hasDetails)
+                  this.blockRow(
+                    row,
+                    'unit_details',
+                    null,
+                    'details_on_non_unit',
+                    `unit details on a ${kind} area (units only)`,
+                  );
               } else {
                 await this.maybeCreateUnitDetails(row, areaId, regionMap.get('unit_details')!);
               }
@@ -885,7 +990,14 @@ class ExecCtx {
     if (scope.has('tenant')) {
       const fullName = this.getValue(regionMap.get('tenant'), 'full_name', row.raw);
       if (!fullName) {
-        if (scope.has('tenancy_member')) this.blockRow(row, 'tenant', 'full_name', 'missing_required_field', 'missing tenant name');
+        if (scope.has('tenancy_member'))
+          this.blockRow(
+            row,
+            'tenant',
+            'full_name',
+            'missing_required_field',
+            'missing tenant name',
+          );
       } else {
         tenantId = await this.resolveTenant(row, fullName, regionMap.get('tenant')!);
       }
@@ -900,26 +1012,48 @@ class ExecCtx {
         const start = coerceDate(startRaw);
         this.recordDate('tenancy.start_date', startRaw, start);
         if (!start) {
-          this.blockRow(row, 'tenancy', 'start_date', startRaw ? 'unparseable_value' : 'missing_required_field', startRaw ? `unparseable start date "${startRaw}"` : 'missing tenancy start date');
+          this.blockRow(
+            row,
+            'tenancy',
+            'start_date',
+            startRaw ? 'unparseable_value' : 'missing_required_field',
+            startRaw ? `unparseable start date "${startRaw}"` : 'missing tenancy start date',
+          );
         } else {
           const endRaw = this.getValue(regionMap.get('tenancy'), 'end_date', row.raw);
           const end = endRaw ? coerceDate(endRaw) : null;
           this.recordDate('tenancy.end_date', endRaw, end);
           if (endRaw && !end) {
-            this.blockRow(row, 'tenancy', 'end_date', 'unparseable_value', `unparseable end date "${endRaw}"`);
+            this.blockRow(
+              row,
+              'tenancy',
+              'end_date',
+              'unparseable_value',
+              `unparseable end date "${endRaw}"`,
+            );
           } else if (end && end < start) {
             this.blockRow(row, 'tenancy', 'end_date', 'date_order', 'end date precedes start date');
           } else {
             tenancyId = await this.resolveTenancy(row, areaId, start, end);
             if (tenancyId) {
               if (scope.has('tenancy_member') && tenantId) {
-                await this.maybeCreateMember(row, tenancyId, tenantId, regionMap.get('tenancy_member'));
+                await this.maybeCreateMember(
+                  row,
+                  tenancyId,
+                  tenantId,
+                  regionMap.get('tenancy_member'),
+                );
               }
               if (scope.has('lease')) {
                 await this.maybeCreateLease(row, tenancyId, start, end, regionMap.get('lease')!);
               }
               if (scope.has('rent_schedule')) {
-                await this.maybeCreateRentSchedule(row, tenancyId, start, regionMap.get('rent_schedule')!);
+                await this.maybeCreateRentSchedule(
+                  row,
+                  tenancyId,
+                  start,
+                  regionMap.get('rent_schedule')!,
+                );
               }
             }
           }
@@ -937,7 +1071,12 @@ class ExecCtx {
     }
   }
 
-  buildResult(opts: { dryRun: boolean; rowsTotal: number; rowsExcluded: number; rowsActive: number }): ExecutionResult {
+  buildResult(opts: {
+    dryRun: boolean;
+    rowsTotal: number;
+    rowsExcluded: number;
+    rowsActive: number;
+  }): ExecutionResult {
     return {
       committed: false,
       dry_run: opts.dryRun,
@@ -983,7 +1122,11 @@ class ExecCtx {
  * Run an import session as a preview (dryRun=true) or a commit (dryRun=false).
  * One transaction, one code path, branching only at the end.
  */
-export async function runImport(sessionId: string, accountId: string, dryRun: boolean): Promise<ExecutionResult> {
+export async function runImport(
+  sessionId: string,
+  accountId: string,
+  dryRun: boolean,
+): Promise<ExecutionResult> {
   let client: PoolClient;
   try {
     client = await getPool().connect();
@@ -1006,7 +1149,9 @@ export async function runImport(sessionId: string, accountId: string, dryRun: bo
     // Bypass RLS (service_role has BYPASSRLS) while keeping auth.uid() NULL so
     // audit.actor wins attribution for every entity the import creates.
     await client.query('SET LOCAL ROLE service_role');
-    await client.query(`select set_config('audit.actor', $1, true)`, [`system:import:${sessionId}`]);
+    await client.query(`select set_config('audit.actor', $1, true)`, [
+      `system:import:${sessionId}`,
+    ]);
 
     const sess = await client.query(
       `select mapping, parent_resolutions from import_sessions

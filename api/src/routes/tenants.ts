@@ -1,9 +1,11 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import type { DbTableUpdate } from '../supabase/db-types';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { softDeleteStamp } from './_lib/soft-delete';
+import { CreateTenantBody } from '../schemas/importable';
 
 const Tenant = z
   .object({
@@ -19,17 +21,6 @@ const Tenant = z
   })
   .openapi('Tenant');
 
-// Exported for reuse by the onboarding-import executor (same-schema validation):
-// this is where email-format and phone-length checks live that the DB does not.
-export const CreateTenantBody = z
-  .object({
-    full_name: z.string().min(1).max(200),
-    emails: z.array(z.string().email()).optional(),
-    phones: z.array(z.string().min(1).max(40)).optional(),
-    notes: z.string().optional(),
-  })
-  .openapi('CreateTenantBody');
-
 const PatchTenantBody = z
   .object({
     full_name: z.string().min(1).max(200).optional(),
@@ -43,11 +34,20 @@ const PatchTenantBody = z
   .openapi('PatchTenantBody');
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 const AccountAndIdParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
 });
 
 const ListQuery = z.object({
@@ -127,11 +127,7 @@ tenantsApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit } = c.req.valid('query');
   const sb = getSb(c);
-  const query = sb
-    .from('tenants')
-    .select('*')
-    .eq('account_id', accountId)
-    .is('deleted_at', null);
+  const query = sb.from('tenants').select('*').eq('account_id', accountId).is('deleted_at', null);
   const { items, next_cursor: nextCursor } = await keysetPage(query, { cursor, limit });
   return c.json({ data: items, next_cursor: nextCursor } as z.infer<typeof ListResponse>, 200);
 });
@@ -174,7 +170,7 @@ tenantsApp.openapi(patch, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
-  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  const update: DbTableUpdate<'tenants'> = { updated_at: new Date().toISOString() };
   if (body.full_name !== undefined) update.full_name = body.full_name;
   if (body.emails !== undefined) update.emails = body.emails;
   if (body.phones !== undefined) update.phones = body.phones;

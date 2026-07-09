@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { loadEnv } from '../env';
+import { nullableRpcArg } from '../supabase/db-types';
 import { getAdminClient } from './supabase-admin';
 
 // ============================================================================
@@ -93,7 +94,7 @@ export function verifyUnsubscribeToken(token: string): string | null {
 export async function registerEmailUnsubscribe(address: string): Promise<void> {
   const admin = getAdminClient();
   const { error } = await admin.rpc('record_opt_out', {
-    p_account_id: null,
+    p_account_id: nullableRpcArg<string>(null),
     p_channel: 'email',
     p_address: address,
     p_keyword: 'unsubscribe',

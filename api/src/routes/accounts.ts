@@ -2,6 +2,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import type { DbTableUpdate } from '../supabase/db-types';
 import { loadEnv } from '../env';
 import { ApiError, dbError, errorResponses } from './_lib/error';
 import {
@@ -26,7 +27,10 @@ import {
 // ---------------------------------------------------------------------------
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 
 const EmailBranding = z
@@ -67,7 +71,7 @@ const getBranding = createRoute({
   method: 'get',
   path: '/accounts/{accountId}/email-branding',
   tags: ['accounts'],
-  summary: 'Get an account\'s email branding',
+  summary: "Get an account's email branding",
   request: { params: AccountParam },
   responses: {
     200: { description: 'branding', content: { 'application/json': { schema: EmailBranding } } },
@@ -79,13 +83,16 @@ const patchBranding = createRoute({
   method: 'patch',
   path: '/accounts/{accountId}/email-branding',
   tags: ['accounts'],
-  summary: 'Update an account\'s email branding (partial; owner/manager only)',
+  summary: "Update an account's email branding (partial; owner/manager only)",
   request: {
     params: AccountParam,
     body: { content: { 'application/json': { schema: PatchEmailBrandingBody } }, required: true },
   },
   responses: {
-    200: { description: 'updated branding', content: { 'application/json': { schema: EmailBranding } } },
+    200: {
+      description: 'updated branding',
+      content: { 'application/json': { schema: EmailBranding } },
+    },
     ...errorResponses,
   },
 });
@@ -143,7 +150,7 @@ accountsApp.openapi(patchBranding, async (c) => {
 
   // Validate + canonicalize each supplied field. Explicit null clears; a bad
   // value collects a field-scoped error so a two-bad-field PATCH reports both.
-  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  const update: DbTableUpdate<'accounts'> = { updated_at: new Date().toISOString() };
   const fieldErrors: Record<string, string[]> = {};
 
   if (body.email_subdomain !== undefined) {

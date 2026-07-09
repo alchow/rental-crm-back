@@ -1,6 +1,7 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import { asJson, type DbTableUpdate } from '../supabase/db-types';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { softDeleteStamp } from './_lib/soft-delete';
@@ -290,9 +291,7 @@ const DiffRow = z
   })
   .openapi('InspectionCheckoutDiffRow');
 
-const DiffResponse = z
-  .object({ data: z.array(DiffRow) })
-  .openapi('InspectionCheckoutDiffResponse');
+const DiffResponse = z.object({ data: z.array(DiffRow) }).openapi('InspectionCheckoutDiffResponse');
 
 // Maps a SECURITY INVOKER RPC's pg error to the HTTP envelope. RLS denials
 // (42501) surface as 404 so we never leak existence to a non-member.
@@ -308,20 +307,44 @@ function rpcError(error: { code?: string; message: string }): ApiError {
 // --- params ------------------------------------------------------------------
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 const AccountAndIdParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
 });
 const InspectionAndItemParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  inspectionId: z.string().uuid().openapi({ param: { name: 'inspectionId', in: 'path' } }),
-  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  inspectionId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'inspectionId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
 });
 const InspectionParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  inspectionId: z.string().uuid().openapi({ param: { name: 'inspectionId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  inspectionId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'inspectionId', in: 'path' } }),
 });
 
 const ListQuery = z.object({
@@ -375,7 +398,10 @@ const tplGet = createRoute({
   tags: ['inspection_templates'],
   request: { params: AccountAndIdParam },
   responses: {
-    200: { description: 'template', content: { 'application/json': { schema: InspectionTemplate } } },
+    200: {
+      description: 'template',
+      content: { 'application/json': { schema: InspectionTemplate } },
+    },
     ...errorResponses,
   },
 });
@@ -388,7 +414,10 @@ const tplCreate = createRoute({
     body: { content: { 'application/json': { schema: CreateTemplateBody } }, required: true },
   },
   responses: {
-    201: { description: 'created', content: { 'application/json': { schema: InspectionTemplate } } },
+    201: {
+      description: 'created',
+      content: { 'application/json': { schema: InspectionTemplate } },
+    },
     ...errorResponses,
   },
 });
@@ -401,7 +430,10 @@ const tplPatch = createRoute({
     body: { content: { 'application/json': { schema: PatchTemplateBody } }, required: true },
   },
   responses: {
-    200: { description: 'updated', content: { 'application/json': { schema: InspectionTemplate } } },
+    200: {
+      description: 'updated',
+      content: { 'application/json': { schema: InspectionTemplate } },
+    },
     ...errorResponses,
   },
 });
@@ -423,16 +455,28 @@ inspectionTemplatesApp.openapi(tplList, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit } = c.req.valid('query');
   const sb = getSb(c);
-  const q = sb.from('inspection_templates').select('*').eq('account_id', accountId).is('deleted_at', null);
+  const q = sb
+    .from('inspection_templates')
+    .select('*')
+    .eq('account_id', accountId)
+    .is('deleted_at', null);
   const { items, next_cursor: nextCursor } = await keysetPage(q, { cursor, limit });
-  return c.json({ data: items, next_cursor: nextCursor } as z.infer<typeof TemplateListResponse>, 200);
+  return c.json(
+    { data: items, next_cursor: nextCursor } as z.infer<typeof TemplateListResponse>,
+    200,
+  );
 });
 
 inspectionTemplatesApp.openapi(tplGet, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const sb = getSb(c);
-  const { data, error } = await sb.from('inspection_templates').select('*')
-    .eq('account_id', accountId).eq('id', id).is('deleted_at', null).maybeSingle();
+  const { data, error } = await sb
+    .from('inspection_templates')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
   if (!data) throw new ApiError(404, 'not_found', 'not found');
   return c.json(data as z.infer<typeof InspectionTemplate>, 200);
@@ -442,9 +486,15 @@ inspectionTemplatesApp.openapi(tplCreate, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
-  const { data, error } = await sb.from('inspection_templates').insert({
-    account_id: accountId, name: body.name, schema: body.schema ?? {},
-  }).select('*').single();
+  const { data, error } = await sb
+    .from('inspection_templates')
+    .insert({
+      account_id: accountId,
+      name: body.name,
+      schema: asJson(body.schema ?? {}),
+    })
+    .select('*')
+    .single();
   if (error) throw new ApiError(500, 'database_error', error.message);
   return c.json(data as z.infer<typeof InspectionTemplate>, 201);
 });
@@ -453,11 +503,17 @@ inspectionTemplatesApp.openapi(tplPatch, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
-  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  const update: DbTableUpdate<'inspection_templates'> = { updated_at: new Date().toISOString() };
   if (body.name !== undefined) update.name = body.name;
-  if (body.schema !== undefined) update.schema = body.schema;
-  const { data, error } = await sb.from('inspection_templates').update(update)
-    .eq('account_id', accountId).eq('id', id).is('deleted_at', null).select('*').maybeSingle();
+  if (body.schema !== undefined) update.schema = asJson(body.schema);
+  const { data, error } = await sb
+    .from('inspection_templates')
+    .update(update)
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .select('*')
+    .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
   if (!data) throw new ApiError(404, 'not_found', 'not found');
   return c.json(data as z.infer<typeof InspectionTemplate>, 200);
@@ -466,7 +522,8 @@ inspectionTemplatesApp.openapi(tplPatch, async (c) => {
 inspectionTemplatesApp.openapi(tplRemove, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const sb = getSb(c);
-  const { data, error } = await sb.from('inspection_templates')
+  const { data, error } = await sb
+    .from('inspection_templates')
     .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('id', id)
@@ -506,7 +563,10 @@ const catalogListRoute = createRoute({
   summary: 'List bundled starter inspection templates',
   request: { params: AccountParam },
   responses: {
-    200: { description: 'catalog', content: { 'application/json': { schema: CatalogListResponse } } },
+    200: {
+      description: 'catalog',
+      content: { 'application/json': { schema: CatalogListResponse } },
+    },
     ...errorResponses,
   },
 });
@@ -524,7 +584,10 @@ const fromCatalogRoute = createRoute({
     body: { content: { 'application/json': { schema: FromCatalogBody } }, required: true },
   },
   responses: {
-    201: { description: 'created', content: { 'application/json': { schema: InspectionTemplate } } },
+    201: {
+      description: 'created',
+      content: { 'application/json': { schema: InspectionTemplate } },
+    },
     ...errorResponses,
   },
 });
@@ -541,7 +604,7 @@ inspectionTemplatesApp.openapi(fromCatalogRoute, async (c) => {
       name: body.name ?? tpl.name,
       jurisdiction: tpl.jurisdiction,
       version: tpl.version,
-      schema: tpl.schema,
+      schema: asJson(tpl.schema),
     })
     .select('*')
     .single();
@@ -559,7 +622,10 @@ const inspList = createRoute({
   tags: ['inspections'],
   request: { params: AccountParam, query: InspectionListQuery },
   responses: {
-    200: { description: 'page', content: { 'application/json': { schema: InspectionListResponse } } },
+    200: {
+      description: 'page',
+      content: { 'application/json': { schema: InspectionListResponse } },
+    },
     ...errorResponses,
   },
 });
@@ -569,7 +635,10 @@ const inspGet = createRoute({
   tags: ['inspections'],
   request: { params: AccountAndIdParam },
   responses: {
-    200: { description: 'inspection', content: { 'application/json': { schema: InspectionDetail } } },
+    200: {
+      description: 'inspection',
+      content: { 'application/json': { schema: InspectionDetail } },
+    },
     ...errorResponses,
   },
 });
@@ -604,10 +673,14 @@ const inspComplete = createRoute({
   method: 'post',
   path: '/accounts/{accountId}/inspections/{id}/complete',
   tags: ['inspections'],
-  summary: 'Mark an inspection complete; locks it AND stores the rendered PDF as a content-hashed attachment',
+  summary:
+    'Mark an inspection complete; locks it AND stores the rendered PDF as a content-hashed attachment',
   request: { params: AccountAndIdParam },
   responses: {
-    200: { description: 'completed', content: { 'application/json': { schema: CompleteResponse } } },
+    200: {
+      description: 'completed',
+      content: { 'application/json': { schema: CompleteResponse } },
+    },
     ...errorResponses,
   },
 });
@@ -621,14 +694,22 @@ inspectionsApp.openapi(inspList, async (c) => {
   let q = sb.from('inspections').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (area_id) q = q.eq('area_id', area_id);
   const { items, next_cursor: nextCursor } = await keysetPage(q, { cursor, limit });
-  return c.json({ data: items, next_cursor: nextCursor } as z.infer<typeof InspectionListResponse>, 200);
+  return c.json(
+    { data: items, next_cursor: nextCursor } as z.infer<typeof InspectionListResponse>,
+    200,
+  );
 });
 
 inspectionsApp.openapi(inspGet, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const sb = getSb(c);
-  const { data, error } = await sb.from('inspections').select('*')
-    .eq('account_id', accountId).eq('id', id).is('deleted_at', null).maybeSingle();
+  const { data, error } = await sb
+    .from('inspections')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
   if (!data) throw new ApiError(404, 'not_found', 'not found');
 
@@ -645,10 +726,18 @@ inspectionsApp.openapi(inspGet, async (c) => {
   type RoomKey = string | typeof UNGROUPED;
   const roomKey = (g: string | null): RoomKey => (g == null || g === '' ? UNGROUPED : g);
   const [itemsRes, confirmsRes] = await Promise.all([
-    sb.from('inspection_items').select('group_label, condition')
-      .eq('account_id', accountId).eq('inspection_id', id).is('deleted_at', null),
-    sb.from('inspection_room_confirmations').select('group_label')
-      .eq('account_id', accountId).eq('inspection_id', id).is('deleted_at', null),
+    sb
+      .from('inspection_items')
+      .select('group_label, condition')
+      .eq('account_id', accountId)
+      .eq('inspection_id', id)
+      .is('deleted_at', null),
+    sb
+      .from('inspection_room_confirmations')
+      .select('group_label')
+      .eq('account_id', accountId)
+      .eq('inspection_id', id)
+      .is('deleted_at', null),
   ]);
   if (itemsRes.error) throw new ApiError(500, 'database_error', itemsRes.error.message);
   if (confirmsRes.error) throw new ApiError(500, 'database_error', confirmsRes.error.message);
@@ -688,22 +777,31 @@ inspectionsApp.openapi(inspCreate, async (c) => {
   const body = c.req.valid('json');
   const sb = getSb(c);
   const auth = c.get('auth');
-  const { data, error } = await sb.from('inspections').insert({
-    account_id: accountId,
-    area_id: body.area_id,
-    template_id: body.template_id ?? null,
-    kind: body.kind ?? 'general',
-    tenancy_id: body.tenancy_id ?? null,
-    baseline_inspection_id: body.baseline_inspection_id ?? null,
-    capture_mode: body.capture_mode ?? 'landlord',
-    performed_by: auth.userId,
-    performed_at: body.performed_at ?? null,
-    notes: body.notes ?? null,
-  }).select('*').single();
+  const { data, error } = await sb
+    .from('inspections')
+    .insert({
+      account_id: accountId,
+      area_id: body.area_id,
+      template_id: body.template_id ?? null,
+      kind: body.kind ?? 'general',
+      tenancy_id: body.tenancy_id ?? null,
+      baseline_inspection_id: body.baseline_inspection_id ?? null,
+      capture_mode: body.capture_mode ?? 'landlord',
+      performed_by: auth.userId,
+      performed_at: body.performed_at ?? null,
+      notes: body.notes ?? null,
+    })
+    .select('*')
+    .single();
   if (error) {
     // coherence trigger (kind/tenancy/area/baseline mismatch) raises check_violation.
     if (error.code === '23514') throw new ApiError(400, 'invalid_request', error.message);
-    if (error.code === '23503') throw new ApiError(404, 'not_found', 'area_id, template_id, tenancy_id or baseline_inspection_id does not belong to this account');
+    if (error.code === '23503')
+      throw new ApiError(
+        404,
+        'not_found',
+        'area_id, template_id, tenancy_id or baseline_inspection_id does not belong to this account',
+      );
     throw new ApiError(500, 'database_error', error.message);
   }
   return c.json(data as z.infer<typeof Inspection>, 201);
@@ -713,13 +811,18 @@ inspectionsApp.openapi(inspPatch, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
-  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  const update: DbTableUpdate<'inspections'> = { updated_at: new Date().toISOString() };
   if (body.template_id !== undefined) update.template_id = body.template_id;
   if (body.performed_at !== undefined) update.performed_at = body.performed_at;
   if (body.notes !== undefined) update.notes = body.notes;
-  const { data, error } = await sb.from('inspections').update(update)
-    .eq('account_id', accountId).eq('id', id).is('deleted_at', null)
-    .select('*').maybeSingle();
+  const { data, error } = await sb
+    .from('inspections')
+    .update(update)
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .select('*')
+    .maybeSingle();
   if (error) {
     if (/inspection .* is completed/i.test(error.message)) {
       throw new ApiError(409, 'conflict', 'inspection is completed and cannot be modified');
@@ -740,28 +843,40 @@ inspectionsApp.openapi(inspComplete, async (c) => {
   // retry finds completed_at already set and skips the lock update entirely).
   let templateSnapshot: Record<string, unknown> | null = null;
   let subjectSnapshot: Record<string, unknown> | null = null;
-  const { data: pre, error: preErr } = await sb.from('inspections')
+  const { data: pre, error: preErr } = await sb
+    .from('inspections')
     .select('area_id, template_id, tenancy_id')
-    .eq('account_id', accountId).eq('id', id)
-    .is('deleted_at', null).is('completed_at', null)
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .is('completed_at', null)
     .maybeSingle();
   if (preErr) throw new ApiError(500, 'database_error', preErr.message);
   if (pre) {
     const p = pre as { area_id: string; template_id: string | null; tenancy_id: string | null };
     if (p.template_id) {
-      const tpl = await sb.from('inspection_templates')
+      const tpl = await sb
+        .from('inspection_templates')
         .select('id, name, jurisdiction, version, schema')
-        .eq('account_id', accountId).eq('id', p.template_id).maybeSingle();
+        .eq('account_id', accountId)
+        .eq('id', p.template_id)
+        .maybeSingle();
       templateSnapshot = (tpl.data as Record<string, unknown> | null) ?? null;
     }
-    const area = await sb.from('areas')
+    const area = await sb
+      .from('areas')
       .select('id, name, kind, property_id, properties(name, address)')
-      .eq('account_id', accountId).eq('id', p.area_id).maybeSingle();
+      .eq('account_id', accountId)
+      .eq('id', p.area_id)
+      .maybeSingle();
     subjectSnapshot = { area: (area.data as unknown) ?? null, tenancy: null as unknown };
     if (p.tenancy_id) {
-      const ten = await sb.from('tenancies')
+      const ten = await sb
+        .from('tenancies')
         .select('id, start_date, end_date, status')
-        .eq('account_id', accountId).eq('id', p.tenancy_id).maybeSingle();
+        .eq('account_id', accountId)
+        .eq('id', p.tenancy_id)
+        .maybeSingle();
       subjectSnapshot.tenancy = (ten.data as unknown) ?? null;
     }
   }
@@ -769,13 +884,14 @@ inspectionsApp.openapi(inspComplete, async (c) => {
   // Step 1: set completed_at + status + snapshots via the user-client
   // (RLS-scoped). This is the last report-data-relevant UPDATE the trigger allows.
   const completedAt = new Date().toISOString();
-  const { data: locked, error: lockErr } = await sb.from('inspections')
+  const { data: locked, error: lockErr } = await sb
+    .from('inspections')
     .update({
       completed_at: completedAt,
       status: 'completed',
       updated_at: completedAt,
-      template_snapshot: templateSnapshot,
-      subject_snapshot: subjectSnapshot,
+      template_snapshot: asJson(templateSnapshot),
+      subject_snapshot: asJson(subjectSnapshot),
     })
     .eq('account_id', accountId)
     .eq('id', id)
@@ -792,8 +908,13 @@ inspectionsApp.openapi(inspComplete, async (c) => {
   // report-gen and document-emission are both idempotent.
   let inspection = locked as z.infer<typeof Inspection> | null;
   if (!inspection) {
-    const { data: existing, error: exErr } = await sb.from('inspections')
-      .select('*').eq('account_id', accountId).eq('id', id).is('deleted_at', null).maybeSingle();
+    const { data: existing, error: exErr } = await sb
+      .from('inspections')
+      .select('*')
+      .eq('account_id', accountId)
+      .eq('id', id)
+      .is('deleted_at', null)
+      .maybeSingle();
     if (exErr) throw new ApiError(500, 'database_error', exErr.message);
     const ex = existing as z.infer<typeof Inspection> | null;
     if (!ex || !ex.completed_at || ex.status === 'voided') {
@@ -810,7 +931,8 @@ inspectionsApp.openapi(inspComplete, async (c) => {
   let document: Record<string, unknown> | null = null;
   let documentVersion: Record<string, unknown> | null = null;
   if (inspection.kind === 'move_in' || inspection.kind === 'move_out') {
-    const title = inspection.kind === 'move_in' ? 'Move-in condition report' : 'Move-out condition report';
+    const title =
+      inspection.kind === 'move_in' ? 'Move-in condition report' : 'Move-out condition report';
     const { data: emitted, error: emitErr } = await sb.rpc('emit_inspection_report_document', {
       p_account_id: accountId,
       p_inspection_id: id,
@@ -821,9 +943,10 @@ inspectionsApp.openapi(inspComplete, async (c) => {
       p_requires_ack: true,
     });
     if (emitErr) throw rpcError(emitErr);
-    const row = (Array.isArray(emitted) ? emitted[0] : emitted) as
-      | { document: Record<string, unknown>; version: Record<string, unknown> }
-      | null;
+    const row = (Array.isArray(emitted) ? emitted[0] : emitted) as {
+      document: Record<string, unknown>;
+      version: Record<string, unknown>;
+    } | null;
     document = row?.document ?? null;
     documentVersion = row?.version ?? null;
   }
@@ -854,7 +977,7 @@ inspectionsApp.openapi(seedRoute, async (c) => {
   const { data, error } = await sb.rpc('seed_inspection_items_from_template', {
     p_account_id: accountId,
     p_inspection_id: id,
-    p_template_id: body.template_id ?? null,
+    p_template_id: body.template_id,
   });
   if (error) throw rpcError(error);
   return c.json((data ?? { items: [], checks: [] }) as z.infer<typeof SeededRows>, 200);
@@ -881,9 +1004,9 @@ inspectionsApp.openapi(startCheckoutRoute, async (c) => {
   const { data, error } = await sb.rpc('start_checkout_from_checkin', {
     p_account_id: accountId,
     p_baseline_inspection_id: id,
-    p_performed_at: body.performed_at ?? null,
-    p_template_id: body.template_id ?? null,
-    p_notes: body.notes ?? null,
+    p_performed_at: body.performed_at,
+    p_template_id: body.template_id,
+    p_notes: body.notes,
   });
   if (error) throw rpcError(error);
   const row = (Array.isArray(data) ? data[0] : data) as z.infer<typeof Inspection> | null;
@@ -927,11 +1050,16 @@ const reviewRoute = createRoute({
 inspectionsApp.openapi(reviewRoute, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const sb = getSb(c);
-  const { data, error } = await sb.from('inspections')
+  const { data, error } = await sb
+    .from('inspections')
     .update({ status: 'landlord_reviewed', updated_at: new Date().toISOString() })
-    .eq('account_id', accountId).eq('id', id).is('deleted_at', null).is('completed_at', null)
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .is('completed_at', null)
     .in('status', ['draft', 'tenant_submitted'])
-    .select('*').maybeSingle();
+    .select('*')
+    .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
   if (!data) throw new ApiError(404, 'not_found', 'inspection not found or not reviewable');
   return c.json(data as z.infer<typeof Inspection>, 200);
@@ -979,8 +1107,12 @@ const checksListRoute = createRoute({
 inspectionsApp.openapi(checksListRoute, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const sb = getSb(c);
-  const { data, error } = await sb.from('inspection_checks').select('*')
-    .eq('account_id', accountId).eq('inspection_id', id).is('deleted_at', null)
+  const { data, error } = await sb
+    .from('inspection_checks')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('inspection_id', id)
+    .is('deleted_at', null)
     .order('sort_order', { ascending: true, nullsFirst: false })
     .order('created_at', { ascending: true });
   if (error) throw new ApiError(500, 'database_error', error.message);
@@ -997,7 +1129,10 @@ const checksUpsertRoute = createRoute({
     body: { content: { 'application/json': { schema: UpsertChecksBody } }, required: true },
   },
   responses: {
-    200: { description: 'upserted', content: { 'application/json': { schema: CheckListResponse } } },
+    200: {
+      description: 'upserted',
+      content: { 'application/json': { schema: CheckListResponse } },
+    },
     ...errorResponses,
   },
 });
@@ -1008,7 +1143,7 @@ inspectionsApp.openapi(checksUpsertRoute, async (c) => {
   const { data, error } = await sb.rpc('upsert_inspection_checks', {
     p_account_id: accountId,
     p_inspection_id: id,
-    p_checks: body.checks,
+    p_checks: asJson(body.checks),
   });
   if (error) throw rpcError(error);
   return c.json({ data: (data ?? []) as z.infer<typeof InspectionCheck>[] }, 200);
@@ -1020,7 +1155,12 @@ inspectionsApp.openapi(checksUpsertRoute, async (c) => {
 const CaptureLinkBody = z
   .object({
     tenant_id: z.string().uuid().optional(),
-    expires_in_minutes: z.coerce.number().int().positive().max(MAX_CAPTURE_TTL_MIN).default(DEFAULT_CAPTURE_TTL_MIN),
+    expires_in_minutes: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(MAX_CAPTURE_TTL_MIN)
+      .default(DEFAULT_CAPTURE_TTL_MIN),
   })
   .openapi('CreateCaptureLinkBody');
 const MintedCaptureLink = z
@@ -1068,7 +1208,8 @@ inspectionsApp.openapi(captureLinkRoute, async (c) => {
     .select('id, account_id, inspection_id, tenant_id, expires_at, created_at')
     .single();
   if (error) {
-    if (error.code === '23503') throw new ApiError(404, 'not_found', 'inspection or tenant not found in this account');
+    if (error.code === '23503')
+      throw new ApiError(404, 'not_found', 'inspection or tenant not found in this account');
     throw new ApiError(500, 'database_error', error.message);
   }
   return c.json({ ...(data as object), secret } as z.infer<typeof MintedCaptureLink>, 201);
@@ -1118,7 +1259,8 @@ const itemRemove = createRoute({
   method: 'delete',
   path: '/accounts/{accountId}/inspections/{inspectionId}/items/{id}',
   tags: ['inspection_items'],
-  summary: 'Soft-delete an inspection item (rejected with 409 if the parent inspection is completed)',
+  summary:
+    'Soft-delete an inspection item (rejected with 409 if the parent inspection is completed)',
   request: { params: InspectionAndItemParam },
   responses: {
     204: { description: 'deleted' },
@@ -1131,7 +1273,8 @@ export const inspectionItemsApp = newApiApp();
 inspectionItemsApp.openapi(itemList, async (c) => {
   const { accountId, inspectionId } = c.req.valid('param');
   const sb = getSb(c);
-  const { data, error } = await sb.from('inspection_items')
+  const { data, error } = await sb
+    .from('inspection_items')
     .select('*')
     .eq('account_id', accountId)
     .eq('inspection_id', inspectionId)
@@ -1145,23 +1288,33 @@ inspectionItemsApp.openapi(itemCreate, async (c) => {
   const { accountId, inspectionId } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
-  const { data, error } = await sb.from('inspection_items').insert({
-    account_id: accountId,
-    inspection_id: inspectionId,
-    label: body.label,
-    condition: body.condition ?? null,
-    notes: body.notes ?? null,
-    item_key: body.item_key ?? null,
-    group_label: body.group_label ?? null,
-    change_type: body.change_type ?? null,
-    sort_order: body.sort_order ?? null,
-  }).select('*').single();
+  const { data, error } = await sb
+    .from('inspection_items')
+    .insert({
+      account_id: accountId,
+      inspection_id: inspectionId,
+      label: body.label,
+      condition: body.condition ?? null,
+      notes: body.notes ?? null,
+      item_key: body.item_key ?? null,
+      group_label: body.group_label ?? null,
+      change_type: body.change_type ?? null,
+      sort_order: body.sort_order ?? null,
+    })
+    .select('*')
+    .single();
   if (error) {
     if (/parent inspection .* is completed/i.test(error.message)) {
       throw new ApiError(409, 'conflict', 'parent inspection is completed; items are immutable');
     }
-    if (error.code === '23505') throw new ApiError(409, 'conflict', 'an item with this item_key already exists for this inspection');
-    if (error.code === '23503') throw new ApiError(404, 'not_found', 'inspection not found in this account');
+    if (error.code === '23505')
+      throw new ApiError(
+        409,
+        'conflict',
+        'an item with this item_key already exists for this inspection',
+      );
+    if (error.code === '23503')
+      throw new ApiError(404, 'not_found', 'inspection not found in this account');
     throw new ApiError(500, 'database_error', error.message);
   }
   return c.json(data as z.infer<typeof InspectionItem>, 201);
@@ -1171,7 +1324,7 @@ inspectionItemsApp.openapi(itemPatch, async (c) => {
   const { accountId, inspectionId, id } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
-  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  const update: DbTableUpdate<'inspection_items'> = { updated_at: new Date().toISOString() };
   if (body.label !== undefined) update.label = body.label;
   if (body.condition !== undefined) update.condition = body.condition;
   if (body.notes !== undefined) update.notes = body.notes;
@@ -1179,17 +1332,25 @@ inspectionItemsApp.openapi(itemPatch, async (c) => {
   if (body.group_label !== undefined) update.group_label = body.group_label;
   if (body.change_type !== undefined) update.change_type = body.change_type;
   if (body.sort_order !== undefined) update.sort_order = body.sort_order;
-  const { data, error } = await sb.from('inspection_items').update(update)
+  const { data, error } = await sb
+    .from('inspection_items')
+    .update(update)
     .eq('account_id', accountId)
     .eq('inspection_id', inspectionId)
     .eq('id', id)
     .is('deleted_at', null)
-    .select('*').maybeSingle();
+    .select('*')
+    .maybeSingle();
   if (error) {
     if (/parent inspection .* is completed/i.test(error.message)) {
       throw new ApiError(409, 'conflict', 'parent inspection is completed; items are immutable');
     }
-    if (error.code === '23505') throw new ApiError(409, 'conflict', 'an item with this item_key already exists for this inspection');
+    if (error.code === '23505')
+      throw new ApiError(
+        409,
+        'conflict',
+        'an item with this item_key already exists for this inspection',
+      );
     throw new ApiError(500, 'database_error', error.message);
   }
   if (!data) throw new ApiError(404, 'not_found', 'not found');
@@ -1199,7 +1360,8 @@ inspectionItemsApp.openapi(itemPatch, async (c) => {
 inspectionItemsApp.openapi(itemRemove, async (c) => {
   const { accountId, inspectionId, id } = c.req.valid('param');
   const sb = getSb(c);
-  const { data, error } = await sb.from('inspection_items')
+  const { data, error } = await sb
+    .from('inspection_items')
     .update(softDeleteStamp())
     .eq('account_id', accountId)
     .eq('inspection_id', inspectionId)

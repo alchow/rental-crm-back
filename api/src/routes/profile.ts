@@ -2,6 +2,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { requireAuth } from '../middleware/auth';
 import { getSb } from '../supabase/request-client';
+import type { DbTableUpdate } from '../supabase/db-types';
 import { ApiError, errorResponses } from './_lib/error';
 import { normalizePhone } from './_lib/phone';
 
@@ -89,7 +90,7 @@ profile.openapi(patchRoute, async (c) => {
   const body = c.req.valid('json');
   const sb = getSb(c);
 
-  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  const update: DbTableUpdate<'users'> = { updated_at: new Date().toISOString() };
   if (body.display_name !== undefined) update.display_name = body.display_name;
   if (body.phone !== undefined) {
     // Any change to the number (set or clear) invalidates a prior verification:

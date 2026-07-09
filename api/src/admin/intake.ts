@@ -2,6 +2,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from '../routes/_lib/app';
 import { randomBytes, createHash } from 'node:crypto';
 import { ApiError, errorResponses } from '../routes/_lib/error';
+import { nullableRpcArg } from '../supabase/db-types';
 import { getAdminClient } from './supabase-admin';
 import { processAndStoreBytes, ALLOWED_MIME_TYPES, MAX_BYTES } from './storage';
 
@@ -72,10 +73,7 @@ export interface MintedToken {
   created_at: string;
 }
 
-export async function mintIntakeToken(
-  accountId: string,
-  tenancyId: string,
-): Promise<MintedToken> {
+export async function mintIntakeToken(accountId: string, tenancyId: string): Promise<MintedToken> {
   const admin = getAdminClient();
   const { data: t, error: tErr } = await admin
     .from('tenancies')
@@ -110,7 +108,11 @@ export async function mintIntakeToken(
     .single();
   if (insErr) {
     if (insErr.code === '23505') {
-      throw new ApiError(409, 'conflict', 'an active intake token already exists for this tenancy; revoke it first');
+      throw new ApiError(
+        409,
+        'conflict',
+        'an active intake token already exists for this tenancy; revoke it first',
+      );
     }
     throw new ApiError(500, 'database_error', insErr.message);
   }
@@ -145,9 +147,9 @@ export async function revokeIntakeToken(
 // ----- per-IP rate limit (DB sliding window) --------------------------------
 
 const TOKEN_WINDOW_S = 10 * 60;
-const TOKEN_LIMIT    = 20;
-const IP_WINDOW_S    = 10 * 60;
-const IP_LIMIT       = 50;
+const TOKEN_LIMIT = 20;
+const IP_WINDOW_S = 10 * 60;
+const IP_LIMIT = 50;
 
 async function bumpIpRateBucket(ip: string): Promise<{ ok: boolean }> {
   const admin = getAdminClient();
@@ -211,7 +213,11 @@ const intake = createRoute({
   summary: 'Submit a maintenance request via tenant magic link',
   request: {
     params: z.object({
-      token: z.string().min(8).max(200).openapi({ param: { name: 'token', in: 'path' } }),
+      token: z
+        .string()
+        .min(8)
+        .max(200)
+        .openapi({ param: { name: 'token', in: 'path' } }),
     }),
   },
   responses: {
@@ -219,7 +225,9 @@ const intake = createRoute({
     ...errorResponses,
     429: {
       description: 'rate limited',
-      content: { 'application/json': { schema: errorResponses[400].content['application/json'].schema } },
+      content: {
+        'application/json': { schema: errorResponses[400].content['application/json'].schema },
+      },
     },
   },
 });
@@ -240,7 +248,9 @@ async function lookupAndRateLimitToken(secret: string): Promise<TokenRow> {
   const hash = hashSecret(secret);
   const { data, error } = await admin
     .from('intake_tokens')
-    .select('id, account_id, property_id, tenancy_id, revoked_at, last_used_at, use_count, use_window_start')
+    .select(
+      'id, account_id, property_id, tenancy_id, revoked_at, last_used_at, use_count, use_window_start',
+    )
     .eq('secret_hash', '\\x' + hash.toString('hex'))
     .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
@@ -316,10 +326,10 @@ intakeApp.openapi(intake, async (c) => {
     type BodyVal = string | File | undefined;
     const form = (await c.req.parseBody()) as Record<string, BodyVal>;
     candidate = {
-      area_id:     typeof form.area_id     === 'string' ? form.area_id     : undefined,
-      title:       typeof form.title       === 'string' ? form.title       : undefined,
+      area_id: typeof form.area_id === 'string' ? form.area_id : undefined,
+      title: typeof form.title === 'string' ? form.title : undefined,
       description: typeof form.description === 'string' ? form.description : undefined,
-      severity:    typeof form.severity    === 'string' ? form.severity    : undefined,
+      severity: typeof form.severity === 'string' ? form.severity : undefined,
       occurred_at: typeof form.occurred_at === 'string' ? form.occurred_at : undefined,
     };
     const maybeFile = form.file;
@@ -327,11 +337,15 @@ intakeApp.openapi(intake, async (c) => {
       file = maybeFile as File;
     }
   } else {
-    candidate = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+    candidate = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   }
   const parsed = IntakeBody.safeParse(candidate);
   if (!parsed.success) {
-    throw new ApiError(400, 'invalid_request', parsed.error.issues.map((i) => i.message).join('; '));
+    throw new ApiError(
+      400,
+      'invalid_request',
+      parsed.error.issues.map((i) => i.message).join('; '),
+    );
   }
   const fields: IntakeFields = parsed.data;
 
@@ -369,22 +383,22 @@ intakeApp.openapi(intake, async (c) => {
   }
 
   const { data: rpcData, error: rpcErr } = await admin.rpc('submit_intake_with_attachment', {
-    p_account_id:        tokenRow.account_id,
-    p_tenancy_id:        tokenRow.tenancy_id,
-    p_area_id:           area.id,
-    p_title:             fields.title,
-    p_description:       fields.description ?? null,
-    p_severity:          fields.severity,
-    p_occurred_at:       fields.occurred_at ?? new Date().toISOString(),
-    p_actor:             `tenant:${tokenRow.id}`,
-    p_attachment_hash:   putResult?.primary.hash ?? null,
-    p_attachment_mime:   putResult?.primary.mimeType ?? null,
-    p_attachment_size:   putResult?.primary.sizeBytes ?? null,
-    p_attachment_path:   putResult?.primary.storagePath ?? null,
-    p_derivative_hash:   putResult?.derivative?.hash ?? null,
-    p_derivative_mime:   putResult?.derivative?.mimeType ?? null,
-    p_derivative_size:   putResult?.derivative?.sizeBytes ?? null,
-    p_derivative_path:   putResult?.derivative?.storagePath ?? null,
+    p_account_id: tokenRow.account_id,
+    p_tenancy_id: tokenRow.tenancy_id,
+    p_area_id: area.id,
+    p_title: fields.title,
+    p_description: nullableRpcArg(fields.description ?? null),
+    p_severity: fields.severity,
+    p_occurred_at: fields.occurred_at ?? new Date().toISOString(),
+    p_actor: `tenant:${tokenRow.id}`,
+    p_attachment_hash: nullableRpcArg(putResult?.primary.hash ?? null),
+    p_attachment_mime: nullableRpcArg(putResult?.primary.mimeType ?? null),
+    p_attachment_size: nullableRpcArg(putResult?.primary.sizeBytes ?? null),
+    p_attachment_path: nullableRpcArg(putResult?.primary.storagePath ?? null),
+    p_derivative_hash: putResult?.derivative?.hash,
+    p_derivative_mime: putResult?.derivative?.mimeType,
+    p_derivative_size: putResult?.derivative?.sizeBytes,
+    p_derivative_path: putResult?.derivative?.storagePath,
   });
   if (rpcErr) {
     throw new ApiError(500, 'database_error', rpcErr.message);

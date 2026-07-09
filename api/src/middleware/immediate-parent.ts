@@ -21,18 +21,18 @@ import { ApiError } from '../routes/_lib/error';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+type ImmediateParentTable = 'areas' | 'tenancies';
+
 export interface ImmediateParentOptions {
   /** The public.* table name the parent lives in. */
-  table: string;
+  table: ImmediateParentTable;
   /** The path-param name that holds the parent's id (e.g. 'tenancyId'). */
   paramName: string;
   /** Set to false for tables that don't soft-delete (e.g. unit_details). */
   hasDeletedAt?: boolean;
 }
 
-export function requireImmediateParent(
-  opts: ImmediateParentOptions,
-): MiddlewareHandler {
+export function requireImmediateParent(opts: ImmediateParentOptions): MiddlewareHandler {
   const hasDeletedAt = opts.hasDeletedAt ?? true;
   return async (c, next) => {
     const accountId = c.get('account').accountId;

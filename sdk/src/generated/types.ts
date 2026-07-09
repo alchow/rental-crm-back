@@ -7378,6 +7378,84 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/accounts/{accountId}/comms/reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Reconcile scan (transport): rows stuck in 'sending' longer than ttl_seconds. The scan never auto-retries or auto-fails — the transport checks the provider and resolves each row via complete or fail. */
+        get: {
+            parameters: {
+                query?: {
+                    ttl_seconds?: number;
+                };
+                header?: never;
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description stale sending rows */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CommReconcileResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/accounts/{accountId}/comms/inbound": {
         parameters: {
             query?: never;
@@ -7415,100 +7493,6 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["CaptureCommInboundResponse"];
-                    };
-                };
-                /** @description invalid request */
-                400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description not found / not a member */
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
-                409: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description server error */
-                500: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
-                503: {
-                    headers: {
-                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
-                        "Retry-After"?: number;
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/accounts/{accountId}/comms/inbound-persona": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Capture an inbound email addressed to the account persona (transport). No reply token: the SENDER is the routing key — a known tenant/vendor (DMARC pass) journals into their active email thread, created atomically when none exists; everything else lands in triage. Idempotent on provider_msg_id (shared raw tier with token capture). */
-        post: {
-            parameters: {
-                query?: never;
-                header: {
-                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
-                    "Idempotency-Key": string;
-                };
-                path: {
-                    accountId: string;
-                };
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["CapturePersonaInboundBody"];
-                };
-            };
-            responses: {
-                /** @description capture result */
-                200: {
-                    headers: {
-                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
-                        "Idempotency-Replay"?: "true";
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["CapturePersonaInboundResponse"];
                     };
                 };
                 /** @description invalid request */
@@ -7972,197 +7956,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/accounts/{accountId}/comms/threads": {
+    "/v1/comms/resolve-reply-address": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List comms threads with participants (landlord). */
+        /** Resolve a tokenized email reply address to its (account, thread, participant) — transport only, account-agnostic by design (the token is all an inbound email carries). 404 for anything but an ACTIVE email binding in an account the caller transports (uniform: unknown, revoked, and foreign tokens are indistinguishable). */
         get: {
             parameters: {
-                query?: {
-                    cursor?: string;
-                    limit?: number;
-                    status?: "active" | "closed";
-                    kind?: "bridged_tenant" | "vendor";
-                    channel?: "sms" | "email" | "voice";
-                    tenancy_id?: string;
+                query: {
+                    address: string;
                 };
                 header?: never;
-                path: {
-                    accountId: string;
-                };
+                path?: never;
                 cookie?: never;
             };
             requestBody?: never;
             responses: {
-                /** @description page */
+                /** @description active binding */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["CommThreadListResponse"];
-                    };
-                };
-                /** @description invalid request */
-                400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description not found / not a member */
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description server error */
-                500: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
-                503: {
-                    headers: {
-                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
-                        "Retry-After"?: number;
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-            };
-        };
-        put?: never;
-        /** Create a thread with participants and channel bindings (landlord). Each counterparty participant is bound to one of the account’s platform numbers; a counterparty may hold only one active thread per platform number. */
-        post: {
-            parameters: {
-                query?: never;
-                header: {
-                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
-                    "Idempotency-Key": string;
-                };
-                path: {
-                    accountId: string;
-                };
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["CreateCommThreadBody"];
-                };
-            };
-            responses: {
-                /** @description created */
-                201: {
-                    headers: {
-                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
-                        "Idempotency-Replay"?: "true";
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["CommThreadDetail"];
-                    };
-                };
-                /** @description invalid request */
-                400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description not found / not a member */
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
-                409: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description server error */
-                500: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
-                503: {
-                    headers: {
-                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
-                        "Retry-After"?: number;
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/accounts/{accountId}/comms/threads/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Thread detail (transport + landlord): participants, channel bindings, and the journal rows in the thread with their delivery state (cursor/limit page the messages). */
-        get: {
-            parameters: {
-                query?: {
-                    cursor?: string;
-                    limit?: number;
-                };
-                header?: never;
-                path: {
-                    accountId: string;
-                    id: string;
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description thread detail */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["CommThreadDetail"];
+                        "application/json": components["schemas"]["CommResolveReplyAddressResponse"];
                     };
                 };
                 /** @description invalid request */
@@ -8213,7 +8032,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/accounts/{accountId}/comms/threads/{id}/messages": {
+    "/v1/accounts/{accountId}/comms/inbound-persona": {
         parameters: {
             query?: never;
             header?: never;
@@ -8222,7 +8041,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Landlord-authored outbound into a thread: creates one send intent per counterparty participant (approved_by = caller, approval_ref = 'self:<user_id>'). The journal entries are appended by the completion path once the transport confirms each leg. */
+        /** Capture an inbound email addressed to the account persona (transport). No reply token: the SENDER is the routing key — a known tenant/vendor (DMARC pass) journals into their active email thread, created atomically when none exists; everything else lands in triage. Idempotent on provider_msg_id (shared raw tier with token capture). */
         post: {
             parameters: {
                 query?: never;
@@ -8232,181 +8051,24 @@ export interface paths {
                 };
                 path: {
                     accountId: string;
-                    id: string;
                 };
                 cookie?: never;
             };
             requestBody: {
                 content: {
-                    "application/json": components["schemas"]["CreateCommThreadMessageBody"];
+                    "application/json": components["schemas"]["CapturePersonaInboundBody"];
                 };
             };
             responses: {
-                /** @description send intents created */
-                201: {
-                    headers: {
-                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
-                        "Idempotency-Replay"?: "true";
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["CommThreadMessageResponse"];
-                    };
-                };
-                /** @description invalid request */
-                400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description not found / not a member */
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
-                409: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description server error */
-                500: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
-                503: {
-                    headers: {
-                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
-                        "Retry-After"?: number;
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/accounts/{accountId}/interactions/{interactionId}/attachments": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** An interaction's stored attachments (any member). Bytes stream from GET …/attachments/{attachmentId}/download. */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    accountId: string;
-                    interactionId: string;
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description attachments */
+                /** @description capture result */
                 200: {
                     headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["CommAttachmentListResponse"];
-                    };
-                };
-                /** @description invalid request */
-                400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description not found / not a member */
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description server error */
-                500: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
-                503: {
-                    headers: {
-                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
-                        "Retry-After"?: number;
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-            };
-        };
-        put?: never;
-        /** Attach original file bytes to a comm-captured journal row (transport). Only rows written by the verified capture paths accept attachments; the transport uploads AFTER capture using the returned interaction_id (skip on duplicate). Idempotent per (interaction, content): a retry returns the existing attachment. */
-        post: {
-            parameters: {
-                query?: never;
-                header: {
-                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
-                    "Idempotency-Key": string;
-                };
-                path: {
-                    accountId: string;
-                    interactionId: string;
-                };
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["UploadCommAttachmentBody"];
-                };
-            };
-            responses: {
-                /** @description stored attachment */
-                201: {
-                    headers: {
                         /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
                         "Idempotency-Replay"?: "true";
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["CommAttachment"];
+                        "application/json": components["schemas"]["CapturePersonaInboundResponse"];
                     };
                 };
                 /** @description invalid request */
@@ -8807,6 +8469,418 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/comms/resolve-persona-address": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Resolve a persona address (<local>@<subdomain>.<parent>) to its account — transport only, account-agnostic like resolve-reply-address (a cold inbound email carries nothing but the address). 404 for anything but a configured persona in an account the caller transports (uniform: unknown local parts, unknown subdomains, and foreign accounts are indistinguishable). */
+        get: {
+            parameters: {
+                query: {
+                    address: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description persona account */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CommResolvePersonaAddressResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/comms/threads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List comms threads with participants (landlord). */
+        get: {
+            parameters: {
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                    status?: "active" | "closed";
+                    kind?: "bridged_tenant" | "vendor";
+                    channel?: "sms" | "email" | "voice";
+                    tenancy_id?: string;
+                };
+                header?: never;
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CommThreadListResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Create a thread with participants and channel bindings (landlord). Each counterparty participant is bound to one of the account’s platform numbers; a counterparty may hold only one active thread per platform number. */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateCommThreadBody"];
+                };
+            };
+            responses: {
+                /** @description created */
+                201: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CommThreadDetail"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/comms/threads/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Thread detail (transport + landlord): participants, channel bindings, and the journal rows in the thread with their delivery state (cursor/limit page the messages). */
+        get: {
+            parameters: {
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description thread detail */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CommThreadDetail"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/comms/threads/{id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Landlord-authored outbound into a thread: creates one send intent per counterparty participant (approved_by = caller, approval_ref = 'self:<user_id>'). The journal entries are appended by the completion path once the transport confirms each leg. */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateCommThreadMessageBody"];
+                };
+            };
+            responses: {
+                /** @description send intents created */
+                201: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CommThreadMessageResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/accounts/{accountId}/comms/threads/{threadId}/bindings/{bindingId}/rebind": {
         parameters: {
             query?: never;
@@ -8846,6 +8920,162 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["CommThreadBinding"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/interactions/{interactionId}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** An interaction's stored attachments (any member). Bytes stream from GET …/attachments/{attachmentId}/download. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    accountId: string;
+                    interactionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description attachments */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CommAttachmentListResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Attach original file bytes to a comm-captured journal row (transport). Only rows written by the verified capture paths accept attachments; the transport uploads AFTER capture using the returned interaction_id (skip on duplicate). Idempotent per (interaction, content): a retry returns the existing attachment. */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    interactionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["UploadCommAttachmentBody"];
+                };
+            };
+            responses: {
+                /** @description stored attachment */
+                201: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CommAttachment"];
                     };
                 };
                 /** @description invalid request */
@@ -9147,236 +9377,6 @@ export interface paths {
                 };
             };
         };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/accounts/{accountId}/comms/reconcile": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Reconcile scan (transport): rows stuck in 'sending' longer than ttl_seconds. The scan never auto-retries or auto-fails — the transport checks the provider and resolves each row via complete or fail. */
-        get: {
-            parameters: {
-                query?: {
-                    ttl_seconds?: number;
-                };
-                header?: never;
-                path: {
-                    accountId: string;
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description stale sending rows */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["CommReconcileResponse"];
-                    };
-                };
-                /** @description invalid request */
-                400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description not found / not a member */
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description server error */
-                500: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
-                503: {
-                    headers: {
-                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
-                        "Retry-After"?: number;
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-            };
-        };
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/comms/resolve-reply-address": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Resolve a tokenized email reply address to its (account, thread, participant) — transport only, account-agnostic by design (the token is all an inbound email carries). 404 for anything but an ACTIVE email binding in an account the caller transports (uniform: unknown, revoked, and foreign tokens are indistinguishable). */
-        get: {
-            parameters: {
-                query: {
-                    address: string;
-                };
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description active binding */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["CommResolveReplyAddressResponse"];
-                    };
-                };
-                /** @description invalid request */
-                400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description not found / not a member */
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description server error */
-                500: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
-                503: {
-                    headers: {
-                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
-                        "Retry-After"?: number;
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-            };
-        };
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/comms/resolve-persona-address": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Resolve a persona address (<local>@<subdomain>.<parent>) to its account — transport only, account-agnostic like resolve-reply-address (a cold inbound email carries nothing but the address). 404 for anything but a configured persona in an account the caller transports (uniform: unknown local parts, unknown subdomains, and foreign accounts are indistinguishable). */
-        get: {
-            parameters: {
-                query: {
-                    address: string;
-                };
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description persona account */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["CommResolvePersonaAddressResponse"];
-                    };
-                };
-                /** @description invalid request */
-                400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description not found / not a member */
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description server error */
-                500: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
-                503: {
-                    headers: {
-                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
-                        "Retry-After"?: number;
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-            };
-        };
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -16312,6 +16312,9 @@ export interface components {
             provider_ts: string;
             error_code?: string;
         };
+        CommReconcileResponse: {
+            data: components["schemas"]["CommOutbox"][];
+        };
         CommThreadParticipant: {
             /** Format: uuid */
             id: string;
@@ -16362,37 +16365,6 @@ export interface components {
             in_reply_to?: string;
             references?: string[];
             auth_results?: components["schemas"]["CommAuthResults"];
-        };
-        CapturePersonaInboundResponse: {
-            /** @enum {string} */
-            disposition: "matched" | "triaged" | "duplicate" | "opted_out" | "cc_journaled";
-            /** Format: uuid */
-            interaction_id: string | null;
-            /** Format: uuid */
-            thread_id: string | null;
-            participant: components["schemas"]["CommThreadParticipant"];
-            /** Format: uuid */
-            unmatched_id: string | null;
-        };
-        CapturePersonaInboundBody: {
-            provider: string;
-            provider_msg_id: string;
-            persona_address: string;
-            from_address: string;
-            from_display_name?: string;
-            /** @default [] */
-            to_addresses: string[];
-            /** @default [] */
-            cc_addresses: string[];
-            subject?: string;
-            body?: string;
-            media?: components["schemas"]["CommInboundMedia"][];
-            rfc822_message_id?: string;
-            in_reply_to?: string;
-            references?: string[];
-            auth_results: components["schemas"]["CommAuthResults"];
-            /** Format: date-time */
-            received_at: string;
         };
         CommInboundProvenance: {
             /** Format: uuid */
@@ -16450,6 +16422,116 @@ export interface components {
         CommOptOutListResponse: {
             data: components["schemas"]["CommOptOut"][];
             next_cursor: string | null;
+        };
+        CommResolveReplyAddressResponse: {
+            /** Format: uuid */
+            account_id: string;
+            /** Format: uuid */
+            thread_id: string;
+            /** Format: uuid */
+            participant_id: string;
+        };
+        CapturePersonaInboundResponse: {
+            /** @enum {string} */
+            disposition: "matched" | "triaged" | "duplicate" | "opted_out" | "cc_journaled";
+            /** Format: uuid */
+            interaction_id: string | null;
+            /** Format: uuid */
+            thread_id: string | null;
+            participant: components["schemas"]["CommThreadParticipant"];
+            /** Format: uuid */
+            unmatched_id: string | null;
+        };
+        CapturePersonaInboundBody: {
+            provider: string;
+            provider_msg_id: string;
+            persona_address: string;
+            from_address: string;
+            from_display_name?: string;
+            /** @default [] */
+            to_addresses: string[];
+            /** @default [] */
+            cc_addresses: string[];
+            subject?: string;
+            body?: string;
+            media?: components["schemas"]["CommInboundMedia"][];
+            rfc822_message_id?: string;
+            in_reply_to?: string;
+            references?: string[];
+            auth_results: components["schemas"]["CommAuthResults"];
+            /** Format: date-time */
+            received_at: string;
+        };
+        CommUnmatchedInbound: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            account_id: string;
+            provider: string;
+            provider_msg_id: string;
+            rfc822_message_id: string | null;
+            persona_address: string;
+            from_address: string;
+            from_display_name: string | null;
+            to_addresses: string[];
+            cc_addresses: string[];
+            subject: string | null;
+            body: string | null;
+            media: components["schemas"]["CommInboundMedia"][];
+            spf: string | null;
+            dkim: string | null;
+            dmarc: string | null;
+            /** @enum {string} */
+            reason: "unknown_sender" | "auth_failed";
+            received_at: string;
+            /** @enum {string} */
+            status: "pending" | "linked" | "dismissed";
+            /** Format: uuid */
+            resolved_by: string | null;
+            resolved_at: string | null;
+            /** Format: uuid */
+            linked_thread_id: string | null;
+            /** Format: uuid */
+            linked_interaction_id: string | null;
+            linked_party_type: string | null;
+            /** Format: uuid */
+            linked_party_id: string | null;
+            auto_acked_at: string | null;
+            created_at: string;
+            updated_at: string;
+        };
+        CommUnmatchedListResponse: {
+            data: components["schemas"]["CommUnmatchedInbound"][];
+            next_cursor: string | null;
+        };
+        CommUnmatchedSuggestion: {
+            /** @enum {string} */
+            party_type: "tenant" | "vendor";
+            /** Format: uuid */
+            party_id: string;
+            title: string;
+            subtitle: string | null;
+            /** @enum {string} */
+            source: "email_exact" | "address_match" | "name_match";
+        };
+        CommUnmatchedDetailResponse: components["schemas"]["CommUnmatchedInbound"] & {
+            suggestions: components["schemas"]["CommUnmatchedSuggestion"][];
+        };
+        LinkCommUnmatchedResponse: {
+            /** Format: uuid */
+            thread_id: string;
+            /** Format: uuid */
+            interaction_id: string;
+        };
+        LinkCommUnmatchedBody: {
+            /** @enum {string} */
+            party_type: "tenant" | "vendor";
+            /** Format: uuid */
+            party_id: string;
+        };
+        CommResolvePersonaAddressResponse: {
+            /** Format: uuid */
+            account_id: string;
         };
         CommThread: {
             /** Format: uuid */
@@ -16553,6 +16635,9 @@ export interface components {
             /** Format: date-time */
             not_before?: string;
         };
+        RebindCommBindingBody: {
+            address: string;
+        };
         CommAttachment: {
             /** Format: uuid */
             id: string;
@@ -16569,76 +16654,6 @@ export interface components {
         };
         CommAttachmentListResponse: {
             data: components["schemas"]["CommAttachment"][];
-        };
-        CommUnmatchedInbound: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            account_id: string;
-            provider: string;
-            provider_msg_id: string;
-            rfc822_message_id: string | null;
-            persona_address: string;
-            from_address: string;
-            from_display_name: string | null;
-            to_addresses: string[];
-            cc_addresses: string[];
-            subject: string | null;
-            body: string | null;
-            media: components["schemas"]["CommInboundMedia"][];
-            spf: string | null;
-            dkim: string | null;
-            dmarc: string | null;
-            /** @enum {string} */
-            reason: "unknown_sender" | "auth_failed";
-            received_at: string;
-            /** @enum {string} */
-            status: "pending" | "linked" | "dismissed";
-            /** Format: uuid */
-            resolved_by: string | null;
-            resolved_at: string | null;
-            /** Format: uuid */
-            linked_thread_id: string | null;
-            /** Format: uuid */
-            linked_interaction_id: string | null;
-            linked_party_type: string | null;
-            /** Format: uuid */
-            linked_party_id: string | null;
-            auto_acked_at: string | null;
-            created_at: string;
-            updated_at: string;
-        };
-        CommUnmatchedListResponse: {
-            data: components["schemas"]["CommUnmatchedInbound"][];
-            next_cursor: string | null;
-        };
-        CommUnmatchedSuggestion: {
-            /** @enum {string} */
-            party_type: "tenant" | "vendor";
-            /** Format: uuid */
-            party_id: string;
-            title: string;
-            subtitle: string | null;
-            /** @enum {string} */
-            source: "email_exact" | "address_match" | "name_match";
-        };
-        CommUnmatchedDetailResponse: components["schemas"]["CommUnmatchedInbound"] & {
-            suggestions: components["schemas"]["CommUnmatchedSuggestion"][];
-        };
-        LinkCommUnmatchedResponse: {
-            /** Format: uuid */
-            thread_id: string;
-            /** Format: uuid */
-            interaction_id: string;
-        };
-        LinkCommUnmatchedBody: {
-            /** @enum {string} */
-            party_type: "tenant" | "vendor";
-            /** Format: uuid */
-            party_id: string;
-        };
-        RebindCommBindingBody: {
-            address: string;
         };
         CommQuietHours: {
             /** @example 21:00 */
@@ -16688,21 +16703,6 @@ export interface components {
                 [key: string]: unknown;
             };
             quiet_hours?: components["schemas"]["CommQuietHours"];
-        };
-        CommReconcileResponse: {
-            data: components["schemas"]["CommOutbox"][];
-        };
-        CommResolveReplyAddressResponse: {
-            /** Format: uuid */
-            account_id: string;
-            /** Format: uuid */
-            thread_id: string;
-            /** Format: uuid */
-            participant_id: string;
-        };
-        CommResolvePersonaAddressResponse: {
-            /** Format: uuid */
-            account_id: string;
         };
         OwnerPhoneResponse: {
             /** Format: uuid */

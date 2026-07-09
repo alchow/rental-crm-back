@@ -67,7 +67,9 @@ async function guardDocAccessRate(c: Parameters<typeof clientIp>[0]): Promise<vo
 const rateLimitedResponse = {
   429: {
     description: 'rate limited',
-    content: { 'application/json': { schema: errorResponses[400].content['application/json'].schema } },
+    content: {
+      'application/json': { schema: errorResponses[400].content['application/json'].schema },
+    },
   },
 } as const;
 
@@ -144,21 +146,43 @@ const DocumentTemplateListResponse = z
   .openapi('DocumentTemplateListResponse');
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 const AccountAndIdParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
 });
 const TenancyParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  tenancyId: z.string().uuid().openapi({ param: { name: 'tenancyId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  tenancyId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'tenancyId', in: 'path' } }),
 });
 const AccessParam = z.object({
-  token: z.string().min(8).max(200).openapi({ param: { name: 'token', in: 'path' } }),
+  token: z
+    .string()
+    .min(8)
+    .max(200)
+    .openapi({ param: { name: 'token', in: 'path' } }),
 });
 const AccessDocumentParam = AccessParam.extend({
-  documentId: z.string().uuid().openapi({ param: { name: 'documentId', in: 'path' } }),
+  documentId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'documentId', in: 'path' } }),
 });
 
 const ListQuery = z.object({
@@ -197,7 +221,12 @@ const FromTemplateBody = z
 const LinkBody = z
   .object({
     tenant_id: z.string().uuid().optional(),
-    expires_in_minutes: z.coerce.number().int().positive().max(MAX_LINK_TTL_MINUTES).default(DEFAULT_LINK_TTL_MINUTES),
+    expires_in_minutes: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(MAX_LINK_TTL_MINUTES)
+      .default(DEFAULT_LINK_TTL_MINUTES),
   })
   .openapi('CreateDocumentAccessLinkBody');
 
@@ -263,15 +292,22 @@ async function withLatestVersions(
   accountId: string,
   docs: Array<Omit<z.infer<typeof DocumentRow>, 'latest_version'>>,
 ): Promise<z.infer<typeof DocumentRow>[]> {
-  const versions = await latestVersions(sb, accountId, docs.map((d) => d.id));
+  const versions = await latestVersions(
+    sb,
+    accountId,
+    docs.map((d) => d.id),
+  );
   return docs.map((d) => ({ ...d, latest_version: versions.get(d.id) ?? null }));
 }
 
-function binaryResponse(bytes: Uint8Array, opts: {
-  mimeType: string;
-  filename: string;
-  contentHash: string;
-}): Response {
+function binaryResponse(
+  bytes: Uint8Array,
+  opts: {
+    mimeType: string;
+    filename: string;
+    contentHash: string;
+  },
+): Response {
   return new Response(bytes, {
     status: 200,
     headers: {
@@ -308,7 +344,12 @@ async function createTenancyDocument(
     p_static_asset_path?: string | null;
   },
 ): Promise<{ document: z.infer<typeof DocumentRow>; deduped: boolean }> {
-  const { data, error } = await sb.rpc('create_tenancy_document', params);
+  const { data, error } = await sb.rpc('create_tenancy_document', {
+    ...params,
+    p_attachment_path: params.p_attachment_path ?? undefined,
+    p_static_template_id: params.p_static_template_id ?? undefined,
+    p_static_asset_path: params.p_static_asset_path ?? undefined,
+  });
   if (error) {
     if (error.code === 'P0002' || /tenancy_not_found/.test(error.message)) {
       throw new ApiError(404, 'not_found', 'tenancy not found');
@@ -333,7 +374,10 @@ const listTemplatesRoute = createRoute({
   summary: 'List bundled document templates/disclosures',
   request: { params: AccountParam },
   responses: {
-    200: { description: 'templates', content: { 'application/json': { schema: DocumentTemplateListResponse } } },
+    200: {
+      description: 'templates',
+      content: { 'application/json': { schema: DocumentTemplateListResponse } },
+    },
     ...errorResponses,
   },
 });
@@ -345,7 +389,10 @@ const listRoute = createRoute({
   summary: 'List documents',
   request: { params: AccountParam, query: ListQuery },
   responses: {
-    200: { description: 'documents', content: { 'application/json': { schema: DocumentListResponse } } },
+    200: {
+      description: 'documents',
+      content: { 'application/json': { schema: DocumentListResponse } },
+    },
     ...errorResponses,
   },
 });
@@ -464,11 +511,7 @@ documentsApp.openapi(listRoute, async (c) => {
   const { accountId } = c.req.valid('param');
   const { tenancy_id, document_type, cursor, limit } = c.req.valid('query');
   const sb = getSb(c);
-  let q = sb
-    .from('documents')
-    .select('*')
-    .eq('account_id', accountId)
-    .is('deleted_at', null);
+  let q = sb.from('documents').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (tenancy_id) q = q.eq('tenancy_id', tenancy_id);
   if (document_type) q = q.eq('document_type', document_type);
   // Newest-first, keyset-paginated: a tenancy accumulates documents over its
@@ -493,11 +536,9 @@ documentsApp.openapi(getRoute, async (c) => {
     .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
   if (!data) throw new ApiError(404, 'not_found', 'document not found');
-  const [doc] = await withLatestVersions(
-    sb,
-    accountId,
-    [data as Omit<z.infer<typeof DocumentRow>, 'latest_version'>],
-  );
+  const [doc] = await withLatestVersions(sb, accountId, [
+    data as Omit<z.infer<typeof DocumentRow>, 'latest_version'>,
+  ]);
   return c.json(doc!, 200);
 });
 
@@ -651,7 +692,8 @@ documentsApp.openapi(mintLinkRoute, async (c) => {
     })
     .select('id, account_id, tenancy_id, tenant_id, expires_at, created_at')
     .single();
-  if (error || !data) throw new ApiError(500, 'database_error', error?.message ?? 'token insert failed');
+  if (error || !data)
+    throw new ApiError(500, 'database_error', error?.message ?? 'token insert failed');
   return c.json({ ...(data as object), secret } as z.infer<typeof MintedDocumentLink>, 201);
 });
 
@@ -664,7 +706,10 @@ const tenantAccessRoute = createRoute({
   summary: 'List published tenancy documents via a short-lived magic link',
   request: { params: AccessParam },
   responses: {
-    200: { description: 'documents', content: { 'application/json': { schema: TenantAccessResponse } } },
+    200: {
+      description: 'documents',
+      content: { 'application/json': { schema: TenantAccessResponse } },
+    },
     ...errorResponses,
     ...rateLimitedResponse,
   },
@@ -717,7 +762,11 @@ documentAccessApp.openapi(accessDownloadRoute, async (c) => {
     token.account_id,
     documentId,
   );
-  if (document.tenancy_id !== token.tenancy_id || !document.published_at || new Date(document.published_at).getTime() > Date.now()) {
+  if (
+    document.tenancy_id !== token.tenancy_id ||
+    !document.published_at ||
+    new Date(document.published_at).getTime() > Date.now()
+  ) {
     throw new ApiError(404, 'not_found', 'document not found');
   }
   await insertDocumentAccessEvent({
@@ -736,7 +785,11 @@ documentAccessApp.openapi(ackRoute, async (c) => {
   const { token: rawToken, documentId } = c.req.valid('param');
   const token = await lookupDocumentAccessToken(rawToken);
   const { document } = await loadDocumentForDownload(token.account_id, documentId);
-  if (document.tenancy_id !== token.tenancy_id || !document.published_at || new Date(document.published_at).getTime() > Date.now()) {
+  if (
+    document.tenancy_id !== token.tenancy_id ||
+    !document.published_at ||
+    new Date(document.published_at).getTime() > Date.now()
+  ) {
     throw new ApiError(404, 'not_found', 'document not found');
   }
   const event = await insertDocumentAccessEvent({
@@ -747,9 +800,12 @@ documentAccessApp.openapi(ackRoute, async (c) => {
     ip: clientIp(c) ?? 'unknown',
     userAgent: c.req.header('user-agent') ?? null,
   });
-  return c.json({
-    document_id: documentId,
-    acknowledged_at: event.occurred_at,
-    event_type: 'acknowledged',
-  } as z.infer<typeof AckResponse>, 200);
+  return c.json(
+    {
+      document_id: documentId,
+      acknowledged_at: event.occurred_at,
+      event_type: 'acknowledged',
+    } as z.infer<typeof AckResponse>,
+    200,
+  );
 });

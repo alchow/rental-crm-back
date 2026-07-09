@@ -1,6 +1,7 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import { nullableRpcArg } from '../supabase/db-types';
 import { ApiError, errorResponses } from './_lib/error';
 
 // The full set of entity kinds the search RPC understands. Used both at
@@ -120,12 +121,13 @@ const SearchResult = z
 // Non-paginated: results are ranked by score (higher = better match) and
 // capped by `limit`. There is no next_cursor — callers narrow the result
 // set via `types`/`exclude` and `limit` rather than paging through it.
-const SearchResponse = z
-  .object({ data: z.array(SearchResult) })
-  .openapi('SearchResponse');
+const SearchResponse = z.object({ data: z.array(SearchResult) }).openapi('SearchResponse');
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 
 const SearchQuery = z.object({
@@ -153,7 +155,10 @@ const search = createRoute({
     'follow-up fetch; `context` is null for other kinds.',
   request: { params: AccountParam, query: SearchQuery },
   responses: {
-    200: { description: 'ranked results', content: { 'application/json': { schema: SearchResponse } } },
+    200: {
+      description: 'ranked results',
+      content: { 'application/json': { schema: SearchResponse } },
+    },
     ...errorResponses,
   },
 });
@@ -167,7 +172,10 @@ searchApp.openapi(search, async (c) => {
   // Parse and validate the comma-separated filter strings.
   const parseKinds = (raw: string | undefined, field: 'types' | 'exclude'): string[] | null => {
     if (!raw) return null;
-    const parts = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    const parts = raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     if (parts.length === 0) return null;
     const bad = parts.filter((p) => !(SEARCHABLE_TYPES as readonly string[]).includes(p));
     if (bad.length > 0) {
@@ -185,10 +193,10 @@ searchApp.openapi(search, async (c) => {
   const { data, error } = await sb.rpc('search_entities', {
     p_account_id: accountId,
     p_q: q,
-    p_types: typesArr,
-    p_exclude: excludeArr,
+    p_types: nullableRpcArg(typesArr),
+    p_exclude: nullableRpcArg(excludeArr),
     p_limit: limit,
   });
   if (error) throw new ApiError(500, 'database_error', error.message);
-  return c.json({ data: (data ?? []) } as z.infer<typeof SearchResponse>, 200);
+  return c.json({ data: data ?? [] } as z.infer<typeof SearchResponse>, 200);
 });

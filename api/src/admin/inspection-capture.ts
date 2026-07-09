@@ -2,6 +2,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { ApiError } from '../routes/_lib/error';
 import { loadEnv } from '../env';
 import { getLogger } from '../log';
+import { asJson, nullableRpcArg } from '../supabase/db-types';
 import { getAdminClient } from './supabase-admin';
 import { getMailer } from './mailer';
 import { removeOrphanStoredObject, type StoragePutResult } from './storage';
@@ -68,7 +69,9 @@ export async function lookupCaptureToken(secret: string): Promise<CaptureTokenRo
   const hash = hashCaptureSecret(secret);
   const { data, error } = await admin
     .from('inspection_capture_tokens')
-    .select('id, account_id, inspection_id, tenant_id, expires_at, revoked_at, deleted_at, last_used_at')
+    .select(
+      'id, account_id, inspection_id, tenant_id, expires_at, revoked_at, deleted_at, last_used_at',
+    )
     .eq('secret_hash', '\\x' + hash.toString('hex'))
     .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
@@ -81,7 +84,8 @@ export async function lookupCaptureToken(secret: string): Promise<CaptureTokenRo
   const lastUsedMs = data.last_used_at ? new Date(data.last_used_at as string).getTime() : 0;
   if (Date.now() - lastUsedMs > TOKEN_TOUCH_MIN_INTERVAL_MS) {
     const nowIso = new Date().toISOString();
-    await admin.from('inspection_capture_tokens')
+    await admin
+      .from('inspection_capture_tokens')
       .update({ last_used_at: nowIso, updated_at: nowIso })
       .eq('id', data.id);
   }
@@ -116,7 +120,8 @@ export async function mintCaptureTokenAdmin(opts: {
     })
     .select('id, expires_at')
     .single();
-  if (error || !data) throw new ApiError(500, 'database_error', error?.message ?? 'token insert failed');
+  if (error || !data)
+    throw new ApiError(500, 'database_error', error?.message ?? 'token insert failed');
   return { id: data.id as string, secret, expires_at: data.expires_at as string };
 }
 
@@ -190,7 +195,7 @@ export async function loadCaptureForm(token: CaptureTokenRow): Promise<{
       .in('entity_id', itemIds)
       .is('deleted_at', null);
     if (photosRes.error) throw new ApiError(500, 'database_error', photosRes.error.message);
-    for (const p of (photosRes.data ?? [])) {
+    for (const p of photosRes.data ?? []) {
       const eid = p.entity_id as string;
       if (!photosMap[eid]) photosMap[eid] = [];
       photosMap[eid].push({
@@ -348,8 +353,8 @@ export async function tenantUpdateItem(
     p_token_id: token.id,
     p_inspection_id: token.inspection_id,
     p_item_id: itemId,
-    p_condition: condition,
-    p_notes: notes,
+    p_condition: nullableRpcArg(condition),
+    p_notes: nullableRpcArg(notes),
   });
   if (error) throw rpcError(error);
   const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
@@ -366,7 +371,7 @@ export async function tenantUpsertChecks(
     p_account_id: token.account_id,
     p_token_id: token.id,
     p_inspection_id: token.inspection_id,
-    p_checks: checks,
+    p_checks: asJson(checks),
   });
   if (error) throw rpcError(error);
   return (data ?? []) as Record<string, unknown>[];
@@ -406,10 +411,10 @@ export async function tenantAttachItemPhoto(
     p_attachment_mime: put.primary.mimeType,
     p_attachment_size: put.primary.sizeBytes,
     p_attachment_path: put.primary.storagePath,
-    p_derivative_hash: put.derivative?.hash ?? null,
-    p_derivative_mime: put.derivative?.mimeType ?? null,
-    p_derivative_size: put.derivative?.sizeBytes ?? null,
-    p_derivative_path: put.derivative?.storagePath ?? null,
+    p_derivative_hash: put.derivative?.hash,
+    p_derivative_mime: put.derivative?.mimeType,
+    p_derivative_size: put.derivative?.sizeBytes,
+    p_derivative_path: put.derivative?.storagePath,
   });
   if (error) {
     await removeOrphanStoredObject(token.account_id, put.primary.storagePath).catch(() => {});
@@ -440,7 +445,7 @@ export async function tenantUpsertItems(
     p_account_id: token.account_id,
     p_token_id: token.id,
     p_inspection_id: token.inspection_id,
-    p_items: items,
+    p_items: asJson(items),
   });
   if (error) throw rpcError(error);
   return (data ?? []) as Record<string, unknown>[];
@@ -483,7 +488,7 @@ export async function tenantConfirmRoom(
     p_account_id: token.account_id,
     p_token_id: token.id,
     p_inspection_id: token.inspection_id,
-    p_group_label: groupLabel, // null => the ungrouped ("General") bucket
+    p_group_label: nullableRpcArg(groupLabel), // null => the ungrouped ("General") bucket
   });
   if (error) throw rpcError(error);
 }

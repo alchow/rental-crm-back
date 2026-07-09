@@ -1,5 +1,6 @@
 import type { MiddlewareHandler } from 'hono';
 import { createHash } from 'node:crypto';
+import { asJson } from '../supabase/db-types';
 import { getSb } from '../supabase/request-client';
 import { ApiError, dbError } from '../routes/_lib/error';
 import { getLogger } from '../log';
@@ -173,11 +174,7 @@ export function requireIdempotency(): MiddlewareHandler {
 
     if (status >= 500) {
       // 5xx: don't cache. Clean up the placeholder so a retry can proceed.
-      await sb
-        .from('idempotency_keys')
-        .delete()
-        .eq('account_id', accountId)
-        .eq('key', key);
+      await sb.from('idempotency_keys').delete().eq('account_id', accountId).eq('key', key);
       return; // c.res already set by handler / onError; let it flow
     }
 
@@ -211,7 +208,7 @@ export function requireIdempotency(): MiddlewareHandler {
           p_account_id: accountId,
           p_key: key,
           p_status: status,
-          p_body: cachedBody,
+          p_body: asJson(cachedBody),
         });
         if (error) getLogger().error({ err: error, key }, 'idempotency completion failed');
       } catch (err) {
