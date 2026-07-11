@@ -294,6 +294,11 @@ jobs:
         # garbage cursors, and a no-dup/no-gap pagination walk.
         run: pnpm --filter ./api test:ledger
 
+      - name: Run rent-rollup checks (parity with the per-tenancy ledger)
+        # The rollup RPC duplicates ledger.ts's aggregation rules in SQL;
+        # the parity check is the drift guard between the two.
+        run: pnpm --filter ./api test:rent-rollup
+
       - name: Run onboarding-import DoD checks (Phase 1)
         # Full recognize -> map -> resolve -> preview -> confirm pipeline and
         # every decline/blocker branch, with the Anthropic client replaced by

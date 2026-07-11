@@ -455,6 +455,21 @@ GET /v1/accounts/{accountId}/tenancies/{tenancyId}/ledger
 
 Voided entries appear in `entries` with `voided_at` set but are excluded from `totals`.
 
+### Account-wide rent rollup
+
+One call prices every door — replaces fetching `/ledger` once per tenancy just to render
+portfolio-level rent-due indicators.
+
+| Method | Path           | Body / Notes                                                                                                                                              |
+| ------ | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/rent-rollup` | One row per tenancy: `{tenancy_id, status, currency, rent_balance_cents, deposit_balance_cents, unapplied_credit_cents}`. `?status=` accepts a comma-separated status list (default `active,holdover`). Not paginated — bounded by the account's tenancy count. |
+
+Same aggregation rules as the per-tenancy ledger, recomputed on read (never stored):
+voided rows excluded, an allocation counts only while its payment **and** charge are both
+live, `rent_balance_cents` = all non-deposit charge types (the ledger's legacy semantics —
+use the ledger's `totals.by_type` when a per-type split is needed). A CI parity test pins
+rollup ≡ ledger per tenancy.
+
 ### Money example (curl)
 
 ```bash

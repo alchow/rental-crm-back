@@ -18,6 +18,7 @@ import { rentSchedulesApp } from './routes/rent-schedules';
 import { chargesApp } from './routes/charges';
 import { paymentsApp } from './routes/payments';
 import { ledgerApp } from './routes/ledger';
+import { rentRollupApp } from './routes/rent-rollup';
 import { eventsApp } from './routes/events';
 import { intakeTokensApp } from './routes/intake-tokens';
 import { agentGrantsApp } from './routes/agent-grants';
@@ -227,6 +228,7 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', chargesApp);
   app.route('/v1', paymentsApp);
   app.route('/v1', ledgerApp);
+  app.route('/v1', rentRollupApp);
   app.route('/v1', eventsApp);
   // Read-only, account-scoped, ranked search across all entity kinds.
   app.route('/v1', searchApp);
