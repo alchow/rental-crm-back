@@ -178,13 +178,31 @@ export async function _resetIntakeIpBucketsForTests(): Promise<void> {
 
 const IntakeBody = z
   .object({
-    area_id: z.string().uuid(),
+    // Optional since the C2 usability fix: the token already binds one
+    // tenancy, and a tenancy is one unit-kind area, so the submitter's own
+    // unit is the honest default. A tenant on a public magic link has no way
+    // to discover area UUIDs anyway. When provided, it is still validated
+    // against the TOKEN's property below.
+    area_id: z.string().uuid().optional().openapi({
+      description:
+        "Optional; defaults to the tenancy's unit. If provided, must belong to the token's property.",
+    }),
     title: z.string().min(1).max(200),
     description: z.string().max(5000).optional(),
     severity: z.enum(['emergency', 'urgent', 'routine']),
     occurred_at: z.string().datetime().optional(),
   })
   .openapi('IntakeBody');
+
+// Documentation-only variant for the multipart leg (adds the file part).
+// Registered in the OpenAPI components but never used as a validator.
+const IntakeMultipartBody = IntakeBody.extend({
+  file: z.any().openapi({
+    type: 'string',
+    format: 'binary',
+    description: 'Optional photo (JPEG/PNG/WebP/HEIC; HEIC gets a server-derived JPEG).',
+  }),
+}).openapi('IntakeMultipartBody');
 
 const IntakeResponse = z
   .object({
@@ -199,13 +217,14 @@ const IntakeResponse = z
   })
   .openapi('IntakeResponse');
 
-// We deliberately describe the body in the OpenAPI spec but DO NOT use
-// zod-openapi's auto-validation: the handler accepts EITHER
-// application/json (text-only intake) or multipart/form-data (intake +
-// photo), and with two declared content-types zod-openapi picks one
-// validator and rejects the other shape with 400. Parsing happens in
-// the handler, validated by the IntakeBody schema directly. The body
-// description below stays accurate for the OpenAPI client.
+// The request body is described in the spec via raw $ref schema objects
+// (registered on the registry below) rather than Zod schemas: zod-openapi
+// auto-registers a validator only for `schema instanceof ZodType`, and with
+// two declared content-types (JSON for text-only intake, multipart for
+// intake + photo) an auto-validator would reject whichever shape it wasn't
+// bound to. Raw $refs keep the spec honest for generated clients while the
+// handler keeps its manual dual-content-type parsing, validated by
+// IntakeBody directly.
 const intake = createRoute({
   method: 'post',
   path: '/intake/{token}',
@@ -219,6 +238,19 @@ const intake = createRoute({
         .max(200)
         .openapi({ param: { name: 'token', in: 'path' } }),
     }),
+    body: {
+      required: true,
+      description:
+        'application/json for text-only intake; multipart/form-data when attaching a photo.',
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/IntakeBody' } as never,
+        },
+        'multipart/form-data': {
+          schema: { $ref: '#/components/schemas/IntakeMultipartBody' } as never,
+        },
+      },
+    },
   },
   responses: {
     201: { description: 'created', content: { 'application/json': { schema: IntakeResponse } } },
@@ -241,15 +273,22 @@ interface TokenRow {
   last_used_at: string | null;
   use_count: number;
   use_window_start: string;
+  submission_count: number;
 }
 
-async function lookupAndRateLimitToken(secret: string): Promise<TokenRow> {
+interface VerifiedToken {
+  token: TokenRow;
+  /** The token tenancy's own unit area — the default intake location. */
+  tenancyAreaId: string;
+}
+
+async function lookupAndRateLimitToken(secret: string): Promise<VerifiedToken> {
   const admin = getAdminClient();
   const hash = hashSecret(secret);
   const { data, error } = await admin
     .from('intake_tokens')
     .select(
-      'id, account_id, property_id, tenancy_id, revoked_at, last_used_at, use_count, use_window_start',
+      'id, account_id, property_id, tenancy_id, revoked_at, last_used_at, use_count, use_window_start, submission_count',
     )
     .eq('secret_hash', '\\x' + hash.toString('hex'))
     .maybeSingle();
@@ -259,7 +298,7 @@ async function lookupAndRateLimitToken(secret: string): Promise<TokenRow> {
 
   const { data: t, error: tErr } = await admin
     .from('tenancies')
-    .select('status, deleted_at')
+    .select('status, deleted_at, area_id')
     .eq('account_id', data.account_id)
     .eq('id', data.tenancy_id)
     .maybeSingle();
@@ -289,7 +328,7 @@ async function lookupAndRateLimitToken(secret: string): Promise<TokenRow> {
     })
     .eq('id', data.id);
 
-  return data as TokenRow;
+  return { token: data as TokenRow, tenancyAreaId: t.area_id as string };
 }
 
 function clientIp(c: { req: { header: (n: string) => string | undefined } }): string {
@@ -304,6 +343,11 @@ function clientIp(c: { req: { header: (n: string) => string | undefined } }): st
 
 export const intakeApp = newApiApp();
 
+// Emit the body schemas into components even though the route references
+// them only as raw $refs (see the comment above the route definition).
+intakeApp.openAPIRegistry.register('IntakeBody', IntakeBody);
+intakeApp.openAPIRegistry.register('IntakeMultipartBody', IntakeMultipartBody);
+
 intakeApp.openapi(intake, async (c) => {
   const ipCheck = await bumpIpRateBucket(clientIp(c));
   if (!ipCheck.ok) {
@@ -311,7 +355,7 @@ intakeApp.openapi(intake, async (c) => {
   }
 
   const { token } = c.req.valid('param');
-  const tokenRow = await lookupAndRateLimitToken(token);
+  const { token: tokenRow, tenancyAreaId } = await lookupAndRateLimitToken(token);
 
   // Parse body in either JSON or multipart shape. We do this ourselves
   // because zod-openapi's auto-validator picks ONE content-type and we
@@ -337,30 +381,54 @@ intakeApp.openapi(intake, async (c) => {
       file = maybeFile as File;
     }
   } else {
-    candidate = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    // A syntactically-broken JSON body must be its own clear 400 — swallowing
+    // it into {} used to cascade into per-field "Required" messages that told
+    // the submitter nothing (usability finding C2).
+    try {
+      candidate = (await c.req.json()) as Record<string, unknown>;
+    } catch {
+      throw new ApiError(400, 'invalid_request', 'malformed JSON request body');
+    }
   }
   const parsed = IntakeBody.safeParse(candidate);
   if (!parsed.success) {
+    // Field paths matter here: this message is rendered verbatim to the
+    // tenant by intake clients. "title: Required" is actionable; "Required"
+    // alone is not.
     throw new ApiError(
       400,
       'invalid_request',
-      parsed.error.issues.map((i) => i.message).join('; '),
+      parsed.error.issues
+        .map((i) => (i.path.length > 0 ? `${i.path.join('.')}: ` : '') + i.message)
+        .join('; '),
+      { fieldErrors: parsed.error.flatten().fieldErrors },
     );
   }
   const fields: IntakeFields = parsed.data;
 
+  // Location defaults to the tenancy's own unit (the token binds exactly one
+  // tenancy). Either way the area is re-validated to be a live area of the
+  // TOKEN's property — the default id could only fail if the unit was
+  // removed out from under the tenancy by direct DB manipulation.
+  const areaId = fields.area_id ?? tenancyAreaId;
   const admin = getAdminClient();
   const { data: area, error: aErr } = await admin
     .from('areas')
     .select('id, kind, property_id, account_id')
     .eq('account_id', tokenRow.account_id)
     .eq('property_id', tokenRow.property_id)
-    .eq('id', fields.area_id)
+    .eq('id', areaId)
     .is('deleted_at', null)
     .maybeSingle();
   if (aErr) throw new ApiError(500, 'database_error', aErr.message);
   if (!area) {
-    throw new ApiError(404, 'not_found', 'area not found in this property');
+    throw new ApiError(
+      404,
+      'not_found',
+      fields.area_id !== undefined
+        ? 'area not found in this property'
+        : 'the tenancy’s unit is no longer available; contact your landlord',
+    );
   }
 
   // If a file came in, validate + store the bytes BEFORE calling the RPC.
@@ -411,6 +479,18 @@ intakeApp.openapi(intake, async (c) => {
     deduped: boolean;
   } | null;
   if (!row) throw new ApiError(500, 'database_error', 'intake RPC returned no row');
+
+  // Lifetime success counter, bumped only after the RPC committed. Same
+  // read-modify-write pattern (and the same accepted undercount race) as the
+  // use_count window bump above; a UX counter, not evidence. Failures are
+  // deliberately not counted -- that is use_count's job.
+  await admin
+    .from('intake_tokens')
+    .update({
+      submission_count: tokenRow.submission_count + 1,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', tokenRow.id);
 
   return c.json(
     {

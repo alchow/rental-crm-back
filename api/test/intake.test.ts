@@ -551,6 +551,87 @@ async function main(): Promise<void> {
     }
   });
 
+  // -----------------------------------------------------------------------
+  // C2 usability fixes (2026-07): area_id defaults to the tenancy's unit,
+  // 400s are actionable, and the token carries an honest success counter.
+  // Fresh fixture + fresh token so the counter assertions are exact.
+  // -----------------------------------------------------------------------
+  await _resetIntakeIpBucketsForTests();
+  const C = await setupUser('C2');
+  const tokenC = await mintToken(C);
+
+  await check('C2: submit without area_id -> 201, lands on the tenancy unit', async () => {
+    // This is byte-for-byte the payload the FE tenant page sends.
+    const r = await submitIntake(tokenC.secret, {
+      title: 'Leaky kitchen faucet',
+      severity: 'routine',
+      description: 'drips constantly',
+    });
+    const body = assertStatus(r, 201, 'no-area submit') as { maintenance_request_id: string };
+    const mr = await api(
+      'GET',
+      `/v1/accounts/${C.accountId}/maintenance-requests/${body.maintenance_request_id}`,
+      { token: C.accessToken },
+    );
+    const mrBody = assertStatus(mr, 200, 'read request') as { area_id: string };
+    if (mrBody.area_id !== C.unitAreaId) {
+      throw new Error(`defaulted to ${mrBody.area_id}, expected the tenancy unit ${C.unitAreaId}`);
+    }
+  });
+
+  await check('C2: malformed JSON body -> its own 400, not "Required" cascade', async () => {
+    const res = await app.fetch(
+      new Request(`http://test/v1/intake/${tokenC.secret}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{oops',
+      }),
+    );
+    const body = (await res.json()) as { error: { code: string; message: string } };
+    if (res.status !== 400) throw new Error(`expected 400, got ${res.status}`);
+    if (!/malformed JSON/i.test(body.error.message)) {
+      throw new Error(`message should say malformed JSON, got: ${body.error.message}`);
+    }
+  });
+
+  await check('C2: missing title -> 400 that names the field', async () => {
+    const r = await submitIntake(tokenC.secret, { severity: 'routine' });
+    assertStatus(r, 400, 'missing title');
+    const err = (r.body as { error: { message: string; details?: { fieldErrors?: Record<string, unknown> } } }).error;
+    if (!/title/.test(err.message)) {
+      throw new Error(`message should name the missing field, got: ${err.message}`);
+    }
+    if (!err.details?.fieldErrors?.title) {
+      throw new Error(`details.fieldErrors.title missing: ${JSON.stringify(err.details)}`);
+    }
+  });
+
+  await check('C2: submission_count counts successes only; use_count counts attempts', async () => {
+    // One more success: 2 successes total against 4 attempts (1 success,
+    // 1 malformed, 1 missing-title, 1 success).
+    const r = await submitIntake(tokenC.secret, {
+      title: 'Second, separate issue: broken stove',
+      severity: 'urgent',
+    });
+    assertStatus(r, 201, 'second success');
+    const list = await api(
+      'GET',
+      `/v1/accounts/${C.accountId}/tenancies/${C.tenancyId}/intake-tokens`,
+      { token: C.accessToken },
+    );
+    const rows = (assertStatus(list, 200, 'token list') as {
+      data: { id: string; use_count: number; submission_count: number }[];
+    }).data;
+    const row = rows.find((t) => t.id === tokenC.id);
+    if (!row) throw new Error('minted token missing from list');
+    if (row.submission_count !== 2) {
+      throw new Error(`submission_count: expected 2 successes, got ${row.submission_count}`);
+    }
+    if (row.use_count !== 4) {
+      throw new Error(`use_count: expected 4 attempts in window, got ${row.use_count}`);
+    }
+  });
+
   if (failures.length > 0) {
     console.error(`\n${failures.length} intake DoD failure(s):`);
     for (const f of failures) console.error(`  ${f.name}: ${f.detail}`);

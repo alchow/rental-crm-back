@@ -2176,6 +2176,7 @@ export type Database = {
           property_id: string;
           revoked_at: string | null;
           secret_hash: string;
+          submission_count: number;
           tenancy_id: string;
           updated_at: string;
           use_count: number;
@@ -2189,6 +2190,7 @@ export type Database = {
           property_id: string;
           revoked_at?: string | null;
           secret_hash: string;
+          submission_count?: number;
           tenancy_id: string;
           updated_at?: string;
           use_count?: number;
@@ -2202,6 +2204,7 @@ export type Database = {
           property_id?: string;
           revoked_at?: string | null;
           secret_hash?: string;
+          submission_count?: number;
           tenancy_id?: string;
           updated_at?: string;
           use_count?: number;

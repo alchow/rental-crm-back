@@ -13,6 +13,58 @@
   ],
   "components": {
     "schemas": {
+      "IntakeBody": {
+        "type": "object",
+        "properties": {
+          "area_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Optional; defaults to the tenancy's unit. If provided, must belong to the token's property."
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 5000
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "emergency",
+              "urgent",
+              "routine"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "title",
+          "severity"
+        ]
+      },
+      "IntakeMultipartBody": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/IntakeBody"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "file": {
+                "type": "string",
+                "description": "Optional photo (JPEG/PNG/WebP/HEIC; HEIC gets a server-derived JPEG).",
+                "format": "binary"
+              }
+            }
+          }
+        ]
+      },
       "AuthSession": {
         "type": "object",
         "properties": {
@@ -3142,7 +3194,12 @@
             ]
           },
           "use_count": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Rate-limit state: attempts in the current 10-minute sliding window. Resets each window and counts failed attempts — NOT a lifetime total. For \"how many requests came through this link\", use submission_count."
+          },
+          "submission_count": {
+            "type": "integer",
+            "description": "Lifetime count of successful submissions through this token."
           }
         },
         "required": [
@@ -3153,7 +3210,8 @@
           "created_at",
           "revoked_at",
           "last_used_at",
-          "use_count"
+          "use_count",
+          "submission_count"
         ]
       },
       "IntakeTokenListResponse": {
@@ -28753,6 +28811,22 @@
             "in": "path"
           }
         ],
+        "requestBody": {
+          "required": true,
+          "description": "application/json for text-only intake; multipart/form-data when attaching a photo.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntakeBody"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/IntakeMultipartBody"
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": "created",
