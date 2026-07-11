@@ -467,6 +467,144 @@ async function main(): Promise<void> {
   });
 
   // -----------------------------------------------------------------------
+  // tenancy_members account-wide list:
+  //   /v1/accounts/{accountId}/tenancy-members
+  // Same table as the nested sub-resource above, but scoped only by
+  // account_id -- no tenancyId in the path. A cross-account tenant_id /
+  // tenancy_id query VALUE is just an RLS-invisible filter (empty 200),
+  // unlike the nested route's path parent, which 404s.
+  // -----------------------------------------------------------------------
+  const acctMembersUrl = `/v1/accounts/${A.accountId}/tenancy-members`;
+
+  await check('tenancy-members (account-wide): A lists own account -> 200', async () => {
+    const res = await api('GET', acctMembersUrl, { token: A.accessToken });
+    const body = (await expectStatus('GET account-wide members', res, 200)) as {
+      data: Array<{ account_id: string }>;
+    };
+    if (!Array.isArray(body.data) || body.data.length < 1) {
+      throw new Error(`expected at least one member; got ${JSON.stringify(body)}`);
+    }
+    for (const row of body.data) {
+      if (row.account_id !== A.accountId) {
+        throw new Error(`row leaked another account: ${JSON.stringify(row)}`);
+      }
+    }
+  });
+
+  await check(
+    "tenancy-members (account-wide): A filters ?tenant_id=<B's tenant> -> 200 empty",
+    async () => {
+      const res = await api('GET', `${acctMembersUrl}?tenant_id=${B.tenantId}`, {
+        token: A.accessToken,
+      });
+      const body = (await expectStatus('GET filtered by B tenant_id', res, 200)) as {
+        data: unknown[];
+      };
+      if (body.data.length !== 0) {
+        throw new Error(`expected empty page for cross-account tenant_id; got ${JSON.stringify(body)}`);
+      }
+    },
+  );
+
+  await check(
+    "tenancy-members (account-wide): A filters ?tenant_id=<A's tenant> -> 200 matching rows",
+    async () => {
+      const res = await api('GET', `${acctMembersUrl}?tenant_id=${A.tenantId}`, {
+        token: A.accessToken,
+      });
+      const body = (await expectStatus('GET filtered by A tenant_id', res, 200)) as {
+        data: Array<{ tenant_id: string }>;
+      };
+      if (body.data.length < 1) {
+        throw new Error(`expected at least one row; got ${JSON.stringify(body)}`);
+      }
+      for (const row of body.data) {
+        if (row.tenant_id !== A.tenantId) {
+          throw new Error(`row didn't match tenant_id filter: ${JSON.stringify(row)}`);
+        }
+      }
+    },
+  );
+
+  await check(
+    'tenancy-members (account-wide): ?tenancy_id= matches the nested route for the same tenancy',
+    async () => {
+      const wideRes = await api('GET', `${acctMembersUrl}?tenancy_id=${A.tenancyId}`, {
+        token: A.accessToken,
+      });
+      const wideBody = (await expectStatus('GET filtered by A tenancy_id', wideRes, 200)) as {
+        data: Array<{ id: string }>;
+      };
+      const nestedRes = await api('GET', mAOwnList, { token: A.accessToken });
+      const nestedBody = (await expectStatus('GET nested list', nestedRes, 200)) as {
+        data: Array<{ id: string }>;
+      };
+      const wideIds = wideBody.data.map((r) => r.id).sort();
+      const nestedIds = nestedBody.data.map((r) => r.id).sort();
+      if (JSON.stringify(wideIds) !== JSON.stringify(nestedIds)) {
+        throw new Error(
+          `tenancy_id-filtered account-wide list != nested list: ${JSON.stringify(wideIds)} vs ${JSON.stringify(nestedIds)}`,
+        );
+      }
+    },
+  );
+
+  await check(
+    'tenancy-members (account-wide): keyset pagination walks every row exactly once',
+    async () => {
+      // A already has one member (role=primary, from setupFixture). Add two
+      // more on the SAME tenancy with different roles (the unique key is
+      // (tenancy_id, tenant_id, role), so each new member also needs its own
+      // tenant) to get three total rows to page through.
+      const extraTenant = async (suffix: string): Promise<string> => {
+        const r = await api('POST', `/v1/accounts/${A.accountId}/tenants`, {
+          token: A.accessToken,
+          body: { full_name: `A pagination tenant ${suffix} ${rnd()}` },
+        });
+        const body = (await expectStatus('POST extra tenant', r, 201)) as { id: string };
+        return body.id;
+      };
+      const occupantTenantId = await extraTenant('occupant');
+      const guarantorTenantId = await extraTenant('guarantor');
+      for (const [tenant_id, role] of [
+        [occupantTenantId, 'occupant'],
+        [guarantorTenantId, 'guarantor'],
+      ] as const) {
+        const r = await api('POST', `/v1/accounts/${A.accountId}/tenancies/${A.tenancyId}/members`, {
+          token: A.accessToken,
+          body: { tenant_id, role },
+        });
+        await expectStatus(`POST pagination member (${role})`, r, 201);
+      }
+
+      const seen = new Set<string>();
+      let cursor: string | undefined;
+      let pages = 0;
+      for (;;) {
+        pages += 1;
+        if (pages > 10) throw new Error('pagination did not terminate within 10 pages');
+        const url = cursor
+          ? `${acctMembersUrl}?limit=2&cursor=${encodeURIComponent(cursor)}`
+          : `${acctMembersUrl}?limit=2`;
+        const res = await api('GET', url, { token: A.accessToken });
+        const body = (await expectStatus('GET pagination page', res, 200)) as {
+          data: Array<{ id: string }>;
+          next_cursor: string | null;
+        };
+        for (const row of body.data) {
+          if (seen.has(row.id)) throw new Error(`row ${row.id} appeared twice across pages`);
+          seen.add(row.id);
+        }
+        if (body.next_cursor === null) break;
+        cursor = body.next_cursor;
+      }
+      if (seen.size !== 3) {
+        throw new Error(`expected exactly 3 distinct rows across pages; got ${seen.size}`);
+      }
+    },
+  );
+
+  // -----------------------------------------------------------------------
   // unit_details sub-resource:
   //   /v1/accounts/{accountId}/areas/{areaId}/unit-details
   // -----------------------------------------------------------------------

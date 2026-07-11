@@ -64,6 +64,23 @@ const MemberParam = z.object({
     .openapi({ param: { name: 'id', in: 'path' } }),
 });
 
+// Account-wide sibling of the nested list above: one call across every
+// tenancy in the account instead of one-per-tenancy (the /tenants
+// directory's dominant cost -- Field Log ask #3). Same table, same
+// ListResponse shape; filterable down to a single tenant or tenancy.
+const AccountParam = z.object({
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+});
+const AccountListQuery = z.object({
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(100).default(50),
+  tenant_id: z.string().uuid().optional(),
+  tenancy_id: z.string().uuid().optional(),
+});
+
 const list = createRoute({
   method: 'get',
   path: '/accounts/{accountId}/tenancies/{tenancyId}/members',
@@ -111,6 +128,25 @@ const remove = createRoute({
   request: { params: MemberParam },
   responses: {
     204: { description: 'removed' },
+    ...errorResponses,
+  },
+});
+const accountList = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/tenancy-members',
+  tags: ['tenancy-members'],
+  summary: 'List tenancy members across the account (filterable by tenant_id / tenancy_id)',
+  description:
+    'Account-wide keyset-paginated list of tenancy members, replacing a one-call-' +
+    'per-tenancy fan-out (e.g. a /tenants directory view). Optional ?tenant_id= ' +
+    'answers "which tenancies is this tenant in"; ?tenancy_id= mirrors the nested ' +
+    'list scoped to one tenancy. Unlike the nested route -- whose tenancyId PATH ' +
+    'segment is resolved against the account and 404s on a cross-account tenancy -- ' +
+    'a cross-account tenant_id/tenancy_id QUERY value is just an RLS-invisible filter: ' +
+    'it returns an empty 200 page, not a 404.',
+  request: { params: AccountParam, query: AccountListQuery },
+  responses: {
+    200: { description: 'members', content: { 'application/json': { schema: ListResponse } } },
     ...errorResponses,
   },
 });
@@ -200,4 +236,19 @@ tenancyMembersApp.openapi(remove, async (c) => {
   if (error) throw new ApiError(500, 'database_error', error.message);
   if (!data) throw new ApiError(404, 'not_found', 'not found');
   return c.body(null, 204);
+});
+
+tenancyMembersApp.openapi(accountList, async (c) => {
+  const { accountId } = c.req.valid('param');
+  const { cursor, limit, tenant_id, tenancy_id } = c.req.valid('query');
+  const sb = getSb(c);
+  let q = sb.from('tenancy_tenants').select('*').eq('account_id', accountId).is('deleted_at', null);
+  if (tenant_id) q = q.eq('tenant_id', tenant_id);
+  if (tenancy_id) q = q.eq('tenancy_id', tenancy_id);
+  // Oldest-first, keyset-paginated on created_at -- same shape as the nested list.
+  const { items, next_cursor } = await keysetPage<z.infer<typeof TenancyMember>>(q, {
+    cursor,
+    limit,
+  });
+  return c.json({ data: items, next_cursor }, 200);
 });
