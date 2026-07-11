@@ -1,9 +1,9 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
-import { asDbInsert } from '../supabase/db-types';
+import { asDbInsert, asJson, nullableRpcArg } from '../supabase/db-types';
 import { ApiError, dbError, errorResponses } from './_lib/error';
-import { keysetPage } from './_lib/cursor';
+import { decodeCursor, encodeCursor, keysetPage } from './_lib/cursor';
 import { withResolvedAuthorship } from './_lib/authorship';
 import { assertAgentJournalWrite } from './_lib/agent-firewall';
 import {
@@ -69,9 +69,19 @@ const ListQuery = z.object({
   latest_only: z.enum(['true', 'false']).optional(),
   /** Filter by counterparty attribution. party_type='unspecified' is the
    *  unresolved-sender queue: comm rows whose sender did not verify
-   *  (sender_mismatch captures) waiting for a human classify. */
+   *  (sender_mismatch captures) waiting for a human classify. When party_id is
+   *  ALSO present, party_type narrows the matched CAST leg (a tenant vs. a
+   *  vendor participant), not the row slot. */
   party_type: PartyType.optional(),
   direction: Direction.optional(),
+  /** Everything involving one person, resolved through the CAST
+   *  (interaction_participants), not the legacy single-slot party_id — so a
+   *  witnessed exchange or group message where the person is one of several
+   *  participants still matches. Keyset pagination stays correct: the person is
+   *  pruned by a SQL semi-join, never a materialized id set. */
+  party_id: z.string().uuid().optional(),
+  /** Filter to interactions scoped to one area (direct column on the row). */
+  area_id: z.string().uuid().optional(),
 });
 const ListResponse = z
   .object({ data: z.array(Interaction), next_cursor: z.string().nullable() })
@@ -109,6 +119,19 @@ const list = createRoute({
   method: 'get',
   path: '/accounts/{accountId}/interactions',
   tags: ['interactions'],
+  summary: 'List interactions (filterable; keyset-paginated on occurred_at)',
+  description:
+    'Chronological journal feed. Filters: tenancy_id, maintenance_request_id, ' +
+    'area_id, direction, party_type, latest_only, and party_id. `party_id` ' +
+    'resolves the person through the CAST (interaction_participants), so a ' +
+    'group message or witnessed exchange in which they were one of several ' +
+    'participants still matches; combine it with party_type to narrow to that ' +
+    "person's tenant vs. vendor leg. HEADS CAVEAT: the cast belongs to the " +
+    'ROOT entry of a correction chain — a correction/retraction row carries no ' +
+    'cast of its own. So `party_id` combined with `latest_only=true` can EXCLUDE ' +
+    'a corrected communication whose current head is a castless correction row; ' +
+    'omit latest_only (the default full set) to see every entry that names the ' +
+    'person.',
   request: { params: AccountParam, query: ListQuery },
   responses: {
     200: { description: 'page', content: { 'application/json': { schema: ListResponse } } },
@@ -147,28 +170,94 @@ export const interactionsApp = newApiApp();
 
 interactionsApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
-  const { cursor, limit, tenancy_id, maintenance_request_id, latest_only, party_type, direction } =
-    c.req.valid('query');
-  const sb = getSb(c);
-  let q = sb
-    .from('interactions_with_chain')
-    .select('*')
-    .eq('account_id', accountId)
-    .is('deleted_at', null);
-  if (tenancy_id) q = q.eq('tenancy_id', tenancy_id);
-  if (maintenance_request_id) q = q.eq('maintenance_request_id', maintenance_request_id);
-  if (latest_only === 'true') q = q.eq('is_head', true);
-  if (party_type) q = q.eq('party_type', party_type);
-  if (direction) q = q.eq('direction', direction);
-  const { items, next_cursor: nextCursor } = await keysetPage(q, {
+  const {
     cursor,
     limit,
-    column: 'occurred_at',
-  });
+    tenancy_id,
+    maintenance_request_id,
+    latest_only,
+    party_type,
+    direction,
+    party_id,
+    area_id,
+  } = c.req.valid('query');
+  const sb = getSb(c);
+
+  // Both read paths converge on the same cast-load + map tail. When party_id
+  // is present the person is resolved through the CAST (interaction_participants)
+  // by a SQL function that reimplements this page's (occurred_at, id) keyset —
+  // the PostgREST view embed is ambiguous on interactions_with_chain (see
+  // 20260716000001). The rows it returns ARE interactions_with_chain rows, so
+  // there is no embedded key to strip. When party_id is absent the view query
+  // keeps its exact prior behaviour (row-slot party_type filter included).
+  let items: Array<Record<string, unknown> & { id: string }>;
+  let nextCursor: string | null;
+
+  if (party_id) {
+    // Decode the shared opaque cursor here (keysetPage owns it on the other
+    // path); garbage -> 400, the same contract as everywhere else.
+    let beforeOccurredAt: string | null = null;
+    let beforeId: string | null = null;
+    if (cursor !== undefined) {
+      const cur = decodeCursor(cursor);
+      if (!cur) throw new ApiError(400, 'invalid_request', 'invalid cursor');
+      beforeOccurredAt = cur.created_at; // the keyset column value (occurred_at)
+      beforeId = cur.id;
+    }
+    const { data, error } = await sb.rpc('list_interactions_for_party', {
+      p_account_id: accountId,
+      p_party_type: nullableRpcArg(party_type ?? null),
+      p_party_id: party_id,
+      p_tenancy_id: nullableRpcArg(tenancy_id ?? null),
+      p_maintenance_request_id: nullableRpcArg(maintenance_request_id ?? null),
+      p_area_id: nullableRpcArg(area_id ?? null),
+      p_direction: nullableRpcArg(direction ?? null),
+      p_latest_only: latest_only === 'true',
+      p_before_occurred_at: nullableRpcArg(beforeOccurredAt),
+      p_before_id: nullableRpcArg(beforeId),
+      p_limit: limit + 1,
+    });
+    if (error) throw new ApiError(500, 'database_error', error.message);
+    const rows = (data ?? []) as Array<Record<string, unknown> & { id: string; occurred_at: string }>;
+    const hasMore = rows.length > limit;
+    items = hasMore ? rows.slice(0, limit) : rows;
+    const last = items[items.length - 1];
+    nextCursor =
+      hasMore && last
+        ? encodeCursor({ created_at: String(last.occurred_at), id: String(last.id) })
+        : null;
+  } else {
+    let q = sb
+      .from('interactions_with_chain')
+      .select('*')
+      .eq('account_id', accountId)
+      .is('deleted_at', null);
+    if (tenancy_id) q = q.eq('tenancy_id', tenancy_id);
+    if (maintenance_request_id) q = q.eq('maintenance_request_id', maintenance_request_id);
+    // area_id is a direct column on the row. Deliberately UNINDEXED:
+    // interactions is the highest-write table and this is a low-frequency
+    // filter, so it rides the per-account scan rather than paying write cost on
+    // every insert. Ready-made partial index if that ever changes:
+    //   create index interactions_area_idx
+    //     on public.interactions (account_id, area_id, occurred_at, id)
+    //     where deleted_at is null;
+    if (area_id) q = q.eq('area_id', area_id);
+    if (latest_only === 'true') q = q.eq('is_head', true);
+    if (party_type) q = q.eq('party_type', party_type);
+    if (direction) q = q.eq('direction', direction);
+    const page = await keysetPage<Record<string, unknown> & { id: string }>(q, {
+      cursor,
+      limit,
+      column: 'occurred_at',
+    });
+    items = page.items;
+    nextCursor = page.next_cursor;
+  }
+
   const casts = await loadInteractionParticipants(
     sb,
     accountId,
-    (items as { id: string }[]).map((r) => r.id),
+    items.map((r) => r.id),
   );
   const data = (items as { id: string; author_type?: string | null; actor: string }[]).map((r) => ({
     ...withResolvedAuthorship(r),
@@ -336,6 +425,70 @@ function assertClassifyFillOnly(
       'classify must resolve party_type (tenant/vendor/inspector/other) when setting party_id',
     );
   }
+}
+
+// The atomic-cast participant shape journal_with_participants consumes.
+interface CastParticipant {
+  role: string;
+  party_type: string;
+  party_id: string | null;
+  address: string | null;
+  label: string | null;
+}
+
+// Item C — close the castless-cast gap. A landlord communication that names a
+// single counterparty in the legacy party slot but supplies no explicit cast
+// gets ONE derived participant, so "everything involving <person>" stays ONE
+// indexed cast query (the party_id filter) even for hand-logged contacts —
+// restoring the backfill's stated end state. Returns null (→ the plain insert,
+// no cast) when:
+//   - the principal is the agent: agent communications are cast by the verified
+//     comms transport (capture_inbound / complete_send always write a cast),
+//     and journal_with_participants both refuses agents AND cannot carry an
+//     agent's provenance (external_ref / approval_ref / approved_by), so the
+//     manual agent-journal path stays on the plain insert;
+//   - no counterparty is named: party_type 'unspecified' is the
+//     unresolved-sender queue (a later classify resolves it) with no name to
+//     cast; 'none' is a note; a concrete role with neither party_id nor
+//     party_label is just a headline bucket ("role known, person unknown");
+//   - a field the RPC cannot faithfully carry is present:
+//     references_interaction_id is dropped by journal_with_participants, and
+//     channel='import' would be stamped attestation='attested' instead of
+//     'imported' — both stay on the plain insert so behaviour is byte-identical.
+// Role follows direction, the same mapping the backfill (20260703000005) uses:
+// inbound → sender, outbound → recipient, anything else → attendee.
+function deriveSingleParticipant(
+  body: {
+    channel?: string;
+    direction?: string;
+    party_type?: string;
+    party_id?: string;
+    party_label?: string;
+    references_interaction_id?: string;
+  },
+  principalType: string,
+): CastParticipant[] | null {
+  if (principalType === 'agent') return null;
+  if (body.channel === 'import') return null;
+  if (body.references_interaction_id !== undefined) return null;
+  const pt = body.party_type;
+  if (pt !== 'tenant' && pt !== 'vendor' && pt !== 'inspector' && pt !== 'other') return null;
+  if (body.party_id === undefined && body.party_label === undefined) return null;
+  const role =
+    body.direction === 'inbound'
+      ? 'sender'
+      : body.direction === 'outbound'
+        ? 'recipient'
+        : 'attendee';
+  return [
+    {
+      role,
+      party_type: pt,
+      party_id: body.party_id ?? null,
+      address: null,
+      label: body.party_label ?? null,
+    },
+  ];
 }
 
 interactionsApp.openapi(create, async (c) => {
@@ -558,8 +711,20 @@ interactionsApp.openapi(create, async (c) => {
     // the journal_with_participants RPC (no window where a valid-but-castless
     // entry exists), which also stamps attestation='attested' and derives
     // actor/author_type from the caller — same values this handler computes.
-    // Landlord-only at this point (agent guard above).
-    if (body.participants !== undefined) {
+    // Landlord-only at this point (agent guard above). TWO inputs converge
+    // here: an EXPLICIT cast (body.participants), or a single DERIVED
+    // participant (Item C) when the body names a counterparty in the legacy
+    // slot but supplies no cast. Both keep the plain insert below for the
+    // no-counterparty case and the agent principal.
+    const explicitCast: CastParticipant[] | undefined = body.participants?.map((p) => ({
+      role: p.role,
+      party_type: p.party_type,
+      party_id: p.party_id ?? null,
+      address: p.address ?? null,
+      label: p.label ?? null,
+    }));
+    const castToWrite = explicitCast ?? deriveSingleParticipant(body, principal.type);
+    if (castToWrite) {
       const { data: created, error: rpcErr } = await sb.rpc('journal_with_participants', {
         p_account_id: accountId,
         p_entry: {
@@ -576,13 +741,7 @@ interactionsApp.openapi(create, async (c) => {
           work_order_id: body.work_order_id ?? null,
           vendor_id: body.vendor_id ?? null,
         },
-        p_participants: body.participants.map((p) => ({
-          role: p.role,
-          party_type: p.party_type,
-          party_id: p.party_id ?? null,
-          address: p.address ?? null,
-          label: p.label ?? null,
-        })),
+        p_participants: asJson(castToWrite),
       });
       if (rpcErr) {
         if (rpcErr.code === '23503') {

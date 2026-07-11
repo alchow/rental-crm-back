@@ -2430,7 +2430,7 @@ export interface paths {
                     cursor?: string;
                     limit?: number;
                     area_id?: string;
-                    status?: "upcoming" | "active" | "ended" | "holdover";
+                    status?: string;
                 };
                 header?: never;
                 path: {
@@ -6320,7 +6320,7 @@ export interface paths {
                     cursor?: string;
                     limit?: number;
                     area_id?: string;
-                    status?: "open" | "triaged" | "in_progress" | "resolved" | "closed";
+                    status?: string;
                 };
                 header?: never;
                 path: {
@@ -6626,6 +6626,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * List interactions (filterable; keyset-paginated on occurred_at)
+         * @description Chronological journal feed. Filters: tenancy_id, maintenance_request_id, area_id, direction, party_type, latest_only, and party_id. `party_id` resolves the person through the CAST (interaction_participants), so a group message or witnessed exchange in which they were one of several participants still matches; combine it with party_type to narrow to that person's tenant vs. vendor leg. HEADS CAVEAT: the cast belongs to the ROOT entry of a correction chain — a correction/retraction row carries no cast of its own. So `party_id` combined with `latest_only=true` can EXCLUDE a corrected communication whose current head is a castless correction row; omit latest_only (the default full set) to see every entry that names the person.
+         */
         get: {
             parameters: {
                 query?: {
@@ -6636,6 +6640,8 @@ export interface paths {
                     latest_only?: "true" | "false";
                     party_type?: "tenant" | "vendor" | "inspector" | "other" | "none" | "unspecified";
                     direction?: "inbound" | "outbound" | "mutual" | "unspecified" | "none";
+                    party_id?: string;
+                    area_id?: string;
                 };
                 header?: never;
                 path: {

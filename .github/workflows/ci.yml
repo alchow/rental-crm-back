@@ -294,6 +294,13 @@ jobs:
         # garbage cursors, and a no-dup/no-gap pagination walk.
         run: pnpm --filter ./api test:ledger
 
+      - name: Run multi-status list-filter checks (Field Log ask #2)
+        # Comma-separated status set on tenancies + maintenance-requests: single
+        # value stays byte-compatible, a set returns the union, a bogus member
+        # is a 400 with fieldErrors.status, and the IN filter composes with the
+        # keyset walk (each row exactly once).
+        run: pnpm --filter ./api test:multi-status-filters
+
       - name: Run onboarding-import DoD checks (Phase 1)
         # Full recognize -> map -> resolve -> preview -> confirm pipeline and
         # every decline/blocker branch, with the Anthropic client replaced by

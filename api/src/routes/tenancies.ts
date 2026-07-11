@@ -4,6 +4,7 @@ import { getSb } from '../supabase/request-client';
 import type { DbTableUpdate } from '../supabase/db-types';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
+import { parseCsvEnum } from './_lib/csv-enum';
 import { softDeleteStamp } from './_lib/soft-delete';
 import { CreateTenancyBody, TenancyStatus } from '../schemas/importable';
 
@@ -63,7 +64,14 @@ const ListQuery = z.object({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().positive().max(100).default(50),
   area_id: z.string().uuid().optional(),
-  status: TenancyStatus.optional(),
+  // Single status or a comma-separated set — a single value keeps its exact
+  // pre-existing behaviour; a multi-value filter widens to an IN. Validated in
+  // the handler (parseCsvEnum) so an unknown member is a 400 with fieldErrors,
+  // not a silent empty page.
+  status: z.string().optional().openapi({
+    description: "Status or comma-separated statuses, e.g. 'active,holdover'.",
+    example: 'active,holdover',
+  }),
 });
 
 const ListResponse = z
@@ -140,7 +148,11 @@ tenanciesApp.openapi(list, async (c) => {
   const sb = getSb(c);
   let q = sb.from('tenancies').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (area_id) q = q.eq('area_id', area_id);
-  if (status) q = q.eq('status', status);
+  const statuses = parseCsvEnum(status, TenancyStatus.options, 'status');
+  if (statuses) {
+    const [only] = statuses;
+    q = statuses.length === 1 && only ? q.eq('status', only) : q.in('status', statuses);
+  }
   const { items, next_cursor: nextCursor } = await keysetPage(q, { cursor, limit });
   return c.json({ data: items, next_cursor: nextCursor } as z.infer<typeof ListResponse>, 200);
 });

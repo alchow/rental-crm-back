@@ -414,6 +414,186 @@ async function main(): Promise<void> {
     }
   });
 
+  // =========================================================================
+  // party_id / area_id list filters (Field Log ask #5) + Item C castless gap
+  // =========================================================================
+
+  const listBy = async (qs: string): Promise<InteractionRow[]> => {
+    const r = await api('GET', `${base}${qs}`, { token: A.accessToken });
+    return (assertStatus(r, 200, `list ${qs}`) as { data: InteractionRow[] }).data;
+  };
+
+  await check('party_id: returns the cast-bearing entry (resolved through the cast, not the slot)', async () => {
+    const target = crypto.randomUUID();
+    const withTarget = assertStatus(
+      await createInteraction(commBody({
+        body: 'Names the target as a witnessed sender.',
+        participants: [
+          { role: 'sender', party_type: 'tenant', party_id: target, label: 'Target Tenant' },
+          { role: 'recipient', party_type: 'landlord_user', party_id: A.userId, label: 'Me' },
+        ],
+      })),
+      201, 'with target',
+    ) as InteractionRow;
+    // A different interaction that does NOT name the target.
+    await createInteraction(commBody({
+      participants: [{ role: 'sender', party_type: 'tenant', party_id: crypto.randomUUID(), label: 'Someone else' }],
+    }));
+
+    const rows = await listBy(`?party_id=${target}&limit=100`);
+    const ids = new Set(rows.map((r) => r.id));
+    if (!ids.has(withTarget.id)) throw new Error('target entry missing from party_id filter');
+    // Every returned row must actually carry the target in its cast.
+    for (const r of rows) {
+      if (!r.participants.some((p) => p.party_id === target)) {
+        throw new Error(`row ${r.id} matched party_id but its cast lacks the target: ${JSON.stringify(r.participants)}`);
+      }
+    }
+  });
+
+  await check('party_id + party_type: narrows to the matching cast leg', async () => {
+    const shared = crypto.randomUUID(); // same uuid cast under two party_types
+    const asTenant = assertStatus(
+      await createInteraction(commBody({
+        participants: [{ role: 'sender', party_type: 'tenant', party_id: shared, label: 'As tenant' }],
+      })),
+      201, 'as tenant',
+    ) as InteractionRow;
+    const asVendor = assertStatus(
+      await createInteraction(commBody({
+        participants: [{ role: 'recipient', party_type: 'vendor', party_id: shared, label: 'As vendor' }],
+      })),
+      201, 'as vendor',
+    ) as InteractionRow;
+
+    const vendorRows = await listBy(`?party_id=${shared}&party_type=vendor&limit=100`);
+    const vIds = new Set(vendorRows.map((r) => r.id));
+    if (!vIds.has(asVendor.id) || vIds.has(asTenant.id)) {
+      throw new Error(`party_type=vendor should return only the vendor leg: ${JSON.stringify([...vIds])}`);
+    }
+    const tenantRows = await listBy(`?party_id=${shared}&party_type=tenant&limit=100`);
+    const tIds = new Set(tenantRows.map((r) => r.id));
+    if (!tIds.has(asTenant.id) || tIds.has(asVendor.id)) {
+      throw new Error(`party_type=tenant should return only the tenant leg: ${JSON.stringify([...tIds])}`);
+    }
+  });
+
+  await check('party_id: cross-account party_id -> 200 empty (RLS scopes the cast)', async () => {
+    const B = await setupUser('B');
+    // A names a party; B queries its OWN account for that same uuid.
+    const foreign = crypto.randomUUID();
+    await createInteraction(commBody({
+      participants: [{ role: 'sender', party_type: 'tenant', party_id: foreign, label: 'A-only' }],
+    }));
+    const r = await api('GET', `/v1/accounts/${B.accountId}/interactions?party_id=${foreign}&limit=100`, {
+      token: B.accessToken,
+    });
+    const rows = (assertStatus(r, 200, 'B lists own account') as { data: InteractionRow[] }).data;
+    if (rows.length !== 0) throw new Error(`cross-account party_id leaked ${rows.length} rows`);
+  });
+
+  await check('area_id: filters interactions scoped to one area', async () => {
+    const property = assertStatus(
+      await api('POST', `/v1/accounts/${A.accountId}/properties`, { token: A.accessToken, body: { name: 'Area prop' } }),
+      201, 'prop',
+    ) as { id: string };
+    const area = assertStatus(
+      await api('POST', `/v1/accounts/${A.accountId}/areas`, {
+        token: A.accessToken, body: { property_id: property.id, kind: 'unit', name: 'Area unit' },
+      }),
+      201, 'area',
+    ) as { id: string };
+    const inArea = assertStatus(
+      await createInteraction(commBody({ area_id: area.id, party_type: 'tenant', body: 'Scoped to the area.' })),
+      201, 'in area',
+    ) as InteractionRow;
+    const rows = await listBy(`?area_id=${area.id}&limit=100`);
+    const ids = new Set(rows.map((r) => r.id));
+    if (!ids.has(inArea.id)) throw new Error('area-scoped interaction missing from area_id filter');
+    // Nothing outside the area should appear (all fixture rows used tenancy_id, not this area).
+    for (const r of rows) {
+      if (r.id !== inArea.id) throw new Error(`area_id filter returned an out-of-area row ${r.id}`);
+    }
+  });
+
+  await check('Item C: a castless create naming party_id is cast + findable via party_id', async () => {
+    const person = crypto.randomUUID();
+    // NO participants[]; the legacy slot names the counterparty. Direction
+    // inbound must derive a 'sender' cast (the backfill mapping).
+    const created = assertStatus(
+      await createInteraction(commBody({
+        party_type: 'tenant',
+        party_id: person,
+        direction: 'inbound',
+        channel: 'phone',
+        body: 'Inbound call, logged with only the party slot.',
+      })),
+      201, 'castless create',
+    ) as InteractionRow;
+    // The row now carries ONE derived participant (it was routed through the RPC).
+    if (created.participants.length !== 1) {
+      throw new Error(`expected 1 derived participant, got ${JSON.stringify(created.participants)}`);
+    }
+    const p = created.participants[0]!;
+    if (p.role !== 'sender' || p.party_type !== 'tenant' || p.party_id !== person) {
+      throw new Error(`derived participant wrong: ${JSON.stringify(p)}`);
+    }
+    if (p.source !== 'capture') throw new Error(`derived participant source: ${p.source}`);
+    if (p.address !== null) throw new Error(`derived participant address should be null: ${p.address}`);
+    // The legacy headline slot is still populated (back-compat).
+    if (created.party_id !== person) throw new Error(`party slot cleared: ${created.party_id}`);
+    // Findable through the cast filter — the whole point.
+    const rows = await listBy(`?party_id=${person}&limit=100`);
+    if (!rows.some((r) => r.id === created.id)) {
+      throw new Error('castless-then-derived entry not findable via party_id');
+    }
+  });
+
+  await check('Item C: a concrete role with no id and no label stays castless (plain insert)', async () => {
+    // "role known, person unknown" is a headline bucket, not a nameable
+    // counterparty — it must NOT be forced through the cast path.
+    const created = assertStatus(
+      await createInteraction(commBody({ party_type: 'tenant', channel: 'phone', body: 'Some tenant, unknown which.' })),
+      201, 'headline-only',
+    ) as InteractionRow;
+    if (created.participants.length !== 0) {
+      throw new Error(`headline-only should stay castless, got ${JSON.stringify(created.participants)}`);
+    }
+  });
+
+  await check('party_id + latest_only=true: the documented head caveat (corrected chain excluded)', async () => {
+    const person = crypto.randomUUID();
+    const original = assertStatus(
+      await createInteraction(commBody({
+        party_type: 'tenant',
+        body: 'Original, cast names the person.',
+        participants: [{ role: 'sender', party_type: 'tenant', party_id: person, label: 'Person' }],
+      })),
+      201, 'original',
+    ) as InteractionRow;
+    // Amend it: the correction ROW carries no cast (the cast belongs to the root).
+    const amend = assertStatus(
+      await createInteraction({
+        corrects_id: original.id,
+        correction_kind: 'amend',
+        body: 'Amended content.',
+      }),
+      201, 'amend',
+    ) as InteractionRow;
+
+    // Without latest_only: the root (which holds the cast) is found.
+    const full = await listBy(`?party_id=${person}&limit=100`);
+    if (!full.some((r) => r.id === original.id)) {
+      throw new Error('root entry (holds the cast) must be found without latest_only');
+    }
+    // With latest_only=true: the root is superseded (not head) and the head
+    // (the amend) is castless -> the whole chain drops out. This is the caveat.
+    const heads = await listBy(`?party_id=${person}&latest_only=true&limit=100`);
+    const headIds = new Set(heads.map((r) => r.id));
+    if (headIds.has(original.id)) throw new Error('superseded root should not appear under latest_only');
+    if (headIds.has(amend.id)) throw new Error('castless correction head should not match party_id');
+  });
+
   // --- summary ---------------------------------------------------------------
   if (failures.length > 0) {
     console.error(`\n${failures.length} interactions-participants failure(s):`);

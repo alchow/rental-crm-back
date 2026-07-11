@@ -4069,6 +4069,65 @@ export type Database = {
           isSetofReturn: true;
         };
       };
+      list_interactions_for_party: {
+        Args: {
+          p_account_id: string;
+          p_area_id: string;
+          p_before_id: string;
+          p_before_occurred_at: string;
+          p_direction: string;
+          p_latest_only: boolean;
+          p_limit: number;
+          p_maintenance_request_id: string;
+          p_party_id: string;
+          p_party_type: string;
+          p_tenancy_id: string;
+        };
+        Returns: {
+          account_id: string | null;
+          actor: string | null;
+          approval_ref: string | null;
+          approved_by: string | null;
+          area_id: string | null;
+          attestation: string | null;
+          author_type: string | null;
+          body: string | null;
+          channel: string | null;
+          correction_kind: string | null;
+          corrects_id: string | null;
+          created_at: string | null;
+          deleted_at: string | null;
+          delivered_at: string | null;
+          delivery_status: string | null;
+          direction: string | null;
+          entry_type: string | null;
+          external_ref: string | null;
+          id: string | null;
+          is_head: boolean | null;
+          kind: string | null;
+          logged_at: string | null;
+          maintenance_request_id: string | null;
+          occurred_at: string | null;
+          outbox_id: string | null;
+          party_id: string | null;
+          party_label: string | null;
+          party_type: string | null;
+          references_interaction_id: string | null;
+          rfc822_message_id: string | null;
+          superseded_by_id: string | null;
+          tenancy_id: string | null;
+          thread_id: string | null;
+          updated_at: string | null;
+          vendor_id: string | null;
+          work_order_id: string | null;
+        }[];
+        SetofOptions: {
+          from: '*';
+          to: 'interactions_with_chain';
+          isOneToOne: false;
+          isSetofReturn: true;
+        };
+      };
       normalize_search_text: { Args: { p_text: string }; Returns: string };
       prune_idempotency_keys: {
         Args: {
