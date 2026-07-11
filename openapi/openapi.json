@@ -12732,7 +12732,7 @@
           {
             "schema": {
               "type": "string",
-              "description": "Status or comma-separated statuses, e.g. 'active,holdover'.",
+              "description": "Status or comma-separated statuses. Allowed values: upcoming, active, ended, holdover. Example: 'active,holdover'.",
               "example": "active,holdover"
             },
             "required": false,
@@ -18280,7 +18280,7 @@
           {
             "schema": {
               "type": "string",
-              "description": "Status or comma-separated statuses, e.g. 'open,triaged'.",
+              "description": "Status or comma-separated statuses. Allowed values: open, triaged, in_progress, resolved, closed. Example: 'open,triaged'.",
               "example": "open,triaged"
             },
             "required": false,

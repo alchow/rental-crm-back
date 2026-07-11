@@ -95,7 +95,8 @@ const ListQuery = z.object({
   // the handler (parseCsvEnum) so an unknown member is a 400 with fieldErrors,
   // not a silent empty page.
   status: z.string().optional().openapi({
-    description: "Status or comma-separated statuses, e.g. 'open,triaged'.",
+    description:
+      "Status or comma-separated statuses. Allowed values: open, triaged, in_progress, resolved, closed. Example: 'open,triaged'.",
     example: 'open,triaged',
   }),
 });

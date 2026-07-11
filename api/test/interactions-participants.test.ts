@@ -478,18 +478,90 @@ async function main(): Promise<void> {
     }
   });
 
-  await check('party_id: cross-account party_id -> 200 empty (RLS scopes the cast)', async () => {
+  await check('party_id: cross-account — each account sees ONLY its own row for a shared uuid', async () => {
     const B = await setupUser('B');
-    // A names a party; B queries its OWN account for that same uuid.
-    const foreign = crypto.randomUUID();
-    await createInteraction(commBody({
-      participants: [{ role: 'sender', party_type: 'tenant', party_id: foreign, label: 'A-only' }],
-    }));
-    const r = await api('GET', `/v1/accounts/${B.accountId}/interactions?party_id=${foreign}&limit=100`, {
-      token: B.accessToken,
-    });
-    const rows = (assertStatus(r, 200, 'B lists own account') as { data: InteractionRow[] }).data;
-    if (rows.length !== 0) throw new Error(`cross-account party_id leaked ${rows.length} rows`);
+    // NON-VACUOUS probe: A and B both cast the SAME uuid on their own rows,
+    // so a semi-join that ignored account scoping would leak a real row.
+    // (An empty-account assertion proves nothing about RLS.)
+    const shared = crypto.randomUUID();
+    const aRow = assertStatus(
+      await createInteraction(commBody({
+        body: 'A names the shared person.',
+        participants: [{ role: 'sender', party_type: 'tenant', party_id: shared, label: 'Shared-A' }],
+      })),
+      201, 'A row',
+    ) as InteractionRow;
+    const bRow = assertStatus(
+      await api('POST', `/v1/accounts/${B.accountId}/interactions`, {
+        token: B.accessToken,
+        body: {
+          party_type: 'tenant',
+          channel: 'in_person',
+          direction: 'inbound',
+          occurred_at: '2026-03-01T09:00:00Z',
+          body: 'B names the shared person.',
+          participants: [{ role: 'sender', party_type: 'tenant', party_id: shared, label: 'Shared-B' }],
+        },
+      }),
+      201, 'B row',
+    ) as InteractionRow;
+
+    const aList = await listBy(`?party_id=${shared}&limit=100`);
+    if (aList.length !== 1 || aList[0]!.id !== aRow.id) {
+      throw new Error(`A should see exactly its own row, got ${JSON.stringify(aList.map((x) => x.id))}`);
+    }
+    const bList = (assertStatus(
+      await api('GET', `/v1/accounts/${B.accountId}/interactions?party_id=${shared}&limit=100`, {
+        token: B.accessToken,
+      }), 200, 'B lists',
+    ) as { data: InteractionRow[] }).data;
+    if (bList.length !== 1 || bList[0]!.id !== bRow.id) {
+      throw new Error(`B should see exactly its own row, got ${JSON.stringify(bList.map((x) => x.id))}`);
+    }
+  });
+
+  await check('party_id: keyset walk (limit=1) over equal occurred_at rows — exactly once, in order', async () => {
+    // Three rows cast to one person, ALL sharing occurred_at, plus one later
+    // row: the walk must rely on the (occurred_at, id) tie-break. A dup/skip
+    // regression in list_interactions_for_party's keyset predicate fails here.
+    const person = crypto.randomUUID();
+    const mk = (body: string, when: string) =>
+      createInteraction(commBody({
+        body,
+        occurred_at: when,
+        participants: [{ role: 'sender', party_type: 'tenant', party_id: person, label: 'Walker' }],
+      }));
+    const created: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const row = assertStatus(await mk(`tie ${i}`, '2026-03-05T10:00:00Z'), 201, `tie ${i}`) as InteractionRow;
+      created.push(row.id);
+    }
+    const late = assertStatus(await mk('later', '2026-03-06T10:00:00Z'), 201, 'later') as InteractionRow;
+    created.push(late.id);
+
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const qs = `?party_id=${person}&limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+      const r = await api('GET', `${base}${qs}`, { token: A.accessToken });
+      const body = assertStatus(r, 200, `page ${page}`) as {
+        data: InteractionRow[];
+        next_cursor: string | null;
+      };
+      for (const row of body.data) {
+        if (seen.includes(row.id)) throw new Error(`row ${row.id} appeared twice across pages`);
+        seen.push(row.id);
+      }
+      if (body.next_cursor === null) break;
+      cursor = body.next_cursor;
+    }
+    if (seen.length !== created.length || !created.every((id) => seen.includes(id))) {
+      throw new Error(`walk saw ${seen.length}/${created.length} rows: ${JSON.stringify(seen)}`);
+    }
+    // Ascending order: the later row must come out last.
+    if (seen[seen.length - 1] !== late.id) {
+      throw new Error('ascending order violated: later row not last');
+    }
   });
 
   await check('area_id: filters interactions scoped to one area', async () => {
