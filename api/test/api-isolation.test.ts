@@ -598,11 +598,41 @@ async function main(): Promise<void> {
         if (body.next_cursor === null) break;
         cursor = body.next_cursor;
       }
-      if (seen.size !== 3) {
-        throw new Error(`expected exactly 3 distinct rows across pages; got ${seen.size}`);
+      // >= 3 with the two known new ids present (not exactly-3): earlier
+      // tests are free to add members to account A without breaking this walk.
+      if (seen.size < 3) {
+        throw new Error(`expected at least 3 distinct rows across pages; got ${seen.size}`);
+      }
+      const wide = await api('GET', `${acctMembersUrl}?tenant_id=${occupantTenantId}`, {
+        token: A.accessToken,
+      });
+      const wideBody = (await expectStatus('GET occupant row', wide, 200)) as {
+        data: Array<{ id: string }>;
+      };
+      for (const row of wideBody.data) {
+        if (!seen.has(row.id)) {
+          throw new Error(`row ${row.id} (occupant) was skipped by the pagination walk`);
+        }
       }
     },
   );
+
+  await check('tenancy-members (account-wide): A on B\'s account path -> 404', async () => {
+    const res = await api('GET', `/v1/accounts/${B.accountId}/tenancy-members`, {
+      token: A.accessToken,
+    });
+    await expectStatus('GET cross-account path', res, 404);
+  });
+
+  await check('tenancy-members (account-wide): garbage cursor -> 400 invalid_request', async () => {
+    const res = await api('GET', `${acctMembersUrl}?cursor=garbage`, { token: A.accessToken });
+    const body = (await expectStatus('GET garbage cursor', res, 400)) as {
+      error?: { code?: string };
+    };
+    if (body.error?.code !== 'invalid_request') {
+      throw new Error(`expected invalid_request, got ${JSON.stringify(body)}`);
+    }
+  });
 
   // -----------------------------------------------------------------------
   // unit_details sub-resource:
