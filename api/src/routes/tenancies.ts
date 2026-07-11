@@ -128,10 +128,12 @@ const patch = createRoute({
   summary: 'Update a tenancy (status / end_date / guarded start_date; area_id is immutable)',
   description:
     'start_date is a correction path for a mis-entered move-in date and is refused with ' +
-    '409 tenancy_has_money once any non-voided charge or payment exists. Two documented ' +
-    'side effects of a correction: evidence-export PDFs show the corrected span from then ' +
-    'on, and re-running an import sheet created before the correction can duplicate the ' +
-    'tenancy (import dedupe keys on start_date).',
+    '409 tenancy_has_money once any non-voided charge or payment exists. A future ' +
+    "start_date requires status='upcoming' in the same PATCH (this guards the correction " +
+    'path only; it is not a table-wide invariant). Two documented side effects of a ' +
+    'correction: evidence-export PDFs show the corrected span from then on, and re-running ' +
+    'an import sheet created before the correction can duplicate the tenancy (import ' +
+    'dedupe keys on start_date).',
   request: {
     params: AccountAndIdParam,
     body: { content: { 'application/json': { schema: PatchTenancyBody } }, required: true },
