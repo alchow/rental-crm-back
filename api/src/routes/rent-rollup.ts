@@ -51,7 +51,8 @@ const AccountParam = z.object({
 const RollupQuery = z.object({
   status: z.string().optional().openapi({
     description:
-      "Status or comma-separated statuses to include; defaults to 'active,holdover' (the current set).",
+      'Status or comma-separated statuses to include. Allowed values: upcoming, active, ' +
+      "ended, holdover. Defaults to 'active,holdover' (the current set).",
     example: 'active,holdover',
   }),
 });
