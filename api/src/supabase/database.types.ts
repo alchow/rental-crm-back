@@ -4186,7 +4186,7 @@ export type Database = {
         Returns: {
           tenancy_id: string;
           status: string;
-          currency: string;
+          currency: string | null;
           rent_balance_cents: number;
           deposit_balance_cents: number;
           unapplied_credit_cents: number;

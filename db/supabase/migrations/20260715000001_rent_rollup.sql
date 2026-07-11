@@ -24,8 +24,10 @@
 --     rent_* semantics — see totals.by_type for the per-type split);
 --   * deposit split on charges.type = 'deposit';
 --   * unapplied_credit = sum(live payments) - sum(active allocations);
---   * currency is read off the rows (single-currency tenancies in
---     practice; min() just makes the pick deterministic).
+--   * currency mirrors the ledger's pick exactly: any NON-DELETED charge
+--     first (voided included — the ledger reads chargeRows[0] before the
+--     void filter), else any non-deleted payment. Single-currency
+--     tenancies in practice; min() just makes the pick deterministic.
 --
 -- SECURITY INVOKER: RLS is the isolation boundary. The p_account_id
 -- predicate is a planner hint and defense-in-depth, not the fence — a
@@ -60,8 +62,7 @@ as $$
   live_charges as (
     select c.tenancy_id,
            sum(c.amount_cents) filter (where c.type <> 'deposit') as rent_charges,
-           sum(c.amount_cents) filter (where c.type =  'deposit') as deposit_charges,
-           min(c.currency) as currency
+           sum(c.amount_cents) filter (where c.type =  'deposit') as deposit_charges
       from public.charges c
       join t on t.id = c.tenancy_id
      where c.account_id = p_account_id
@@ -71,14 +72,26 @@ as $$
   ),
   live_payments as (
     select p.tenancy_id,
-           sum(p.amount_cents) as received,
-           min(p.currency) as currency
+           sum(p.amount_cents) as received
       from public.payments p
       join t on t.id = p.tenancy_id
      where p.account_id = p_account_id
        and p.deleted_at is null
        and p.voided_at is null
      group by p.tenancy_id
+  ),
+  -- Currency picked over NON-DELETED rows INCLUDING voided ones — the
+  -- ledger reads its currency off chargeRows[0] before any void filter, so
+  -- a tenancy whose only charge is voided still reports that currency.
+  currencies as (
+    select t.id as tenancy_id,
+           (select min(c.currency) from public.charges c
+             where c.account_id = p_account_id and c.tenancy_id = t.id
+               and c.deleted_at is null) as charge_currency,
+           (select min(p.currency) from public.payments p
+             where p.account_id = p_account_id and p.tenancy_id = t.id
+               and p.deleted_at is null) as payment_currency
+      from t
   ),
   active_allocations as (
     select c.tenancy_id,
@@ -98,7 +111,7 @@ as $$
   )
   select t.id,
          t.status,
-         coalesce(lc.currency, lp.currency),
+         coalesce(cu.charge_currency, cu.payment_currency),
          (coalesce(lc.rent_charges, 0)    - coalesce(aa.rent_allocated, 0))::bigint,
          (coalesce(lc.deposit_charges, 0) - coalesce(aa.deposit_allocated, 0))::bigint,
          (coalesce(lp.received, 0)        - coalesce(aa.total_allocated, 0))::bigint
@@ -106,6 +119,7 @@ as $$
     left join live_charges       lc on lc.tenancy_id = t.id
     left join live_payments      lp on lp.tenancy_id = t.id
     left join active_allocations aa on aa.tenancy_id = t.id
+    left join currencies         cu on cu.tenancy_id = t.id
 $$;
 
 -- Default PostgREST-era ACLs would let anon call this; scope it to real

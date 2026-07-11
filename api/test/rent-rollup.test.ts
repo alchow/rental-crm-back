@@ -191,6 +191,15 @@ await voidRow('charges', cExtra.id);
 // T2: zero money — must still get a (zero) row.
 const t2 = await mkTenancy('Unit R2', 'active', '2026-01-01');
 
+// T4: only a VOIDED charge — balances are zero but the ledger still reports
+// the voided charge's currency (it reads currency before the void filter);
+// the rollup must match. This is the currency edge from the PR review.
+const t4 = await mkTenancy('Unit R4', 'active', '2026-01-01');
+const t4Charge = await post<{ id: string }>('/charges', {
+  tenancy_id: t4.id, type: 'rent', amount_cents: 8000, currency: 'USD', due_date: '2026-02-01',
+});
+await voidRow('charges', t4Charge.id);
+
 // T3: ended, with money — excluded by default, included via ?status=ended.
 const t3 = await mkTenancy('Unit R3', 'ended', '2025-01-01');
 await post('/charges', {
@@ -205,10 +214,13 @@ interface RollupRow {
   deposit_balance_cents: number;
   unapplied_credit_cents: number;
 }
-interface LedgerTotals {
-  rent_balance_cents: number;
-  deposit_balance_cents: number;
-  unapplied_credit_cents: number;
+interface LedgerView {
+  currency: string | null;
+  totals: {
+    rent_balance_cents: number;
+    deposit_balance_cents: number;
+    unapplied_credit_cents: number;
+  };
 }
 
 const getRollup = async (qs = ''): Promise<RollupRow[]> => {
@@ -216,10 +228,10 @@ const getRollup = async (qs = ''): Promise<RollupRow[]> => {
   if (r.status !== 200) throw new Error(`rollup GET failed: ${r.status} ${JSON.stringify(r.body)}`);
   return (r.body as { data: RollupRow[] }).data;
 };
-const getLedgerTotals = async (tenancyId: string): Promise<LedgerTotals> => {
+const getLedger = async (tenancyId: string): Promise<LedgerView> => {
   const r = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancyId}/ledger`, { token });
   if (r.status !== 200) throw new Error(`ledger GET failed: ${r.status}`);
-  return (r.body as { totals: LedgerTotals }).totals;
+  return r.body as LedgerView;
 };
 
 // --- tests --------------------------------------------------------------------
@@ -254,12 +266,21 @@ await check('(2) zero-money tenancy gets a zero row with null currency', async (
 await check('(3) PARITY: rollup equals GET /ledger for every returned tenancy', async () => {
   const rows = await getRollup();
   for (const row of rows) {
-    const totals = await getLedgerTotals(row.tenancy_id);
-    assertEq(row.rent_balance_cents, totals.rent_balance_cents, `t=${row.tenancy_id} rent parity`);
-    assertEq(row.deposit_balance_cents, totals.deposit_balance_cents, `t=${row.tenancy_id} deposit parity`);
-    assertEq(row.unapplied_credit_cents, totals.unapplied_credit_cents, `t=${row.tenancy_id} credit parity`);
+    const ledger = await getLedger(row.tenancy_id);
+    assertEq(row.rent_balance_cents, ledger.totals.rent_balance_cents, `t=${row.tenancy_id} rent parity`);
+    assertEq(row.deposit_balance_cents, ledger.totals.deposit_balance_cents, `t=${row.tenancy_id} deposit parity`);
+    assertEq(row.unapplied_credit_cents, ledger.totals.unapplied_credit_cents, `t=${row.tenancy_id} credit parity`);
+    assertEq(row.currency, ledger.currency, `t=${row.tenancy_id} currency parity`);
   }
-  if (rows.length < 2) throw new Error(`parity walked only ${rows.length} tenancies`);
+  if (rows.length < 3) throw new Error(`parity walked only ${rows.length} tenancies`);
+});
+
+await check('(3b) currency edge: tenancy whose only charge is voided still reports it', async () => {
+  const rows = await getRollup();
+  const r4 = rows.find((r) => r.tenancy_id === t4.id);
+  if (!r4) throw new Error('t4 missing from rollup');
+  assertEq(r4.currency, 'USD', 'currency from voided charge');
+  assertEq(r4.rent_balance_cents, 0, 'balances zero');
 });
 
 await check('(4) default excludes ended; ?status=ended includes it (with parity)', async () => {
@@ -269,8 +290,8 @@ await check('(4) default excludes ended; ?status=ended includes it (with parity)
   const r3 = ended.find((r) => r.tenancy_id === t3.id);
   if (!r3) throw new Error('t3 missing from ?status=ended');
   assertEq(r3.rent_balance_cents, 50000, 'ended rent_balance');
-  const totals = await getLedgerTotals(t3.id);
-  assertEq(r3.rent_balance_cents, totals.rent_balance_cents, 'ended parity');
+  const ledger = await getLedger(t3.id);
+  assertEq(r3.rent_balance_cents, ledger.totals.rent_balance_cents, 'ended parity');
 });
 
 await check('(5) bogus status value -> 400 with fieldErrors.status', async () => {
@@ -295,6 +316,15 @@ await check('(6) RLS floor: direct RPC with A\'s JWT against B\'s account id -> 
   const own = await sb.rpc('rent_rollup', { p_account_id: acct });
   if (own.error) throw new Error(`own rpc failed: ${own.error.message}`);
   if ((own.data as unknown[]).length < 2) throw new Error('own-account rpc returned too few rows');
+});
+
+await check('(7) grants: a bare-anon RPC call (no user JWT) is refused', async () => {
+  const anon = createClient(status.API_URL, status.ANON_KEY);
+  const { error } = await anon.rpc('rent_rollup', { p_account_id: acct });
+  if (!error) throw new Error('anon call succeeded; execute grant is too broad');
+  if (!/permission denied|not.*exist/i.test(error.message)) {
+    throw new Error(`unexpected anon error shape: ${error.message}`);
+  }
 });
 
 if (failures.length > 0) {
