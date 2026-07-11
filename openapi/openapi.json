@@ -1151,6 +1151,11 @@
               "ended",
               "holdover"
             ]
+          },
+          "start_date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Correction path for a wrong move-in date. Allowed only while the tenancy has no non-voided charges or payments (409 tenancy_has_money otherwise). A future date requires status='upcoming' in the same PATCH."
           }
         }
       },
@@ -13020,7 +13025,8 @@
         "tags": [
           "tenancies"
         ],
-        "summary": "Update a tenancy (status / end_date only; area_id is immutable)",
+        "summary": "Update a tenancy (status / end_date / guarded start_date; area_id is immutable)",
+        "description": "start_date is a correction path for a mis-entered move-in date and is refused with 409 tenancy_has_money once any non-voided charge or payment exists. Two documented side effects of a correction: evidence-export PDFs show the corrected span from then on, and re-running an import sheet created before the correction can duplicate the tenancy (import dedupe keys on start_date).",
         "parameters": [
           {
             "schema": {
@@ -13106,7 +13112,7 @@
             }
           },
           "409": {
-            "description": "idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource",
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
             "content": {
               "application/json": {
                 "schema": {

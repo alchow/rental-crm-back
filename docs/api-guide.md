@@ -299,10 +299,18 @@ An **occupancy period** — who occupied which unit, when. This is the operation
 | `GET`    | `/tenancies`      | Supports `?area_id=`, `?status=` filters.                                                                         |
 | `POST`   | `/tenancies`      | `area_id` (required), `start_date` (required, YYYY-MM-DD), `end_date` (optional), `status` (required, see below). |
 | `GET`    | `/tenancies/{id}` |                                                                                                                   |
-| `PATCH`  | `/tenancies/{id}` | `end_date`, `status`.                                                                                             |
+| `PATCH`  | `/tenancies/{id}` | `end_date`, `status`, `start_date` (guarded — see below).                                                         |
 | `DELETE` | `/tenancies/{id}` | Soft-delete.                                                                                                      |
 
 `status` values: `upcoming` → `active` → `holdover` / `ended`.
+
+**Correcting `start_date`.** A mis-entered move-in date can be PATCHed while the tenancy has no
+non-voided charges or payments; once money exists the timeline is anchored and the PATCH answers
+`409 {code: "tenancy_has_money"}` (void the money rows first — the ADR-0012 correction recipes —
+or leave the date alone). A future `start_date` must be paired with `status: "upcoming"` in the
+same PATCH; the nightly sweep re-activates the tenancy on the new date. Two side effects to know:
+evidence-export PDFs show the corrected span from then on, and re-running an import sheet created
+before the correction can duplicate the tenancy (import dedupe keys on `start_date`).
 
 ### Tenancy members
 

@@ -2722,7 +2722,10 @@ export interface paths {
         };
         options?: never;
         head?: never;
-        /** Update a tenancy (status / end_date only; area_id is immutable) */
+        /**
+         * Update a tenancy (status / end_date / guarded start_date; area_id is immutable)
+         * @description start_date is a correction path for a mis-entered move-in date and is refused with 409 tenancy_has_money once any non-voided charge or payment exists. Two documented side effects of a correction: evidence-export PDFs show the corrected span from then on, and re-running an import sheet created before the correction can duplicate the tenancy (import dedupe keys on start_date).
+         */
         patch: {
             parameters: {
                 query?: never;
@@ -2771,7 +2774,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -15502,6 +15505,8 @@ export interface components {
             end_date?: string | null;
             /** @enum {string} */
             status?: "upcoming" | "active" | "ended" | "holdover";
+            /** @description Correction path for a wrong move-in date. Allowed only while the tenancy has no non-voided charges or payments (409 tenancy_has_money otherwise). A future date requires status='upcoming' in the same PATCH. */
+            start_date?: string;
         };
         TenancyMember: {
             /** Format: uuid */

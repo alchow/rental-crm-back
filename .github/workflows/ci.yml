@@ -294,6 +294,11 @@ jobs:
         # garbage cursors, and a no-dup/no-gap pagination walk.
         run: pnpm --filter ./api test:ledger
 
+      - name: Run tenancy start_date correction checks
+        # C3 correction path: money guard (409 tenancy_has_money), void
+        # re-opens the path, future-date/status coherence, end_date ordering.
+        run: pnpm --filter ./api test:tenancy-start-date
+
       - name: Run onboarding-import DoD checks (Phase 1)
         # Full recognize -> map -> resolve -> preview -> confirm pipeline and
         # every decline/blocker branch, with the Anthropic client replaced by
