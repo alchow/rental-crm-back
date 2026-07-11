@@ -429,6 +429,16 @@ GET /v1/accounts/{accountId}/tenancies/{tenancyId}/ledger
       "voided_at": null,
     },
     {
+      "kind": "charge",
+      "id": "c_2",
+      "occurred_at": "2026-06-05",
+      "type": "utility",
+      "amount_cents": 12000,
+      "derived_balance_cents": 12000, // unpaid — and NOT rent; see by_type below
+      "is_deposit": false,
+      "voided_at": null,
+    },
+    {
       "kind": "payment",
       "id": "pay_1",
       "occurred_at": "2026-06-01",
@@ -440,9 +450,9 @@ GET /v1/accounts/{accountId}/tenancies/{tenancyId}/ledger
     },
   ],
   "totals": {
-    "rent_charges_cents": 120000, // LEGACY: all NON-DEPOSIT types, not just rent — see by_type
+    "rent_charges_cents": 132000, // LEGACY: all NON-DEPOSIT types — the 12000 utility is in here
     "rent_payments_cents": 70000,
-    "rent_balance_cents": 50000,
+    "rent_balance_cents": 62000, // reads 12000 high if labeled "Rent balance"
     "deposit_charges_cents": 0,
     "deposit_payments_cents": 0,
     "deposit_balance_cents": 0,
@@ -454,7 +464,7 @@ GET /v1/accounts/{accountId}/tenancies/{tenancyId}/ledger
       // allocated_cents attributes payments to a type via their allocations —
       // the same rule the deposit split uses.
       "rent":    { "charges_cents": 120000, "allocated_cents": 70000, "balance_cents": 50000 },
-      "utility": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "utility": { "charges_cents": 12000, "allocated_cents": 0, "balance_cents": 12000 },
       "deposit": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
       "late_fee": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
       "parking": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },

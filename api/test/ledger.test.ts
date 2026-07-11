@@ -186,6 +186,14 @@ await check('(B) voided charge frees the payment into unapplied credit', async (
   assertEq(body.totals.total_received_cents, 800, 'total_received_cents after void');
   assertEq(body.totals.total_allocated_cents, 0, 'total_allocated_cents after void');
   assertEq(body.totals.unapplied_credit_cents, 800, 'unapplied_credit_cents after void');
+  // Void exclusion must hold in by_type too — the voided rent charge and its
+  // (now-released) allocation count nowhere. Pinned here because the identity
+  // checks in (D) can't catch a leak that hits legacy and by_type equally.
+  assertTypeTotals(
+    body.totals.by_type.rent!,
+    { charges_cents: 0, allocated_cents: 0, balance_cents: 0 },
+    'by_type.rent after void',
+  );
 });
 
 // --- by_type: the honest per-charge-type split (PR 2) ------------------------

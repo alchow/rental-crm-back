@@ -305,10 +305,14 @@ ledgerApp.openapi(get, async (c) => {
     if (voidedPayments.has(a.payment_id)) continue;
     if (voidedCharges.has(a.charge_id)) continue;
     totalAllocatedC += a.amount_cents;
-    const chargeType = chargeById.get(a.charge_id)?.type;
-    if (chargeType === 'deposit') depositPaymentsC += a.amount_cents;
+    // One shared attribution key so the legacy split and by_type can never
+    // diverge: an (unreachable today) allocation whose charge is missing
+    // from chargeById lands in 'other' — non-deposit for the legacy
+    // buckets, counted in by_type — keeping Σ non-deposit ≡ rent_*.
+    const k = typeKey(chargeById.get(a.charge_id)?.type ?? 'other');
+    if (k === 'deposit') depositPaymentsC += a.amount_cents;
     else rentPaymentsC += a.amount_cents;
-    if (chargeType !== undefined) byType[typeKey(chargeType)].allocated_cents += a.amount_cents;
+    byType[k].allocated_cents += a.amount_cents;
   }
   for (const k of CHARGE_TYPE_KEYS) {
     byType[k].balance_cents = byType[k].charges_cents - byType[k].allocated_cents;
