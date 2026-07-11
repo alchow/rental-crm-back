@@ -632,6 +632,26 @@ async function main(): Promise<void> {
     }
   });
 
+  await check('C2: explicit area_id: null also defaults to the tenancy unit', async () => {
+    // Third-party serializers often emit absent optionals as null; the
+    // schema is nullish so both shapes mean "use the default".
+    const r = await submitIntake(tokenC.secret, {
+      title: 'Third issue: hallway light out by my door',
+      severity: 'routine',
+      area_id: null,
+    });
+    const body = assertStatus(r, 201, 'null-area submit') as { maintenance_request_id: string };
+    const mr = await api(
+      'GET',
+      `/v1/accounts/${C.accountId}/maintenance-requests/${body.maintenance_request_id}`,
+      { token: C.accessToken },
+    );
+    const mrBody = assertStatus(mr, 200, 'read request') as { area_id: string };
+    if (mrBody.area_id !== C.unitAreaId) {
+      throw new Error(`null area_id defaulted to ${mrBody.area_id}, expected ${C.unitAreaId}`);
+    }
+  });
+
   if (failures.length > 0) {
     console.error(`\n${failures.length} intake DoD failure(s):`);
     for (const f of failures) console.error(`  ${f.name}: ${f.detail}`);

@@ -15231,7 +15231,7 @@ export interface components {
              * Format: uuid
              * @description Optional; defaults to the tenancy's unit. If provided, must belong to the token's property.
              */
-            area_id?: string;
+            area_id?: string | null;
             title: string;
             description?: string;
             /** @enum {string} */

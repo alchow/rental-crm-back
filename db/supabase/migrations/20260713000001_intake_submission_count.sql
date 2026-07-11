@@ -8,10 +8,12 @@
 -- has never been (usability finding C2).
 --
 -- submission_count increments only after the intake RPC commits, from the API
--- handler. It is a UX counter, not evidence: a crash between the RPC commit
--- and the counter UPDATE undercounts by exactly one, which is acceptable for
--- its display purpose (the maintenance_request + interaction rows remain the
--- auditable record of what was submitted).
+-- handler via read-modify-write. It is a UX counter, not evidence, and it can
+-- UNDERCOUNT: a crash between the RPC commit and the counter UPDATE loses one,
+-- and N truly-concurrent submissions on the same link can collapse to a single
+-- increment (bounded by the 20-per-window token rate limit). The
+-- maintenance_request + interaction rows remain the auditable record of what
+-- was actually submitted; never treat this counter as evidence.
 -- ----------------------------------------------------------------------------
 
 alter table public.intake_tokens

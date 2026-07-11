@@ -183,7 +183,9 @@ const IntakeBody = z
     // unit is the honest default. A tenant on a public magic link has no way
     // to discover area UUIDs anyway. When provided, it is still validated
     // against the TOKEN's property below.
-    area_id: z.string().uuid().optional().openapi({
+    // nullish (not just optional): third-party clients commonly serialize an
+    // absent optional as an explicit null; both mean "use the default".
+    area_id: z.string().uuid().nullish().openapi({
       description:
         "Optional; defaults to the tenancy's unit. If provided, must belong to the token's property.",
     }),
@@ -425,7 +427,7 @@ intakeApp.openapi(intake, async (c) => {
     throw new ApiError(
       404,
       'not_found',
-      fields.area_id !== undefined
+      fields.area_id != null
         ? 'area not found in this property'
         : 'the tenancy’s unit is no longer available; contact your landlord',
     );
@@ -480,10 +482,13 @@ intakeApp.openapi(intake, async (c) => {
   } | null;
   if (!row) throw new ApiError(500, 'database_error', 'intake RPC returned no row');
 
-  // Lifetime success counter, bumped only after the RPC committed. Same
-  // read-modify-write pattern (and the same accepted undercount race) as the
-  // use_count window bump above; a UX counter, not evidence. Failures are
-  // deliberately not counted -- that is use_count's job.
+  // Lifetime success counter, bumped only after the RPC committed.
+  // Read-modify-write from the row fetched at the TOP of the request, so
+  // N truly-concurrent submissions on one link can collapse to a single
+  // increment (bounded by the 20-per-window token rate limit). Accepted:
+  // a UX counter, not evidence -- the maintenance_request + interaction
+  // rows are the auditable record. Failures are deliberately not counted;
+  // that is use_count's job.
   await admin
     .from('intake_tokens')
     .update({
