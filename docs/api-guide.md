@@ -440,20 +440,38 @@ GET /v1/accounts/{accountId}/tenancies/{tenancyId}/ledger
     },
   ],
   "totals": {
-    "rent_charges_cents": 120000,
+    "rent_charges_cents": 120000, // LEGACY: all NON-DEPOSIT types, not just rent — see by_type
     "rent_payments_cents": 70000,
-    "rent_balance_cents": 50000, // still owed on rent
+    "rent_balance_cents": 50000,
     "deposit_charges_cents": 0,
     "deposit_payments_cents": 0,
     "deposit_balance_cents": 0,
     "total_received_cents": 70000,
     "total_allocated_cents": 70000,
     "unapplied_credit_cents": 0, // received but not yet allocated to any charge
+    "by_type": {
+      // Honest per-type split. All 8 charge types always present (zeros included).
+      // allocated_cents attributes payments to a type via their allocations —
+      // the same rule the deposit split uses.
+      "rent":    { "charges_cents": 120000, "allocated_cents": 70000, "balance_cents": 50000 },
+      "utility": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "deposit": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "late_fee": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "parking": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "repair_chargeback": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "nsf_fee": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "other":   { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+    },
   },
 }
 ```
 
 Voided entries appear in `entries` with `voided_at` set but are excluded from `totals`.
+
+**Labeling note:** the legacy `rent_*` buckets aggregate **all non-deposit charge types** — a
+utility or late-fee charge lands in `rent_balance_cents`. UIs that say "Rent balance" should
+read `by_type.rent.balance_cents` instead; `by_type.deposit` always equals the legacy
+`deposit_*` buckets, and the non-deposit `by_type` rows sum to the legacy `rent_*` ones.
 
 ### Money example (curl)
 
