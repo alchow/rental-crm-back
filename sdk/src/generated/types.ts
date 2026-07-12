@@ -2722,7 +2722,10 @@ export interface paths {
         };
         options?: never;
         head?: never;
-        /** Update a tenancy (status / end_date only; area_id is immutable) */
+        /**
+         * Update a tenancy (status / end_date / guarded start_date; area_id is immutable)
+         * @description start_date is a correction path for a mis-entered move-in date and is refused with 409 tenancy_has_money once any non-voided charge or payment exists. A future start_date requires status='upcoming' in the same PATCH (this guards the correction path only; it is not a table-wide invariant). Two documented side effects of a correction: evidence-export PDFs show the corrected span from then on, and re-running an import sheet created before the correction can duplicate the tenancy (import dedupe keys on start_date).
+         */
         patch: {
             parameters: {
                 query?: never;
@@ -2771,7 +2774,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -3131,6 +3134,90 @@ export interface paths {
                 };
             };
         };
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/tenancy-members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List tenancy members across the account (filterable by tenant_id / tenancy_id)
+         * @description Account-wide keyset-paginated list of tenancy members, replacing a one-call-per-tenancy fan-out (e.g. a /tenants directory view). Optional ?tenant_id= answers "which tenancies is this tenant in"; ?tenancy_id= mirrors the nested list scoped to one tenancy. Unlike the nested route -- whose tenancyId PATH segment is resolved against the account and 404s on a cross-account tenancy -- a cross-account tenant_id/tenancy_id QUERY value is just an RLS-invisible filter: it returns an empty 200 page, not a 404.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                    tenant_id?: string;
+                    tenancy_id?: string;
+                };
+                header?: never;
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description members */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["TenancyMemberListResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/v1/accounts/{accountId}/leases": {
@@ -5595,6 +5682,87 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["LedgerResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/rent-rollup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Account-wide per-tenancy balances (rent / deposit / unapplied credit)
+         * @description One row per tenancy in the requested statuses (default active,holdover). Derived on read — recomputed from charges + payments + allocations with exactly the per-tenancy ledger's rules; rent_balance_cents matches the ledger's legacy all-non-deposit semantics. Not paginated: bounded by the account’s tenancy count.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    status?: string;
+                };
+                header?: never;
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description rollup */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RentRollupResponse"];
                     };
                 };
                 /** @description invalid request */
@@ -13885,7 +14053,13 @@ export interface paths {
                 };
                 cookie?: never;
             };
-            requestBody?: never;
+            /** @description application/json for text-only intake; multipart/form-data when attaching a photo. */
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IntakeBody"];
+                    "multipart/form-data": components["schemas"]["IntakeMultipartBody"];
+                };
+            };
             responses: {
                 /** @description created */
                 201: {
@@ -15226,6 +15400,26 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        IntakeBody: {
+            /**
+             * Format: uuid
+             * @description Optional; defaults to the tenancy's unit. If provided, must belong to the token's property.
+             */
+            area_id?: string | null;
+            title: string;
+            description?: string;
+            /** @enum {string} */
+            severity: "emergency" | "urgent" | "routine";
+            /** Format: date-time */
+            occurred_at?: string;
+        };
+        IntakeMultipartBody: components["schemas"]["IntakeBody"] & {
+            /**
+             * Format: binary
+             * @description Optional photo (JPEG/PNG/WebP/HEIC; HEIC gets a server-derived JPEG).
+             */
+            file?: string;
+        };
         AuthSession: {
             access_token: string;
             refresh_token: string;
@@ -15508,6 +15702,8 @@ export interface components {
             end_date?: string | null;
             /** @enum {string} */
             status?: "upcoming" | "active" | "ended" | "holdover";
+            /** @description Correction path for a wrong move-in date. Allowed only while the tenancy has no non-voided charges or payments (409 tenancy_has_money otherwise). A future date requires status='upcoming' in the same PATCH. */
+            start_date?: string;
         };
         TenancyMember: {
             /** Format: uuid */
@@ -15856,6 +16052,48 @@ export interface components {
         VoidPaymentBody: {
             void_reason: string;
         };
+        LedgerTotalsByType: {
+            rent: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
+            late_fee: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
+            deposit: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
+            utility: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
+            parking: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
+            repair_chargeback: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
+            nsf_fee: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
+            other: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
+        };
         LedgerResponse: {
             /** Format: uuid */
             tenancy_id: string;
@@ -15891,8 +16129,11 @@ export interface components {
                 }[];
             })[];
             totals: {
+                /** @description LEGACY: aggregates ALL non-deposit charge types (utility, late_fee, ... included), not just type=rent. Use totals.by_type for an honest per-type split. */
                 rent_charges_cents: number;
+                /** @description LEGACY: aggregates ALL non-deposit charge types (utility, late_fee, ... included), not just type=rent. Use totals.by_type for an honest per-type split. */
                 rent_payments_cents: number;
+                /** @description LEGACY: aggregates ALL non-deposit charge types (utility, late_fee, ... included), not just type=rent. Use totals.by_type for an honest per-type split. */
                 rent_balance_cents: number;
                 deposit_charges_cents: number;
                 deposit_payments_cents: number;
@@ -15900,7 +16141,23 @@ export interface components {
                 total_received_cents: number;
                 total_allocated_cents: number;
                 unapplied_credit_cents: number;
+                by_type: components["schemas"]["LedgerTotalsByType"];
             };
+        };
+        RentRollupRow: {
+            /** Format: uuid */
+            tenancy_id: string;
+            /** @enum {string} */
+            status: "upcoming" | "active" | "ended" | "holdover";
+            /** @description Read off the money rows; null when the tenancy has no charges or payments. */
+            currency: string | null;
+            /** @description All NON-DEPOSIT charge types minus their active allocations — matches the ledger's legacy totals.rent_balance_cents (see totals.by_type there for a per-type split). */
+            rent_balance_cents: number;
+            deposit_balance_cents: number;
+            unapplied_credit_cents: number;
+        };
+        RentRollupResponse: {
+            data: components["schemas"]["RentRollupRow"][];
         };
         EventFeedItem: {
             account_seq: number;
@@ -16006,7 +16263,10 @@ export interface components {
             created_at: string;
             revoked_at: string | null;
             last_used_at: string | null;
+            /** @description Rate-limit state: attempts in the current 10-minute sliding window. Resets each window and counts failed attempts — NOT a lifetime total. For "how many requests came through this link", use submission_count. */
             use_count: number;
+            /** @description Lifetime count of successful submissions through this token. */
+            submission_count: number;
         };
         IntakeTokenListResponse: {
             data: components["schemas"]["IntakeTokenRow"][];

@@ -24,6 +24,8 @@
     "test:phase12": "tsx test/phase12.test.ts",
     "test:imports": "tsx test/imports.test.ts",
     "test:ledger": "tsx test/ledger.test.ts",
+    "test:rent-rollup": "tsx test/rent-rollup.test.ts",
+    "test:tenancy-start-date": "tsx test/tenancy-start-date.test.ts",
     "test:multi-status-filters": "tsx test/multi-status-filters.test.ts",
     "test:interactions-journal": "tsx test/interactions-journal.test.ts",
     "test:interactions-participants": "tsx test/interactions-participants.test.ts",

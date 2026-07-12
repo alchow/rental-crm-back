@@ -119,7 +119,10 @@ export type ErrorCode =
                              // delete it (never-billed) or change on a later date
   | 'lease_superseded'       // transition out of status=superseded: create a new lease instead
   | 'instrument_anchored'    // patch/delete of a lease/notice anchoring a live schedule
-  | 'schedule_has_charges';  // DELETE of a schedule with non-voided charges: void them first
+  | 'schedule_has_charges'   // DELETE of a schedule with non-voided charges: void them first
+  | 'tenancy_has_money';     // PATCH start_date once non-voided charges/payments exist:
+                             // the money rows anchor the timeline — void them first
+                             // (ADR-0012 recipes) or leave start_date alone
 
 export class ApiError extends Error {
   constructor(

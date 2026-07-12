@@ -2176,6 +2176,7 @@ export type Database = {
           property_id: string;
           revoked_at: string | null;
           secret_hash: string;
+          submission_count: number;
           tenancy_id: string;
           updated_at: string;
           use_count: number;
@@ -2189,6 +2190,7 @@ export type Database = {
           property_id: string;
           revoked_at?: string | null;
           secret_hash: string;
+          submission_count?: number;
           tenancy_id: string;
           updated_at?: string;
           use_count?: number;
@@ -2202,6 +2204,7 @@ export type Database = {
           property_id?: string;
           revoked_at?: string | null;
           secret_hash?: string;
+          submission_count?: number;
           tenancy_id?: string;
           updated_at?: string;
           use_count?: number;
@@ -4236,6 +4239,20 @@ export type Database = {
           isOneToOne: true;
           isSetofReturn: false;
         };
+      };
+      rent_rollup: {
+        Args: {
+          p_account_id: string;
+          p_statuses?: string[];
+        };
+        Returns: {
+          tenancy_id: string;
+          status: string;
+          currency: string | null;
+          rent_balance_cents: number;
+          deposit_balance_cents: number;
+          unapplied_credit_cents: number;
+        }[];
       };
       search_entities: {
         Args: {
