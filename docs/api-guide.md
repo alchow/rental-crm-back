@@ -299,10 +299,18 @@ An **occupancy period** — who occupied which unit, when. This is the operation
 | `GET`    | `/tenancies`      | Supports `?area_id=`, `?status=` filters.                                                                         |
 | `POST`   | `/tenancies`      | `area_id` (required), `start_date` (required, YYYY-MM-DD), `end_date` (optional), `status` (required, see below). |
 | `GET`    | `/tenancies/{id}` |                                                                                                                   |
-| `PATCH`  | `/tenancies/{id}` | `end_date`, `status`.                                                                                             |
+| `PATCH`  | `/tenancies/{id}` | `end_date`, `status`, `start_date` (guarded — see below).                                                         |
 | `DELETE` | `/tenancies/{id}` | Soft-delete.                                                                                                      |
 
 `status` values: `upcoming` → `active` → `holdover` / `ended`.
+
+**Correcting `start_date`.** A mis-entered move-in date can be PATCHed while the tenancy has no
+non-voided charges or payments; once money exists the timeline is anchored and the PATCH answers
+`409 {code: "tenancy_has_money"}` (void the money rows first — the ADR-0012 correction recipes —
+or leave the date alone). A future `start_date` must be paired with `status: "upcoming"` in the
+same PATCH; the nightly sweep re-activates the tenancy on the new date. Two side effects to know:
+evidence-export PDFs show the corrected span from then on, and re-running an import sheet created
+before the correction can duplicate the tenancy (import dedupe keys on `start_date`).
 
 ### Tenancy members
 
@@ -314,6 +322,7 @@ People associated with an occupancy and their roles.
 | `POST`   | `/tenancies/{tenancyId}/members`      | `tenant_id` (required), `role` ∈ `primary`/`occupant`/`guarantor`. |
 | `PATCH`  | `/tenancies/{tenancyId}/members/{id}` | `role`.                                                            |
 | `DELETE` | `/tenancies/{tenancyId}/members/{id}` | Soft-delete.                                                       |
+| `GET`    | `/tenancy-members`                    | Account-wide, keyset-paginated across every tenancy (avoids a one-call-per-tenancy fan-out). Supports `?tenant_id=` and `?tenancy_id=` filters; a filter value from another account just returns an empty 200 page (RLS floor), not a 404. |
 
 ### Leases
 
@@ -429,6 +438,16 @@ GET /v1/accounts/{accountId}/tenancies/{tenancyId}/ledger
       "voided_at": null,
     },
     {
+      "kind": "charge",
+      "id": "c_2",
+      "occurred_at": "2026-06-05",
+      "type": "utility",
+      "amount_cents": 12000,
+      "derived_balance_cents": 12000, // unpaid — and NOT rent; see by_type below
+      "is_deposit": false,
+      "voided_at": null,
+    },
+    {
       "kind": "payment",
       "id": "pay_1",
       "occurred_at": "2026-06-01",
@@ -440,20 +459,38 @@ GET /v1/accounts/{accountId}/tenancies/{tenancyId}/ledger
     },
   ],
   "totals": {
-    "rent_charges_cents": 120000,
+    "rent_charges_cents": 132000, // LEGACY: all NON-DEPOSIT types — the 12000 utility is in here
     "rent_payments_cents": 70000,
-    "rent_balance_cents": 50000, // still owed on rent
+    "rent_balance_cents": 62000, // reads 12000 high if labeled "Rent balance"
     "deposit_charges_cents": 0,
     "deposit_payments_cents": 0,
     "deposit_balance_cents": 0,
     "total_received_cents": 70000,
     "total_allocated_cents": 70000,
     "unapplied_credit_cents": 0, // received but not yet allocated to any charge
+    "by_type": {
+      // Honest per-type split. All 8 charge types always present (zeros included).
+      // allocated_cents attributes payments to a type via their allocations —
+      // the same rule the deposit split uses.
+      "rent":    { "charges_cents": 120000, "allocated_cents": 70000, "balance_cents": 50000 },
+      "utility": { "charges_cents": 12000, "allocated_cents": 0, "balance_cents": 12000 },
+      "deposit": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "late_fee": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "parking": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "repair_chargeback": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "nsf_fee": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "other":   { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+    },
   },
 }
 ```
 
 Voided entries appear in `entries` with `voided_at` set but are excluded from `totals`.
+
+**Labeling note:** the legacy `rent_*` buckets aggregate **all non-deposit charge types** — a
+utility or late-fee charge lands in `rent_balance_cents`. UIs that say "Rent balance" should
+read `by_type.rent.balance_cents` instead; `by_type.deposit` always equals the legacy
+`deposit_*` buckets, and the non-deposit `by_type` rows sum to the legacy `rent_*` ones.
 
 ### Account-wide rent rollup
 
@@ -579,6 +616,11 @@ Magic links for unauthenticated tenant submissions. See §11 for the public inta
 | `POST` | `/tenancies/{tenancyId}/intake-tokens`             | No body. Returns the secret **once** — it is not recoverable.      |
 | `GET`  | `/tenancies/{tenancyId}/intake-tokens`             | Returns token rows (no secrets).                                   |
 | `POST` | `/tenancies/{tenancyId}/intake-tokens/{id}/revoke` | Revokes the token immediately. Auto-revoked when the tenancy ends. |
+
+Token rows carry two counters that are easy to confuse: **`submission_count`** is the lifetime
+number of successful submissions — the number to render as "Used N×". **`use_count`** is
+rate-limit state (attempts in the current 10-minute sliding window, failures included, resets
+each window) and is not a usage total.
 
 ```jsonc
 // POST /v1/accounts/{accountId}/tenancies/{tenancyId}/intake-tokens → 201
@@ -885,14 +927,18 @@ POST /v1/intake/{secret}
 
 Accepts `application/json` (text-only) or `multipart/form-data` (with optional file).
 
-| Field         | Type    | Required | Notes                                                                                    |
-| ------------- | ------- | -------- | ---------------------------------------------------------------------------------------- |
-| `area_id`     | uuid    | yes      | Must belong to the token's property — scoping is derived from the token, not user input. |
-| `title`       | string  | yes      | 1–200 chars.                                                                             |
-| `severity`    | string  | yes      | `emergency` / `urgent` / `routine`                                                       |
-| `description` | string  | no       | Max 5000 chars.                                                                          |
-| `occurred_at` | ISO8601 | no       | When the issue was noticed; defaults to server time.                                     |
-| `file`        | binary  | no       | Multipart only. HEIC or JPEG, max 50 MB.                                                 |
+| Field         | Type    | Required | Notes                                                                                                                             |
+| ------------- | ------- | -------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `area_id`     | uuid    | no       | Defaults to the tenancy's own unit. If provided, must belong to the token's property — scoping is derived from the token, not user input. |
+| `title`       | string  | yes      | 1–200 chars.                                                                                                                        |
+| `severity`    | string  | yes      | `emergency` / `urgent` / `routine`                                                                                                  |
+| `description` | string  | no       | Max 5000 chars.                                                                                                                     |
+| `occurred_at` | ISO8601 | no       | When the issue was noticed; defaults to server time.                                                                                |
+| `file`        | binary  | no       | Multipart only. HEIC or JPEG, max 50 MB.                                                                                            |
+
+Validation failures answer `400` with field-path messages (e.g. `"title: Required"`) and a
+`details.fieldErrors` map; a syntactically-broken JSON body answers `400` with
+`"malformed JSON request body"`.
 
 ```bash
 # Text-only (JSON)

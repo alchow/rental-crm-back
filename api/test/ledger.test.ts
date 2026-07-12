@@ -141,15 +141,26 @@ await post('/payments', {
   allocations: [{ charge_id: chargeB.id, amount_cents: 500 }],
 });
 
+interface TypeTotals { charges_cents: number; allocated_cents: number; balance_cents: number }
 interface LedgerTotals {
   rent_charges_cents: number;
   rent_payments_cents: number;
   rent_balance_cents: number;
+  deposit_charges_cents: number;
+  deposit_payments_cents: number;
+  deposit_balance_cents: number;
   total_received_cents: number;
   total_allocated_cents: number;
   unapplied_credit_cents: number;
+  by_type: Record<string, TypeTotals>;
 }
 interface LedgerBody { entries: { kind: string; id: string }[]; totals: LedgerTotals }
+
+function assertTypeTotals(actual: TypeTotals, expected: TypeTotals, label: string): void {
+  assertEq(actual.charges_cents, expected.charges_cents, `${label}.charges_cents`);
+  assertEq(actual.allocated_cents, expected.allocated_cents, `${label}.allocated_cents`);
+  assertEq(actual.balance_cents, expected.balance_cents, `${label}.balance_cents`);
+}
 
 await check('(A) tenancy A ledger unaffected by tenancy B', async () => {
   const r = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancyA.id}/ledger`, { token });
@@ -175,6 +186,66 @@ await check('(B) voided charge frees the payment into unapplied credit', async (
   assertEq(body.totals.total_received_cents, 800, 'total_received_cents after void');
   assertEq(body.totals.total_allocated_cents, 0, 'total_allocated_cents after void');
   assertEq(body.totals.unapplied_credit_cents, 800, 'unapplied_credit_cents after void');
+  // Void exclusion must hold in by_type too — the voided rent charge and its
+  // (now-released) allocation count nowhere. Pinned here because the identity
+  // checks in (D) can't catch a leak that hits legacy and by_type equally.
+  assertTypeTotals(
+    body.totals.by_type.rent!,
+    { charges_cents: 0, allocated_cents: 0, balance_cents: 0 },
+    'by_type.rent after void',
+  );
+});
+
+// --- by_type: the honest per-charge-type split (PR 2) ------------------------
+// Tenancy B grows a $120 utility charge (half-paid) and a fully-paid $300
+// deposit; its original $5 rent charge stays fully paid.
+
+await check('(D) by_type splits utility/deposit/rent honestly', async () => {
+  const utilCharge = await post<{ id: string }>('/charges', {
+    tenancy_id: tenancyB.id, type: 'utility', amount_cents: 12000, currency: 'USD', due_date: '2026-03-01',
+  });
+  await post('/payments', {
+    tenancy_id: tenancyB.id, amount_cents: 5000, currency: 'USD',
+    received_at: '2026-03-02T00:00:00.000Z', method: 'ach',
+    allocations: [{ charge_id: utilCharge.id, amount_cents: 5000 }],
+  });
+  const depCharge = await post<{ id: string }>('/charges', {
+    tenancy_id: tenancyB.id, type: 'deposit', amount_cents: 30000, currency: 'USD', due_date: '2026-02-01',
+  });
+  await post('/payments', {
+    tenancy_id: tenancyB.id, amount_cents: 30000, currency: 'USD',
+    received_at: '2026-02-02T00:00:00.000Z', method: 'check',
+    allocations: [{ charge_id: depCharge.id, amount_cents: 30000 }],
+  });
+
+  const r = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancyB.id}/ledger`, { token });
+  assertEq(r.status, 200, 'status');
+  const t = (r.body as LedgerBody).totals;
+
+  assertTypeTotals(t.by_type.rent!,    { charges_cents: 500,   allocated_cents: 500,  balance_cents: 0 },    'by_type.rent');
+  assertTypeTotals(t.by_type.utility!, { charges_cents: 12000, allocated_cents: 5000, balance_cents: 7000 }, 'by_type.utility');
+  assertTypeTotals(t.by_type.deposit!, { charges_cents: 30000, allocated_cents: 30000, balance_cents: 0 },   'by_type.deposit');
+  assertTypeTotals(t.by_type.late_fee!, { charges_cents: 0, allocated_cents: 0, balance_cents: 0 }, 'by_type.late_fee (zero row present)');
+
+  // Identities: by_type.deposit ≡ legacy deposit buckets; Σ non-deposit ≡ legacy rent_*.
+  assertEq(t.by_type.deposit!.charges_cents, t.deposit_charges_cents, 'deposit identity (charges)');
+  assertEq(t.by_type.deposit!.allocated_cents, t.deposit_payments_cents, 'deposit identity (payments)');
+  assertEq(t.by_type.deposit!.balance_cents, t.deposit_balance_cents, 'deposit identity (balance)');
+  const nonDeposit = Object.entries(t.by_type).filter(([k]) => k !== 'deposit').map(([, v]) => v);
+  assertEq(nonDeposit.reduce((s, v) => s + v.charges_cents, 0), t.rent_charges_cents, 'Σ non-deposit charges ≡ rent_charges_cents');
+  assertEq(nonDeposit.reduce((s, v) => s + v.allocated_cents, 0), t.rent_payments_cents, 'Σ non-deposit allocated ≡ rent_payments_cents');
+  assertEq(nonDeposit.reduce((s, v) => s + v.balance_cents, 0), t.rent_balance_cents, 'Σ non-deposit balance ≡ rent_balance_cents');
+});
+
+await check('(E) by_type composes with as_of (utility not yet due is excluded)', async () => {
+  const r = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancyB.id}/ledger?as_of=2026-02-15`, { token });
+  assertEq(r.status, 200, 'status');
+  const t = (r.body as LedgerBody).totals;
+  // At Feb 15: rent (due Feb 1) + deposit (due Feb 1, paid Feb 2) are in;
+  // the utility charge (due Mar 1) and its payment (Mar 2) are not.
+  assertTypeTotals(t.by_type.rent!,    { charges_cents: 500,   allocated_cents: 500,   balance_cents: 0 }, 'as_of by_type.rent');
+  assertTypeTotals(t.by_type.deposit!, { charges_cents: 30000, allocated_cents: 30000, balance_cents: 0 }, 'as_of by_type.deposit');
+  assertTypeTotals(t.by_type.utility!, { charges_cents: 0,     allocated_cents: 0,     balance_cents: 0 }, 'as_of by_type.utility');
 });
 
 await check('(C1) garbage cursor is a 400 invalid_request', async () => {

@@ -61,15 +61,49 @@ const LedgerPayment = z.object({
 });
 const LedgerEntry = z.union([LedgerCharge, LedgerPayment]);
 
+// Per-charge-type slice of the totals. `allocated_cents` is the sum of
+// ACTIVE allocations against charges of that type (payment and charge both
+// non-voided) -- the same attribution rule the deposit split has always
+// used, generalized to all 8 types. Keys are fixed and always present
+// (zeros included) because the charge-type vocabulary is a closed DB CHECK
+// constraint; keep this list aligned with ChargeType in charges.ts.
+const TypeTotals = z.object({
+  charges_cents:   z.number().int(),
+  allocated_cents: z.number().int(),
+  balance_cents:   z.number().int(),
+});
+const LedgerTotalsByType = z
+  .object({
+    rent:              TypeTotals,
+    late_fee:          TypeTotals,
+    deposit:           TypeTotals,
+    utility:           TypeTotals,
+    parking:           TypeTotals,
+    repair_chargeback: TypeTotals,
+    nsf_fee:           TypeTotals,
+    other:             TypeTotals,
+  })
+  .openapi('LedgerTotalsByType');
+
+const CHARGE_TYPE_KEYS = [
+  'rent', 'late_fee', 'deposit', 'utility',
+  'parking', 'repair_chargeback', 'nsf_fee', 'other',
+] as const;
+type ChargeTypeKey = (typeof CHARGE_TYPE_KEYS)[number];
+
+const LEGACY_NON_DEPOSIT_NOTE =
+  'LEGACY: aggregates ALL non-deposit charge types (utility, late_fee, ... included), ' +
+  'not just type=rent. Use totals.by_type for an honest per-type split.';
+
 const LedgerResponse = z
   .object({
     tenancy_id: z.string().uuid(),
     currency: z.string().nullable(),
     entries: z.array(LedgerEntry),
     totals: z.object({
-      rent_charges_cents:     z.number().int(),
-      rent_payments_cents:    z.number().int(),
-      rent_balance_cents:     z.number().int(),
+      rent_charges_cents:     z.number().int().openapi({ description: LEGACY_NON_DEPOSIT_NOTE }),
+      rent_payments_cents:    z.number().int().openapi({ description: LEGACY_NON_DEPOSIT_NOTE }),
+      rent_balance_cents:     z.number().int().openapi({ description: LEGACY_NON_DEPOSIT_NOTE }),
       deposit_charges_cents:  z.number().int(),
       deposit_payments_cents: z.number().int(),
       deposit_balance_cents:  z.number().int(),
@@ -84,6 +118,7 @@ const LedgerResponse = z
       total_received_cents:    z.number().int(),
       total_allocated_cents:   z.number().int(),
       unapplied_credit_cents:  z.number().int(),
+      by_type: LedgerTotalsByType,
     }),
   })
   .openapi('LedgerResponse');
@@ -246,12 +281,22 @@ ledgerApp.openapi(get, async (c) => {
   if (chargeRows.length > 0) currency = chargeRows[0]!.currency;
   else if (paymentRows.length > 0) currency = paymentRows[0]!.currency;
 
-  // Aggregates. Voided rows excluded. Deposits split out.
+  // Aggregates. Voided rows excluded. Deposits split out, and every type
+  // additionally tracked in by_type (same pass, same rules).
+  const byType = Object.fromEntries(
+    CHARGE_TYPE_KEYS.map((k) => [k, { charges_cents: 0, allocated_cents: 0, balance_cents: 0 }]),
+  ) as Record<ChargeTypeKey, z.infer<typeof TypeTotals>>;
+  // The DB CHECK constraint closes the vocabulary; 'other' is the defensive
+  // bucket in case a future migration widens it before this list catches up.
+  const typeKey = (t: string): ChargeTypeKey =>
+    (CHARGE_TYPE_KEYS as readonly string[]).includes(t) ? (t as ChargeTypeKey) : 'other';
+
   let rentChargesC = 0, rentPaymentsC = 0, depositChargesC = 0, depositPaymentsC = 0;
   for (const cr of chargeRows) {
     if (cr.voided_at) continue;
     if (cr.type === 'deposit') depositChargesC += cr.amount_cents;
     else rentChargesC += cr.amount_cents;
+    byType[typeKey(cr.type)].charges_cents += cr.amount_cents;
   }
   // Payments aren't intrinsically rent-vs-deposit; the split is decided by
   // what they're allocated to.
@@ -260,9 +305,17 @@ ledgerApp.openapi(get, async (c) => {
     if (voidedPayments.has(a.payment_id)) continue;
     if (voidedCharges.has(a.charge_id)) continue;
     totalAllocatedC += a.amount_cents;
-    const isDeposit = chargeById.get(a.charge_id)?.type === 'deposit';
-    if (isDeposit) depositPaymentsC += a.amount_cents;
+    // One shared attribution key so the legacy split and by_type can never
+    // diverge: an (unreachable today) allocation whose charge is missing
+    // from chargeById lands in 'other' — non-deposit for the legacy
+    // buckets, counted in by_type — keeping Σ non-deposit ≡ rent_*.
+    const k = typeKey(chargeById.get(a.charge_id)?.type ?? 'other');
+    if (k === 'deposit') depositPaymentsC += a.amount_cents;
     else rentPaymentsC += a.amount_cents;
+    byType[k].allocated_cents += a.amount_cents;
+  }
+  for (const k of CHARGE_TYPE_KEYS) {
+    byType[k].balance_cents = byType[k].charges_cents - byType[k].allocated_cents;
   }
   // Total received: every non-voided payment, regardless of where (or
   // whether) it was allocated.
@@ -326,6 +379,7 @@ ledgerApp.openapi(get, async (c) => {
         total_received_cents:   totalReceivedC,
         total_allocated_cents:  totalAllocatedC,
         unapplied_credit_cents: unappliedCreditC,
+        by_type: byType,
       },
     } satisfies z.infer<typeof LedgerResponse>,
     200,

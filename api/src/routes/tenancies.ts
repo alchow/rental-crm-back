@@ -2,7 +2,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import type { DbTableUpdate } from '../supabase/db-types';
-import { ApiError, errorResponses } from './_lib/error';
+import { ApiError, errorResponses, conflictResponse } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { softDeleteStamp } from './_lib/soft-delete';
 import { CreateTenancyBody, TenancyStatus } from '../schemas/importable';
@@ -36,6 +36,21 @@ const PatchTenancyBody = z
       .nullable()
       .optional(),
     status: TenancyStatus.optional(),
+    // Correction path for a mis-entered move-in date (usability finding C3).
+    // Guarded in the handler: refused with 409 tenancy_has_money once any
+    // non-voided charge or payment exists, and a future start_date must be
+    // accompanied by status='upcoming' (a future-dated active/holdover/ended
+    // tenancy is incoherent, and the daily sweep only advances forward).
+    start_date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional()
+      .openapi({
+        description:
+          'Correction path for a wrong move-in date. Allowed only while the tenancy has no ' +
+          "non-voided charges or payments (409 tenancy_has_money otherwise). A future date " +
+          "requires status='upcoming' in the same PATCH.",
+      }),
   })
   .refine((b) => Object.keys(b).length > 0, {
     message: 'at least one field is required',
@@ -110,7 +125,15 @@ const patch = createRoute({
   method: 'patch',
   path: '/accounts/{accountId}/tenancies/{id}',
   tags: ['tenancies'],
-  summary: 'Update a tenancy (status / end_date only; area_id is immutable)',
+  summary: 'Update a tenancy (status / end_date / guarded start_date; area_id is immutable)',
+  description:
+    'start_date is a correction path for a mis-entered move-in date and is refused with ' +
+    '409 tenancy_has_money once any non-voided charge or payment exists. A future ' +
+    "start_date requires status='upcoming' in the same PATCH (this guards the correction " +
+    'path only; it is not a table-wide invariant). Two documented side effects of a ' +
+    'correction: evidence-export PDFs show the corrected span from then on, and re-running ' +
+    'an import sheet created before the correction can duplicate the tenancy (import ' +
+    'dedupe keys on start_date).',
   request: {
     params: AccountAndIdParam,
     body: { content: { 'application/json': { schema: PatchTenancyBody } }, required: true },
@@ -118,6 +141,7 @@ const patch = createRoute({
   responses: {
     200: { description: 'updated', content: { 'application/json': { schema: Tenancy } } },
     ...errorResponses,
+    ...conflictResponse,
   },
 });
 const remove = createRoute({
@@ -202,9 +226,86 @@ tenanciesApp.openapi(patch, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
+
+  // start_date guards. The edit is a workflow guard, not DB-integrity:
+  // charges/payments carry their own dates and never reference
+  // tenancies.start_date, so nothing corrupts — but a correction under money
+  // would silently leave already-billed periods on the old timeline, and a
+  // future-dated 'active' tenancy would never be re-advanced (the daily
+  // sweep only moves upcoming -> active).
+  if (body.start_date !== undefined) {
+    const { data: current, error: curErr } = await sb
+      .from('tenancies')
+      .select('start_date, end_date, status')
+      .eq('account_id', accountId)
+      .eq('id', id)
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (curErr) throw new ApiError(500, 'database_error', curErr.message);
+    if (!current) throw new ApiError(404, 'not_found', 'not found');
+
+    // Idempotent no-op corrections skip the guards.
+    if (body.start_date !== current.start_date) {
+      const [charges, payments] = await Promise.all([
+        sb
+          .from('charges')
+          .select('id', { count: 'exact', head: true })
+          .eq('account_id', accountId)
+          .eq('tenancy_id', id)
+          .is('deleted_at', null)
+          .is('voided_at', null),
+        sb
+          .from('payments')
+          .select('id', { count: 'exact', head: true })
+          .eq('account_id', accountId)
+          .eq('tenancy_id', id)
+          .is('deleted_at', null)
+          .is('voided_at', null),
+      ]);
+      if (charges.error) throw new ApiError(500, 'database_error', charges.error.message);
+      if (payments.error) throw new ApiError(500, 'database_error', payments.error.message);
+      if ((charges.count ?? 0) > 0 || (payments.count ?? 0) > 0) {
+        throw new ApiError(
+          409,
+          'tenancy_has_money',
+          'start_date cannot change once non-voided charges or payments exist; void them first ' +
+            '(POST /charges/{id}/void, POST /payments/{id}/void) or leave start_date unchanged',
+          { fieldErrors: { start_date: ['tenancy has non-voided charges or payments'] } },
+        );
+      }
+
+      // Status coherence. Dates are compared as YYYY-MM-DD strings in UTC —
+      // the same day-boundary contract the status-advance sweep uses.
+      const today = new Date().toISOString().slice(0, 10);
+      const effStatus = body.status ?? current.status;
+      if (body.start_date > today && effStatus !== 'upcoming') {
+        throw new ApiError(
+          400,
+          'invalid_request',
+          "a future start_date requires status='upcoming' in the same PATCH " +
+            '(the daily sweep re-activates the tenancy on the new date)',
+          {
+            fieldErrors: {
+              start_date: ['future date on a non-upcoming tenancy'],
+              status: ["must be 'upcoming' when start_date is in the future"],
+            },
+          },
+        );
+      }
+
+      const effEnd = body.end_date !== undefined ? body.end_date : current.end_date;
+      if (effEnd !== null && effEnd < body.start_date) {
+        throw new ApiError(400, 'invalid_request', 'end_date must be on or after start_date', {
+          fieldErrors: { start_date: ['after the effective end_date'] },
+        });
+      }
+    }
+  }
+
   const update: DbTableUpdate<'tenancies'> = { updated_at: new Date().toISOString() };
   if (body.end_date !== undefined) update.end_date = body.end_date;
   if (body.status !== undefined) update.status = body.status;
+  if (body.start_date !== undefined) update.start_date = body.start_date;
   const { data, error } = await sb
     .from('tenancies')
     .update(update)
