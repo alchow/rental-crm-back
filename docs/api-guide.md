@@ -594,6 +594,11 @@ Magic links for unauthenticated tenant submissions. See §11 for the public inta
 | `GET`  | `/tenancies/{tenancyId}/intake-tokens`             | Returns token rows (no secrets).                                   |
 | `POST` | `/tenancies/{tenancyId}/intake-tokens/{id}/revoke` | Revokes the token immediately. Auto-revoked when the tenancy ends. |
 
+Token rows carry two counters that are easy to confuse: **`submission_count`** is the lifetime
+number of successful submissions — the number to render as "Used N×". **`use_count`** is
+rate-limit state (attempts in the current 10-minute sliding window, failures included, resets
+each window) and is not a usage total.
+
 ```jsonc
 // POST /v1/accounts/{accountId}/tenancies/{tenancyId}/intake-tokens → 201
 {
@@ -899,14 +904,18 @@ POST /v1/intake/{secret}
 
 Accepts `application/json` (text-only) or `multipart/form-data` (with optional file).
 
-| Field         | Type    | Required | Notes                                                                                    |
-| ------------- | ------- | -------- | ---------------------------------------------------------------------------------------- |
-| `area_id`     | uuid    | yes      | Must belong to the token's property — scoping is derived from the token, not user input. |
-| `title`       | string  | yes      | 1–200 chars.                                                                             |
-| `severity`    | string  | yes      | `emergency` / `urgent` / `routine`                                                       |
-| `description` | string  | no       | Max 5000 chars.                                                                          |
-| `occurred_at` | ISO8601 | no       | When the issue was noticed; defaults to server time.                                     |
-| `file`        | binary  | no       | Multipart only. HEIC or JPEG, max 50 MB.                                                 |
+| Field         | Type    | Required | Notes                                                                                                                             |
+| ------------- | ------- | -------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `area_id`     | uuid    | no       | Defaults to the tenancy's own unit. If provided, must belong to the token's property — scoping is derived from the token, not user input. |
+| `title`       | string  | yes      | 1–200 chars.                                                                                                                        |
+| `severity`    | string  | yes      | `emergency` / `urgent` / `routine`                                                                                                  |
+| `description` | string  | no       | Max 5000 chars.                                                                                                                     |
+| `occurred_at` | ISO8601 | no       | When the issue was noticed; defaults to server time.                                                                                |
+| `file`        | binary  | no       | Multipart only. HEIC or JPEG, max 50 MB.                                                                                            |
+
+Validation failures answer `400` with field-path messages (e.g. `"title: Required"`) and a
+`details.fieldErrors` map; a syntactically-broken JSON body answers `400` with
+`"malformed JSON request body"`.
 
 ```bash
 # Text-only (JSON)

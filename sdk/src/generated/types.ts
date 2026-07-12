@@ -13963,7 +13963,13 @@ export interface paths {
                 };
                 cookie?: never;
             };
-            requestBody?: never;
+            /** @description application/json for text-only intake; multipart/form-data when attaching a photo. */
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IntakeBody"];
+                    "multipart/form-data": components["schemas"]["IntakeMultipartBody"];
+                };
+            };
             responses: {
                 /** @description created */
                 201: {
@@ -15304,6 +15310,26 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        IntakeBody: {
+            /**
+             * Format: uuid
+             * @description Optional; defaults to the tenancy's unit. If provided, must belong to the token's property.
+             */
+            area_id?: string | null;
+            title: string;
+            description?: string;
+            /** @enum {string} */
+            severity: "emergency" | "urgent" | "routine";
+            /** Format: date-time */
+            occurred_at?: string;
+        };
+        IntakeMultipartBody: components["schemas"]["IntakeBody"] & {
+            /**
+             * Format: binary
+             * @description Optional photo (JPEG/PNG/WebP/HEIC; HEIC gets a server-derived JPEG).
+             */
+            file?: string;
+        };
         AuthSession: {
             access_token: string;
             refresh_token: string;
@@ -16130,7 +16156,10 @@ export interface components {
             created_at: string;
             revoked_at: string | null;
             last_used_at: string | null;
+            /** @description Rate-limit state: attempts in the current 10-minute sliding window. Resets each window and counts failed attempts — NOT a lifetime total. For "how many requests came through this link", use submission_count. */
             use_count: number;
+            /** @description Lifetime count of successful submissions through this token. */
+            submission_count: number;
         };
         IntakeTokenListResponse: {
             data: components["schemas"]["IntakeTokenRow"][];
