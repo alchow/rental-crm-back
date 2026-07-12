@@ -429,6 +429,16 @@ GET /v1/accounts/{accountId}/tenancies/{tenancyId}/ledger
       "voided_at": null,
     },
     {
+      "kind": "charge",
+      "id": "c_2",
+      "occurred_at": "2026-06-05",
+      "type": "utility",
+      "amount_cents": 12000,
+      "derived_balance_cents": 12000, // unpaid — and NOT rent; see by_type below
+      "is_deposit": false,
+      "voided_at": null,
+    },
+    {
       "kind": "payment",
       "id": "pay_1",
       "occurred_at": "2026-06-01",
@@ -440,20 +450,38 @@ GET /v1/accounts/{accountId}/tenancies/{tenancyId}/ledger
     },
   ],
   "totals": {
-    "rent_charges_cents": 120000,
+    "rent_charges_cents": 132000, // LEGACY: all NON-DEPOSIT types — the 12000 utility is in here
     "rent_payments_cents": 70000,
-    "rent_balance_cents": 50000, // still owed on rent
+    "rent_balance_cents": 62000, // reads 12000 high if labeled "Rent balance"
     "deposit_charges_cents": 0,
     "deposit_payments_cents": 0,
     "deposit_balance_cents": 0,
     "total_received_cents": 70000,
     "total_allocated_cents": 70000,
     "unapplied_credit_cents": 0, // received but not yet allocated to any charge
+    "by_type": {
+      // Honest per-type split. All 8 charge types always present (zeros included).
+      // allocated_cents attributes payments to a type via their allocations —
+      // the same rule the deposit split uses.
+      "rent":    { "charges_cents": 120000, "allocated_cents": 70000, "balance_cents": 50000 },
+      "utility": { "charges_cents": 12000, "allocated_cents": 0, "balance_cents": 12000 },
+      "deposit": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "late_fee": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "parking": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "repair_chargeback": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "nsf_fee": { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+      "other":   { "charges_cents": 0, "allocated_cents": 0, "balance_cents": 0 },
+    },
   },
 }
 ```
 
 Voided entries appear in `entries` with `voided_at` set but are excluded from `totals`.
+
+**Labeling note:** the legacy `rent_*` buckets aggregate **all non-deposit charge types** — a
+utility or late-fee charge lands in `rent_balance_cents`. UIs that say "Rent balance" should
+read `by_type.rent.balance_cents` instead; `by_type.deposit` always equals the legacy
+`deposit_*` buckets, and the non-deposit `by_type` rows sum to the legacy `rent_*` ones.
 
 ### Money example (curl)
 
