@@ -2503,6 +2503,173 @@
           "void_reason"
         ]
       },
+      "LedgerTotalsByType": {
+        "type": "object",
+        "properties": {
+          "rent": {
+            "type": "object",
+            "properties": {
+              "charges_cents": {
+                "type": "integer"
+              },
+              "allocated_cents": {
+                "type": "integer"
+              },
+              "balance_cents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "charges_cents",
+              "allocated_cents",
+              "balance_cents"
+            ]
+          },
+          "late_fee": {
+            "type": "object",
+            "properties": {
+              "charges_cents": {
+                "type": "integer"
+              },
+              "allocated_cents": {
+                "type": "integer"
+              },
+              "balance_cents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "charges_cents",
+              "allocated_cents",
+              "balance_cents"
+            ]
+          },
+          "deposit": {
+            "type": "object",
+            "properties": {
+              "charges_cents": {
+                "type": "integer"
+              },
+              "allocated_cents": {
+                "type": "integer"
+              },
+              "balance_cents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "charges_cents",
+              "allocated_cents",
+              "balance_cents"
+            ]
+          },
+          "utility": {
+            "type": "object",
+            "properties": {
+              "charges_cents": {
+                "type": "integer"
+              },
+              "allocated_cents": {
+                "type": "integer"
+              },
+              "balance_cents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "charges_cents",
+              "allocated_cents",
+              "balance_cents"
+            ]
+          },
+          "parking": {
+            "type": "object",
+            "properties": {
+              "charges_cents": {
+                "type": "integer"
+              },
+              "allocated_cents": {
+                "type": "integer"
+              },
+              "balance_cents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "charges_cents",
+              "allocated_cents",
+              "balance_cents"
+            ]
+          },
+          "repair_chargeback": {
+            "type": "object",
+            "properties": {
+              "charges_cents": {
+                "type": "integer"
+              },
+              "allocated_cents": {
+                "type": "integer"
+              },
+              "balance_cents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "charges_cents",
+              "allocated_cents",
+              "balance_cents"
+            ]
+          },
+          "nsf_fee": {
+            "type": "object",
+            "properties": {
+              "charges_cents": {
+                "type": "integer"
+              },
+              "allocated_cents": {
+                "type": "integer"
+              },
+              "balance_cents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "charges_cents",
+              "allocated_cents",
+              "balance_cents"
+            ]
+          },
+          "other": {
+            "type": "object",
+            "properties": {
+              "charges_cents": {
+                "type": "integer"
+              },
+              "allocated_cents": {
+                "type": "integer"
+              },
+              "balance_cents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "charges_cents",
+              "allocated_cents",
+              "balance_cents"
+            ]
+          }
+        },
+        "required": [
+          "rent",
+          "late_fee",
+          "deposit",
+          "utility",
+          "parking",
+          "repair_chargeback",
+          "nsf_fee",
+          "other"
+        ]
+      },
       "LedgerResponse": {
         "type": "object",
         "properties": {
@@ -2659,13 +2826,16 @@
             "type": "object",
             "properties": {
               "rent_charges_cents": {
-                "type": "integer"
+                "type": "integer",
+                "description": "LEGACY: aggregates ALL non-deposit charge types (utility, late_fee, ... included), not just type=rent. Use totals.by_type for an honest per-type split."
               },
               "rent_payments_cents": {
-                "type": "integer"
+                "type": "integer",
+                "description": "LEGACY: aggregates ALL non-deposit charge types (utility, late_fee, ... included), not just type=rent. Use totals.by_type for an honest per-type split."
               },
               "rent_balance_cents": {
-                "type": "integer"
+                "type": "integer",
+                "description": "LEGACY: aggregates ALL non-deposit charge types (utility, late_fee, ... included), not just type=rent. Use totals.by_type for an honest per-type split."
               },
               "deposit_charges_cents": {
                 "type": "integer"
@@ -2684,6 +2854,9 @@
               },
               "unapplied_credit_cents": {
                 "type": "integer"
+              },
+              "by_type": {
+                "$ref": "#/components/schemas/LedgerTotalsByType"
               }
             },
             "required": [
@@ -2695,7 +2868,8 @@
               "deposit_balance_cents",
               "total_received_cents",
               "total_allocated_cents",
-              "unapplied_credit_cents"
+              "unapplied_credit_cents",
+              "by_type"
             ]
           }
         },

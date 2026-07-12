@@ -15934,6 +15934,48 @@ export interface components {
         VoidPaymentBody: {
             void_reason: string;
         };
+        LedgerTotalsByType: {
+            rent: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
+            late_fee: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
+            deposit: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
+            utility: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
+            parking: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
+            repair_chargeback: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
+            nsf_fee: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
+            other: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
+        };
         LedgerResponse: {
             /** Format: uuid */
             tenancy_id: string;
@@ -15969,8 +16011,11 @@ export interface components {
                 }[];
             })[];
             totals: {
+                /** @description LEGACY: aggregates ALL non-deposit charge types (utility, late_fee, ... included), not just type=rent. Use totals.by_type for an honest per-type split. */
                 rent_charges_cents: number;
+                /** @description LEGACY: aggregates ALL non-deposit charge types (utility, late_fee, ... included), not just type=rent. Use totals.by_type for an honest per-type split. */
                 rent_payments_cents: number;
+                /** @description LEGACY: aggregates ALL non-deposit charge types (utility, late_fee, ... included), not just type=rent. Use totals.by_type for an honest per-type split. */
                 rent_balance_cents: number;
                 deposit_charges_cents: number;
                 deposit_payments_cents: number;
@@ -15978,6 +16023,7 @@ export interface components {
                 total_received_cents: number;
                 total_allocated_cents: number;
                 unapplied_credit_cents: number;
+                by_type: components["schemas"]["LedgerTotalsByType"];
             };
         };
         EventFeedItem: {
