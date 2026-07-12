@@ -2940,6 +2940,63 @@
           "totals"
         ]
       },
+      "RentRollupRow": {
+        "type": "object",
+        "properties": {
+          "tenancy_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "upcoming",
+              "active",
+              "ended",
+              "holdover"
+            ]
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Read off the money rows; null when the tenancy has no charges or payments."
+          },
+          "rent_balance_cents": {
+            "type": "integer",
+            "description": "All NON-DEPOSIT charge types minus their active allocations — matches the ledger's legacy totals.rent_balance_cents (see totals.by_type there for a per-type split)."
+          },
+          "deposit_balance_cents": {
+            "type": "integer"
+          },
+          "unapplied_credit_cents": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tenancy_id",
+          "status",
+          "currency",
+          "rent_balance_cents",
+          "deposit_balance_cents",
+          "unapplied_credit_cents"
+        ]
+      },
+      "RentRollupResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RentRollupRow"
+            }
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
       "EventFeedItem": {
         "type": "object",
         "properties": {
@@ -17605,6 +17662,97 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LedgerResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/rent-rollup": {
+      "get": {
+        "tags": [
+          "ledger"
+        ],
+        "summary": "Account-wide per-tenancy balances (rent / deposit / unapplied credit)",
+        "description": "One row per tenancy in the requested statuses (default active,holdover). Derived on read — recomputed from charges + payments + allocations with exactly the per-tenancy ledger's rules; rent_balance_cents matches the ledger's legacy all-non-deposit semantics. Not paginated: bounded by the account’s tenancy count.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Status or comma-separated statuses to include. Allowed values: upcoming, active, ended, holdover. Defaults to 'active,holdover' (the current set).",
+              "example": "active,holdover"
+            },
+            "required": false,
+            "name": "status",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "rollup",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RentRollupResponse"
                 }
               }
             }
