@@ -23,7 +23,15 @@ const IntakeTokenRow = z
     created_at: z.string(),
     revoked_at: z.string().nullable(),
     last_used_at: z.string().nullable(),
-    use_count: z.number().int(),
+    use_count: z.number().int().openapi({
+      description:
+        'Rate-limit state: attempts in the current 10-minute sliding window. Resets each ' +
+        'window and counts failed attempts — NOT a lifetime total. For "how many requests ' +
+        'came through this link", use submission_count.',
+    }),
+    submission_count: z.number().int().openapi({
+      description: 'Lifetime count of successful submissions through this token.',
+    }),
   })
   .openapi('IntakeTokenRow');
 
@@ -101,7 +109,7 @@ intakeTokensApp.openapi(list, async (c) => {
   const sb = getSb(c);
   const q = sb
     .from('intake_tokens')
-    .select('id, account_id, property_id, tenancy_id, created_at, revoked_at, last_used_at, use_count')
+    .select('id, account_id, property_id, tenancy_id, created_at, revoked_at, last_used_at, use_count, submission_count')
     .eq('account_id', accountId)
     .eq('tenancy_id', tenancyId);
   // Newest-first, keyset-paginated on created_at.
