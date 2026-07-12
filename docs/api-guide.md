@@ -314,6 +314,7 @@ People associated with an occupancy and their roles.
 | `POST`   | `/tenancies/{tenancyId}/members`      | `tenant_id` (required), `role` ∈ `primary`/`occupant`/`guarantor`. |
 | `PATCH`  | `/tenancies/{tenancyId}/members/{id}` | `role`.                                                            |
 | `DELETE` | `/tenancies/{tenancyId}/members/{id}` | Soft-delete.                                                       |
+| `GET`    | `/tenancy-members`                    | Account-wide, keyset-paginated across every tenancy (avoids a one-call-per-tenancy fan-out). Supports `?tenant_id=` and `?tenancy_id=` filters; a filter value from another account just returns an empty 200 page (RLS floor), not a 404. |
 
 ### Leases
 
