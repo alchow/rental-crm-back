@@ -303,6 +303,12 @@ jobs:
         # C3 correction path: money guard (409 tenancy_has_money), void
         # re-opens the path, future-date/status coherence, end_date ordering.
         run: pnpm --filter ./api test:tenancy-start-date
+      - name: Run multi-status list-filter checks (Field Log ask #2)
+        # Comma-separated status set on tenancies + maintenance-requests: single
+        # value stays byte-compatible, a set returns the union, a bogus member
+        # is a 400 with fieldErrors.status, and the IN filter composes with the
+        # keyset walk (each row exactly once).
+        run: pnpm --filter ./api test:multi-status-filters
 
       - name: Run onboarding-import DoD checks (Phase 1)
         # Full recognize -> map -> resolve -> preview -> confirm pipeline and

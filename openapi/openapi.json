@@ -13029,12 +13029,8 @@
           {
             "schema": {
               "type": "string",
-              "enum": [
-                "upcoming",
-                "active",
-                "ended",
-                "holdover"
-              ]
+              "description": "Status or comma-separated statuses. Allowed values: upcoming, active, ended, holdover. Example: 'active,holdover'.",
+              "example": "active,holdover"
             },
             "required": false,
             "name": "status",
@@ -18791,13 +18787,8 @@
           {
             "schema": {
               "type": "string",
-              "enum": [
-                "open",
-                "triaged",
-                "in_progress",
-                "resolved",
-                "closed"
-              ]
+              "description": "Status or comma-separated statuses. Allowed values: open, triaged, in_progress, resolved, closed. Example: 'open,triaged'.",
+              "example": "open,triaged"
             },
             "required": false,
             "name": "status",
@@ -19210,6 +19201,8 @@
         "tags": [
           "interactions"
         ],
+        "summary": "List interactions (filterable; keyset-paginated on occurred_at)",
+        "description": "Chronological journal feed. Filters: tenancy_id, maintenance_request_id, area_id, direction, party_type, latest_only, and party_id. `party_id` resolves the person through the CAST (interaction_participants), so a group message or witnessed exchange in which they were one of several participants still matches; combine it with party_type to narrow to that person's tenant vs. vendor leg. HEADS CAVEAT: the cast belongs to the ROOT entry of a correction chain — a correction/retraction row carries no cast of its own. So `party_id` combined with `latest_only=true` can EXCLUDE a corrected communication whose current head is a castless correction row; omit latest_only (the default full set) to see every entry that names the person.",
         "parameters": [
           {
             "schema": {
@@ -19298,6 +19291,24 @@
             },
             "required": false,
             "name": "direction",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": false,
+            "name": "party_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": false,
+            "name": "area_id",
             "in": "query"
           }
         ],
