@@ -170,6 +170,10 @@ EXCLUDES=(
   # under test sees the env it gets in CI. ASSIGNED, never read into a
   # client constructor in these files.
   ':!api/test/ledger.test.ts'
+  # api/test/tenancy-start-date.test.ts: same shape as ledger.test.ts --
+  # assigns process.env from supabase status so the app under test sees the
+  # env it gets in CI. ASSIGNED, never read into a client constructor.
+  ':!api/test/tenancy-start-date.test.ts'
   ':!api/test/bench-import.ts'
   ':!openapi/emit.ts'
   ':!scripts/check-render-env-drift.mjs'
