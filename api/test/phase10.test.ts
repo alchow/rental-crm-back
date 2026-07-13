@@ -10,11 +10,8 @@
 //       chain_verified=false + a banner-shaped chain_message.
 //   (D) Soft-deleted / ENDED tenancy: an export still works (this is the
 //       case where disputes happen).
-//   (E) HEIC photo provenance: when libheif is supported, the bundle embeds
-//       the JPEG derivative; identity in the PDF is the ORIGINAL hash. If
-//       libheif is missing this test asserts no derivative was created and
-//       does NOT fail (the missing-libheif gap is surfaced at /healthz, not
-//       by this test).
+//   (E) HEIC photo provenance: Storage renders a bounded JPEG derivative;
+//       identity in the PDF remains the ORIGINAL hash.
 //   (F) Hardened download proxy: Content-Disposition: attachment + nosniff
 //       + CSP + cache-control: no-store + X-Content-Sha256.
 //   (G) Cross-account isolation: B cannot fetch metadata or download for
@@ -30,6 +27,7 @@
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { Client } from 'pg';
+import { HEVC_HEIC_FIXTURE } from '../src/admin/hevc-heic-fixture';
 
 interface SupabaseStatus {
   API_URL: string;
@@ -491,22 +489,37 @@ async function main(): Promise<void> {
     // original-and-derivative shape Phase 9 specified.
     // Fresh in-scope maintenance request (same area -> still bundled in the
     // tenancy export) so the HEIC upload is a clean 201: per-entity content
-    // idempotency (20260629000001) would otherwise dedupe these PNG_1X1 bytes
-    // onto the leak.png row already on mreq.
+    // idempotency (20260629000001) would otherwise dedupe identical bytes
+    // onto an existing row for the same request.
     const heicReq = await api('POST', `/v1/accounts/${A.accountId}/maintenance-requests`, {
-      token: A.accessToken, body: { area_id: A.unitAreaId, title: 'heic-export', severity: 'routine' },
+      token: A.accessToken,
+      body: { area_id: A.unitAreaId, title: 'heic-export', severity: 'routine' },
     });
     const heicReqId = (assertStatus(heicReq, 201, 'mr for heic export') as { id: string }).id;
     const fd2 = new FormData();
     fd2.set('entity_type', 'maintenance_requests');
     fd2.set('entity_id', heicReqId);
-    fd2.set('file', new File([new Uint8Array(PNG_1X1)], 'test.heic', { type: 'image/heic' }));
+    fd2.set(
+      'file',
+      new File([new Uint8Array(HEVC_HEIC_FIXTURE)], 'test.heic', { type: 'image/heic' }),
+    );
     const r = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
-      token: A.accessToken, multipart: fd2,
+      token: A.accessToken,
+      multipart: fd2,
     });
     const body = assertStatus(r, 201, 'heic upload') as {
-      attachment: { id: string; content_hash: string; mime_type: string; derived_from: string | null };
-      derivative: { id: string; content_hash: string; mime_type: string; derived_from: string | null } | null;
+      attachment: {
+        id: string;
+        content_hash: string;
+        mime_type: string;
+        derived_from: string | null;
+      };
+      derivative: {
+        id: string;
+        content_hash: string;
+        mime_type: string;
+        derived_from: string | null;
+      } | null;
     };
     if (body.attachment.mime_type !== 'image/heic') {
       throw new Error(`original mime should be image/heic; got ${body.attachment.mime_type}`);
@@ -514,28 +527,35 @@ async function main(): Promise<void> {
     if (body.attachment.derived_from !== null) {
       throw new Error('original.derived_from must be null');
     }
-    // libheif may not be available on every host; if it is, the derivative
-    // exists and its derived_from points at the original.
-    if (body.derivative) {
-      if (body.derivative.mime_type !== 'image/jpeg') {
-        throw new Error(`derivative mime should be image/jpeg; got ${body.derivative.mime_type}`);
-      }
-      if (body.derivative.derived_from !== body.attachment.id) {
-        throw new Error(`derivative.derived_from should equal original.id`);
-      }
+    if (!body.derivative) {
+      throw new Error('Storage did not create the required HEIC JPEG derivative');
+    }
+    if (body.derivative.mime_type !== 'image/jpeg') {
+      throw new Error(`derivative mime should be image/jpeg; got ${body.derivative.mime_type}`);
+    }
+    if (body.derivative.derived_from !== body.attachment.id) {
+      throw new Error(`derivative.derived_from should equal original.id`);
     }
     // Build a fresh export. It must succeed and the PDF must be at least
     // as large as the prior (no-HEIC) export -- meaning the renderer
     // walked the photos section without erroring on the HEIC original.
-    const expBody = await createExportAndWait(A.accessToken, A.accountId, { tenancy_id: A.tenancyId });
+    const expBody = await createExportAndWait(A.accessToken, A.accountId, {
+      tenancy_id: A.tenancyId,
+    });
     if (expBody.size_bytes < exportSizeBytes) {
-      throw new Error(`export with HEIC should not be smaller than without (got ${expBody.size_bytes} < ${exportSizeBytes})`);
+      throw new Error(
+        `export with HEIC should not be smaller than without (got ${expBody.size_bytes} < ${exportSizeBytes})`,
+      );
     }
     // And the bundle still downloads -- a HEIC rendering exception used
     // to abort generation; we verify it doesn't.
-    const dl = await api('GET', `/v1/accounts/${A.accountId}/evidence-exports/${expBody.id}/download`, {
-      token: A.accessToken,
-    });
+    const dl = await api(
+      'GET',
+      `/v1/accounts/${A.accountId}/evidence-exports/${expBody.id}/download`,
+      {
+        token: A.accessToken,
+      },
+    );
     if (dl.status !== 200) throw new Error(`download after HEIC: ${dl.status}`);
   });
 

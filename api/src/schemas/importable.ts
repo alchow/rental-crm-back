@@ -231,6 +231,7 @@ export const Interaction = z
     tenancy_id: z.string().uuid().nullable(),
     maintenance_request_id: z.string().uuid().nullable(),
     area_id: z.string().uuid().nullable(),
+    property_id: z.string().uuid().nullable(),
     work_order_id: z.string().uuid().nullable(),
     vendor_id: z.string().uuid().nullable(),
     thread_id: z.string().uuid().nullable().optional(),
@@ -258,6 +259,16 @@ export const CreateInteractionBody = z
     tenancy_id: z.string().uuid().optional(),
     maintenance_request_id: z.string().uuid().optional(),
     area_id: z.string().uuid().optional(),
+    property_id: z
+      .string()
+      .uuid()
+      .optional()
+      .openapi({
+        description:
+          'Place-resolution hint. The backend stores only canonical area_id. If omitted area_id ' +
+          'and the property has exactly one live unit, that unit is used automatically; otherwise ' +
+          'the request returns 422 property_requires_area.',
+      }),
     work_order_id: z.string().uuid().optional(),
     vendor_id: z.string().uuid().optional(),
     entry_type: EntryType.optional(),
@@ -350,6 +361,7 @@ export const CreateInteractionBody = z
           'tenancy_id',
           'maintenance_request_id',
           'area_id',
+          'property_id',
           'work_order_id',
           'vendor_id',
           'references_interaction_id',

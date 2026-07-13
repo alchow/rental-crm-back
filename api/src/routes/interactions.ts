@@ -2,7 +2,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { asDbInsert, asJson, nullableRpcArg } from '../supabase/db-types';
-import { ApiError, dbError, errorResponses } from './_lib/error';
+import { ApiError, dbError, ErrorEnvelope, errorResponses } from './_lib/error';
 import { decodeCursor, encodeCursor, keysetPage } from './_lib/cursor';
 import { withResolvedAuthorship } from './_lib/authorship';
 import { assertAgentJournalWrite } from './_lib/agent-firewall';
@@ -82,6 +82,8 @@ const ListQuery = z.object({
   party_id: z.string().uuid().optional(),
   /** Filter to interactions scoped to one area (direct column on the row). */
   area_id: z.string().uuid().optional(),
+  /** Derived through area_id; no duplicate property_id is stored on the journal row. */
+  property_id: z.string().uuid().optional(),
 });
 const ListResponse = z
   .object({ data: z.array(Interaction), next_cursor: z.string().nullable() })
@@ -122,7 +124,7 @@ const list = createRoute({
   summary: 'List interactions (filterable; keyset-paginated on occurred_at)',
   description:
     'Chronological journal feed. Filters: tenancy_id, maintenance_request_id, ' +
-    'area_id, direction, party_type, latest_only, and party_id. `party_id` ' +
+    'area_id, property_id, direction, party_type, latest_only, and party_id. `party_id` ' +
     'resolves the person through the CAST (interaction_participants), so a ' +
     'group message or witnessed exchange in which they were one of several ' +
     'participants still matches; combine it with party_type to narrow to that ' +
@@ -162,6 +164,11 @@ const create = createRoute({
   },
   responses: {
     201: { description: 'created', content: { 'application/json': { schema: Interaction } } },
+    422: {
+      description:
+        'property_id has zero/multiple live units, or the supplied area_id is outside it',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
     ...errorResponses,
   },
 });
@@ -180,6 +187,7 @@ interactionsApp.openapi(list, async (c) => {
     direction,
     party_id,
     area_id,
+    property_id,
   } = c.req.valid('query');
   const sb = getSb(c);
 
@@ -211,6 +219,7 @@ interactionsApp.openapi(list, async (c) => {
       p_tenancy_id: nullableRpcArg(tenancy_id ?? null),
       p_maintenance_request_id: nullableRpcArg(maintenance_request_id ?? null),
       p_area_id: nullableRpcArg(area_id ?? null),
+      p_property_id: nullableRpcArg(property_id ?? null),
       p_direction: nullableRpcArg(direction ?? null),
       p_latest_only: latest_only === 'true',
       p_before_occurred_at: nullableRpcArg(beforeOccurredAt),
@@ -218,7 +227,9 @@ interactionsApp.openapi(list, async (c) => {
       p_limit: limit + 1,
     });
     if (error) throw new ApiError(500, 'database_error', error.message);
-    const rows = (data ?? []) as Array<Record<string, unknown> & { id: string; occurred_at: string }>;
+    const rows = (data ?? []) as Array<
+      Record<string, unknown> & { id: string; occurred_at: string }
+    >;
     const hasMore = rows.length > limit;
     items = hasMore ? rows.slice(0, limit) : rows;
     const last = items[items.length - 1];
@@ -242,6 +253,7 @@ interactionsApp.openapi(list, async (c) => {
     //     on public.interactions (account_id, area_id, occurred_at, id)
     //     where deleted_at is null;
     if (area_id) q = q.eq('area_id', area_id);
+    if (property_id) q = q.eq('property_id', property_id);
     if (latest_only === 'true') q = q.eq('is_head', true);
     if (party_type) q = q.eq('party_type', party_type);
     if (direction) q = q.eq('direction', direction);
@@ -511,6 +523,108 @@ function deriveSingleParticipant(
   ];
 }
 
+interface ResolvedInteractionScope {
+  areaId: string | null;
+  propertyId: string | null;
+}
+
+/**
+ * Resolve a client-facing property selection to the one canonical place key we
+ * store: interactions.area_id.
+ *
+ * property with one live unit -> that unit
+ * property with zero/multiple live units -> typed 422; caller chooses area_id
+ * property + area -> validate that they belong together
+ */
+async function resolveInteractionScope(
+  sb: ReturnType<typeof getSb>,
+  accountId: string,
+  propertyId: string | undefined,
+  explicitAreaId: string | undefined,
+  fallback: ResolvedInteractionScope = { areaId: null, propertyId: null },
+): Promise<ResolvedInteractionScope> {
+  // An explicit area remains the canonical input. We still resolve its
+  // property once so POST responses carry the same derived shape as GET/list.
+  if (propertyId === undefined && explicitAreaId !== undefined) {
+    const { data: area, error } = await sb
+      .from('areas')
+      .select('id, property_id')
+      .eq('account_id', accountId)
+      .eq('id', explicitAreaId)
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (error) throw new ApiError(500, 'database_error', error.message);
+    if (!area) throw new ApiError(404, 'not_found', 'area_id does not belong to this account');
+    return { areaId: area.id, propertyId: area.property_id };
+  }
+
+  if (propertyId === undefined) return fallback;
+
+  const { data: property, error: propertyError } = await sb
+    .from('properties')
+    .select('id')
+    .eq('account_id', accountId)
+    .eq('id', propertyId)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (propertyError) throw new ApiError(500, 'database_error', propertyError.message);
+  if (!property)
+    throw new ApiError(404, 'not_found', 'property_id does not belong to this account');
+
+  // A correction that deliberately changes property must not inherit the old
+  // property's area. Resolve the new property from scratch unless its area is
+  // also supplied explicitly.
+  const candidateAreaId =
+    explicitAreaId ?? (fallback.propertyId === propertyId ? fallback.areaId : null);
+  if (candidateAreaId !== null && candidateAreaId !== undefined) {
+    let query = sb
+      .from('areas')
+      .select('id, property_id')
+      .eq('account_id', accountId)
+      .eq('id', candidateAreaId);
+    // A newly selected area must be live. A correction may retain the original
+    // historical area after that area was soft-deleted.
+    if (explicitAreaId !== undefined) query = query.is('deleted_at', null);
+    const { data: area, error } = await query.maybeSingle();
+    if (error) throw new ApiError(500, 'database_error', error.message);
+    if (!area) throw new ApiError(404, 'not_found', 'area_id does not belong to this account');
+    if (area.property_id !== propertyId) {
+      throw new ApiError(422, 'property_requires_area', 'area_id does not belong to property_id', {
+        fieldErrors: {
+          property_id: ['does not contain area_id'],
+          area_id: ['does not belong to property_id'],
+        },
+      });
+    }
+    return { areaId: area.id, propertyId };
+  }
+
+  const { data: units, error: unitsError } = await sb
+    .from('areas')
+    .select('id')
+    .eq('account_id', accountId)
+    .eq('property_id', propertyId)
+    .eq('kind', 'unit')
+    .is('deleted_at', null)
+    .order('created_at', { ascending: true })
+    .limit(2);
+  if (unitsError) throw new ApiError(500, 'database_error', unitsError.message);
+  if ((units ?? []).length !== 1) {
+    throw new ApiError(
+      422,
+      'property_requires_area',
+      'property_id cannot be resolved to exactly one live unit; supply area_id',
+      {
+        fieldErrors: {
+          property_id: ['property has zero or multiple live units'],
+          area_id: ['choose a unit or common area explicitly'],
+        },
+      },
+    );
+  }
+  return { areaId: units![0]!.id, propertyId };
+}
+
 interactionsApp.openapi(create, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
@@ -577,6 +691,7 @@ interactionsApp.openapi(create, async (c) => {
   // emits.)
 
   let row: Record<string, unknown>;
+  let responsePropertyId: string | null = null;
 
   if (body.corrects_id !== undefined) {
     // A correction NEVER writes to the original -- it only reads it, to
@@ -625,6 +740,13 @@ interactionsApp.openapi(create, async (c) => {
     // rejects them) and is fill-only (assertClassifyFillOnly + the DB trigger):
     // it fills an empty field but never overwrites a recorded one.
     const mayCorrectContext = isAmend || isClassify;
+    const correctedScope = mayCorrectContext
+      ? await resolveInteractionScope(sb, accountId, body.property_id, body.area_id, {
+          areaId: original.area_id,
+          propertyId: original.property_id,
+        })
+      : { areaId: original.area_id, propertyId: original.property_id };
+    responsePropertyId = correctedScope.propertyId;
     row = {
       account_id: accountId,
       actor,
@@ -661,7 +783,7 @@ interactionsApp.openapi(create, async (c) => {
       maintenance_request_id: mayCorrectContext
         ? (body.maintenance_request_id ?? original.maintenance_request_id)
         : original.maintenance_request_id,
-      area_id: mayCorrectContext ? (body.area_id ?? original.area_id) : original.area_id,
+      area_id: correctedScope.areaId,
       work_order_id: mayCorrectContext
         ? (body.work_order_id ?? original.work_order_id)
         : original.work_order_id,
@@ -672,156 +794,166 @@ interactionsApp.openapi(create, async (c) => {
     };
     assertCoherentShape(row as Parameters<typeof assertCoherentShape>[0]);
     if (isClassify) assertClassifyFillOnly(original as Record<string, unknown>, row);
-  } else if ((body.kind ?? 'communication') === 'agent_event') {
-    // Agent exhaust entry: structured machine event with sentinel shape.
-    row = {
-      account_id: accountId,
-      actor,
-      author_type: authorType,
-      approved_by: body.approved_by ?? null,
-      approval_ref: body.approval_ref ?? null,
-      entry_type: body.entry_type ?? null,
-      external_ref: null,
-      kind: 'agent_event',
-      party_type: 'none',
-      party_id: null,
-      party_label: null,
-      channel: 'agent_event',
-      direction: 'none',
-      body: body.body ?? null,
-      occurred_at: body.occurred_at,
-      corrects_id: null,
-      correction_kind: null,
-      tenancy_id: body.tenancy_id ?? null,
-      maintenance_request_id: body.maintenance_request_id ?? null,
-      area_id: body.area_id ?? null,
-      work_order_id: body.work_order_id ?? null,
-      vendor_id: body.vendor_id ?? null,
-      references_interaction_id: body.references_interaction_id ?? null,
-    };
-  } else if ((body.kind ?? 'communication') === 'note') {
-    row = {
-      account_id: accountId,
-      actor,
-      author_type: authorType,
-      // Agent notes carry approval fields; landlord notes always null.
-      approved_by: principal.type === 'agent' ? (body.approved_by ?? null) : null,
-      approval_ref: principal.type === 'agent' ? (body.approval_ref ?? null) : null,
-      entry_type: null,
-      external_ref: null,
-      kind: 'note',
-      // A note MAY name a counterparty (campaign-4 §12); default to the
-      // party-less shape when none is supplied. channel/direction stay pinned.
-      party_type: body.party_type ?? 'none',
-      party_id: body.party_id ?? null,
-      party_label: body.party_label ?? null,
-      channel: 'note',
-      direction: 'none',
-      body: body.body ?? null,
-      occurred_at: body.occurred_at,
-      corrects_id: null,
-      correction_kind: null,
-      tenancy_id: body.tenancy_id ?? null,
-      maintenance_request_id: body.maintenance_request_id ?? null,
-      area_id: body.area_id ?? null,
-      work_order_id: body.work_order_id ?? null,
-      vendor_id: body.vendor_id ?? null,
-      references_interaction_id: body.references_interaction_id ?? null,
-    };
   } else {
-    // Cast-carrying create: the row and its cast are written atomically by
-    // the journal_with_participants RPC (no window where a valid-but-castless
-    // entry exists), which also stamps attestation='attested' and derives
-    // actor/author_type from the caller — same values this handler computes.
-    // Landlord-only at this point (agent guard above). TWO inputs converge
-    // here: an EXPLICIT cast (body.participants), or a single DERIVED
-    // participant (Item C) when the body names a counterparty in the legacy
-    // slot but supplies no cast. Both keep the plain insert below for the
-    // no-counterparty case and the agent principal.
-    const explicitCast: CastParticipant[] | undefined = body.participants?.map((p) => ({
-      role: p.role,
-      party_type: p.party_type,
-      party_id: p.party_id ?? null,
-      address: p.address ?? null,
-      label: p.label ?? null,
-    }));
-    const castToWrite = explicitCast ?? deriveSingleParticipant(body, principal.type);
-    if (castToWrite) {
-      const { data: created, error: rpcErr } = await sb.rpc('journal_with_participants', {
-        p_account_id: accountId,
-        p_entry: {
-          channel: body.channel,
-          direction: body.direction ?? 'unspecified',
-          party_type: body.party_type,
-          party_id: body.party_id ?? null,
-          party_label: body.party_label ?? null,
-          body: body.body ?? null,
-          occurred_at: body.occurred_at,
-          tenancy_id: body.tenancy_id ?? null,
-          maintenance_request_id: body.maintenance_request_id ?? null,
-          area_id: body.area_id ?? null,
-          work_order_id: body.work_order_id ?? null,
-          vendor_id: body.vendor_id ?? null,
-        },
-        p_participants: asJson(castToWrite),
-      });
-      if (rpcErr) {
-        if (rpcErr.code === '23503') {
-          throw new ApiError(404, 'not_found', 'a referenced row does not belong to this account');
-        }
-        if (rpcErr.code === '22023') {
-          throw new ApiError(400, 'invalid_request', rpcErr.message);
-        }
-        throw dbError(rpcErr);
-      }
-      const createdRow = created as unknown as {
-        id: string;
-        author_type?: string | null;
-        actor: string;
+    const scope = await resolveInteractionScope(sb, accountId, body.property_id, body.area_id);
+    responsePropertyId = scope.propertyId;
+
+    if ((body.kind ?? 'communication') === 'agent_event') {
+      // Agent exhaust entry: structured machine event with sentinel shape.
+      row = {
+        account_id: accountId,
+        actor,
+        author_type: authorType,
+        approved_by: body.approved_by ?? null,
+        approval_ref: body.approval_ref ?? null,
+        entry_type: body.entry_type ?? null,
+        external_ref: null,
+        kind: 'agent_event',
+        party_type: 'none',
+        party_id: null,
+        party_label: null,
+        channel: 'agent_event',
+        direction: 'none',
+        body: body.body ?? null,
+        occurred_at: body.occurred_at,
+        corrects_id: null,
+        correction_kind: null,
+        tenancy_id: body.tenancy_id ?? null,
+        maintenance_request_id: body.maintenance_request_id ?? null,
+        area_id: scope.areaId,
+        work_order_id: body.work_order_id ?? null,
+        vendor_id: body.vendor_id ?? null,
+        references_interaction_id: body.references_interaction_id ?? null,
       };
-      const cast =
-        (await loadInteractionParticipants(sb, accountId, [createdRow.id])).get(createdRow.id) ??
-        [];
-      return c.json(
-        withResolvedAuthorship({
-          ...createdRow,
-          superseded_by_id: null,
-          is_head: true,
-          participants: cast,
-        }) as z.infer<typeof Interaction>,
-        201,
-      );
+    } else if ((body.kind ?? 'communication') === 'note') {
+      row = {
+        account_id: accountId,
+        actor,
+        author_type: authorType,
+        // Agent notes carry approval fields; landlord notes always null.
+        approved_by: principal.type === 'agent' ? (body.approved_by ?? null) : null,
+        approval_ref: principal.type === 'agent' ? (body.approval_ref ?? null) : null,
+        entry_type: null,
+        external_ref: null,
+        kind: 'note',
+        // A note MAY name a counterparty (campaign-4 §12); default to the
+        // party-less shape when none is supplied. channel/direction stay pinned.
+        party_type: body.party_type ?? 'none',
+        party_id: body.party_id ?? null,
+        party_label: body.party_label ?? null,
+        channel: 'note',
+        direction: 'none',
+        body: body.body ?? null,
+        occurred_at: body.occurred_at,
+        corrects_id: null,
+        correction_kind: null,
+        tenancy_id: body.tenancy_id ?? null,
+        maintenance_request_id: body.maintenance_request_id ?? null,
+        area_id: scope.areaId,
+        work_order_id: body.work_order_id ?? null,
+        vendor_id: body.vendor_id ?? null,
+        references_interaction_id: body.references_interaction_id ?? null,
+      };
+    } else {
+      // Cast-carrying create: the row and its cast are written atomically by
+      // the journal_with_participants RPC (no window where a valid-but-castless
+      // entry exists), which also stamps attestation='attested' and derives
+      // actor/author_type from the caller — same values this handler computes.
+      // Landlord-only at this point (agent guard above). TWO inputs converge
+      // here: an EXPLICIT cast (body.participants), or a single DERIVED
+      // participant (Item C) when the body names a counterparty in the legacy
+      // slot but supplies no cast. Both keep the plain insert below for the
+      // no-counterparty case and the agent principal.
+      const explicitCast: CastParticipant[] | undefined = body.participants?.map((p) => ({
+        role: p.role,
+        party_type: p.party_type,
+        party_id: p.party_id ?? null,
+        address: p.address ?? null,
+        label: p.label ?? null,
+      }));
+      const castToWrite = explicitCast ?? deriveSingleParticipant(body, principal.type);
+      if (castToWrite) {
+        const { data: created, error: rpcErr } = await sb.rpc('journal_with_participants', {
+          p_account_id: accountId,
+          p_entry: {
+            channel: body.channel,
+            direction: body.direction ?? 'unspecified',
+            party_type: body.party_type,
+            party_id: body.party_id ?? null,
+            party_label: body.party_label ?? null,
+            body: body.body ?? null,
+            occurred_at: body.occurred_at,
+            tenancy_id: body.tenancy_id ?? null,
+            maintenance_request_id: body.maintenance_request_id ?? null,
+            area_id: scope.areaId,
+            work_order_id: body.work_order_id ?? null,
+            vendor_id: body.vendor_id ?? null,
+          },
+          p_participants: asJson(castToWrite),
+        });
+        if (rpcErr) {
+          if (rpcErr.code === '23503') {
+            throw new ApiError(
+              404,
+              'not_found',
+              'a referenced row does not belong to this account',
+            );
+          }
+          if (rpcErr.code === '22023') {
+            throw new ApiError(400, 'invalid_request', rpcErr.message);
+          }
+          throw dbError(rpcErr);
+        }
+        const createdRow = created as unknown as {
+          id: string;
+          author_type?: string | null;
+          actor: string;
+        };
+        const cast =
+          (await loadInteractionParticipants(sb, accountId, [createdRow.id])).get(createdRow.id) ??
+          [];
+        return c.json(
+          withResolvedAuthorship({
+            ...createdRow,
+            property_id: responsePropertyId,
+            superseded_by_id: null,
+            is_head: true,
+            participants: cast,
+          }) as z.infer<typeof Interaction>,
+          201,
+        );
+      }
+      row = {
+        account_id: accountId,
+        actor,
+        author_type: authorType,
+        // Agent communications carry their authorization provenance (the
+        // firewall has already required approval_ref + approved_by-or-grant);
+        // landlord communications never carry approval fields.
+        approved_by: principal.type === 'agent' ? (body.approved_by ?? null) : null,
+        approval_ref: principal.type === 'agent' ? (body.approval_ref ?? null) : null,
+        entry_type: null,
+        external_ref: principal.type === 'agent' ? (body.external_ref ?? null) : null,
+        kind: 'communication',
+        party_type: body.party_type,
+        party_id: body.party_id ?? null,
+        party_label: body.party_label ?? null,
+        channel: body.channel,
+        // Optional now: an omitted direction is stored as the 'unspecified'
+        // sentinel rather than forcing the landlord to fabricate inbound/outbound.
+        direction: body.direction ?? 'unspecified',
+        body: body.body ?? null,
+        occurred_at: body.occurred_at,
+        corrects_id: null,
+        correction_kind: null,
+        tenancy_id: body.tenancy_id ?? null,
+        maintenance_request_id: body.maintenance_request_id ?? null,
+        area_id: scope.areaId,
+        work_order_id: body.work_order_id ?? null,
+        vendor_id: body.vendor_id ?? null,
+        references_interaction_id: body.references_interaction_id ?? null,
+      };
     }
-    row = {
-      account_id: accountId,
-      actor,
-      author_type: authorType,
-      // Agent communications carry their authorization provenance (the
-      // firewall has already required approval_ref + approved_by-or-grant);
-      // landlord communications never carry approval fields.
-      approved_by: principal.type === 'agent' ? (body.approved_by ?? null) : null,
-      approval_ref: principal.type === 'agent' ? (body.approval_ref ?? null) : null,
-      entry_type: null,
-      external_ref: principal.type === 'agent' ? (body.external_ref ?? null) : null,
-      kind: 'communication',
-      party_type: body.party_type,
-      party_id: body.party_id ?? null,
-      party_label: body.party_label ?? null,
-      channel: body.channel,
-      // Optional now: an omitted direction is stored as the 'unspecified'
-      // sentinel rather than forcing the landlord to fabricate inbound/outbound.
-      direction: body.direction ?? 'unspecified',
-      body: body.body ?? null,
-      occurred_at: body.occurred_at,
-      corrects_id: null,
-      correction_kind: null,
-      tenancy_id: body.tenancy_id ?? null,
-      maintenance_request_id: body.maintenance_request_id ?? null,
-      area_id: body.area_id ?? null,
-      work_order_id: body.work_order_id ?? null,
-      vendor_id: body.vendor_id ?? null,
-      references_interaction_id: body.references_interaction_id ?? null,
-    };
   }
 
   // logged_at not passed -- DB default = now(); Phase 3 immutability
@@ -856,6 +988,7 @@ interactionsApp.openapi(create, async (c) => {
   return c.json(
     withResolvedAuthorship({
       ...data,
+      property_id: responsePropertyId,
       superseded_by_id: null,
       is_head: true,
       participants: [],

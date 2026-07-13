@@ -30,8 +30,7 @@ export const ErrorEnvelope = z
     error: z.object({
       code: z.string().openapi({
         example: 'not_found',
-        description:
-          'Stable, machine-readable code. Clients branch on this; never on message.',
+        description: 'Stable, machine-readable code. Clients branch on this; never on message.',
       }),
       message: z.string().openapi({ example: 'not found' }),
       details: z.unknown().optional(),
@@ -65,8 +64,7 @@ export const errorResponses = {
 // route's own description specific about which apply.
 export const conflictResponse = {
   409: {
-    description:
-      'conflict — error.code carries a fine-grained reason (see the route description)',
+    description: 'conflict — error.code carries a fine-grained reason (see the route description)',
     content: { 'application/json': { schema: ErrorEnvelope } },
   },
 } as const;
@@ -98,9 +96,9 @@ export type ErrorCode =
   // profile: a submitted phone number cannot be normalised to E.164
   | 'invalid_phone'
   // agent-principal firewall codes (Workstream D)
-  | 'agent_forbidden'           // agent attempted a forbidden operation (correction/retraction)
+  | 'agent_forbidden' // agent attempted a forbidden operation (correction/retraction)
   | 'agent_entry_type_forbidden' // agent attempted a communication append without provenance
-  | 'agent_only'                // landlord attempted an agent-only field or kind
+  | 'agent_only' // landlord attempted an agent-only field or kind
   // contract-first stub: the route is defined (and its schemas are final)
   // but the handler has not shipped yet. Clients should treat this as
   // "come back after the next deploy", never as a permanent failure.
@@ -112,17 +110,19 @@ export type ErrorCode =
   // ADR-0012 rent-change conflicts. Fine-grained (invalid_correction_target
   // precedent) so clients can build recovery UX per cause instead of echoing
   // message text: each code implies a distinct next action.
-  | 'tenancy_ended'          // rent change on an ended tenancy: nothing to do
-  | 'notice_not_served'      // anchor notice has no served_at: serve it first
+  | 'tenancy_ended' // rent change on an ended tenancy: nothing to do
+  | 'notice_not_served' // anchor notice has no served_at: serve it first
   | 'instrument_not_current' // anchor lease is expired/superseded: pick/create a current one
-  | 'schedule_conflict'      // a same-kind schedule starts on/after effective_date:
-                             // delete it (never-billed) or change on a later date
-  | 'lease_superseded'       // transition out of status=superseded: create a new lease instead
-  | 'instrument_anchored'    // patch/delete of a lease/notice anchoring a live schedule
-  | 'schedule_has_charges'   // DELETE of a schedule with non-voided charges: void them first
-  | 'tenancy_has_money';     // PATCH start_date once non-voided charges/payments exist:
-                             // the money rows anchor the timeline — void them first
-                             // (ADR-0012 recipes) or leave start_date alone
+  | 'schedule_conflict' // a same-kind schedule starts on/after effective_date:
+  // delete it (never-billed) or change on a later date
+  | 'lease_superseded' // transition out of status=superseded: create a new lease instead
+  | 'instrument_anchored' // patch/delete of a lease/notice anchoring a live schedule
+  | 'schedule_has_charges' // DELETE of a schedule with non-voided charges: void them first
+  | 'property_requires_area' // property scope has zero/multiple live units: caller must choose area_id
+  | 'tenancy_already_ended' // POST /tenancies/{id}/end was already applied: do not retry
+  | 'tenancy_has_money'; // PATCH start_date once non-voided charges/payments exist:
+// the money rows anchor the timeline — void them first
+// (ADR-0012 recipes) or leave start_date alone
 
 export class ApiError extends Error {
   constructor(
@@ -143,14 +143,29 @@ export class ApiError extends Error {
 //   57P03  cannot_connect_now (server still starting -- the cold-start case)
 //   53300  too_many_connections   53400  configuration_limit_exceeded
 const TRANSIENT_PG_CODES = new Set([
-  '08000', '08003', '08006', '08001', '08004', '08007', '08P01',
-  '57P03', '53300', '53400',
+  '08000',
+  '08003',
+  '08006',
+  '08001',
+  '08004',
+  '08007',
+  '08P01',
+  '57P03',
+  '53300',
+  '53400',
 ]);
 // Node/undici socket + DNS errors. undici nests the real code under .cause, so
 // classifyTransient() inspects both the error and its cause.
 const TRANSIENT_NET_CODES = new Set([
-  'ENOTFOUND', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'EAI_AGAIN',
-  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT',
+  'ENOTFOUND',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'EPIPE',
+  'EAI_AGAIN',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_SOCKET',
+  'UND_ERR_HEADERS_TIMEOUT',
 ]);
 
 /**
@@ -164,7 +179,10 @@ export function classifyTransient(e: unknown): ApiError | null {
     v && typeof v === 'object' && typeof (v as { code?: unknown }).code === 'string'
       ? (v as { code: string }).code
       : undefined;
-  const codes = [codeOf(e), codeOf(e && typeof e === 'object' ? (e as { cause?: unknown }).cause : undefined)];
+  const codes = [
+    codeOf(e),
+    codeOf(e && typeof e === 'object' ? (e as { cause?: unknown }).cause : undefined),
+  ];
   for (const c of codes) {
     if (c && (TRANSIENT_PG_CODES.has(c) || TRANSIENT_NET_CODES.has(c))) {
       return new ApiError(503, 'service_unavailable', 'a dependency is temporarily unavailable');

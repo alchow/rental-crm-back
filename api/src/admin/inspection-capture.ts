@@ -5,7 +5,7 @@ import { getLogger } from '../log';
 import { asJson, nullableRpcArg } from '../supabase/db-types';
 import { getAdminClient } from './supabase-admin';
 import { getMailer } from './mailer';
-import { removeOrphanStoredObject, type StoragePutResult } from './storage';
+import type { StoragePutResult } from './storage';
 
 // ============================================================================
 // Tenant capture magic-link helpers (service-role).
@@ -393,8 +393,9 @@ export async function tenantSubmit(token: CaptureTokenRow): Promise<Record<strin
 /**
  * Registers a tenant-uploaded photo on an inspection item via the
  * SECURITY DEFINER tenant_attach_inspection_item_photo RPC.
- * On RPC failure, best-effort removes the already-stored bytes to avoid
- * orphaning storage objects, then re-throws.
+ * On RPC failure, leaves content-addressed bytes in place and re-throws. A
+ * synchronous cleanup cannot distinguish a true orphan from another request
+ * that has uploaded the same bytes but has not committed its evidence row yet.
  */
 export async function tenantAttachItemPhoto(
   token: CaptureTokenRow,
@@ -417,10 +418,6 @@ export async function tenantAttachItemPhoto(
     p_derivative_path: put.derivative?.storagePath,
   });
   if (error) {
-    await removeOrphanStoredObject(token.account_id, put.primary.storagePath).catch(() => {});
-    if (put.derivative) {
-      await removeOrphanStoredObject(token.account_id, put.derivative.storagePath).catch(() => {});
-    }
     throw rpcError(error);
   }
   const row = (Array.isArray(data) ? data[0] : data) as {

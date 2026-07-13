@@ -1,6 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { createHash } from 'node:crypto';
 import { getAdminClient } from './supabase-admin';
+import { storeGeneratedArtifactBytes } from './storage';
 
 // ============================================================================
 // Deterministic inspection PDF rendering.
@@ -445,13 +446,8 @@ export async function generateAndStoreInspectionReport(opts: {
   // Phase 9: content-addressed path -- same scheme as processAndStoreBytes()
   // uses for user uploads. The inspection_id is captured on the attachments
   // row's entity_id, not in the path.
-  const storagePath = `${opts.accountId}/${contentHash}.pdf`;
-  const { error: upErr } = await admin.storage.from('attachments').upload(
-    storagePath,
-    pdfBytes,
-    { contentType: 'application/pdf', upsert: true },
-  );
-  if (upErr) throw new Error(`pdf upload failed: ${upErr.message}`);
+  const stored = await storeGeneratedArtifactBytes(opts.accountId, pdfBytes, 'application/pdf');
+  const storagePath = stored.storagePath;
 
   // Replace any previous report (a renderer change -> different hash) so there
   // is a SINGLE current report row. Old rows stay in events history.
@@ -477,7 +473,6 @@ export async function generateAndStoreInspectionReport(opts: {
     .select('id')
     .single();
   if (insErr || !row) {
-    await admin.storage.from('attachments').remove([storagePath]).catch(() => {});
     throw new Error(`report attachment insert failed: ${insErr?.message}`);
   }
   return {

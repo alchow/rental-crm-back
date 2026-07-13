@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export interface DocumentTemplate {
   id: string;
@@ -31,8 +34,24 @@ export function getDocumentTemplate(id: string): DocumentTemplate | null {
   return TEMPLATES.find((t) => t.id === id) ?? null;
 }
 
+const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+const resolvedStaticRoot = [
+  // Source mode: api/src/admin/document-templates.ts -> api/src/static.
+  resolve(moduleDirectory, '../static'),
+  // Bundled mode: api/dist/{document-templates,chunk-*}.js -> api/dist/static.
+  resolve(moduleDirectory, 'static'),
+].find(existsSync);
+
+if (!resolvedStaticRoot) throw new Error('bundled document asset root is missing');
+const STATIC_ROOT: string = resolvedStaticRoot;
+
 export function staticAssetUrl(assetPath: string): URL {
-  return new URL(`../static/${assetPath}`, import.meta.url);
+  const candidate = resolve(STATIC_ROOT, assetPath);
+  const fromRoot = relative(STATIC_ROOT, candidate);
+  if (!assetPath || isAbsolute(assetPath) || fromRoot === '..' || fromRoot.startsWith(`..${sep}`)) {
+    throw new Error('static asset path escapes the bundled asset root');
+  }
+  return pathToFileURL(candidate);
 }
 
 interface StaticAsset {

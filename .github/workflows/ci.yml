@@ -303,12 +303,20 @@ jobs:
         # C3 correction path: money guard (409 tenancy_has_money), void
         # re-opens the path, future-date/status coherence, end_date ordering.
         run: pnpm --filter ./api test:tenancy-start-date
+      - name: Run atomic tenancy-ending checks
+        # Immutable ending fact + tenancy/schedule transition in one transaction;
+        # covers pre-move-in cancellation, audit attribution, and charged futures.
+        run: pnpm --filter ./api test:tenancy-endings
       - name: Run multi-status list-filter checks (Field Log ask #2)
         # Comma-separated status set on tenancies + maintenance-requests: single
         # value stays byte-compatible, a set returns the union, a bogus member
         # is a 400 with fieldErrors.status, and the IN filter composes with the
         # keyset walk (each row exactly once).
         run: pnpm --filter ./api test:multi-status-filters
+      - name: Run maintenance reporter provenance checks
+        # Reporter is an immutable source interaction + sender cast, derived on
+        # request reads; covers landlord capture and tenant intake.
+        run: pnpm --filter ./api test:maintenance-reporter
 
       - name: Run onboarding-import DoD checks (Phase 1)
         # Full recognize -> map -> resolve -> preview -> confirm pipeline and

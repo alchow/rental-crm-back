@@ -95,6 +95,13 @@ const NO_SEED_REQUIRED = new Set([
   'document_versions',
   'document_access_tokens',
   'document_access_events',
+  'document_upload_receipts',
+  // Initial reporter facts are created atomically with an on-demand
+  // maintenance request; legacy fixture requests deliberately have no link.
+  'maintenance_request_reports',
+  // Ending records are created only when the explicit end-tenancy workflow
+  // runs; the static two-account fixture has no ended tenancy.
+  'tenancy_endings',
   // Phase 27 condition reports: capture tokens are minted on demand by the
   // capture-link API (sibling of document_access_tokens); nothing to seed in a
   // static fixture. Still gets the cross-tenant == 0 isolation check.
