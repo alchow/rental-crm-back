@@ -2579,6 +2579,63 @@ export type Database = {
           },
         ];
       };
+      document_upload_receipts: {
+        Row: {
+          account_id: string;
+          content_hash: string;
+          created_at: string;
+          derived_from_receipt_id: string | null;
+          id: string;
+          mime_type: string;
+          received_at: string;
+          size_bytes: number;
+          stored_at: string | null;
+          storage_path: string;
+          uploaded_by: string;
+        };
+        Insert: {
+          account_id: string;
+          content_hash: string;
+          created_at?: string;
+          derived_from_receipt_id?: string | null;
+          id?: string;
+          mime_type: string;
+          received_at?: string;
+          size_bytes: number;
+          stored_at?: string | null;
+          storage_path: string;
+          uploaded_by: string;
+        };
+        Update: {
+          account_id?: string;
+          content_hash?: string;
+          created_at?: string;
+          derived_from_receipt_id?: string | null;
+          id?: string;
+          mime_type?: string;
+          received_at?: string;
+          size_bytes?: number;
+          stored_at?: string | null;
+          storage_path?: string;
+          uploaded_by?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'document_upload_receipts_account_id_fkey';
+            columns: ['account_id'];
+            isOneToOne: false;
+            referencedRelation: 'accounts';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'document_receipts_derivation_fk';
+            columns: ['account_id', 'derived_from_receipt_id'];
+            isOneToOne: false;
+            referencedRelation: 'document_upload_receipts';
+            referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
       maintenance_requests: {
         Row: {
           account_id: string;
@@ -2638,6 +2695,45 @@ export type Database = {
             columns: ['account_id', 'asset_id'];
             isOneToOne: false;
             referencedRelation: 'assets';
+            referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
+      maintenance_request_reports: {
+        Row: {
+          account_id: string;
+          created_at: string;
+          id: string;
+          interaction_id: string;
+          maintenance_request_id: string;
+        };
+        Insert: {
+          account_id: string;
+          created_at?: string;
+          id?: string;
+          interaction_id: string;
+          maintenance_request_id: string;
+        };
+        Update: {
+          account_id?: string;
+          created_at?: string;
+          id?: string;
+          interaction_id?: string;
+          maintenance_request_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'maintenance_request_reports_account_id_interaction_id_fkey';
+            columns: ['account_id', 'interaction_id'];
+            isOneToOne: true;
+            referencedRelation: 'interactions';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'maintenance_request_reports_account_id_maintenance_request_id_fkey';
+            columns: ['account_id', 'maintenance_request_id'];
+            isOneToOne: true;
+            referencedRelation: 'maintenance_requests';
             referencedColumns: ['account_id', 'id'];
           },
         ];
@@ -3068,6 +3164,73 @@ export type Database = {
           },
         ];
       };
+      tenancy_endings: {
+        Row: {
+          account_id: string;
+          created_at: string;
+          created_by: string;
+          effective_date: string;
+          id: string;
+          initiated_by: string;
+          kind: string;
+          reason_code: string;
+          reason_note: string | null;
+          source_interaction_id: string | null;
+          source_notice_id: string | null;
+          tenancy_id: string;
+        };
+        Insert: {
+          account_id: string;
+          created_at?: string;
+          created_by?: string;
+          effective_date: string;
+          id?: string;
+          initiated_by?: string;
+          kind: string;
+          reason_code?: string;
+          reason_note?: string | null;
+          source_interaction_id?: string | null;
+          source_notice_id?: string | null;
+          tenancy_id: string;
+        };
+        Update: {
+          account_id?: string;
+          created_at?: string;
+          created_by?: string;
+          effective_date?: string;
+          id?: string;
+          initiated_by?: string;
+          kind?: string;
+          reason_code?: string;
+          reason_note?: string | null;
+          source_interaction_id?: string | null;
+          source_notice_id?: string | null;
+          tenancy_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'tenancy_endings_account_id_source_interaction_id_fkey';
+            columns: ['account_id', 'source_interaction_id'];
+            isOneToOne: false;
+            referencedRelation: 'interactions';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'tenancy_endings_account_id_source_notice_id_fkey';
+            columns: ['account_id', 'source_notice_id'];
+            isOneToOne: false;
+            referencedRelation: 'notices';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'tenancy_endings_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: true;
+            referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
       tenancies: {
         Row: {
           account_id: string;
@@ -3462,6 +3625,47 @@ export type Database = {
       };
     };
     Views: {
+      maintenance_requests_with_reporter: {
+        Row: {
+          account_id: string | null;
+          area_id: string | null;
+          asset_id: string | null;
+          created_at: string | null;
+          deleted_at: string | null;
+          description: string | null;
+          id: string | null;
+          intake_token: string | null;
+          opened_by: string | null;
+          reported_at: string | null;
+          reporter_address: string | null;
+          reporter_attestation: string | null;
+          reporter_channel: string | null;
+          reporter_interaction_id: string | null;
+          reporter_label: string | null;
+          reporter_party_id: string | null;
+          reporter_party_type: string | null;
+          severity: string | null;
+          status: string | null;
+          title: string | null;
+          updated_at: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'maintenance_requests_account_id_area_id_fkey';
+            columns: ['account_id', 'area_id'];
+            isOneToOne: false;
+            referencedRelation: 'areas';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'maintenance_requests_account_id_asset_id_fkey';
+            columns: ['account_id', 'asset_id'];
+            isOneToOne: false;
+            referencedRelation: 'assets';
+            referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
       interactions_with_chain: {
         Row: {
           account_id: string | null;
@@ -3492,6 +3696,7 @@ export type Database = {
           party_id: string | null;
           party_label: string | null;
           party_type: string | null;
+          property_id: string | null;
           references_interaction_id: string | null;
           rfc822_message_id: string | null;
           superseded_by_id: string | null;
@@ -3793,6 +3998,24 @@ export type Database = {
           role: string;
         }[];
       };
+      create_maintenance_request_with_report: {
+        Args: {
+          p_account_id: string;
+          p_area_id: string;
+          p_asset_id: string;
+          p_description: string;
+          p_report_address: string;
+          p_report_body: string;
+          p_report_channel: string;
+          p_report_label: string;
+          p_report_party_id: string;
+          p_report_party_type: string;
+          p_reported_at: string;
+          p_severity: string;
+          p_title: string;
+        };
+        Returns: Json;
+      };
       create_payment_with_allocations: {
         Args: {
           p_account_id: string;
@@ -3825,6 +4048,29 @@ export type Database = {
           p_static_template_id?: string;
           p_tenancy_id: string;
           p_title: string;
+        };
+        Returns: Json;
+      };
+      create_tenancy_document_from_image: {
+        Args: {
+          p_account_id: string;
+          p_document_type: string;
+          p_original_receipt_id: string;
+          p_pdf_receipt_id: string;
+          p_requires_ack: boolean;
+          p_tenancy_id: string;
+          p_title: string;
+        };
+        Returns: Json;
+      };
+      create_tenancy_document_from_upload: {
+        Args: {
+          p_account_id: string;
+          p_document_type: string;
+          p_requires_ack: boolean;
+          p_tenancy_id: string;
+          p_title: string;
+          p_upload_receipt_id: string;
         };
         Returns: Json;
       };
@@ -3888,6 +4134,20 @@ export type Database = {
           p_requires_ack?: boolean;
           p_size_bytes: number;
           p_title: string;
+        };
+        Returns: Json;
+      };
+      end_tenancy: {
+        Args: {
+          p_account_id: string;
+          p_effective_date: string;
+          p_initiated_by?: string;
+          p_kind: string;
+          p_reason_code?: string;
+          p_reason_note?: string;
+          p_source_interaction_id?: string;
+          p_source_notice_id?: string;
+          p_tenancy_id: string;
         };
         Returns: Json;
       };
@@ -4084,6 +4344,7 @@ export type Database = {
           p_maintenance_request_id: string;
           p_party_id: string;
           p_party_type: string;
+          p_property_id: string;
           p_tenancy_id: string;
         };
         Returns: {
@@ -4115,6 +4376,7 @@ export type Database = {
           party_id: string | null;
           party_label: string | null;
           party_type: string | null;
+          property_id: string | null;
           references_interaction_id: string | null;
           rfc822_message_id: string | null;
           superseded_by_id: string | null;
@@ -4243,6 +4505,7 @@ export type Database = {
       rent_rollup: {
         Args: {
           p_account_id: string;
+          p_as_of?: string;
           p_statuses?: string[];
         };
         Returns: {
@@ -4252,6 +4515,11 @@ export type Database = {
           rent_balance_cents: number;
           deposit_balance_cents: number;
           unapplied_credit_cents: number;
+          non_deposit_overdue_cents: number;
+          non_deposit_due_today_cents: number;
+          non_deposit_upcoming_cents: number;
+          deposit_owed_cents: number;
+          deposit_held_cents: number;
         }[];
       };
       search_entities: {

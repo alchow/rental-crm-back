@@ -1,6 +1,7 @@
 import { getLogger } from '../log';
 import { ApiError } from '../routes/_lib/error';
 import { getAdminClient } from './supabase-admin';
+import { pruneDocumentUploadOrphans } from './storage';
 
 const ACCOUNT_PAGE = 1000;
 
@@ -25,6 +26,7 @@ export interface MaintenanceJanitorResult {
   idempotency_pruned_completed: number;
   idempotency_pruned_in_flight: number;
   ip_rate_buckets_pruned: number;
+  document_upload_orphans_pruned: number;
   accounts_scanned: number;
   chain_alerts_inserted: number;
   chain_alerts_resolved: number;
@@ -60,6 +62,7 @@ export async function runMaintenanceJanitors(): Promise<MaintenanceJanitorResult
     idempotency_pruned_completed: 0,
     idempotency_pruned_in_flight: 0,
     ip_rate_buckets_pruned: 0,
+    document_upload_orphans_pruned: 0,
     accounts_scanned: 0,
     chain_alerts_inserted: 0,
     chain_alerts_resolved: 0,
@@ -92,6 +95,8 @@ export async function runMaintenanceJanitors(): Promise<MaintenanceJanitorResult
     throw new ApiError(500, 'database_error', `prune_ip_rate_buckets failed: ${ipBuckets.error.message}`);
   }
   result.ip_rate_buckets_pruned = Number(ipBuckets.data ?? 0);
+
+  result.document_upload_orphans_pruned = await pruneDocumentUploadOrphans();
 
   const accounts = await enumerateAccountIds(admin);
   result.accounts_scanned = accounts.length;

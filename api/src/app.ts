@@ -95,8 +95,8 @@ export function buildApp(): OpenAPIHono {
   // defaultHook does not inherit across `.route()` mounts.
   const app = newApiApp();
 
-  // Fire-and-forget at boot: probe the sharp/libvips stack for HEIC
-  // support. If libheif is missing the probe logs a loud warning to
+  // Fire-and-forget at boot: probe the hosted Storage HEIC rendition path.
+  // If it fails the probe logs a loud warning to
   // stderr -- it does NOT throw, because non-HEIC workloads still work.
   // The /healthz endpoint surfaces the result so an external monitor can
   // alert on degraded evidence-rendering capability.
@@ -156,9 +156,9 @@ export function buildApp(): OpenAPIHono {
     const heic = heicSupported();
     return c.json({
       status: 'ok',
-      // null = probe still pending (first ~50ms after boot); true/false
-      // once it's run. Surface in /healthz so deploy-target monitors can
-      // alert when an environment regresses on libheif.
+      // null = boot probe still pending. Thereafter this tracks the latest
+      // real HEVC Storage rendition, so request-time outage/recovery changes
+      // the signal instead of leaving a stale boot snapshot.
       capabilities: {
         heic_decode: heic,
         // Onboarding import needs ANTHROPIC_API_KEY (LLM) + SUPABASE_DB_URL

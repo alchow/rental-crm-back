@@ -175,6 +175,13 @@ EXCLUDES=(
   # gets in CI. The direct PostgREST probe in the test builds its client
   # from the ANON key + a user JWT, never the service-role key.
   ':!api/test/rent-rollup.test.ts'
+  # api/test/tenancy-endings.test.ts / maintenance-reporter.test.ts: workflow
+  # integration tests. They assign the service-role env value so the app's
+  # admin-only setup paths can initialize, and use an admin client only for
+  # fixture creation/read-back of states the public API deliberately cannot
+  # manufacture. TEST code, never shipped.
+  ':!api/test/tenancy-endings.test.ts'
+  ':!api/test/maintenance-reporter.test.ts'
   # api/test/tenancy-start-date.test.ts: same shape as ledger.test.ts --
   # assigns process.env from supabase status so the app under test sees the
   # env it gets in CI. ASSIGNED, never read into a client constructor.

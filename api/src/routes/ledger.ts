@@ -34,7 +34,14 @@ import { ApiError, errorResponses } from './_lib/error';
 const LedgerCharge = z.object({
   kind: z.literal('charge'),
   id: z.string().uuid(),
+  // occurred_at stays as the backwards-compatible sort/display alias for
+  // due_date. The explicit fields below carry the financial meaning.
   occurred_at: z.string(),
+  due_date: z.string(),
+  period_start: z.string().nullable(),
+  period_end: z.string().nullable(),
+  source_schedule_id: z.string().uuid().nullable(),
+  source: z.enum(['manual', 'rent_schedule']),
   type: z.string(),
   amount_cents: z.number().int(),
   voided_at: z.string().nullable(),
@@ -68,26 +75,32 @@ const LedgerEntry = z.union([LedgerCharge, LedgerPayment]);
 // (zeros included) because the charge-type vocabulary is a closed DB CHECK
 // constraint; keep this list aligned with ChargeType in charges.ts.
 const TypeTotals = z.object({
-  charges_cents:   z.number().int(),
+  charges_cents: z.number().int(),
   allocated_cents: z.number().int(),
-  balance_cents:   z.number().int(),
+  balance_cents: z.number().int(),
 });
 const LedgerTotalsByType = z
   .object({
-    rent:              TypeTotals,
-    late_fee:          TypeTotals,
-    deposit:           TypeTotals,
-    utility:           TypeTotals,
-    parking:           TypeTotals,
+    rent: TypeTotals,
+    late_fee: TypeTotals,
+    deposit: TypeTotals,
+    utility: TypeTotals,
+    parking: TypeTotals,
     repair_chargeback: TypeTotals,
-    nsf_fee:           TypeTotals,
-    other:             TypeTotals,
+    nsf_fee: TypeTotals,
+    other: TypeTotals,
   })
   .openapi('LedgerTotalsByType');
 
 const CHARGE_TYPE_KEYS = [
-  'rent', 'late_fee', 'deposit', 'utility',
-  'parking', 'repair_chargeback', 'nsf_fee', 'other',
+  'rent',
+  'late_fee',
+  'deposit',
+  'utility',
+  'parking',
+  'repair_chargeback',
+  'nsf_fee',
+  'other',
 ] as const;
 type ChargeTypeKey = (typeof CHARGE_TYPE_KEYS)[number];
 
@@ -101,12 +114,12 @@ const LedgerResponse = z
     currency: z.string().nullable(),
     entries: z.array(LedgerEntry),
     totals: z.object({
-      rent_charges_cents:     z.number().int().openapi({ description: LEGACY_NON_DEPOSIT_NOTE }),
-      rent_payments_cents:    z.number().int().openapi({ description: LEGACY_NON_DEPOSIT_NOTE }),
-      rent_balance_cents:     z.number().int().openapi({ description: LEGACY_NON_DEPOSIT_NOTE }),
-      deposit_charges_cents:  z.number().int(),
+      rent_charges_cents: z.number().int().openapi({ description: LEGACY_NON_DEPOSIT_NOTE }),
+      rent_payments_cents: z.number().int().openapi({ description: LEGACY_NON_DEPOSIT_NOTE }),
+      rent_balance_cents: z.number().int().openapi({ description: LEGACY_NON_DEPOSIT_NOTE }),
+      deposit_charges_cents: z.number().int(),
       deposit_payments_cents: z.number().int(),
-      deposit_balance_cents:  z.number().int(),
+      deposit_balance_cents: z.number().int(),
       // The total a tenant has paid into this tenancy that has NOT yet been
       // applied to a charge. Equals
       //     sum(non-voided payments.amount_cents) - sum(active allocations)
@@ -115,17 +128,23 @@ const LedgerResponse = z
       // was later voided will show up here -- it's real money still owed
       // back to the tenant. This is the credit number a litigant could
       // point to and say "you have my money".
-      total_received_cents:    z.number().int(),
-      total_allocated_cents:   z.number().int(),
-      unapplied_credit_cents:  z.number().int(),
+      total_received_cents: z.number().int(),
+      total_allocated_cents: z.number().int(),
+      unapplied_credit_cents: z.number().int(),
       by_type: LedgerTotalsByType,
     }),
   })
   .openapi('LedgerResponse');
 
 const TenancyParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  tenancyId: z.string().uuid().openapi({ param: { name: 'tenancyId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  tenancyId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'tenancyId', in: 'path' } }),
 });
 
 const LedgerQuery = z.object({
@@ -136,7 +155,10 @@ const LedgerQuery = z.object({
   //   charge/payment voided AFTER as_of counts as live at as_of.
   //   Allocations count when both sides qualify.
   // Omit for the current view.
-  as_of: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  as_of: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
 });
 
 const get = createRoute({
@@ -166,6 +188,9 @@ interface ChargeRow {
   amount_cents: number;
   currency: string;
   due_date: string;
+  period_start: string | null;
+  period_end: string | null;
+  source_schedule_id: string | null;
   description: string | null;
   voided_at: string | null;
   void_reason: string | null;
@@ -197,8 +222,18 @@ ledgerApp.openapi(get, async (c) => {
   const sb = getSb(c);
 
   const [charges, payments] = await Promise.all([
-    sb.from('charges').select('*').eq('account_id', accountId).eq('tenancy_id', tenancyId).is('deleted_at', null),
-    sb.from('payments').select('*').eq('account_id', accountId).eq('tenancy_id', tenancyId).is('deleted_at', null),
+    sb
+      .from('charges')
+      .select('*')
+      .eq('account_id', accountId)
+      .eq('tenancy_id', tenancyId)
+      .is('deleted_at', null),
+    sb
+      .from('payments')
+      .select('*')
+      .eq('account_id', accountId)
+      .eq('tenancy_id', tenancyId)
+      .is('deleted_at', null),
   ]);
 
   if (charges.error) throw new ApiError(500, 'database_error', charges.error.message);
@@ -253,12 +288,8 @@ ledgerApp.openapi(get, async (c) => {
   const tenancyAllocations = allRows.filter((a) => paymentIds.has(a.payment_id));
 
   // Index voided rows so we can exclude their allocations from the balance.
-  const voidedPayments = new Set(
-    paymentRows.filter((p) => p.voided_at !== null).map((p) => p.id),
-  );
-  const voidedCharges = new Set(
-    chargeRows.filter((c) => c.voided_at !== null).map((c) => c.id),
-  );
+  const voidedPayments = new Set(paymentRows.filter((p) => p.voided_at !== null).map((p) => p.id));
+  const voidedCharges = new Set(chargeRows.filter((c) => c.voided_at !== null).map((c) => c.id));
 
   // Per-charge derived balance.
   // active allocation = allocation row whose payment AND charge are both not voided.
@@ -291,7 +322,10 @@ ledgerApp.openapi(get, async (c) => {
   const typeKey = (t: string): ChargeTypeKey =>
     (CHARGE_TYPE_KEYS as readonly string[]).includes(t) ? (t as ChargeTypeKey) : 'other';
 
-  let rentChargesC = 0, rentPaymentsC = 0, depositChargesC = 0, depositPaymentsC = 0;
+  let rentChargesC = 0,
+    rentPaymentsC = 0,
+    depositChargesC = 0,
+    depositPaymentsC = 0;
   for (const cr of chargeRows) {
     if (cr.voided_at) continue;
     if (cr.type === 'deposit') depositChargesC += cr.amount_cents;
@@ -337,6 +371,11 @@ ledgerApp.openapi(get, async (c) => {
       kind: 'charge',
       id: cr.id,
       occurred_at: cr.due_date,
+      due_date: cr.due_date,
+      period_start: cr.period_start,
+      period_end: cr.period_end,
+      source_schedule_id: cr.source_schedule_id,
+      source: cr.source_schedule_id === null ? 'manual' : 'rent_schedule',
       type: cr.type,
       amount_cents: cr.amount_cents,
       voided_at: cr.voided_at,
@@ -370,14 +409,14 @@ ledgerApp.openapi(get, async (c) => {
       currency,
       entries,
       totals: {
-        rent_charges_cents:     rentChargesC,
-        rent_payments_cents:    rentPaymentsC,
-        rent_balance_cents:     rentChargesC - rentPaymentsC,
-        deposit_charges_cents:  depositChargesC,
+        rent_charges_cents: rentChargesC,
+        rent_payments_cents: rentPaymentsC,
+        rent_balance_cents: rentChargesC - rentPaymentsC,
+        deposit_charges_cents: depositChargesC,
         deposit_payments_cents: depositPaymentsC,
-        deposit_balance_cents:  depositChargesC - depositPaymentsC,
-        total_received_cents:   totalReceivedC,
-        total_allocated_cents:  totalAllocatedC,
+        deposit_balance_cents: depositChargesC - depositPaymentsC,
+        total_received_cents: totalReceivedC,
+        total_allocated_cents: totalAllocatedC,
         unapplied_credit_cents: unappliedCreditC,
         by_type: byType,
       },

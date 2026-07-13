@@ -2807,6 +2807,181 @@ export interface paths {
         };
         trace?: never;
     };
+    "/v1/accounts/{accountId}/tenancies/{id}/ending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get the immutable ending fact for a tenancy */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description ending */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["TenancyEnding"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/tenancies/{id}/end": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * End or cancel a tenancy atomically
+         * @description Creates an immutable ending fact, marks the tenancy ended, and safely stops future rent generation in one transaction. cancelled_before_move_in is valid only for an upcoming tenancy and preserves its actual cancellation effective_date separately from tenancies.end_date. Schedules with live charges are retained for explicit void/correction. Repeated calls return 409 tenancy_already_ended. The generic tenancy PATCH remains a compatibility path during frontend migration but does not create an ending fact.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["EndTenancyBody"];
+                };
+            };
+            responses: {
+                /** @description ended */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EndTenancyResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/accounts/{accountId}/tenancies/{tenancyId}/members": {
         parameters: {
             query?: never;
@@ -5741,12 +5916,13 @@ export interface paths {
         };
         /**
          * Account-wide per-tenancy balances (rent / deposit / unapplied credit)
-         * @description One row per tenancy in the requested statuses (default active,holdover). Derived on read — recomputed from charges + payments + allocations with exactly the per-tenancy ledger's rules; rent_balance_cents matches the ledger's legacy all-non-deposit semantics. Not paginated: bounded by the account’s tenancy count.
+         * @description One row per tenancy in the requested statuses (default active,holdover). Include ended to add past tenancies with money still owed, unapplied credit, or a held deposit. Derived on read — recomputed from charges + payments + allocations with exactly the per-tenancy ledger's rules; rent_balance_cents matches the ledger's legacy all-non-deposit semantics. Precise current open-balance buckets are classified against ?as_of (default current UTC date). Not paginated: bounded by the account’s tenancy count.
          */
         get: {
             parameters: {
                 query?: {
                     status?: string;
+                    as_of?: string;
                 };
                 header?: never;
                 path: {
@@ -6796,7 +6972,7 @@ export interface paths {
         };
         /**
          * List interactions (filterable; keyset-paginated on occurred_at)
-         * @description Chronological journal feed. Filters: tenancy_id, maintenance_request_id, area_id, direction, party_type, latest_only, and party_id. `party_id` resolves the person through the CAST (interaction_participants), so a group message or witnessed exchange in which they were one of several participants still matches; combine it with party_type to narrow to that person's tenant vs. vendor leg. HEADS CAVEAT: the cast belongs to the ROOT entry of a correction chain — a correction/retraction row carries no cast of its own. So `party_id` combined with `latest_only=true` can EXCLUDE a corrected communication whose current head is a castless correction row; omit latest_only (the default full set) to see every entry that names the person.
+         * @description Chronological journal feed. Filters: tenancy_id, maintenance_request_id, area_id, property_id, direction, party_type, latest_only, and party_id. `party_id` resolves the person through the CAST (interaction_participants), so a group message or witnessed exchange in which they were one of several participants still matches; combine it with party_type to narrow to that person's tenant vs. vendor leg. HEADS CAVEAT: the cast belongs to the ROOT entry of a correction chain — a correction/retraction row carries no cast of its own. So `party_id` combined with `latest_only=true` can EXCLUDE a corrected communication whose current head is a castless correction row; omit latest_only (the default full set) to see every entry that names the person.
          */
         get: {
             parameters: {
@@ -6810,6 +6986,7 @@ export interface paths {
                     direction?: "inbound" | "outbound" | "mutual" | "unspecified" | "none";
                     party_id?: string;
                     area_id?: string;
+                    property_id?: string;
                 };
                 header?: never;
                 path: {
@@ -6919,6 +7096,15 @@ export interface paths {
                 };
                 /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
                 409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description property_id has zero/multiple live units, or the supplied area_id is outside it */
+                422: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -10273,7 +10459,10 @@ export interface paths {
             };
         };
         put?: never;
-        /** Upload a PDF document for a tenancy */
+        /**
+         * Upload a PDF or phone image document for a tenancy
+         * @description PDF uploads are stored directly. Image uploads preserve the exact original bytes and create a linked PDF rendition; document downloads and acknowledgements use the PDF while latest_version.original_* identifies the uploaded evidence.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -10334,6 +10523,15 @@ export interface paths {
                 };
                 /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
                 409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description image bytes could not be converted to PDF */
+                422: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -15699,11 +15897,82 @@ export interface components {
             status: "upcoming" | "active" | "ended" | "holdover";
         };
         PatchTenancyBody: {
+            /** Format: date */
             end_date?: string | null;
             /** @enum {string} */
             status?: "upcoming" | "active" | "ended" | "holdover";
-            /** @description Correction path for a wrong move-in date. Allowed only while the tenancy has no non-voided charges or payments (409 tenancy_has_money otherwise). A future date requires status='upcoming' in the same PATCH. */
+            /**
+             * Format: date
+             * @description Correction path for a wrong move-in date. Allowed only while the tenancy has no non-voided charges or payments (409 tenancy_has_money otherwise). A future date requires status='upcoming' in the same PATCH.
+             */
             start_date?: string;
+        };
+        TenancyEnding: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            account_id: string;
+            /** Format: uuid */
+            tenancy_id: string;
+            /** @enum {string} */
+            kind: "ended" | "cancelled_before_move_in";
+            effective_date: string;
+            /** @enum {string} */
+            initiated_by: "tenant" | "landlord" | "mutual" | "unknown";
+            reason_code: string;
+            reason_note: string | null;
+            /** Format: uuid */
+            source_notice_id: string | null;
+            /** Format: uuid */
+            source_interaction_id: string | null;
+            /** Format: uuid */
+            created_by: string;
+            created_at: string;
+        };
+        EndTenancyResponse: {
+            tenancy: components["schemas"]["Tenancy"];
+            ending: components["schemas"]["TenancyEnding"];
+        };
+        EndTenancyBody: {
+            /** @enum {string} */
+            kind: "ended";
+            /** Format: date */
+            effective_date: string;
+            /**
+             * @default unknown
+             * @enum {string}
+             */
+            initiated_by: "tenant" | "landlord" | "mutual" | "unknown";
+            reason_note?: string;
+            /** Format: uuid */
+            source_notice_id?: string;
+            /** Format: uuid */
+            source_interaction_id?: string;
+            /**
+             * @default other
+             * @enum {string}
+             */
+            reason_code: "notice" | "abandonment" | "fixed_term_completed" | "mutual_surrender" | "other";
+        } | {
+            /** @enum {string} */
+            kind: "cancelled_before_move_in";
+            /** Format: date */
+            effective_date: string;
+            /**
+             * @default unknown
+             * @enum {string}
+             */
+            initiated_by: "tenant" | "landlord" | "mutual" | "unknown";
+            reason_note?: string;
+            /** Format: uuid */
+            source_notice_id?: string;
+            /** Format: uuid */
+            source_interaction_id?: string;
+            /**
+             * @default other
+             * @enum {string}
+             */
+            reason_code: "applicant_withdrew" | "landlord_withdrew" | "other";
         };
         TenancyMember: {
             /** Format: uuid */
@@ -16104,6 +16373,13 @@ export interface components {
                 /** Format: uuid */
                 id: string;
                 occurred_at: string;
+                due_date: string;
+                period_start: string | null;
+                period_end: string | null;
+                /** Format: uuid */
+                source_schedule_id: string | null;
+                /** @enum {string} */
+                source: "manual" | "rent_schedule";
                 type: string;
                 amount_cents: number;
                 voided_at: string | null;
@@ -16155,8 +16431,20 @@ export interface components {
             rent_balance_cents: number;
             deposit_balance_cents: number;
             unapplied_credit_cents: number;
+            /** @description Current open non-deposit balance on charges due before as_of. */
+            non_deposit_overdue_cents: number;
+            /** @description Current open non-deposit balance on charges due on as_of. */
+            non_deposit_due_today_cents: number;
+            /** @description Current open non-deposit balance on billed charges due after as_of. */
+            non_deposit_upcoming_cents: number;
+            /** @description Current open balance on live deposit charges. */
+            deposit_owed_cents: number;
+            /** @description Active payment allocations held against live deposit charges. */
+            deposit_held_cents: number;
         };
         RentRollupResponse: {
+            /** @description UTC date used to classify overdue, due-today, and upcoming balances. */
+            as_of: string;
             data: components["schemas"]["RentRollupRow"][];
         };
         EventFeedItem: {
@@ -16310,6 +16598,24 @@ export interface components {
             id: string;
             revoked_at: string;
         };
+        /** @description Derived from the earliest linked inbound root interaction and its immutable sender cast. Null means no structured report interaction exists. */
+        MaintenanceReportedBy: {
+            /** @enum {string} */
+            source: "interaction";
+            /** Format: uuid */
+            interaction_id: string;
+            /** @enum {string} */
+            party_type: "tenant" | "landlord_user" | "vendor" | "agent" | "inspector" | "other" | "unknown";
+            /** Format: uuid */
+            party_id: string | null;
+            label: string | null;
+            address: string | null;
+            /** @enum {string} */
+            channel: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app";
+            reported_at: string;
+            /** @enum {string|null} */
+            attestation: "provider_verified" | "attested" | "imported" | null;
+        } | null;
         MaintenanceRequest: {
             /** Format: uuid */
             id: string;
@@ -16328,6 +16634,7 @@ export interface components {
             severity: "emergency" | "urgent" | "routine";
             /** @enum {string} */
             status: "open" | "triaged" | "in_progress" | "resolved" | "closed";
+            reported_by: components["schemas"]["MaintenanceReportedBy"];
             created_at: string;
             updated_at: string;
             deleted_at: string | null;
@@ -16345,6 +16652,21 @@ export interface components {
             description?: string;
             /** @enum {string} */
             severity: "emergency" | "urgent" | "routine";
+            /** @description Optional report provenance. When present, request + inbound interaction + sender cast are committed atomically. Reporter identity is not copied onto the mutable request row. */
+            report?: {
+                /** @enum {string} */
+                party_type: "tenant" | "landlord_user" | "vendor" | "agent" | "inspector" | "other" | "unknown";
+                /** Format: uuid */
+                party_id?: string;
+                label?: string;
+                address?: string;
+                /** @enum {string} */
+                channel: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app";
+                /** Format: date-time */
+                reported_at?: string;
+                /** @description The reporter’s wording when it differs from the request description. */
+                body?: string;
+            };
         };
         PatchMaintenanceRequestBody: {
             description?: string | null;
@@ -16410,6 +16732,8 @@ export interface components {
             /** Format: uuid */
             area_id: string | null;
             /** Format: uuid */
+            property_id: string | null;
+            /** Format: uuid */
             work_order_id: string | null;
             /** Format: uuid */
             vendor_id: string | null;
@@ -16453,6 +16777,11 @@ export interface components {
             maintenance_request_id?: string;
             /** Format: uuid */
             area_id?: string;
+            /**
+             * Format: uuid
+             * @description Place-resolution hint. The backend stores only canonical area_id. If omitted area_id and the property has exactly one live unit, that unit is used automatically; otherwise the request returns 422 property_requires_area.
+             */
+            property_id?: string;
             /** Format: uuid */
             work_order_id?: string;
             /** Format: uuid */
@@ -17061,6 +17390,13 @@ export interface components {
             created_at: string;
             updated_at: string;
             deleted_at: string | null;
+            /**
+             * Format: uuid
+             * @description The landlord-uploaded original. For image uploads this differs from attachment_id, which points to the derived PDF rendition.
+             */
+            original_attachment_id: string | null;
+            original_content_hash: string | null;
+            original_mime_type: string | null;
         } | null;
         Document: {
             /** Format: uuid */
@@ -17092,7 +17428,7 @@ export interface components {
             document_type: "lease" | "move_in" | "move_out" | "lead_paint" | "disclosure" | "other";
             title: string;
             requires_ack?: string;
-            /** @description PDF document file (multipart) */
+            /** @description PDF or image document file (JPEG, PNG, WebP, HEIC/HEIF; multipart) */
             file?: unknown;
         };
         CreateDocumentFromTemplateBody: {
