@@ -93,7 +93,11 @@ const app = buildApp();
 
 // --- helpers ----------------------------------------------------------------
 
-interface ApiResp { status: number; body: unknown; headers: Record<string, string> }
+interface ApiResp {
+  status: number;
+  body: unknown;
+  headers: Record<string, string>;
+}
 
 async function api(
   method: string,
@@ -113,7 +117,9 @@ async function api(
   }
   const res = await app.fetch(new Request(`http://test${path}`, init));
   const responseHeaders: Record<string, string> = {};
-  res.headers.forEach((v, k) => { responseHeaders[k] = v; });
+  res.headers.forEach((v, k) => {
+    responseHeaders[k] = v;
+  });
   const text = await res.text();
   return {
     status: res.status,
@@ -122,7 +128,9 @@ async function api(
   };
 }
 
-function rnd(): string { return Math.random().toString(36).slice(2, 10); }
+function rnd(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
 
 interface UserFixture {
   userId: string;
@@ -146,16 +154,18 @@ async function setupUser(label: string): Promise<UserFixture> {
   };
   const post = async <T>(p: string, body: unknown): Promise<T> => {
     const r = await api('POST', p, { token: b.session.access_token, body });
-    if (r.status !== 201) throw new Error(`setup POST ${p} failed: ${r.status} ${JSON.stringify(r.body)}`);
+    if (r.status !== 201)
+      throw new Error(`setup POST ${p} failed: ${r.status} ${JSON.stringify(r.body)}`);
     return r.body as T;
   };
-  const property = await post<{ id: string }>(
-    `/v1/accounts/${b.account.id}/properties`, { name: `${label} prop` },
-  );
-  const unitArea = await post<{ id: string }>(
-    `/v1/accounts/${b.account.id}/areas`,
-    { property_id: property.id, kind: 'unit', name: `${label} unit` },
-  );
+  const property = await post<{ id: string }>(`/v1/accounts/${b.account.id}/properties`, {
+    name: `${label} prop`,
+  });
+  const unitArea = await post<{ id: string }>(`/v1/accounts/${b.account.id}/areas`, {
+    property_id: property.id,
+    kind: 'unit',
+    name: `${label} unit`,
+  });
   return {
     userId: b.user.id,
     accessToken: b.session.access_token,
@@ -165,11 +175,16 @@ async function setupUser(label: string): Promise<UserFixture> {
   };
 }
 
-interface Failure { name: string; detail: string }
+interface Failure {
+  name: string;
+  detail: string;
+}
 const failures: Failure[] = [];
 async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try { await fn(); console.info(`  PASS  ${name}`); }
-  catch (e) {
+  try {
+    await fn();
+    console.info(`  PASS  ${name}`);
+  } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     failures.push({ name, detail });
     console.error(`  FAIL  ${name}: ${detail}`);
@@ -194,46 +209,65 @@ async function main(): Promise<void> {
     schedEnd?: string | null;
     amount?: number;
   }): Promise<{ tenancyId: string; scheduleId: string }> {
-    const t = await admin.from('tenancies').insert({
-      account_id: A.accountId,
-      area_id: A.unitAreaId,
-      start_date: opts.tenancyStart ?? '2026-01-01',
-      end_date: opts.tenancyEnd ?? null,
-      status: opts.tenancyStatus ?? 'active',
-    }).select('id').single();
+    const t = await admin
+      .from('tenancies')
+      .insert({
+        account_id: A.accountId,
+        area_id: A.unitAreaId,
+        start_date: opts.tenancyStart ?? '2026-01-01',
+        end_date: opts.tenancyEnd ?? null,
+        status: opts.tenancyStatus ?? 'active',
+      })
+      .select('id')
+      .single();
     if (t.error || !t.data) throw new Error(`seed tenancy: ${t.error?.message}`);
-    const s = await admin.from('rent_schedules').insert({
-      account_id: A.accountId,
-      tenancy_id: t.data.id,
-      kind: 'rent',
-      amount_cents: opts.amount ?? 200000,
-      currency: 'USD',
-      due_day: opts.dueDay,
-      start_date: opts.schedStart ?? '2026-01-01',
-      end_date: opts.schedEnd ?? null,
-    }).select('id').single();
+    const s = await admin
+      .from('rent_schedules')
+      .insert({
+        account_id: A.accountId,
+        tenancy_id: t.data.id,
+        kind: 'rent',
+        amount_cents: opts.amount ?? 200000,
+        currency: 'USD',
+        due_day: opts.dueDay,
+        start_date: opts.schedStart ?? '2026-01-01',
+        end_date: opts.schedEnd ?? null,
+      })
+      .select('id')
+      .single();
     if (s.error || !s.data) throw new Error(`seed schedule: ${s.error?.message}`);
     return { tenancyId: t.data.id, scheduleId: s.data.id };
   }
 
-  interface GenRow { o_charge_id: string; o_schedule_id: string; o_period_start: string; o_amount_cents: number }
+  interface GenRow {
+    o_charge_id: string;
+    o_schedule_id: string;
+    o_period_start: string;
+    o_amount_cents: number;
+  }
   async function generate(asOf: string): Promise<GenRow[]> {
     const r = await admin.rpc('generate_rent_charges', {
       p_account_id: A.accountId,
       p_as_of: asOf,
     });
     if (r.error) throw new Error(`generate(${asOf}): ${r.error.message}`);
-    return ((r.data as GenRow[] | null) ?? []);
+    return (r.data as GenRow[] | null) ?? [];
   }
 
-  async function chargesFor(scheduleId: string): Promise<{ id: string; period_start: string }[]> {
+  async function chargesFor(scheduleId: string): Promise<
+    Array<{
+      id: string;
+      period_start: string;
+      description: string | null;
+    }>
+  > {
     const { data, error } = await admin
       .from('charges')
-      .select('id, period_start')
+      .select('id, period_start, description')
       .eq('account_id', A.accountId)
       .eq('source_schedule_id', scheduleId);
     if (error) throw new Error(`chargesFor: ${error.message}`);
-    return (data ?? []) as { id: string; period_start: string }[];
+    return (data ?? []) as Array<{ id: string; period_start: string; description: string | null }>;
   }
 
   // =========================================================================
@@ -244,9 +278,11 @@ async function main(): Promise<void> {
     const { scheduleId } = await seed({ dueDay: 1 });
     const rows = await generate('2026-07-02T12:00:00Z');
     const mine = rows.filter((r) => r.o_schedule_id === scheduleId);
-    if (mine.length !== 0) throw new Error(`expected 0 generated rows while flag off, got ${mine.length}`);
+    if (mine.length !== 0)
+      throw new Error(`expected 0 generated rows while flag off, got ${mine.length}`);
     const charges = await chargesFor(scheduleId);
-    if (charges.length !== 0) throw new Error(`expected 0 charges while flag off, got ${charges.length}`);
+    if (charges.length !== 0)
+      throw new Error(`expected 0 charges while flag off, got ${charges.length}`);
   });
 
   // Flip the opt-in on for A (admin path -- the API PATCH route would do this
@@ -277,17 +313,24 @@ async function main(): Promise<void> {
     if (mine[0]!.o_period_start !== '2026-07-01') {
       throw new Error(`expected period_start 2026-07-01, got ${mine[0]!.o_period_start}`);
     }
-  });
-
-  await check('timing: due_day=1, as_of 2026-07-02 -> period_start 2026-08-01 (advance)', async () => {
-    const { scheduleId } = await seed({ dueDay: 1 });
-    const rows = await generate('2026-07-02T12:00:00Z');
-    const mine = rows.filter((r) => r.o_schedule_id === scheduleId);
-    if (mine.length !== 1) throw new Error(`expected 1 generated row, got ${mine.length}`);
-    if (mine[0]!.o_period_start !== '2026-08-01') {
-      throw new Error(`expected period_start 2026-08-01, got ${mine[0]!.o_period_start}`);
+    const charges = await chargesFor(scheduleId);
+    if (charges[0]?.description !== null) {
+      throw new Error(`generated description must be null, got ${String(charges[0]?.description)}`);
     }
   });
+
+  await check(
+    'timing: due_day=1, as_of 2026-07-02 -> period_start 2026-08-01 (advance)',
+    async () => {
+      const { scheduleId } = await seed({ dueDay: 1 });
+      const rows = await generate('2026-07-02T12:00:00Z');
+      const mine = rows.filter((r) => r.o_schedule_id === scheduleId);
+      if (mine.length !== 1) throw new Error(`expected 1 generated row, got ${mine.length}`);
+      if (mine[0]!.o_period_start !== '2026-08-01') {
+        throw new Error(`expected period_start 2026-08-01, got ${mine[0]!.o_period_start}`);
+      }
+    },
+  );
 
   await check('timing: due_day=15, as_of 2026-07-10 -> period_start 2026-07-15', async () => {
     const { scheduleId } = await seed({ dueDay: 15 });
@@ -299,32 +342,43 @@ async function main(): Promise<void> {
     }
   });
 
-  await check('timing: due_day=15, as_of 2026-07-16 -> period_start 2026-08-15 (advance)', async () => {
-    const { scheduleId } = await seed({ dueDay: 15 });
-    const rows = await generate('2026-07-16T12:00:00Z');
-    const mine = rows.filter((r) => r.o_schedule_id === scheduleId);
-    if (mine.length !== 1) throw new Error(`expected 1 generated row, got ${mine.length}`);
-    if (mine[0]!.o_period_start !== '2026-08-15') {
-      throw new Error(`expected period_start 2026-08-15, got ${mine[0]!.o_period_start}`);
-    }
-  });
+  await check(
+    'timing: due_day=15, as_of 2026-07-16 -> period_start 2026-08-15 (advance)',
+    async () => {
+      const { scheduleId } = await seed({ dueDay: 15 });
+      const rows = await generate('2026-07-16T12:00:00Z');
+      const mine = rows.filter((r) => r.o_schedule_id === scheduleId);
+      if (mine.length !== 1) throw new Error(`expected 1 generated row, got ${mine.length}`);
+      if (mine[0]!.o_period_start !== '2026-08-15') {
+        throw new Error(`expected period_start 2026-08-15, got ${mine[0]!.o_period_start}`);
+      }
+    },
+  );
 
   // =========================================================================
   // (C) Idempotency -- double-run same as_of
   // =========================================================================
 
-  await check('idempotent: same as_of twice -> exactly one charge per (schedule, period)', async () => {
-    const { scheduleId } = await seed({ dueDay: 1 });
-    const r1 = (await generate('2026-07-02T12:00:00Z')).filter((r) => r.o_schedule_id === scheduleId);
-    const r2 = (await generate('2026-07-02T12:00:00Z')).filter((r) => r.o_schedule_id === scheduleId);
-    if (r1.length !== 1) throw new Error(`run1 expected 1 insert, got ${r1.length}`);
-    if (r2.length !== 0) throw new Error(`run2 expected 0 inserts (ON CONFLICT), got ${r2.length}`);
-    const charges = await chargesFor(scheduleId);
-    if (charges.length !== 1) throw new Error(`expected exactly 1 charge, got ${charges.length}`);
-    if (charges[0]!.period_start !== '2026-08-01') {
-      throw new Error(`expected period 2026-08-01, got ${charges[0]!.period_start}`);
-    }
-  });
+  await check(
+    'idempotent: same as_of twice -> exactly one charge per (schedule, period)',
+    async () => {
+      const { scheduleId } = await seed({ dueDay: 1 });
+      const r1 = (await generate('2026-07-02T12:00:00Z')).filter(
+        (r) => r.o_schedule_id === scheduleId,
+      );
+      const r2 = (await generate('2026-07-02T12:00:00Z')).filter(
+        (r) => r.o_schedule_id === scheduleId,
+      );
+      if (r1.length !== 1) throw new Error(`run1 expected 1 insert, got ${r1.length}`);
+      if (r2.length !== 0)
+        throw new Error(`run2 expected 0 inserts (ON CONFLICT), got ${r2.length}`);
+      const charges = await chargesFor(scheduleId);
+      if (charges.length !== 1) throw new Error(`expected exactly 1 charge, got ${charges.length}`);
+      if (charges[0]!.period_start !== '2026-08-01') {
+        throw new Error(`expected period 2026-08-01, got ${charges[0]!.period_start}`);
+      }
+    },
+  );
 
   // =========================================================================
   // (D) Period-scoped bounds
@@ -334,16 +388,24 @@ async function main(): Promise<void> {
     // due_day=1, as_of 2026-07-02 -> p_start 2026-08-01. end_date 2026-06-30
     // is before that period, so nothing should generate.
     const { scheduleId } = await seed({ dueDay: 1, schedEnd: '2026-06-30' });
-    const rows = (await generate('2026-07-02T12:00:00Z')).filter((r) => r.o_schedule_id === scheduleId);
-    if (rows.length !== 0) throw new Error(`expected 0 generated rows past schedule end, got ${rows.length}`);
-    if ((await chargesFor(scheduleId)).length !== 0) throw new Error('expected 0 charges past schedule end');
+    const rows = (await generate('2026-07-02T12:00:00Z')).filter(
+      (r) => r.o_schedule_id === scheduleId,
+    );
+    if (rows.length !== 0)
+      throw new Error(`expected 0 generated rows past schedule end, got ${rows.length}`);
+    if ((await chargesFor(scheduleId)).length !== 0)
+      throw new Error('expected 0 charges past schedule end');
   });
 
   await check('bounds: ended tenancy with open schedule -> not charged', async () => {
     const { scheduleId } = await seed({ dueDay: 1, tenancyStatus: 'ended' });
-    const rows = (await generate('2026-07-02T12:00:00Z')).filter((r) => r.o_schedule_id === scheduleId);
-    if (rows.length !== 0) throw new Error(`expected 0 generated rows for ended tenancy, got ${rows.length}`);
-    if ((await chargesFor(scheduleId)).length !== 0) throw new Error('expected 0 charges for ended tenancy');
+    const rows = (await generate('2026-07-02T12:00:00Z')).filter(
+      (r) => r.o_schedule_id === scheduleId,
+    );
+    if (rows.length !== 0)
+      throw new Error(`expected 0 generated rows for ended tenancy, got ${rows.length}`);
+    if ((await chargesFor(scheduleId)).length !== 0)
+      throw new Error('expected 0 charges for ended tenancy');
   });
 
   await check('holdover: status=holdover past its end_date -> STILL billed', async () => {
@@ -352,12 +414,19 @@ async function main(): Promise<void> {
     // as_of 2026-07-02 -> p_start 2026-08-01; end_date 2026-06-30 is already in
     // the past, but the 'holdover' status overrides the tenancy end_date bound.
     const { scheduleId } = await seed({
-      dueDay: 1, tenancyStatus: 'holdover', tenancyEnd: '2026-06-30',
+      dueDay: 1,
+      tenancyStatus: 'holdover',
+      tenancyEnd: '2026-06-30',
     });
-    const rows = (await generate('2026-07-02T12:00:00Z')).filter((r) => r.o_schedule_id === scheduleId);
-    if (rows.length !== 1) throw new Error(`expected 1 generated row for holdover, got ${rows.length}`);
+    const rows = (await generate('2026-07-02T12:00:00Z')).filter(
+      (r) => r.o_schedule_id === scheduleId,
+    );
+    if (rows.length !== 1)
+      throw new Error(`expected 1 generated row for holdover, got ${rows.length}`);
     if (rows[0]!.o_period_start !== '2026-08-01') {
-      throw new Error(`expected period_start 2026-08-01 for holdover, got ${rows[0]!.o_period_start}`);
+      throw new Error(
+        `expected period_start 2026-08-01 for holdover, got ${rows[0]!.o_period_start}`,
+      );
     }
   });
 
@@ -366,11 +435,17 @@ async function main(): Promise<void> {
     // end_date. Same derived p_start 2026-08-01; end_date 2026-06-30 < p_start
     // excludes it via the (t.end_date >= p_start) clause.
     const { scheduleId } = await seed({
-      dueDay: 1, tenancyStatus: 'active', tenancyEnd: '2026-06-30',
+      dueDay: 1,
+      tenancyStatus: 'active',
+      tenancyEnd: '2026-06-30',
     });
-    const rows = (await generate('2026-07-02T12:00:00Z')).filter((r) => r.o_schedule_id === scheduleId);
-    if (rows.length !== 0) throw new Error(`expected 0 rows for active-past-end, got ${rows.length}`);
-    if ((await chargesFor(scheduleId)).length !== 0) throw new Error('expected 0 charges for active-past-end');
+    const rows = (await generate('2026-07-02T12:00:00Z')).filter(
+      (r) => r.o_schedule_id === scheduleId,
+    );
+    if (rows.length !== 0)
+      throw new Error(`expected 0 rows for active-past-end, got ${rows.length}`);
+    if ((await chargesFor(scheduleId)).length !== 0)
+      throw new Error('expected 0 charges for active-past-end');
   });
 
   // =========================================================================
@@ -402,40 +477,65 @@ async function main(): Promise<void> {
 
     // A subsequent generate for a period AFTER the end must emit nothing: both
     // the schedule end_date (2026-07-31) and the ended-tenancy guard exclude it.
-    const rows = (await generate('2026-08-02T12:00:00Z')).filter((r) => r.o_schedule_id === scheduleId);
-    if (rows.length !== 0) throw new Error(`expected 0 generated rows after tenancy end, got ${rows.length}`);
+    const rows = (await generate('2026-08-02T12:00:00Z')).filter(
+      (r) => r.o_schedule_id === scheduleId,
+    );
+    if (rows.length !== 0)
+      throw new Error(`expected 0 generated rows after tenancy end, got ${rows.length}`);
   });
 
-  await check('extend: pushing end_date out (status still active) keeps billing; cascade does NOT fire', async () => {
-    // Planned move-out 2026-07-31 on an OPEN schedule. Before extending, a
-    // period after the move-out is bounded out by the live tenancy.end_date.
-    const { tenancyId, scheduleId } = await seed({
-      dueDay: 1, tenancyStatus: 'active', tenancyEnd: '2026-07-31',
-    });
-    const before = (await generate('2026-08-02T12:00:00Z')).filter((r) => r.o_schedule_id === scheduleId);
-    if (before.length !== 0) throw new Error(`expected 0 rows before extend (bounded by end_date), got ${before.length}`);
+  await check(
+    'extend: pushing end_date out (status still active) keeps billing; cascade does NOT fire',
+    async () => {
+      // Planned move-out 2026-07-31 on an OPEN schedule. Before extending, a
+      // period after the move-out is bounded out by the live tenancy.end_date.
+      const { tenancyId, scheduleId } = await seed({
+        dueDay: 1,
+        tenancyStatus: 'active',
+        tenancyEnd: '2026-07-31',
+      });
+      const before = (await generate('2026-08-02T12:00:00Z')).filter(
+        (r) => r.o_schedule_id === scheduleId,
+      );
+      if (before.length !== 0)
+        throw new Error(
+          `expected 0 rows before extend (bounded by end_date), got ${before.length}`,
+        );
 
-    // EXTEND: push end_date far out; status stays 'active'. The cascade fires
-    // ONLY on status->'ended', so this end_date edit must NOT touch the
-    // schedule (otherwise the extended term would be stuck short).
-    const upd = await admin.from('tenancies').update({ end_date: '2027-12-31' }).eq('id', tenancyId);
-    if (upd.error) throw new Error(`extend tenancy: ${upd.error.message}`);
+      // EXTEND: push end_date far out; status stays 'active'. The cascade fires
+      // ONLY on status->'ended', so this end_date edit must NOT touch the
+      // schedule (otherwise the extended term would be stuck short).
+      const upd = await admin
+        .from('tenancies')
+        .update({ end_date: '2027-12-31' })
+        .eq('id', tenancyId);
+      if (upd.error) throw new Error(`extend tenancy: ${upd.error.message}`);
 
-    const { data: sched, error } = await admin
-      .from('rent_schedules').select('end_date').eq('id', scheduleId).single();
-    if (error || !sched) throw new Error(`read schedule after extend: ${error?.message}`);
-    if (sched.end_date !== null) {
-      throw new Error(`schedule end_date must stay null after an end_date-only edit, got ${sched.end_date}`);
-    }
+      const { data: sched, error } = await admin
+        .from('rent_schedules')
+        .select('end_date')
+        .eq('id', scheduleId)
+        .single();
+      if (error || !sched) throw new Error(`read schedule after extend: ${error?.message}`);
+      if (sched.end_date !== null) {
+        throw new Error(
+          `schedule end_date must stay null after an end_date-only edit, got ${sched.end_date}`,
+        );
+      }
 
-    // Billing now continues into the extended term: p_start 2026-09-01 is now
-    // within the live tenancy end_date 2027-12-31.
-    const after = (await generate('2026-08-02T12:00:00Z')).filter((r) => r.o_schedule_id === scheduleId);
-    if (after.length !== 1) throw new Error(`expected 1 row after extend, got ${after.length}`);
-    if (after[0]!.o_period_start !== '2026-09-01') {
-      throw new Error(`expected period_start 2026-09-01 after extend, got ${after[0]!.o_period_start}`);
-    }
-  });
+      // Billing now continues into the extended term: p_start 2026-09-01 is now
+      // within the live tenancy end_date 2027-12-31.
+      const after = (await generate('2026-08-02T12:00:00Z')).filter(
+        (r) => r.o_schedule_id === scheduleId,
+      );
+      if (after.length !== 1) throw new Error(`expected 1 row after extend, got ${after.length}`);
+      if (after[0]!.o_period_start !== '2026-09-01') {
+        throw new Error(
+          `expected period_start 2026-09-01 after extend, got ${after[0]!.o_period_start}`,
+        );
+      }
+    },
+  );
 
   await check('cascade fires ONLY on status->ended, not on an end_date edit', async () => {
     const { tenancyId, scheduleId } = await seed({ dueDay: 1, tenancyStatus: 'active' });
@@ -446,7 +546,9 @@ async function main(): Promise<void> {
     let sched = await admin.from('rent_schedules').select('end_date').eq('id', scheduleId).single();
     if (sched.error) throw new Error(`read schedule (1): ${sched.error.message}`);
     if (sched.data!.end_date !== null) {
-      throw new Error(`schedule end_date must stay null on an end_date-only edit, got ${sched.data!.end_date}`);
+      throw new Error(
+        `schedule end_date must stay null on an end_date-only edit, got ${sched.data!.end_date}`,
+      );
     }
 
     // Step 2: flip status to 'ended' -> schedule end_date := coalesce(end_date, today).
@@ -455,11 +557,15 @@ async function main(): Promise<void> {
     sched = await admin.from('rent_schedules').select('end_date').eq('id', scheduleId).single();
     if (sched.error) throw new Error(`read schedule (2): ${sched.error.message}`);
     if (sched.data!.end_date !== '2027-06-30') {
-      throw new Error(`expected schedule end_date 2027-06-30 after status->ended, got ${sched.data!.end_date}`);
+      throw new Error(
+        `expected schedule end_date 2027-06-30 after status->ended, got ${sched.data!.end_date}`,
+      );
     }
 
     // Step 3: no billing for a period after the cascaded end.
-    const rows = (await generate('2027-07-02T12:00:00Z')).filter((r) => r.o_schedule_id === scheduleId);
+    const rows = (await generate('2027-07-02T12:00:00Z')).filter(
+      (r) => r.o_schedule_id === scheduleId,
+    );
     if (rows.length !== 0) throw new Error(`expected 0 rows after cascade end, got ${rows.length}`);
   });
 
@@ -474,51 +580,65 @@ async function main(): Promise<void> {
   // URL level + the caller's JWT in the Authorization header, which is what RLS
   // and auth.uid() key off). This is the REAL member write path, not a fake.
 
-  await check('H1 guard: member (owner) may set auto_charge_enabled but NOT other columns', async () => {
-    const { createClient } = await import('@supabase/supabase-js');
-    const userSb = createClient(status.API_URL, status.ANON_KEY, {
-      global: { headers: { Authorization: `Bearer ${A.accessToken}` } },
-      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-    });
+  await check(
+    'H1 guard: member (owner) may set auto_charge_enabled but NOT other columns',
+    async () => {
+      const { createClient } = await import('@supabase/supabase-js');
+      const userSb = createClient(status.API_URL, status.ANON_KEY, {
+        global: { headers: { Authorization: `Bearer ${A.accessToken}` } },
+        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      });
 
-    // ALLOWED: auto_charge_enabled is a member-writable column. A is the owner
-    // of their account (signup creates the owner membership), so the
-    // accounts_manager_update RLS policy authorises the row and the column-level
-    // UPDATE grant on auto_charge_enabled lets the write through.
-    const ok = await userSb
-      .from('accounts')
-      .update({ auto_charge_enabled: true })
-      .eq('id', A.accountId)
-      .select('auto_charge_enabled')
-      .maybeSingle();
-    if (ok.error) throw new Error(`member auto_charge_enabled update should succeed, got ${ok.error.message}`);
-    if (ok.data?.auto_charge_enabled !== true) {
-      throw new Error('auto_charge_enabled did not persist true on the user path');
-    }
+      // ALLOWED: auto_charge_enabled is a member-writable column. A is the owner
+      // of their account (signup creates the owner membership), so the
+      // accounts_manager_update RLS policy authorises the row and the column-level
+      // UPDATE grant on auto_charge_enabled lets the write through.
+      const ok = await userSb
+        .from('accounts')
+        .update({ auto_charge_enabled: true })
+        .eq('id', A.accountId)
+        .select('auto_charge_enabled')
+        .maybeSingle();
+      if (ok.error)
+        throw new Error(
+          `member auto_charge_enabled update should succeed, got ${ok.error.message}`,
+        );
+      if (ok.data?.auto_charge_enabled !== true) {
+        throw new Error('auto_charge_enabled did not persist true on the user path');
+      }
 
-    // REJECTED: any other column (here: name). RLS still permits the row (A is
-    // owner), but the user JWT has no UPDATE grant on `name`, so Postgres raises
-    // insufficient_privilege (SQLSTATE 42501 -> PostgREST HTTP 403).
-    const bad = await userSb
-      .from('accounts')
-      .update({ name: 'hijacked-by-member' })
-      .eq('id', A.accountId)
-      .select('name')
-      .maybeSingle();
-    if (!bad.error) {
-      throw new Error('member UPDATE of accounts.name should be rejected (no column grant), but it succeeded');
-    }
-    if (bad.error.code !== '42501') {
-      throw new Error(`expected insufficient_privilege (42501), got code=${bad.error.code} msg=${bad.error.message}`);
-    }
+      // REJECTED: any other column (here: name). RLS still permits the row (A is
+      // owner), but the user JWT has no UPDATE grant on `name`, so Postgres raises
+      // insufficient_privilege (SQLSTATE 42501 -> PostgREST HTTP 403).
+      const bad = await userSb
+        .from('accounts')
+        .update({ name: 'hijacked-by-member' })
+        .eq('id', A.accountId)
+        .select('name')
+        .maybeSingle();
+      if (!bad.error) {
+        throw new Error(
+          'member UPDATE of accounts.name should be rejected (no column grant), but it succeeded',
+        );
+      }
+      if (bad.error.code !== '42501') {
+        throw new Error(
+          `expected insufficient_privilege (42501), got code=${bad.error.code} msg=${bad.error.message}`,
+        );
+      }
 
-    // Confirm the write was actually blocked (not merely hidden from RETURNING):
-    // re-read via admin and assert the name is unchanged.
-    const { data: acct, error: readErr } = await admin
-      .from('accounts').select('name').eq('id', A.accountId).single();
-    if (readErr || !acct) throw new Error(`re-read account: ${readErr?.message}`);
-    if (acct.name === 'hijacked-by-member') throw new Error('account name was changed despite the guard');
-  });
+      // Confirm the write was actually blocked (not merely hidden from RETURNING):
+      // re-read via admin and assert the name is unchanged.
+      const { data: acct, error: readErr } = await admin
+        .from('accounts')
+        .select('name')
+        .eq('id', A.accountId)
+        .single();
+      if (readErr || !acct) throw new Error(`re-read account: ${readErr?.message}`);
+      if (acct.name === 'hijacked-by-member')
+        throw new Error('account name was changed despite the guard');
+    },
+  );
 
   // --- summary ---
   if (failures.length > 0) {

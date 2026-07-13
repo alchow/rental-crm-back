@@ -6,7 +6,8 @@ import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { paginated } from './_lib/list-response';
 import { softDeleteStamp } from './_lib/soft-delete';
-import { processAndStoreBytes, removeOrphanStoredObject } from '../admin/storage';
+import { MAX_BYTES, processAndStoreBytes, storeExactBytes } from '../admin/storage';
+import { renderDocumentImagePdf } from '../admin/document-image';
 import {
   documentTemplates,
   getDocumentTemplate,
@@ -76,6 +77,13 @@ const rateLimitedResponse = {
 const DocumentType = z.enum(['lease', 'move_in', 'move_out', 'lead_paint', 'disclosure', 'other']);
 const VersionSource = z.enum(['landlord_upload', 'bundled_static']);
 const AccessEventType = z.enum(['viewed', 'downloaded', 'acknowledged']);
+const IMAGE_DOCUMENT_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+]);
 
 const DocumentVersion = z
   .object({
@@ -94,6 +102,17 @@ const DocumentVersion = z
     created_at: z.string(),
     updated_at: z.string(),
     deleted_at: z.string().nullable(),
+    original_attachment_id: z
+      .string()
+      .uuid()
+      .nullable()
+      .openapi({
+        description:
+          'The landlord-uploaded original. For image uploads this differs from attachment_id, ' +
+          'which points to the derived PDF rendition.',
+      }),
+    original_content_hash: z.string().nullable(),
+    original_mime_type: z.string().nullable(),
   })
   .openapi('DocumentVersion');
 
@@ -198,7 +217,7 @@ const UploadBody = z
     document_type: DocumentType,
     title: z.string(),
     requires_ack: z.string().optional(),
-    file: z.any().describe('PDF document file (multipart)'),
+    file: z.any().describe('PDF or image document file (JPEG, PNG, WebP, HEIC/HEIF; multipart)'),
   })
   .openapi('DocumentUploadBody');
 
@@ -281,7 +300,55 @@ async function latestVersions(
     .is('deleted_at', null)
     .order('version_no', { ascending: false });
   if (error) throw new ApiError(500, 'database_error', error.message);
-  for (const row of (data ?? []) as z.infer<typeof DocumentVersion>[]) {
+  const raw = (data ?? []) as Array<
+    Omit<
+      z.infer<typeof DocumentVersion>,
+      'original_attachment_id' | 'original_content_hash' | 'original_mime_type'
+    >
+  >;
+  const attachmentIds = raw
+    .map((row) => row.attachment_id)
+    .filter((id): id is string => id !== null);
+  const attachmentById = new Map<
+    string,
+    { id: string; derived_from: string | null; content_hash: string; mime_type: string | null }
+  >();
+  if (attachmentIds.length > 0) {
+    const current = await sb
+      .from('attachments')
+      .select('id, derived_from, content_hash, mime_type')
+      .eq('account_id', accountId)
+      .in('id', attachmentIds)
+      .is('deleted_at', null);
+    if (current.error) throw new ApiError(500, 'database_error', current.error.message);
+    for (const attachment of current.data ?? []) attachmentById.set(attachment.id, attachment);
+    const parentIds = (current.data ?? [])
+      .map((attachment) => attachment.derived_from)
+      .filter((id): id is string => id !== null);
+    if (parentIds.length > 0) {
+      const parents = await sb
+        .from('attachments')
+        .select('id, derived_from, content_hash, mime_type')
+        .eq('account_id', accountId)
+        .in('id', parentIds)
+        .is('deleted_at', null);
+      if (parents.error) throw new ApiError(500, 'database_error', parents.error.message);
+      for (const attachment of parents.data ?? []) attachmentById.set(attachment.id, attachment);
+    }
+  }
+  const versions: z.infer<typeof DocumentVersion>[] = raw.map((row) => {
+    const rendition = row.attachment_id ? attachmentById.get(row.attachment_id) : undefined;
+    const original = rendition?.derived_from
+      ? attachmentById.get(rendition.derived_from)
+      : rendition;
+    return {
+      ...row,
+      original_attachment_id: original?.id ?? null,
+      original_content_hash: original?.content_hash ?? null,
+      original_mime_type: original?.mime_type ?? null,
+    };
+  });
+  for (const row of versions) {
     if (!out.has(row.document_id)) out.set(row.document_id, row);
   }
   return out;
@@ -358,11 +425,60 @@ async function createTenancyDocument(
   }
   const result = data as { document: object; version: object; deduped?: boolean } | null;
   if (!result) throw new ApiError(500, 'database_error', 'document creation returned no row');
+  const rawDocument = result.document as { id?: unknown };
+  if (typeof rawDocument.id !== 'string') {
+    throw new ApiError(500, 'database_error', 'document creation returned no document id');
+  }
+  const versions = await latestVersions(sb, params.p_account_id, [rawDocument.id]);
+  const version = versions.get(rawDocument.id);
+  if (!version) throw new ApiError(500, 'database_error', 'document creation returned no version');
   const document = {
     ...(result.document as object),
-    latest_version: result.version,
+    latest_version: version,
   } as z.infer<typeof DocumentRow>;
   return { document, deduped: result.deduped ?? false };
+}
+
+async function createTenancyDocumentFromImage(
+  sb: ReturnType<typeof getSb>,
+  params: {
+    p_account_id: string;
+    p_tenancy_id: string;
+    p_document_type: z.infer<typeof DocumentType>;
+    p_title: string;
+    p_requires_ack: boolean;
+    p_original_hash: string;
+    p_original_mime_type: string;
+    p_original_size_bytes: number;
+    p_original_path: string;
+    p_pdf_hash: string;
+    p_pdf_size_bytes: number;
+    p_pdf_path: string;
+  },
+): Promise<{ document: z.infer<typeof DocumentRow>; deduped: boolean }> {
+  const { data, error } = await sb.rpc('create_tenancy_document_from_image', params);
+  if (error) {
+    if (error.code === 'P0002' || /tenancy_not_found/.test(error.message)) {
+      throw new ApiError(404, 'not_found', 'tenancy not found');
+    }
+    if (error.code === '22023') throw new ApiError(400, 'invalid_request', error.message);
+    throw new ApiError(500, 'database_error', error.message);
+  }
+  const result = data as { document?: { id?: unknown }; deduped?: boolean } | null;
+  if (!result || typeof result.document?.id !== 'string') {
+    throw new ApiError(500, 'database_error', 'image document creation returned no document id');
+  }
+  const documentId = result.document.id;
+  const versions = await latestVersions(sb, params.p_account_id, [documentId]);
+  const version = versions.get(documentId);
+  if (!version)
+    throw new ApiError(500, 'database_error', 'image document creation returned no version');
+  return {
+    document: { ...(result.document as object), latest_version: version } as z.infer<
+      typeof DocumentRow
+    >,
+    deduped: result.deduped ?? false,
+  };
 }
 
 // ----- authenticated landlord routes ---------------------------------------
@@ -413,7 +529,11 @@ const uploadRoute = createRoute({
   method: 'post',
   path: '/accounts/{accountId}/documents',
   tags: ['documents'],
-  summary: 'Upload a PDF document for a tenancy',
+  summary: 'Upload a PDF or phone image document for a tenancy',
+  description:
+    'PDF uploads are stored directly. Image uploads preserve the exact original bytes and ' +
+    'create a linked PDF rendition; document downloads and acknowledgements use the PDF while ' +
+    'latest_version.original_* identifies the uploaded evidence.',
   request: {
     params: AccountParam,
     body: { content: { 'multipart/form-data': { schema: UploadBody } }, required: true },
@@ -424,6 +544,12 @@ const uploadRoute = createRoute({
       content: { 'application/json': { schema: DocumentRow } },
     },
     201: { description: 'created', content: { 'application/json': { schema: DocumentRow } } },
+    422: {
+      description: 'image bytes could not be converted to PDF',
+      content: {
+        'application/json': { schema: errorResponses[400].content['application/json'].schema },
+      },
+    },
     ...errorResponses,
   },
 });
@@ -562,8 +688,13 @@ documentsApp.openapi(uploadRoute, async (c) => {
   if (!file || typeof file === 'string' || !('arrayBuffer' in file)) {
     throw new ApiError(400, 'invalid_request', 'file part missing');
   }
-  if ((file as File).type !== 'application/pdf') {
-    throw new ApiError(400, 'invalid_request', 'documents must be uploaded as application/pdf');
+  const mimeType = (file as File).type;
+  if (mimeType !== 'application/pdf' && !IMAGE_DOCUMENT_MIME_TYPES.has(mimeType)) {
+    throw new ApiError(
+      400,
+      'invalid_request',
+      'documents must be PDF, JPEG, PNG, WebP, HEIC, or HEIF',
+    );
   }
 
   const sb = getSb(c);
@@ -581,32 +712,53 @@ documentsApp.openapi(uploadRoute, async (c) => {
   if (!tenancy) throw new ApiError(404, 'not_found', 'tenancy not found');
 
   // Store the bytes first (service-role; content-addressed). The attachment +
-  // document + version ROWS are then written atomically by the RPC. If the RPC
-  // fails, the rows never land and we remove the just-stored object so the
-  // tenant PDF isn't leaked -- never a half-written document.
+  // document + version ROWS are then written atomically by the RPC. A failed
+  // RPC can leave a private, unreachable storage orphan for a future age-gated
+  // janitor; request-time deletion could race another upload of the same hash.
   const bytes = new Uint8Array(await (file as File).arrayBuffer());
-  const stored = await processAndStoreBytes(accountId, bytes, 'application/pdf');
-  let created: { document: z.infer<typeof DocumentRow>; deduped: boolean };
-  try {
-    created = await createTenancyDocument(sb, {
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_BYTES) {
+    throw new ApiError(400, 'invalid_request', 'document file is empty or exceeds 20 MiB');
+  }
+
+  if (mimeType !== 'application/pdf') {
+    const originalHash = createHash('sha256').update(bytes).digest('hex');
+    const pdfBytes = await renderDocumentImagePdf(bytes, originalHash);
+    const original = await storeExactBytes(accountId, bytes, mimeType);
+    const pdf = await storeExactBytes(accountId, pdfBytes, 'application/pdf');
+    const created = await createTenancyDocumentFromImage(sb, {
       p_account_id: accountId,
       p_tenancy_id: parsed.data.tenancy_id,
       p_document_type: parsed.data.document_type,
       p_title: parsed.data.title,
       p_requires_ack: parsed.data.requires_ack ?? false,
-      p_source: 'landlord_upload',
-      p_content_hash: stored.primary.hash,
-      p_mime_type: stored.primary.mimeType,
-      p_size_bytes: stored.primary.sizeBytes,
-      p_attachment_path: stored.primary.storagePath,
+      p_original_hash: original.hash,
+      p_original_mime_type: original.mimeType,
+      p_original_size_bytes: original.sizeBytes,
+      p_original_path: original.storagePath,
+      p_pdf_hash: pdf.hash,
+      p_pdf_size_bytes: pdf.sizeBytes,
+      p_pdf_path: pdf.storagePath,
     });
-  } catch (e) {
-    // Rows didn't land -> don't leak the stored PDF (tenant PII). Reference-
-    // counted: only removes the object if no live attachment references these
-    // content-addressed bytes (a byte-identical upload could share them).
-    await removeOrphanStoredObject(accountId, stored.primary.storagePath);
-    throw e;
+    // Do not delete an apparently unreferenced content-addressed object here:
+    // another request may have uploaded the same bytes and be between storage
+    // and its DB commit. An age-gated storage janitor can safely prune genuine
+    // orphans later without racing evidence creation.
+    return c.json(created.document, created.deduped ? 200 : 201);
   }
+
+  const stored = await processAndStoreBytes(accountId, bytes, mimeType);
+  const created = await createTenancyDocument(sb, {
+    p_account_id: accountId,
+    p_tenancy_id: parsed.data.tenancy_id,
+    p_document_type: parsed.data.document_type,
+    p_title: parsed.data.title,
+    p_requires_ack: parsed.data.requires_ack ?? false,
+    p_source: 'landlord_upload',
+    p_content_hash: stored.primary.hash,
+    p_mime_type: stored.primary.mimeType,
+    p_size_bytes: stored.primary.sizeBytes,
+    p_attachment_path: stored.primary.storagePath,
+  });
   // 200 (existing doc) when identical bytes were already filed for this
   // tenancy + document_type; 201 on a fresh create.
   return c.json(created.document, created.deduped ? 200 : 201);

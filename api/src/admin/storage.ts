@@ -119,6 +119,34 @@ export interface StoragePutResult {
 }
 
 /**
+ * Store exactly the supplied bytes, with server-computed hash/path metadata.
+ * Unlike processAndStoreBytes this does not create an automatic HEIC->JPEG
+ * rendition. Document ingestion uses it because its only rendition is the
+ * PDF that becomes the document version; recording an unused JPEG would leave
+ * an orphaned provenance branch.
+ */
+export async function storeExactBytes(
+  accountId: string,
+  bytes: Uint8Array,
+  mimeType: string,
+): Promise<StoragePut> {
+  if (bytes.byteLength === 0) {
+    throw new ApiError(400, 'invalid_request', 'empty upload');
+  }
+  if (bytes.byteLength > MAX_BYTES) {
+    throw new ApiError(
+      400,
+      'invalid_request',
+      `attachment exceeds max size (${bytes.byteLength} > ${MAX_BYTES} bytes)`,
+    );
+  }
+  if (!ALLOWED_MIME_TYPES.has(mimeType)) {
+    throw new ApiError(400, 'invalid_request', `unsupported mime_type ${mimeType}`);
+  }
+  return uploadBytes(getAdminClient(), accountId, bytes, mimeType);
+}
+
+/**
  * Validates inputs, hashes server-side, uploads the bytes to private
  * storage, and -- if the input is HEIC -- transcodes a JPEG derivative and
  * uploads that too. Does NOT touch the attachments DB table; callers are
@@ -138,22 +166,8 @@ export async function processAndStoreBytes(
   bytes: Uint8Array,
   mimeType: string,
 ): Promise<StoragePutResult> {
-  if (bytes.byteLength === 0) {
-    throw new ApiError(400, 'invalid_request', 'empty upload');
-  }
-  if (bytes.byteLength > MAX_BYTES) {
-    throw new ApiError(
-      400,
-      'invalid_request',
-      `attachment exceeds max size (${bytes.byteLength} > ${MAX_BYTES} bytes)`,
-    );
-  }
-  if (!ALLOWED_MIME_TYPES.has(mimeType)) {
-    throw new ApiError(400, 'invalid_request', `unsupported mime_type ${mimeType}`);
-  }
-
   const admin = getAdminClient();
-  const primary = await uploadBytes(admin, accountId, bytes, mimeType);
+  const primary = await storeExactBytes(accountId, bytes, mimeType);
 
   let derivative: StoragePut | null = null;
   if (isHeicLike(mimeType)) {

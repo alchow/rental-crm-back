@@ -60,7 +60,10 @@ const app = buildApp();
 
 // --- helpers ----------------------------------------------------------------
 
-interface ApiResp { status: number; body: unknown }
+interface ApiResp {
+  status: number;
+  body: unknown;
+}
 
 async function api(
   method: string,
@@ -69,7 +72,10 @@ async function api(
 ): Promise<ApiResp> {
   const headers: Record<string, string> = { accept: 'application/json' };
   if (opts.token) headers.authorization = `Bearer ${opts.token}`;
-  if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase()) && path.startsWith('/v1/accounts/')) {
+  if (
+    ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase()) &&
+    path.startsWith('/v1/accounts/')
+  ) {
     headers['idempotency-key'] = `t-${crypto.randomUUID()}`;
   }
   let init: RequestInit = { method, headers };
@@ -82,20 +88,28 @@ async function api(
   return { status: res.status, body: text ? JSON.parse(text) : null };
 }
 
-function rnd(): string { return Math.random().toString(36).slice(2, 10); }
+function rnd(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
 
-interface Failure { name: string; detail: string }
+interface Failure {
+  name: string;
+  detail: string;
+}
 const failures: Failure[] = [];
 async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try { await fn(); console.info(`  PASS  ${name}`); }
-  catch (e) {
+  try {
+    await fn();
+    console.info(`  PASS  ${name}`);
+  } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     failures.push({ name, detail });
     console.error(`  FAIL  ${name}: ${detail}`);
   }
 }
 function assertEq(actual: unknown, expected: unknown, label: string): void {
-  if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, got ${String(actual)}`);
+  if (actual !== expected)
+    throw new Error(`${label}: expected ${String(expected)}, got ${String(actual)}`);
 }
 
 // --- fixture: one account, two tenancies -------------------------------------
@@ -116,32 +130,68 @@ const post = async <T>(p: string, body: unknown): Promise<T> => {
 };
 
 const property = await post<{ id: string }>('/properties', { name: 'Ledger prop' });
-const areaA = await post<{ id: string }>('/areas', { property_id: property.id, kind: 'unit', name: 'Unit A' });
-const areaB = await post<{ id: string }>('/areas', { property_id: property.id, kind: 'unit', name: 'Unit B' });
-const tenancyA = await post<{ id: string }>('/tenancies', { area_id: areaA.id, start_date: '2026-01-01', status: 'active' });
-const tenancyB = await post<{ id: string }>('/tenancies', { area_id: areaB.id, start_date: '2026-01-01', status: 'active' });
+const areaA = await post<{ id: string }>('/areas', {
+  property_id: property.id,
+  kind: 'unit',
+  name: 'Unit A',
+});
+const areaB = await post<{ id: string }>('/areas', {
+  property_id: property.id,
+  kind: 'unit',
+  name: 'Unit B',
+});
+const tenancyA = await post<{ id: string }>('/tenancies', {
+  area_id: areaA.id,
+  start_date: '2026-01-01',
+  status: 'active',
+});
+const tenancyB = await post<{ id: string }>('/tenancies', {
+  area_id: areaB.id,
+  start_date: '2026-01-01',
+  status: 'active',
+});
 
 // Tenancy A: 1000 rent charge, 800 payment fully allocated to it.
 const chargeA = await post<{ id: string }>('/charges', {
-  tenancy_id: tenancyA.id, type: 'rent', amount_cents: 1000, currency: 'USD', due_date: '2026-02-01',
+  tenancy_id: tenancyA.id,
+  type: 'rent',
+  amount_cents: 1000,
+  currency: 'USD',
+  due_date: '2026-02-01',
+  period_start: '2026-02-01',
+  period_end: '2026-02-28',
 });
 await post('/payments', {
-  tenancy_id: tenancyA.id, amount_cents: 800, currency: 'USD',
-  received_at: '2026-02-02T00:00:00.000Z', method: 'check',
+  tenancy_id: tenancyA.id,
+  amount_cents: 800,
+  currency: 'USD',
+  received_at: '2026-02-02T00:00:00.000Z',
+  method: 'check',
   allocations: [{ charge_id: chargeA.id, amount_cents: 800 }],
 });
 
 // Tenancy B: 500 charge, 500 payment fully allocated. Must NOT bleed into A.
 const chargeB = await post<{ id: string }>('/charges', {
-  tenancy_id: tenancyB.id, type: 'rent', amount_cents: 500, currency: 'USD', due_date: '2026-02-01',
+  tenancy_id: tenancyB.id,
+  type: 'rent',
+  amount_cents: 500,
+  currency: 'USD',
+  due_date: '2026-02-01',
 });
 await post('/payments', {
-  tenancy_id: tenancyB.id, amount_cents: 500, currency: 'USD',
-  received_at: '2026-02-03T00:00:00.000Z', method: 'cash',
+  tenancy_id: tenancyB.id,
+  amount_cents: 500,
+  currency: 'USD',
+  received_at: '2026-02-03T00:00:00.000Z',
+  method: 'cash',
   allocations: [{ charge_id: chargeB.id, amount_cents: 500 }],
 });
 
-interface TypeTotals { charges_cents: number; allocated_cents: number; balance_cents: number }
+interface TypeTotals {
+  charges_cents: number;
+  allocated_cents: number;
+  balance_cents: number;
+}
 interface LedgerTotals {
   rent_charges_cents: number;
   rent_payments_cents: number;
@@ -154,7 +204,19 @@ interface LedgerTotals {
   unapplied_credit_cents: number;
   by_type: Record<string, TypeTotals>;
 }
-interface LedgerBody { entries: { kind: string; id: string }[]; totals: LedgerTotals }
+interface LedgerBody {
+  entries: Array<{
+    kind: string;
+    id: string;
+    occurred_at: string;
+    due_date?: string;
+    period_start?: string | null;
+    period_end?: string | null;
+    source_schedule_id?: string | null;
+    source?: 'manual' | 'rent_schedule';
+  }>;
+  totals: LedgerTotals;
+}
 
 function assertTypeTotals(actual: TypeTotals, expected: TypeTotals, label: string): void {
   assertEq(actual.charges_cents, expected.charges_cents, `${label}.charges_cents`);
@@ -167,6 +229,14 @@ await check('(A) tenancy A ledger unaffected by tenancy B', async () => {
   assertEq(r.status, 200, 'status');
   const body = r.body as LedgerBody;
   assertEq(body.entries.length, 2, 'entry count (1 charge + 1 payment)');
+  const chargeEntry = body.entries.find((entry) => entry.kind === 'charge');
+  if (!chargeEntry) throw new Error('charge entry missing');
+  assertEq(chargeEntry.occurred_at, '2026-02-01', 'occurred_at compatibility alias');
+  assertEq(chargeEntry.due_date, '2026-02-01', 'due_date');
+  assertEq(chargeEntry.period_start, '2026-02-01', 'period_start');
+  assertEq(chargeEntry.period_end, '2026-02-28', 'period_end');
+  assertEq(chargeEntry.source_schedule_id, null, 'manual source_schedule_id');
+  assertEq(chargeEntry.source, 'manual', 'structured source');
   assertEq(body.totals.rent_charges_cents, 1000, 'rent_charges_cents');
   assertEq(body.totals.rent_payments_cents, 800, 'rent_payments_cents');
   assertEq(body.totals.rent_balance_cents, 200, 'rent_balance_cents');
@@ -175,9 +245,28 @@ await check('(A) tenancy A ledger unaffected by tenancy B', async () => {
   assertEq(body.totals.unapplied_credit_cents, 0, 'unapplied_credit_cents');
 });
 
+await check('(A2) charge periods are both-or-neither', async () => {
+  const r = await api('POST', `/v1/accounts/${acct}/charges`, {
+    token,
+    body: {
+      tenancy_id: tenancyA.id,
+      type: 'rent',
+      amount_cents: 1000,
+      currency: 'USD',
+      due_date: '2026-03-01',
+      period_start: '2026-03-01',
+    },
+  });
+  assertEq(r.status, 400, 'one-sided period status');
+  const details = (r.body as { error?: { details?: { fieldErrors?: Record<string, string[]> } } })
+    .error?.details;
+  if (!details?.fieldErrors?.period_end) throw new Error('period_end field error missing');
+});
+
 await check('(B) voided charge frees the payment into unapplied credit', async () => {
   const v = await api('POST', `/v1/accounts/${acct}/charges/${chargeA.id}/void`, {
-    token, body: { void_reason: 'entered in error' },
+    token,
+    body: { void_reason: 'entered in error' },
   });
   assertEq(v.status, 200, 'void status');
   const r = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancyA.id}/ledger`, { token });
@@ -202,19 +291,33 @@ await check('(B) voided charge frees the payment into unapplied credit', async (
 
 await check('(D) by_type splits utility/deposit/rent honestly', async () => {
   const utilCharge = await post<{ id: string }>('/charges', {
-    tenancy_id: tenancyB.id, type: 'utility', amount_cents: 12000, currency: 'USD', due_date: '2026-03-01',
+    tenancy_id: tenancyB.id,
+    type: 'utility',
+    amount_cents: 12000,
+    currency: 'USD',
+    due_date: '2026-03-01',
   });
   await post('/payments', {
-    tenancy_id: tenancyB.id, amount_cents: 5000, currency: 'USD',
-    received_at: '2026-03-02T00:00:00.000Z', method: 'ach',
+    tenancy_id: tenancyB.id,
+    amount_cents: 5000,
+    currency: 'USD',
+    received_at: '2026-03-02T00:00:00.000Z',
+    method: 'ach',
     allocations: [{ charge_id: utilCharge.id, amount_cents: 5000 }],
   });
   const depCharge = await post<{ id: string }>('/charges', {
-    tenancy_id: tenancyB.id, type: 'deposit', amount_cents: 30000, currency: 'USD', due_date: '2026-02-01',
+    tenancy_id: tenancyB.id,
+    type: 'deposit',
+    amount_cents: 30000,
+    currency: 'USD',
+    due_date: '2026-02-01',
   });
   await post('/payments', {
-    tenancy_id: tenancyB.id, amount_cents: 30000, currency: 'USD',
-    received_at: '2026-02-02T00:00:00.000Z', method: 'check',
+    tenancy_id: tenancyB.id,
+    amount_cents: 30000,
+    currency: 'USD',
+    received_at: '2026-02-02T00:00:00.000Z',
+    method: 'check',
     allocations: [{ charge_id: depCharge.id, amount_cents: 30000 }],
   });
 
@@ -222,30 +325,80 @@ await check('(D) by_type splits utility/deposit/rent honestly', async () => {
   assertEq(r.status, 200, 'status');
   const t = (r.body as LedgerBody).totals;
 
-  assertTypeTotals(t.by_type.rent!,    { charges_cents: 500,   allocated_cents: 500,  balance_cents: 0 },    'by_type.rent');
-  assertTypeTotals(t.by_type.utility!, { charges_cents: 12000, allocated_cents: 5000, balance_cents: 7000 }, 'by_type.utility');
-  assertTypeTotals(t.by_type.deposit!, { charges_cents: 30000, allocated_cents: 30000, balance_cents: 0 },   'by_type.deposit');
-  assertTypeTotals(t.by_type.late_fee!, { charges_cents: 0, allocated_cents: 0, balance_cents: 0 }, 'by_type.late_fee (zero row present)');
+  assertTypeTotals(
+    t.by_type.rent!,
+    { charges_cents: 500, allocated_cents: 500, balance_cents: 0 },
+    'by_type.rent',
+  );
+  assertTypeTotals(
+    t.by_type.utility!,
+    { charges_cents: 12000, allocated_cents: 5000, balance_cents: 7000 },
+    'by_type.utility',
+  );
+  assertTypeTotals(
+    t.by_type.deposit!,
+    { charges_cents: 30000, allocated_cents: 30000, balance_cents: 0 },
+    'by_type.deposit',
+  );
+  assertTypeTotals(
+    t.by_type.late_fee!,
+    { charges_cents: 0, allocated_cents: 0, balance_cents: 0 },
+    'by_type.late_fee (zero row present)',
+  );
 
   // Identities: by_type.deposit ≡ legacy deposit buckets; Σ non-deposit ≡ legacy rent_*.
   assertEq(t.by_type.deposit!.charges_cents, t.deposit_charges_cents, 'deposit identity (charges)');
-  assertEq(t.by_type.deposit!.allocated_cents, t.deposit_payments_cents, 'deposit identity (payments)');
+  assertEq(
+    t.by_type.deposit!.allocated_cents,
+    t.deposit_payments_cents,
+    'deposit identity (payments)',
+  );
   assertEq(t.by_type.deposit!.balance_cents, t.deposit_balance_cents, 'deposit identity (balance)');
-  const nonDeposit = Object.entries(t.by_type).filter(([k]) => k !== 'deposit').map(([, v]) => v);
-  assertEq(nonDeposit.reduce((s, v) => s + v.charges_cents, 0), t.rent_charges_cents, 'Σ non-deposit charges ≡ rent_charges_cents');
-  assertEq(nonDeposit.reduce((s, v) => s + v.allocated_cents, 0), t.rent_payments_cents, 'Σ non-deposit allocated ≡ rent_payments_cents');
-  assertEq(nonDeposit.reduce((s, v) => s + v.balance_cents, 0), t.rent_balance_cents, 'Σ non-deposit balance ≡ rent_balance_cents');
+  const nonDeposit = Object.entries(t.by_type)
+    .filter(([k]) => k !== 'deposit')
+    .map(([, v]) => v);
+  assertEq(
+    nonDeposit.reduce((s, v) => s + v.charges_cents, 0),
+    t.rent_charges_cents,
+    'Σ non-deposit charges ≡ rent_charges_cents',
+  );
+  assertEq(
+    nonDeposit.reduce((s, v) => s + v.allocated_cents, 0),
+    t.rent_payments_cents,
+    'Σ non-deposit allocated ≡ rent_payments_cents',
+  );
+  assertEq(
+    nonDeposit.reduce((s, v) => s + v.balance_cents, 0),
+    t.rent_balance_cents,
+    'Σ non-deposit balance ≡ rent_balance_cents',
+  );
 });
 
 await check('(E) by_type composes with as_of (utility not yet due is excluded)', async () => {
-  const r = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancyB.id}/ledger?as_of=2026-02-15`, { token });
+  const r = await api(
+    'GET',
+    `/v1/accounts/${acct}/tenancies/${tenancyB.id}/ledger?as_of=2026-02-15`,
+    { token },
+  );
   assertEq(r.status, 200, 'status');
   const t = (r.body as LedgerBody).totals;
   // At Feb 15: rent (due Feb 1) + deposit (due Feb 1, paid Feb 2) are in;
   // the utility charge (due Mar 1) and its payment (Mar 2) are not.
-  assertTypeTotals(t.by_type.rent!,    { charges_cents: 500,   allocated_cents: 500,   balance_cents: 0 }, 'as_of by_type.rent');
-  assertTypeTotals(t.by_type.deposit!, { charges_cents: 30000, allocated_cents: 30000, balance_cents: 0 }, 'as_of by_type.deposit');
-  assertTypeTotals(t.by_type.utility!, { charges_cents: 0,     allocated_cents: 0,     balance_cents: 0 }, 'as_of by_type.utility');
+  assertTypeTotals(
+    t.by_type.rent!,
+    { charges_cents: 500, allocated_cents: 500, balance_cents: 0 },
+    'as_of by_type.rent',
+  );
+  assertTypeTotals(
+    t.by_type.deposit!,
+    { charges_cents: 30000, allocated_cents: 30000, balance_cents: 0 },
+    'as_of by_type.deposit',
+  );
+  assertTypeTotals(
+    t.by_type.utility!,
+    { charges_cents: 0, allocated_cents: 0, balance_cents: 0 },
+    'as_of by_type.utility',
+  );
 });
 
 await check('(C1) garbage cursor is a 400 invalid_request', async () => {

@@ -16,8 +16,14 @@ import { keysetPage } from './_lib/cursor';
 // the truth (allocations + voids).
 
 const ChargeType = z.enum([
-  'rent', 'late_fee', 'deposit', 'utility',
-  'parking', 'repair_chargeback', 'nsf_fee', 'other',
+  'rent',
+  'late_fee',
+  'deposit',
+  'utility',
+  'parking',
+  'repair_chargeback',
+  'nsf_fee',
+  'other',
 ]);
 const CurrencyCode = z.string().length(3);
 
@@ -49,10 +55,34 @@ const CreateChargeBody = z
     amount_cents: z.number().int().positive(),
     currency: CurrencyCode,
     due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    period_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-    period_end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    period_start: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
+    period_end: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
     description: z.string().optional(),
     source_schedule_id: z.string().uuid().optional(),
+  })
+  .superRefine((body, ctx) => {
+    const hasStart = body.period_start !== undefined;
+    const hasEnd = body.period_end !== undefined;
+    if (hasStart !== hasEnd) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [hasStart ? 'period_end' : 'period_start'],
+        message: 'period_start and period_end must be provided together',
+      });
+    }
+    if (body.period_start && body.period_end && body.period_end < body.period_start) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['period_end'],
+        message: 'period_end must be on or after period_start',
+      });
+    }
   })
   .openapi('CreateChargeBody');
 
@@ -61,11 +91,20 @@ const VoidChargeBody = z
   .openapi('VoidChargeBody');
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 const AccountAndIdParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
 });
 const ListQuery = z.object({
   cursor: z.string().optional(),
@@ -181,7 +220,11 @@ chargesApp.openapi(create, async (c) => {
     .single();
   if (error) {
     if (error.code === '23503') {
-      throw new ApiError(404, 'not_found', 'tenancy_id or source_schedule_id does not belong to this account');
+      throw new ApiError(
+        404,
+        'not_found',
+        'tenancy_id or source_schedule_id does not belong to this account',
+      );
     }
     if (error.code === '23514') throw new ApiError(400, 'invalid_request', error.message);
     // 23505 = charges_one_per_schedule_period: one row per (schedule, period),
@@ -211,7 +254,11 @@ chargesApp.openapi(voidRoute, async (c) => {
   // no-op match-zero -> 404 "not found".
   const { data, error } = await sb
     .from('charges')
-    .update({ voided_at: new Date().toISOString(), void_reason, updated_at: new Date().toISOString() })
+    .update({
+      voided_at: new Date().toISOString(),
+      void_reason,
+      updated_at: new Date().toISOString(),
+    })
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)
