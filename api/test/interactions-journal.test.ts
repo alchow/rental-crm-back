@@ -270,12 +270,14 @@ async function main(): Promise<void> {
     }
   });
 
-  await check('note: counterparty / real channel-direction rejected', async () => {
+  await check('note: bare party_id (no role) / real channel-direction rejected', async () => {
+    // A note MAY carry a party (see below), but a party_id still needs a
+    // resolved role -- an id with no party_type is incoherent.
     const withParty = await createInteraction({
       kind: 'note', occurred_at: '2026-03-02T09:00:00.000Z', body: 'x',
       party_id: crypto.randomUUID(),
     });
-    assertStatus(withParty, 400, 'note with party_id');
+    assertStatus(withParty, 400, 'note with bare party_id');
     const withDirection = await createInteraction({
       kind: 'note', occurred_at: '2026-03-02T09:00:00.000Z', body: 'x',
       direction: 'inbound',
@@ -283,6 +285,152 @@ async function main(): Promise<void> {
     assertStatus(withDirection, 400, 'note with direction');
     const reservedChannel = await createInteraction(commBody({ channel: 'note' }));
     assertStatus(reservedChannel, 400, "communication with channel 'note'");
+  });
+
+  // =========================================================================
+  // (B2) kind='note' with a counterparty (campaign-4 §12) — a note ABOUT a
+  // person keeps direction='none' but may name who it concerns.
+  // =========================================================================
+
+  await check('note: creates with a concrete party (tenant) → 201, echoed', async () => {
+    const partyX = crypto.randomUUID();
+    const r = await createInteraction({
+      kind: 'note',
+      occurred_at: '2026-03-02T10:00:00.000Z',
+      body: 'Spoke with the tenant about the boiler service window.',
+      party_type: 'tenant',
+      party_id: partyX,
+      party_label: 'Gina Alvarez',
+      tenancy_id: A.tenancyId,
+    });
+    const row = assertStatus(r, 201, 'create note with party') as InteractionRow;
+    if (row.kind !== 'note' || row.channel !== 'note' || row.direction !== 'none') {
+      throw new Error(`note shape: kind=${row.kind} channel=${row.channel} direction=${row.direction}`);
+    }
+    if (row.party_type !== 'tenant' || row.party_id !== partyX || row.party_label !== 'Gina Alvarez') {
+      throw new Error(`party not echoed: type=${row.party_type} id=${row.party_id} label=${row.party_label}`);
+    }
+    const g = await api('GET', `${base}/${row.id}`, { token: A.accessToken });
+    const got = assertStatus(g, 200, 'read back note party') as InteractionRow;
+    if (got.party_type !== 'tenant' || got.party_id !== partyX) {
+      throw new Error(`read back party mismatch: ${JSON.stringify(got)}`);
+    }
+  });
+
+  await check('note: party_label only (no id, no role) → 201', async () => {
+    const r = await createInteraction({
+      kind: 'note',
+      occurred_at: '2026-03-02T11:00:00.000Z',
+      body: 'Note about Marcus at #4 — mentioned a leak, will confirm later.',
+      party_label: 'Marcus',
+    });
+    const row = assertStatus(r, 201, 'create note with label only') as InteractionRow;
+    if (row.party_type !== 'none' || row.party_id !== null || row.party_label !== 'Marcus') {
+      throw new Error(`label-only note shape: type=${row.party_type} id=${row.party_id} label=${row.party_label}`);
+    }
+  });
+
+  await check("note: party_type='unspecified' + party_id → 400", async () => {
+    const r = await createInteraction({
+      kind: 'note',
+      occurred_at: '2026-03-02T12:00:00.000Z',
+      body: 'x',
+      party_type: 'unspecified',
+      party_id: crypto.randomUUID(),
+    });
+    assertStatus(r, 400, "note with unspecified + party_id");
+    if (!JSON.stringify(r.body).includes('party')) {
+      throw new Error(`expected a party* field error: ${JSON.stringify(r.body)}`);
+    }
+  });
+
+  await check('classify: adds a party to a party-less note → 201', async () => {
+    const created = await createInteraction({
+      kind: 'note',
+      occurred_at: '2026-03-02T13:00:00.000Z',
+      body: 'Roof inspection notes.',
+      tenancy_id: A.tenancyId,
+    });
+    const note = assertStatus(created, 201, 'create party-less note') as InteractionRow;
+    if (note.party_type !== 'none' || note.party_id !== null) {
+      throw new Error(`precondition: note should be party-less, got type=${note.party_type} id=${note.party_id}`);
+    }
+    const partyX = crypto.randomUUID();
+    const cls = await createInteraction({
+      corrects_id: note.id,
+      correction_kind: 'classify',
+      party_type: 'tenant',
+      party_id: partyX,
+    });
+    const head = assertStatus(cls, 201, 'classify note party') as InteractionRow;
+    if (head.kind !== 'note' || head.channel !== 'note' || head.direction !== 'none') {
+      throw new Error(`classified note lost its shape: ${JSON.stringify(head)}`);
+    }
+    if (head.party_type !== 'tenant' || head.party_id !== partyX) {
+      throw new Error(`classify did not fill party: type=${head.party_type} id=${head.party_id}`);
+    }
+    if (head.corrects_id !== note.id) throw new Error(`corrects_id: ${head.corrects_id}`);
+  });
+
+  await check('classify: cannot overwrite a note party already set → 400 (fill-only)', async () => {
+    const partyX = crypto.randomUUID();
+    const created = await createInteraction({
+      kind: 'note',
+      occurred_at: '2026-03-02T14:00:00.000Z',
+      body: 'Note that already names its person.',
+      party_type: 'tenant',
+      party_id: partyX,
+    });
+    const note = assertStatus(created, 201, 'create note with party') as InteractionRow;
+    const overwrite = await createInteraction({
+      corrects_id: note.id,
+      correction_kind: 'classify',
+      party_type: 'vendor',
+      party_id: crypto.randomUUID(),
+    });
+    assertStatus(overwrite, 400, 'classify overwriting a set note party');
+    if (errCode(overwrite) !== 'invalid_request') {
+      throw new Error(`expected invalid_request, got '${errCode(overwrite)}'`);
+    }
+  });
+
+  await check('retract: a party-carrying note inherits its party on the retraction head', async () => {
+    const partyX = crypto.randomUUID();
+    const created = await createInteraction({
+      kind: 'note',
+      occurred_at: '2026-03-02T15:00:00.000Z',
+      body: 'Note about the tenant that will be crossed out.',
+      party_type: 'tenant',
+      party_id: partyX,
+    });
+    const note = assertStatus(created, 201, 'create note with party') as InteractionRow;
+    const retract = await createInteraction({
+      corrects_id: note.id,
+      correction_kind: 'retract',
+      body: 'Filed under the wrong tenant.',
+    });
+    const head = assertStatus(retract, 201, 'retract party-carrying note') as InteractionRow;
+    if (head.correction_kind !== 'retract') throw new Error(`correction_kind: ${head.correction_kind}`);
+    if (head.party_type !== 'tenant' || head.party_id !== partyX) {
+      throw new Error(`retraction did not inherit party: type=${head.party_type} id=${head.party_id}`);
+    }
+  });
+
+  await check('note correction: cannot change channel or direction', async () => {
+    const created = await createInteraction({
+      kind: 'note',
+      occurred_at: '2026-03-02T16:00:00.000Z',
+      body: 'A plain note.',
+    });
+    const note = assertStatus(created, 201, 'create note') as InteractionRow;
+    const badChannel = await createInteraction({
+      corrects_id: note.id, correction_kind: 'amend', body: 'edited', channel: 'sms',
+    });
+    assertStatus(badChannel, 400, 'note amend changing channel');
+    const badDirection = await createInteraction({
+      corrects_id: note.id, correction_kind: 'amend', body: 'edited', direction: 'inbound',
+    });
+    assertStatus(badDirection, 400, 'note amend changing direction');
   });
 
   // =========================================================================
