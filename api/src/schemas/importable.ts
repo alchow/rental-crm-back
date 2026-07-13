@@ -424,17 +424,32 @@ export const CreateInteractionBody = z
         );
       }
     } else {
+      // kind === 'note'. A note MAY name a counterparty (campaign-4 §12) so
+      // "a note about Gina" surfaces on Gina's page. channel/direction stay
+      // note-shaped; party fields are free under the same coherence a
+      // communication uses.
       if (b.channel !== undefined && b.channel !== 'note') {
         issue('channel', "a note has no channel (omit it, or send 'note')");
       }
       if (b.direction !== undefined && b.direction !== 'none') {
         issue('direction', "a note has no direction (omit it, or send 'none')");
       }
-      if (b.party_type !== undefined && b.party_type !== 'none') {
-        issue('party_type', "a note has no counterparty (omit party_type, or send 'none')");
+      // 'unspecified' is the communication-only capture sentinel (the
+      // unresolved-sender queue). A note carries a concrete role or none.
+      if (b.party_type === 'unspecified') {
+        issue(
+          'party_type',
+          "party_type 'unspecified' is for communications; a note carries a concrete role (tenant/vendor/inspector/other) or none",
+        );
       }
-      if (b.party_id !== undefined) issue('party_id', 'a note has no counterparty');
-      if (b.party_label !== undefined) issue('party_label', 'a note has no counterparty');
+      // id => concrete role (whoToParty coherence, mirrors the communication
+      // unspecified+id rejection): a party_id needs a resolved party_type.
+      if (b.party_id !== undefined && (b.party_type === undefined || b.party_type === 'none')) {
+        issue(
+          'party_id',
+          'party_id needs a resolved role (set party_type to tenant/vendor/inspector/other)',
+        );
+      }
     }
   })
   .openapi('CreateInteractionBody');

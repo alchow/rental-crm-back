@@ -336,17 +336,28 @@ function assertCoherentShape(row: {
     );
   }
   if (row.kind === 'note') {
-    if (
-      row.channel !== 'note' ||
-      row.direction !== 'none' ||
-      row.party_type !== 'none' ||
-      row.party_id !== null ||
-      row.party_label !== null
-    ) {
+    // channel/direction stay note-shaped; the party MAY be filled or changed
+    // (campaign-4 §12) -- this is what lets a classify add a who to a note.
+    // Party coherence mirrors the communication rules below.
+    if (row.channel !== 'note' || row.direction !== 'none') {
       throw new ApiError(
         400,
         'invalid_request',
-        'a note correction cannot change the note shape (channel/direction/party fields)',
+        'a note correction cannot change channel or direction',
+      );
+    }
+    if (row.party_type === 'unspecified') {
+      throw new ApiError(
+        400,
+        'invalid_request',
+        "party_type 'unspecified' is for communications; a note carries a concrete role or none",
+      );
+    }
+    if (row.party_id !== null && (row.party_type === 'none' || row.party_type === undefined)) {
+      throw new ApiError(
+        400,
+        'invalid_request',
+        'party_id on a note needs a resolved role (party_type tenant/vendor/inspector/other)',
       );
     }
     return;
@@ -469,6 +480,15 @@ interface CastParticipant {
 //     'imported' — both stay on the plain insert so behaviour is byte-identical.
 // Role follows direction, the same mapping the backfill (20260703000005) uses:
 // inbound → sender, outbound → recipient, anything else → attendee.
+//
+// FAST-FOLLOW (campaign-4 §12, BACKEND_ASKS): kind='note' rows never reach this
+// path — they take the plain-insert note branch above and write NO participant
+// cast. Since list_interactions_for_party resolves people through
+// interaction_participants (not the legacy row-slot party_id), a party-carrying
+// note will NOT yet match GET /interactions?party_id=<id>. Closing that gap
+// (derive an 'attendee' participant for party-carrying notes here, or teach the
+// RPC to union the note's row-slot party_id) is deferred; the FE tenant scope
+// filters client-side on party_id/participants so it does not depend on this.
 function deriveSingleParticipant(
   body: {
     channel?: string;
@@ -816,9 +836,11 @@ interactionsApp.openapi(create, async (c) => {
         entry_type: null,
         external_ref: null,
         kind: 'note',
-        party_type: 'none',
-        party_id: null,
-        party_label: null,
+        // A note MAY name a counterparty (campaign-4 §12); default to the
+        // party-less shape when none is supplied. channel/direction stay pinned.
+        party_type: body.party_type ?? 'none',
+        party_id: body.party_id ?? null,
+        party_label: body.party_label ?? null,
         channel: 'note',
         direction: 'none',
         body: body.body ?? null,
