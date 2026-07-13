@@ -46,8 +46,15 @@ import {
 
 const BUCKET = 'attachments';
 export const MAX_BYTES = 20 * 1024 * 1024; // 20 MiB
+// Generated reports/exports aggregate many already-accepted photos and have a
+// different DOS profile from untrusted uploads. Keep a separate bounded cap.
+export const MAX_GENERATED_BYTES = 200 * 1024 * 1024; // 200 MiB
 const STORAGE_RENDITION_EDGE = 2500;
 const STORAGE_TRANSFORM_TIMEOUT_MS = 20_000;
+const STORAGE_VERIFY_BASE_TIMEOUT_MS = 5_000;
+const STORAGE_VERIFY_BYTES_PER_SECOND = 5 * 1024 * 1024;
+const STORAGE_VERIFY_MAX_TIMEOUT_MS = 60_000;
+const STORAGE_TRANSIENT_RETRY_DELAYS_MS = [0, 100, 300] as const;
 
 export const ALLOWED_MIME_TYPES = new Set<string>([
   'image/jpeg',
@@ -151,6 +158,20 @@ export interface StoragePutResult {
   derivative: StoragePut | null;
 }
 
+function isStorageObjectAlreadyPresent(error: {
+  status?: string | number;
+  statusCode?: string | number;
+  message?: string;
+} | null): boolean {
+  const status = Number(error?.status);
+  const statusCode = Number(error?.statusCode);
+  if (status >= 500) return false;
+  if (status === 409 || statusCode === 409) return true;
+  const duplicateCode = String(error?.statusCode ?? '').toLowerCase() === 'duplicate';
+  const duplicateMessage = /already exists|duplicate|resource exists/i.test(error?.message ?? '');
+  return status === 400 && (duplicateCode || duplicateMessage);
+}
+
 /**
  * Store exactly the supplied bytes, with server-computed hash/path metadata.
  * Unlike processAndStoreBytes this does not create an automatic HEIC->JPEG
@@ -175,6 +196,25 @@ export async function storeExactBytes(
   }
   if (!ALLOWED_MIME_TYPES.has(mimeType)) {
     throw new ApiError(400, 'invalid_request', `unsupported mime_type ${mimeType}`);
+  }
+  return uploadBytes(getAdminClient(), accountId, bytes, mimeType);
+}
+
+/** Store a trusted server-generated artifact without the 20 MiB upload cap. */
+export async function storeGeneratedArtifactBytes(
+  accountId: string,
+  bytes: Uint8Array,
+  mimeType: string,
+): Promise<StoragePut> {
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_GENERATED_BYTES) {
+    throw new ApiError(
+      500,
+      'database_error',
+      `generated artifact is empty or exceeds ${MAX_GENERATED_BYTES} bytes`,
+    );
+  }
+  if (!ALLOWED_MIME_TYPES.has(mimeType)) {
+    throw new ApiError(500, 'database_error', `unsupported generated mime_type ${mimeType}`);
   }
   return uploadBytes(getAdminClient(), accountId, bytes, mimeType);
 }
@@ -230,7 +270,7 @@ export async function stageDocumentUpload(
     );
   }
 
-  await uploadDescribedBytes(admin, put, bytes, false);
+  await uploadDescribedBytes(admin, put, bytes, { allowExisting: false });
   const { data: completed, error: completeError } = await admin
     .from('document_upload_receipts')
     .update({ stored_at: new Date().toISOString() })
@@ -329,6 +369,23 @@ export async function renderStoredImageToJpeg(
   }
 }
 
+async function renderStoredImageToJpegWithRetry(
+  storagePath: string,
+  sourceBytes: Uint8Array,
+): Promise<Uint8Array> {
+  let lastError: unknown;
+  for (const delayMs of STORAGE_TRANSIENT_RETRY_DELAYS_MS) {
+    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    try {
+      return await renderStoredImageToJpeg(storagePath, sourceBytes);
+    } catch (renderError) {
+      lastError = renderError;
+      if (!(renderError instanceof ApiError) || renderError.status !== 503) throw renderError;
+    }
+  }
+  throw lastError;
+}
+
 /** End-to-end startup probe for the same hosted Storage path uploads use. */
 export async function probeStoredHeicRendition(bytes: Uint8Array): Promise<void> {
   const admin = getAdminClient();
@@ -336,33 +393,21 @@ export async function probeStoredHeicRendition(bytes: Uint8Array): Promise<void>
   // One immutable system object avoids per-deploy origin-transform billing and
   // cannot collide with an account UUID path. It is deliberately retained.
   const storagePath = `_system/heic-probe/${hash}.heic`;
-  const { error } = await admin.storage
-    .from(BUCKET)
-    .upload(storagePath, bytes, { contentType: 'image/heic', upsert: false });
-  const statusCode = Number((error as { statusCode?: string | number } | null)?.statusCode);
-  const alreadyExists =
-    statusCode === 409 || /already exists|duplicate|resource exists/i.test(error?.message ?? '');
-  if (error && !alreadyExists) {
-    const uploadError = new Error(`HEIC probe upload failed: ${error.message}`);
-    recordHeicRenditionFailure(uploadError);
-    throw uploadError;
+  try {
+    await uploadDescribedBytes(
+      admin,
+      { hash, storagePath, mimeType: 'image/heic', sizeBytes: bytes.byteLength },
+      bytes,
+    );
+  } catch (error) {
+    recordHeicRenditionFailure(error);
+    throw error;
   }
 
   // Parallel test workers and rolling deploys can observe a brief Storage edge
   // race while the first writer's immutable object becomes transformable.
   // Retry only dependency failures; an invalid fixture must fail immediately.
-  let lastError: unknown;
-  for (const delayMs of [0, 100, 300]) {
-    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
-    try {
-      await renderStoredImageToJpeg(storagePath, bytes);
-      return;
-    } catch (renderError) {
-      lastError = renderError;
-      if (!(renderError instanceof ApiError) || renderError.status !== 503) throw renderError;
-    }
-  }
-  throw lastError;
+  await renderStoredImageToJpegWithRetry(storagePath, bytes);
 }
 
 /**
@@ -391,13 +436,13 @@ export async function processAndStoreBytes(
   let derivative: StoragePut | null = null;
   if (isHeicLike(mimeType)) {
     try {
-      const jpegBytes = await renderStoredImageToJpeg(primary.storagePath, bytes);
+      const jpegBytes = await renderStoredImageToJpegWithRetry(primary.storagePath, bytes);
       derivative = await uploadBytes(admin, accountId, jpegBytes, 'image/jpeg');
     } catch (error) {
       // A dependency outage is retryable and must not commit an original-only
       // attachment row. Idempotency middleware releases 5xx claims; retrying
       // reuses the content-addressed original and completes provenance.
-      if (error instanceof ApiError && error.status === 503) throw error;
+      if (error instanceof ApiError && error.status >= 500) throw error;
 
       // The exact original is already content-addressed in private storage.
       // Keep corrupt/mislabeled input as evidence, but do not claim it has a
@@ -421,6 +466,8 @@ async function uploadBytes(
   mimeType: string,
 ): Promise<StoragePut> {
   const put = describeBytes(accountId, bytes, mimeType);
+  // Ordinary paths are content-addressed, so an already-verified object is a
+  // safe immutable dedupe hit rather than an upload failure.
   await uploadDescribedBytes(admin, put, bytes);
   return put;
 }
@@ -436,14 +483,112 @@ async function uploadDescribedBytes(
   admin: ReturnType<typeof getAdminClient>,
   put: StoragePut,
   bytes: Uint8Array,
-  upsert = true,
+  options: { allowExisting?: boolean } = {},
 ): Promise<void> {
+  const allowExisting = options.allowExisting ?? true;
   const { error: upErr } = await admin.storage
     .from(BUCKET)
-    .upload(put.storagePath, bytes, { contentType: put.mimeType, upsert });
+    // Never rewrite an object in place: document staging paths require a fresh
+    // receipt, while content-addressed callers verify an existing duplicate.
+    .upload(put.storagePath, bytes, { contentType: put.mimeType, upsert: false });
+  if (!upErr) return;
+  if (allowExisting && isStorageObjectAlreadyPresent(upErr)) {
+    await verifyStoredObject(admin, put);
+    return;
+  }
   if (upErr) {
     throw new ApiError(500, 'database_error', `storage upload failed: ${upErr.message}`);
   }
+}
+
+async function withinDeadline<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function verifyStoredObject(
+  admin: ReturnType<typeof getAdminClient>,
+  put: StoragePut,
+): Promise<void> {
+  const timeoutMs = Math.min(
+    STORAGE_VERIFY_MAX_TIMEOUT_MS,
+    STORAGE_VERIFY_BASE_TIMEOUT_MS +
+      Math.ceil(put.sizeBytes / STORAGE_VERIFY_BYTES_PER_SECOND) * 1_000,
+  );
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  for (const delayMs of STORAGE_TRANSIENT_RETRY_DELAYS_MS) {
+    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    try {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) throw new Error('stored object verification timed out');
+      const { data, error } = await withinDeadline(
+        admin.storage
+          .from(BUCKET)
+          .createSignedUrl(put.storagePath, Math.max(60, Math.ceil(remainingMs / 1_000) + 10)),
+        remainingMs,
+        'stored object signing timed out',
+      );
+      if (error || !data?.signedUrl) {
+        throw new Error(error?.message ?? 'stored object returned no signed URL');
+      }
+      const downloadRemainingMs = deadline - Date.now();
+      if (downloadRemainingMs <= 0) throw new Error('stored object verification timed out');
+      const response = await fetch(data.signedUrl, {
+        signal: AbortSignal.timeout(downloadRemainingMs),
+      });
+      if (!response.ok || !response.body) {
+        throw new Error(`stored object download returned HTTP ${response.status}`);
+      }
+      const hash = createHash('sha256');
+      const reader = response.body.getReader();
+      let sizeBytes = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        sizeBytes += value.byteLength;
+        if (sizeBytes > put.sizeBytes) {
+          await reader.cancel().catch(() => {});
+          throw new ApiError(
+            500,
+            'database_error',
+            `content-addressed storage object exceeds its attested size: ${put.storagePath}`,
+          );
+        }
+        hash.update(value);
+      }
+      const actualHash = hash.digest('hex');
+      if (sizeBytes !== put.sizeBytes || actualHash !== put.hash) {
+        throw new ApiError(
+          500,
+          'database_error',
+          `content-addressed storage object failed integrity verification: ${put.storagePath}`,
+        );
+      }
+      return;
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      lastError = error;
+    }
+  }
+  throw new ApiError(
+    503,
+    'service_unavailable',
+    `stored object could not be verified: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+  );
 }
 
 const DOCUMENT_RECEIPT_GRACE_HOURS = 48;
@@ -753,16 +898,9 @@ export async function uploadAttachment(input: UploadInput): Promise<UploadResult
         return { primary: won.primary, derivative, deduped: true };
       }
     }
-    await admin.storage
-      .from(BUCKET)
-      .remove([stored.primary.storagePath])
-      .catch(() => {});
-    if (stored.derivative) {
-      await admin.storage
-        .from(BUCKET)
-        .remove([stored.derivative.storagePath])
-        .catch(() => {});
-    }
+    // Content-addressed objects may already back another attachment or be in
+    // use by a concurrent insert. Never delete them as request rollback; a
+    // future reference-aware janitor can safely reclaim true orphans.
     if (insErr?.code === '23503') {
       throw new ApiError(404, 'not_found', 'referenced entity not found in this account');
     }
@@ -880,32 +1018,4 @@ export async function softDeleteAttachment(
  */
 export function sha256Bytes(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
-}
-
-/**
- * Best-effort removal of a freshly-stored object whose owning DB row(s) failed
- * to commit (e.g. an atomic create RPC threw AFTER the bytes were uploaded).
- * Reference-counted by the content-addressed path: under the Phase 9 scheme
- * (`<account>/<hash>.<ext>`) two attachment rows can share one storage object,
- * so we only delete the object when NO live attachments row references it --
- * otherwise we would orphan another attachment's bytes. Safe to call when the
- * caller's own row never landed (the common failure case).
- */
-export async function removeOrphanStoredObject(
-  accountId: string,
-  storagePath: string,
-): Promise<void> {
-  const admin = getAdminClient();
-  const { data } = await admin
-    .from('attachments')
-    .select('id')
-    .eq('account_id', accountId)
-    .eq('storage_path', storagePath)
-    .is('deleted_at', null)
-    .limit(1);
-  if (data && data.length > 0) return;
-  await admin.storage
-    .from(BUCKET)
-    .remove([storagePath])
-    .catch(() => {});
 }

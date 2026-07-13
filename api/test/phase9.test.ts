@@ -449,7 +449,9 @@ async function main(): Promise<void> {
     const responses = await Promise.all([upload(), upload()]);
     const bodies = responses.map((response, index) => {
       if (response.status !== 200 && response.status !== 201) {
-        throw new Error(`concurrent upload ${index} returned ${response.status}`);
+        throw new Error(
+          `concurrent upload ${index} returned ${response.status}: ${JSON.stringify(response.body)}`,
+        );
       }
       return response.body as {
         attachment: { id: string };
@@ -701,7 +703,7 @@ async function main(): Promise<void> {
 
   await check('content-addressed sharing: soft-delete one row, sibling still downloads', async () => {
     // Upload the SAME PNG to TWO DIFFERENT entities. Server-computed hash is
-    // identical, so the storage object collides and dedupes via upsert: two
+    // identical, so the storage object collides and dedupes immutably: two
     // attachment rows pointing at the same content-addressed storage_path.
     // (Per-entity content idempotency (20260629000001) would collapse two
     // uploads to the SAME entity into one row, so the shared-blob invariant is
