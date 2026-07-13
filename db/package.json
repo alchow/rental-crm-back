@@ -7,7 +7,7 @@
   "scripts": {
     "migrate:new": "supabase migration new",
     "migrate:up": "supabase db push --db-url \"$SUPABASE_DB_URL\"",
-    "migrate:reset": "supabase db reset --db-url \"$SUPABASE_DB_URL\"",
+    "migrate:reset": "bash ../scripts/assert-local-db.sh && supabase db reset --db-url \"$SUPABASE_DB_URL\"",
     "test:isolation": "tsx test/isolation.test.ts",
     "test:audit": "tsx test/audit.test.ts",
     "test:chain-mixed-era": "tsx test/chain-mixed-era.test.ts",
