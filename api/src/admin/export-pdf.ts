@@ -537,7 +537,10 @@ export function groupInteractionChains(rows: Record<string, unknown>[]): Interac
 // Human-facing counterparty for an interaction row in the export. Resolves
 // party_id to a name (tenant full_name / vendor name) via partyNames; falls
 // back to the free-text party_label, then the party_type itself ('unspecified'
-// for a role-unknown capture). Empty for notes/agent_events (party_type 'none').
+// for a role-unknown capture). Empty only for a party-LESS row (party_type
+// 'none') — agent_events and notes with no counterparty. A note that names a
+// counterparty (campaign-4 §12) carries party_type 'tenant'/'vendor'/… and so
+// renders that party here, exactly like any other row.
 // Exported for unit testing (mirrors groupInteractionChains).
 export function interactionPartyDisplay(
   row: Record<string, unknown>,

@@ -5,8 +5,12 @@
 // Covers:
 //   (A) Communication create/read: party_type still required; direction is
 //       now OPTIONAL (omitted -> 'unspecified'), and 'mutual' is accepted.
-//   (B) kind='note': creates with no direction/party_type/channel; reads
-//       back note-shaped; counterparty fields rejected.
+//   (B) kind='note': creates note-shaped (channel='note'/direction='none');
+//       a bare party_id (no role), a real direction, and the reserved 'note'
+//       channel on a communication are all rejected.
+//   (B2) kind='note' WITH a counterparty (campaign-4 §12): a note ABOUT a
+//       person keeps direction='none' but may name who it concerns; a bare
+//       'unspecified' party (comm-only sentinel) is rejected either way.
 //   (C) Amend: the correcting row carries corrects_id+correction_kind;
 //       the ORIGINAL row is unchanged byte-for-byte (stored fields AND its
 //       audit events); superseded_by_id/is_head derive correctly;
@@ -341,6 +345,23 @@ async function main(): Promise<void> {
     assertStatus(r, 400, "note with unspecified + party_id");
     if (!JSON.stringify(r.body).includes('party')) {
       throw new Error(`expected a party* field error: ${JSON.stringify(r.body)}`);
+    }
+  });
+
+  await check("note: bare party_type='unspecified' (no party_id) → 400", async () => {
+    // The note-vs-communication boundary: a communication MAY capture as bare
+    // 'unspecified' (the unresolved-sender queue), but a note may not — it
+    // carries a concrete role or none. Rejected at the zod layer, before the
+    // DB, regardless of any party_id (the sibling case above covers +id).
+    const r = await createInteraction({
+      kind: 'note',
+      occurred_at: '2026-03-02T12:30:00.000Z',
+      body: 'x',
+      party_type: 'unspecified',
+    });
+    assertStatus(r, 400, "note with bare unspecified");
+    if (!JSON.stringify(r.body).includes('party_type')) {
+      throw new Error(`expected a party_type field error: ${JSON.stringify(r.body)}`);
     }
   });
 
