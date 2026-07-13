@@ -35,7 +35,7 @@ https://rental-crm-api.onrender.com/v1
 ```
 
 - All endpoints live under `/v1`. Breaking changes ship as `/v2`; `/v1` is never broken in place.
-- `GET /healthz` (no `/v1` prefix) returns `{"status":"ok","capabilities":{"heic_decode":true|false|null}}` and is safe to hit from load balancer health checks. `heic_decode` reflects whether the server's `sharp`/libvips build includes libheif support; `null` means the probe hasn't finished yet (first ~50ms after boot).
+- `GET /healthz` (no `/v1` prefix) returns `{"status":"ok","capabilities":{"heic_decode":true|false|null}}` and is safe to hit from load balancer health checks. `heic_decode` starts with an end-to-end HEVC fixture upload and authenticated Supabase Storage rendition, then follows the latest real HEIC rendition outcome so outages and recoveries change the signal; `null` means the asynchronous boot probe has not finished yet.
 - `GET /openapi.json` returns the full OpenAPI 3.1 spec.
 - Couple only to this contract. Do **not** reach past it into the underlying database — that coupling forfeits forward-compatibility, and the API enforces invariants (isolation, audit trail, money integrity) that direct DB access bypasses.
 
@@ -704,9 +704,9 @@ Files tied to any entity — maintenance requests, inspection items, inspections
 | ------------- | ------ | -------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `entity_type` | string | yes      | `maintenance_requests` / `inspections` / `inspection_items` / `evidence_export` / `inspection_report` / `document_versions` |
 | `entity_id`   | uuid   | yes      | ID of the entity                                                                                                            |
-| `file`        | binary | yes      | Max 50 MB. Accepted MIME types: `image/jpeg`, `image/png`, `image/heic`, `image/heif`, `application/pdf`                    |
+| `file`        | binary | yes      | Max 20 MiB. Accepted MIME types: `image/jpeg`, `image/png`, `image/heic`, `image/heif`, `application/pdf`                  |
 
-**HEIC handling:** if the file is HEIC/HEIF and the server has libheif available (`/healthz` → `capabilities.heic_decode: true`), the API transcodes the original to a JPEG derivative and creates two attachment rows atomically. The original HEIC row has `derived_from: null`; the JPEG row has `derived_from: <heic_id>`. Both rows share the same `entity_type`/`entity_id`. If libheif is unavailable, the HEIC lands as-is — one row, no derivative.
+**HEIC handling:** the API stores and hashes the exact original first, then asks Supabase Storage to produce a bounded JPEG rendition (HEIC sources up to 50 MP, subject to the 20 MiB upload cap). It creates two attachment rows: the HEIC original with `derived_from: null`, and the JPEG with `derived_from: <heic_id>`. The JPEG is a usable rendition, not the evidence identity; original bytes and embedded metadata remain unchanged. A systemic transformation outage answers retryable `503` before attachment rows commit and flips `/healthz` → `heic_decode: false`; the next successful rendition flips it back to `true`. Corrupt or mislabeled input may preserve an original-only attachment, explicitly without claiming a usable derivative.
 
 ```jsonc
 // Response: 201
@@ -934,7 +934,7 @@ Accepts `application/json` (text-only) or `multipart/form-data` (with optional f
 | `severity`    | string  | yes      | `emergency` / `urgent` / `routine`                                                                                                  |
 | `description` | string  | no       | Max 5000 chars.                                                                                                                     |
 | `occurred_at` | ISO8601 | no       | When the issue was noticed; defaults to server time.                                                                                |
-| `file`        | binary  | no       | Multipart only. HEIC or JPEG, max 50 MB.                                                                                            |
+| `file`        | binary  | no       | Multipart only. HEIC or JPEG, max 20 MiB.                                                                                                 |
 
 Validation failures answer `400` with field-path messages (e.g. `"title: Required"`) and a
 `details.fieldErrors` map; a syntactically-broken JSON body answers `400` with
@@ -1251,7 +1251,7 @@ Every mutating call is protected by a server-side idempotency key. Retrying a ne
 Every uploaded file is stored with a server-computed SHA256 `content_hash`. The download endpoint returns `X-Content-Sha256` so you can verify the bytes haven't been corrupted in storage.
 
 **Tamper-evident evidence**
-Evidence exports embed a chain-of-custody for every file (upload time, hash, actor) and a full audit chain verification. Use the PDF directly in housing court or insurance claims without any additional attestation.
+Evidence exports embed provenance for every file (upload time, hash, actor) and a full audit-chain verification. This helps demonstrate integrity and reconstruct what the system recorded; it does not by itself establish legal admissibility, authentication, or self-authentication. Preserve the original files and export, and follow the evidentiary rules and counsel requirements for the relevant jurisdiction.
 
 ---
 

@@ -12,10 +12,9 @@
 //   (B) HEIC transcoding + provenance. A HEIC upload creates two
 //       attachments rows: the original (mime=image/heic) and a derivative
 //       (mime=image/jpeg, derived_from=<original.id>). The two rows have
-//       DIFFERENT content_hashes and DIFFERENT storage_paths. If sharp
-//       cannot decode the HEIC on this host (libvips without libheif), the
-//       derivative is absent and the original still lands -- we surface
-//       which case applies in the test output.
+//       DIFFERENT content_hashes and DIFFERENT storage_paths. The local
+//       Supabase imgproxy mirrors the hosted Storage rendition dependency,
+//       so a missing derivative is a hard contract failure.
 //
 //   (C) Per-IP DB rate limit. Hammering the intake endpoint past the limit
 //       returns 429s, and the ip_rate_buckets row reflects the count. A
@@ -32,6 +31,7 @@
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { Client } from 'pg';
+import { HEVC_HEIC_FIXTURE } from '../src/admin/hevc-heic-fixture';
 
 interface SupabaseStatus {
   API_URL: string;
@@ -321,25 +321,29 @@ async function main(): Promise<void> {
   // =========================================================================
 
   await check('heic: upload creates original + JPEG derivative with derived_from set', async () => {
-    // We don't have a real HEIC fixture to ship in the repo (and shipping
-    // one would balloon the test bundle). Instead we lie about the
-    // content-type on a known-good JPEG-encoded PNG. sharp will fail to
-    // decode it as HEIC; the derivative will be null. That's an
-    // acceptable test of the negative branch: the code path runs and the
-    // original lands. For the positive branch (real HEIC decode), we
-    // tee a small JPEG through sharp -> heif if libvips supports it.
     const fd = new FormData();
     fd.set('entity_type', 'maintenance_requests');
     fd.set('entity_id', A.maintenanceRequestId);
-    // PNG bytes but mime label says HEIC -- exercises the HEIC branch
-    // even if libvips can't actually decode.
-    fd.set('file', new File([new Uint8Array(PNG_1X1)], 'test.heic', { type: 'image/heic' }));
+    fd.set('file', new File([HEVC_HEIC_FIXTURE], 'iphone.heic', { type: 'image/heic' }));
     const r = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
-      token: A.accessToken, multipart: fd,
+      token: A.accessToken,
+      multipart: fd,
     });
     const body = assertStatus(r, 201, 'heic upload') as {
-      attachment: { id: string; mime_type: string | null; storage_path: string; content_hash: string; derived_from: string | null };
-      derivative: null | { id: string; mime_type: string | null; storage_path: string; content_hash: string; derived_from: string | null };
+      attachment: {
+        id: string;
+        mime_type: string | null;
+        storage_path: string;
+        content_hash: string;
+        derived_from: string | null;
+      };
+      derivative: null | {
+        id: string;
+        mime_type: string | null;
+        storage_path: string;
+        content_hash: string;
+        derived_from: string | null;
+      };
     };
     if (body.attachment.mime_type !== 'image/heic') {
       throw new Error(`expected primary mime image/heic, got ${body.attachment.mime_type}`);
@@ -347,24 +351,121 @@ async function main(): Promise<void> {
     if (body.attachment.derived_from !== null) {
       throw new Error(`primary row's derived_from should be null`);
     }
-    // The derivative may or may not be present depending on libvips/heif
-    // support. If it IS present, validate the provenance link rigorously.
-    if (body.derivative) {
-      if (body.derivative.mime_type !== 'image/jpeg') {
-        throw new Error(`derivative mime should be image/jpeg, got ${body.derivative.mime_type}`);
+    if (!body.derivative) throw new Error('Storage HEIC transformation produced no derivative');
+    if (body.derivative.mime_type !== 'image/jpeg') {
+      throw new Error(`derivative mime should be image/jpeg, got ${body.derivative.mime_type}`);
+    }
+    if (body.derivative.derived_from !== body.attachment.id) {
+      throw new Error(`derivative.derived_from should equal primary.id`);
+    }
+    if (body.derivative.content_hash === body.attachment.content_hash) {
+      throw new Error(`derivative should have its OWN content_hash`);
+    }
+    if (body.derivative.storage_path === body.attachment.storage_path) {
+      throw new Error(`derivative should have its OWN storage_path`);
+    }
+    console.info('    note: Storage transformed HEVC; provenance row landed');
+  });
+
+  await check('heic: retry heals an existing original-only provenance row', async () => {
+    const request = await api(
+      'POST',
+      `/v1/accounts/${A.accountId}/maintenance-requests`,
+      {
+        token: A.accessToken,
+        body: {
+          area_id: A.unitAreaId,
+          title: 'heic provenance repair',
+          severity: 'routine',
+        },
+      },
+    );
+    const requestId = (assertStatus(request, 201, 'repair request') as { id: string }).id;
+    const originalHash = createHash('sha256').update(HEVC_HEIC_FIXTURE).digest('hex');
+    const originalPath = `${A.accountId}/${originalHash}.heic`;
+    const seeded = await admin
+      .from('attachments')
+      .insert({
+        account_id: A.accountId,
+        entity_type: 'maintenance_requests',
+        entity_id: requestId,
+        storage_path: originalPath,
+        content_hash: originalHash,
+        mime_type: 'image/heic',
+        size_bytes: HEVC_HEIC_FIXTURE.byteLength,
+        uploaded_by: A.userId,
+      })
+      .select('id')
+      .single();
+    if (seeded.error || !seeded.data) {
+      throw new Error(`seed original-only HEIC row: ${seeded.error?.message}`);
+    }
+
+    const form = new FormData();
+    form.set('entity_type', 'maintenance_requests');
+    form.set('entity_id', requestId);
+    form.set('file', new File([HEVC_HEIC_FIXTURE], 'iphone.heic', { type: 'image/heic' }));
+    const retried = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
+      token: A.accessToken,
+      multipart: form,
+    });
+    const body = assertStatus(retried, 200, 'repair retry') as {
+      attachment: { id: string };
+      derivative: { id: string; derived_from: string | null; mime_type: string | null } | null;
+      deduped: boolean;
+    };
+    if (!body.deduped || body.attachment.id !== seeded.data.id) {
+      throw new Error('retry did not preserve the content-idempotent original row');
+    }
+    if (
+      !body.derivative ||
+      body.derivative.derived_from !== seeded.data.id ||
+      body.derivative.mime_type !== 'image/jpeg'
+    ) {
+      throw new Error(`retry did not heal derivative provenance: ${JSON.stringify(body)}`);
+    }
+  });
+
+  await check('heic: concurrent identical uploads both return complete provenance', async () => {
+    const request = await api('POST', `/v1/accounts/${A.accountId}/maintenance-requests`, {
+      token: A.accessToken,
+      body: {
+        area_id: A.unitAreaId,
+        title: 'heic concurrent provenance',
+        severity: 'routine',
+      },
+    });
+    const requestId = (assertStatus(request, 201, 'concurrent request') as { id: string }).id;
+    const upload = () => {
+      const form = new FormData();
+      form.set('entity_type', 'maintenance_requests');
+      form.set('entity_id', requestId);
+      form.set('file', new File([HEVC_HEIC_FIXTURE], 'iphone.heic', { type: 'image/heic' }));
+      return api('POST', `/v1/accounts/${A.accountId}/attachments`, {
+        token: A.accessToken,
+        multipart: form,
+      });
+    };
+    const responses = await Promise.all([upload(), upload()]);
+    const bodies = responses.map((response, index) => {
+      if (response.status !== 200 && response.status !== 201) {
+        throw new Error(`concurrent upload ${index} returned ${response.status}`);
       }
-      if (body.derivative.derived_from !== body.attachment.id) {
-        throw new Error(`derivative.derived_from should equal primary.id`);
+      return response.body as {
+        attachment: { id: string };
+        derivative: { id: string; derived_from: string | null } | null;
+      };
+    });
+    for (const body of bodies) {
+      if (!body.derivative || body.derivative.derived_from !== body.attachment.id) {
+        throw new Error(`concurrent response lacked complete provenance: ${JSON.stringify(body)}`);
       }
-      if (body.derivative.content_hash === body.attachment.content_hash) {
-        throw new Error(`derivative should have its OWN content_hash`);
-      }
-      if (body.derivative.storage_path === body.attachment.storage_path) {
-        throw new Error(`derivative should have its OWN storage_path`);
-      }
-      console.info('    note: libvips+libheif decoded the HEIC; provenance row landed');
-    } else {
-      console.info('    note: libvips lacks libheif on this host; derivative skipped (original still landed)');
+    }
+    if (
+      bodies[0]!.attachment.id !== bodies[1]!.attachment.id ||
+      bodies[0]!.derivative!.id !== bodies[1]!.derivative!.id
+    ) {
+      throw new Error('concurrent uploads did not converge to one primary and one derivative');
     }
   });
 

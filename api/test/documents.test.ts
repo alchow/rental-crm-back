@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import sharp from 'sharp';
 
 interface SupabaseStatus {
@@ -168,6 +169,15 @@ const PNG_BYTES = new Uint8Array(pngBuffer.buffer, pngBuffer.byteOffset, pngBuff
 
 function pngFile(): File {
   return new File([PNG_BYTES], 'move-in-form.png', { type: 'image/png' });
+}
+
+const HEIC_24MP_BYTES = Buffer.from(
+  (await readFile(new URL('./fixtures/solid-24mp-hevc.base64', import.meta.url), 'utf8')).trim(),
+  'base64',
+);
+
+function heic24MpFile(): File {
+  return new File([HEIC_24MP_BYTES], 'iphone-24mp.heic', { type: 'image/heic' });
 }
 
 interface Failure {
@@ -760,6 +770,72 @@ async function main(): Promise<void> {
     }
   });
 
+  await check('24 MP iPhone HEIC is storage-rendered without weakening provenance', async () => {
+    const fd = new FormData();
+    fd.set('tenancy_id', A.tenancyId);
+    fd.set('document_type', 'move_out');
+    fd.set('title', 'Move-out 24 MP iPhone photo');
+    fd.set('file', heic24MpFile());
+    const response = await api('POST', `/v1/accounts/${A.accountId}/documents`, {
+      token: A.accessToken,
+      multipart: fd,
+    });
+    const body = assertStatus(response, 201, '24 MP HEIC document upload') as {
+      id: string;
+      latest_version: {
+        id: string;
+        attachment_id: string;
+        mime_type: string;
+        original_attachment_id: string;
+        original_content_hash: string;
+        original_mime_type: string;
+      };
+    };
+    const version = body.latest_version;
+    const expectedHash = createHash('sha256').update(HEIC_24MP_BYTES).digest('hex');
+    if (
+      version.mime_type !== 'application/pdf' ||
+      version.original_mime_type !== 'image/heic' ||
+      version.original_content_hash !== expectedHash ||
+      version.attachment_id === version.original_attachment_id
+    ) {
+      throw new Error(`24 MP HEIC provenance mismatch: ${JSON.stringify(version)}`);
+    }
+
+    const originalRow = await admin
+      .from('attachments')
+      .select('storage_path, content_hash, mime_type, derived_from')
+      .eq('id', version.original_attachment_id)
+      .single();
+    if (
+      originalRow.error ||
+      !originalRow.data ||
+      originalRow.data.content_hash !== expectedHash ||
+      originalRow.data.mime_type !== 'image/heic' ||
+      originalRow.data.derived_from !== null
+    ) {
+      throw new Error(`24 MP original row mismatch: ${originalRow.error?.message}`);
+    }
+    const storedOriginal = await admin.storage
+      .from('attachments')
+      .download(originalRow.data.storage_path);
+    if (storedOriginal.error || !storedOriginal.data) {
+      throw new Error(`24 MP original bytes missing: ${storedOriginal.error?.message}`);
+    }
+    const storedBytes = Buffer.from(await storedOriginal.data.arrayBuffer());
+    if (!storedBytes.equals(HEIC_24MP_BYTES)) {
+      throw new Error('stored 24 MP HEIC differs from the uploaded evidence bytes');
+    }
+
+    const download = await api('GET', `/v1/accounts/${A.accountId}/documents/${body.id}/download`, {
+      token: A.accessToken,
+    });
+    const pdf = assertStatus(download, 200, '24 MP HEIC PDF download') as Uint8Array;
+    if (!Buffer.from(pdf).subarray(0, 5).equals(Buffer.from('%PDF-'))) {
+      throw new Error('24 MP HEIC rendition is not a PDF');
+    }
+  });
+
   await check('invalid image bytes return 422 before any document row is filed', async () => {
     const fd = new FormData();
     fd.set('tenancy_id', A.tenancyId);
@@ -894,22 +970,30 @@ async function main(): Promise<void> {
   });
 
   await check('repeated magic-link loads do not multiply viewed events', async () => {
-    // One load already happened in the previous check; load twice more. The
-    // once-per-(token,document) dedupe must keep the viewed count at one row
-    // per published document rather than growing with each refresh. This
-    // This tenancy has four published docs (including the image-derived PDF),
-    // so the deduped total is 4 -- not 4x loads.
-    for (let i = 0; i < 2; i++) {
-      const r = await api('GET', `/v1/document-access/${linkSecret}`);
-      assertStatus(r, 200, `repeat list ${i}`);
-    }
-    const { data } = await admin
+    // One load already happened in the previous check. Capture its event set,
+    // then prove refreshes do not grow it. This stays correct when another
+    // published document fixture is added to the test.
+    const { data: before } = await admin
       .from('document_access_events')
       .select('id')
       .eq('token_id', linkId)
       .eq('event_type', 'viewed');
-    if (!data || data.length !== 4) {
-      throw new Error(`expected 4 viewed events after repeated loads, got ${data?.length ?? 0}`);
+    if (!before || before.length === 0) {
+      throw new Error('expected the first magic-link load to create viewed events');
+    }
+    for (let i = 0; i < 2; i++) {
+      const r = await api('GET', `/v1/document-access/${linkSecret}`);
+      assertStatus(r, 200, `repeat list ${i}`);
+    }
+    const { data: after } = await admin
+      .from('document_access_events')
+      .select('id')
+      .eq('token_id', linkId)
+      .eq('event_type', 'viewed');
+    if (!after || after.length !== before.length) {
+      throw new Error(
+        `viewed events multiplied across refreshes: ${before.length} -> ${after?.length ?? 0}`,
+      );
     }
   });
 

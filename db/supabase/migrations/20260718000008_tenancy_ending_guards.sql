@@ -24,8 +24,18 @@ begin
     return NEW;
   end if;
 
+  -- Once an ending is recorded, both boundaries are historical facts. In
+  -- particular, a cancelled tenancy's operational end_date is its ORIGINAL
+  -- scheduled start. Deriving this from NEW.start_date would let a caller
+  -- rewrite both dates together and preserve the equality while changing
+  -- history.
+  if NEW.start_date is distinct from OLD.start_date then
+    raise exception 'conflict: start_date is fixed by the immutable tenancy ending'
+      using errcode = 'check_violation';
+  end if;
+
   v_expected_end_date := case
-    when v_ending.kind = 'cancelled_before_move_in' then NEW.start_date
+    when v_ending.kind = 'cancelled_before_move_in' then OLD.start_date
     else v_ending.effective_date
   end;
 

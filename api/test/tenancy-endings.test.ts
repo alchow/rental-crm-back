@@ -257,6 +257,42 @@ await check('ending is readable, audited, immutable, and repeat-safe', async () 
   if (!mutate.error || mutate.error.code !== '42501') {
     throw new Error(`direct update should lack privilege: ${mutate.error?.code}`);
   }
+
+  const rewriteBothDirectly = await userSb
+    .from('tenancies')
+    .update({ start_date: '2025-08-15', end_date: '2025-08-15' })
+    .eq('id', cancelledTenancyId);
+  if (!rewriteBothDirectly.error || rewriteBothDirectly.error.code !== '23514') {
+    throw new Error(
+      `rewriting both cancelled-tenancy dates should hit the DB guard: ${rewriteBothDirectly.error?.code}`,
+    );
+  }
+
+  const rewriteBothViaApi = await api(
+    'PATCH',
+    `/v1/accounts/${accountId}/tenancies/${cancelledTenancyId}`,
+    {
+      token,
+      body: { status: 'ended', start_date: '2025-08-15', end_date: '2025-08-15' },
+    },
+  );
+  if (rewriteBothViaApi.status !== 400) {
+    throw new Error(
+      `API rewrite of both cancelled-tenancy dates expected 400, got ${rewriteBothViaApi.status}`,
+    );
+  }
+  const unchanged = await admin
+    .from('tenancies')
+    .select('start_date, end_date')
+    .eq('id', cancelledTenancyId)
+    .single();
+  if (
+    unchanged.error ||
+    unchanged.data?.start_date !== '2030-08-15' ||
+    unchanged.data.end_date !== '2030-08-15'
+  ) {
+    throw new Error(`cancelled-tenancy dates were rewritten: ${JSON.stringify(unchanged.data)}`);
+  }
 });
 
 await check('impossible and future normal ending dates are rejected before lifecycle mutation', async () => {

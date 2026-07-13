@@ -1,9 +1,11 @@
 import { getLogger } from '../log';
 import { createHash, randomUUID } from 'node:crypto';
-import sharp from 'sharp';
 import { getAdminClient } from './supabase-admin';
-import { heicSupported } from './heic-probe';
 import { ApiError } from '../routes/_lib/error';
+import {
+  recordHeicRenditionFailure,
+  recordHeicRenditionSuccess,
+} from './heic-capability';
 
 // ============================================================================
 // Attachment storage helpers (admin-side, service-role).
@@ -44,6 +46,8 @@ import { ApiError } from '../routes/_lib/error';
 
 const BUCKET = 'attachments';
 export const MAX_BYTES = 20 * 1024 * 1024; // 20 MiB
+const STORAGE_RENDITION_EDGE = 2500;
+const STORAGE_TRANSFORM_TIMEOUT_MS = 20_000;
 
 export const ALLOWED_MIME_TYPES = new Set<string>([
   'image/jpeg',
@@ -91,6 +95,34 @@ function mimeToExt(mime: string): string {
 
 function isHeicLike(mime: string): boolean {
   return mime === 'image/heic' || mime === 'image/heif';
+}
+
+const HEIF_BRANDS = new Set([
+  'heic',
+  'heix',
+  'hevc',
+  'hevx',
+  'heim',
+  'heis',
+  'hevm',
+  'hevs',
+  'mif1',
+  'msf1',
+]);
+
+/** Cheap ISO-BMFF container check before asking the rendition dependency. */
+export function hasHeicContainerSignature(bytes: Uint8Array): boolean {
+  if (bytes.byteLength < 12) return false;
+  const ascii = (offset: number) =>
+    String.fromCharCode(bytes[offset]!, bytes[offset + 1]!, bytes[offset + 2]!, bytes[offset + 3]!);
+  if (ascii(4) !== 'ftyp') return false;
+  const declaredSize =
+    ((bytes[0]! << 24) | (bytes[1]! << 16) | (bytes[2]! << 8) | bytes[3]!) >>> 0;
+  const boxEnd = Math.min(bytes.byteLength, declaredSize >= 12 ? declaredSize : bytes.byteLength);
+  for (let offset = 8; offset + 3 < boxEnd; offset += 4) {
+    if (HEIF_BRANDS.has(ascii(offset))) return true;
+  }
+  return false;
 }
 
 function safeFilename(original: string | undefined, mime: string): string {
@@ -217,6 +249,123 @@ export async function stageDocumentUpload(
 }
 
 /**
+ * Ask Supabase Storage's imgproxy tier to decode and bound an already-stored
+ * image. Hosted Storage supports HEIC sources up to 50 MP, so normal iPhone
+ * photos never expand into RGBA inside the 512 MB API process. The returned
+ * JPEG is a rendition only; the exact original remains the evidence identity.
+ */
+export async function renderStoredImageToJpeg(
+  storagePath: string,
+  sourceBytes: Uint8Array,
+): Promise<Uint8Array> {
+  if (!hasHeicContainerSignature(sourceBytes)) {
+    throw new ApiError(
+      422,
+      'invalid_request',
+      'image bytes do not contain a recognized HEIC/HEIF container',
+      { fieldErrors: { file: ['image bytes do not match the declared HEIC/HEIF type'] } },
+    );
+  }
+  try {
+    const { data, error } = await getAdminClient()
+      .storage.from(BUCKET)
+      .download(
+        storagePath,
+        {
+          transform: {
+            width: STORAGE_RENDITION_EDGE,
+            height: STORAGE_RENDITION_EDGE,
+            resize: 'contain',
+            quality: 92,
+          },
+        },
+        { signal: AbortSignal.timeout(STORAGE_TRANSFORM_TIMEOUT_MS) },
+      );
+    if (error || !data) {
+      const statusCode = Number((error as { statusCode?: string | number } | null)?.statusCode);
+      const message = error?.message ?? 'no transformed bytes returned';
+      const invalidSource =
+        [400, 415, 422].includes(statusCode) &&
+        /decode|format|image|invalid|unsupported/i.test(message) &&
+        !/billing|enabled|plan|transform/i.test(message);
+      throw new ApiError(
+        invalidSource ? 422 : 503,
+        invalidSource ? 'invalid_request' : 'service_unavailable',
+        invalidSource
+          ? `image could not be decoded: ${message}`
+          : `image rendition service unavailable: ${message}`,
+        invalidSource
+          ? { fieldErrors: { file: ['image bytes are invalid or use an unsupported codec'] } }
+          : undefined,
+      );
+    }
+    const bytes = new Uint8Array(await data.arrayBuffer());
+    if (
+      data.type !== 'image/jpeg' ||
+      bytes.byteLength < 3 ||
+      bytes[0] !== 0xff ||
+      bytes[1] !== 0xd8 ||
+      bytes[2] !== 0xff
+    ) {
+      throw new ApiError(
+        503,
+        'service_unavailable',
+        `image rendition service returned ${data.type || 'an unknown format'} instead of JPEG`,
+      );
+    }
+    recordHeicRenditionSuccess();
+    return bytes;
+  } catch (error) {
+    const mapped =
+      error instanceof ApiError
+        ? error
+        : new ApiError(
+            503,
+            'service_unavailable',
+            `image rendition service unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          );
+    if (mapped.status === 503) recordHeicRenditionFailure(mapped);
+    throw mapped;
+  }
+}
+
+/** End-to-end startup probe for the same hosted Storage path uploads use. */
+export async function probeStoredHeicRendition(bytes: Uint8Array): Promise<void> {
+  const admin = getAdminClient();
+  const hash = createHash('sha256').update(bytes).digest('hex');
+  // One immutable system object avoids per-deploy origin-transform billing and
+  // cannot collide with an account UUID path. It is deliberately retained.
+  const storagePath = `_system/heic-probe/${hash}.heic`;
+  const { error } = await admin.storage
+    .from(BUCKET)
+    .upload(storagePath, bytes, { contentType: 'image/heic', upsert: false });
+  const statusCode = Number((error as { statusCode?: string | number } | null)?.statusCode);
+  const alreadyExists =
+    statusCode === 409 || /already exists|duplicate|resource exists/i.test(error?.message ?? '');
+  if (error && !alreadyExists) {
+    const uploadError = new Error(`HEIC probe upload failed: ${error.message}`);
+    recordHeicRenditionFailure(uploadError);
+    throw uploadError;
+  }
+
+  // Parallel test workers and rolling deploys can observe a brief Storage edge
+  // race while the first writer's immutable object becomes transformable.
+  // Retry only dependency failures; an invalid fixture must fail immediately.
+  let lastError: unknown;
+  for (const delayMs of [0, 100, 300]) {
+    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    try {
+      await renderStoredImageToJpeg(storagePath, bytes);
+      return;
+    } catch (renderError) {
+      lastError = renderError;
+      if (!(renderError instanceof ApiError) || renderError.status !== 503) throw renderError;
+    }
+  }
+  throw lastError;
+}
+
+/**
  * Validates inputs, hashes server-side, uploads the bytes to private
  * storage, and -- if the input is HEIC -- transcodes a JPEG derivative and
  * uploads that too. Does NOT touch the attachments DB table; callers are
@@ -241,43 +390,24 @@ export async function processAndStoreBytes(
 
   let derivative: StoragePut | null = null;
   if (isHeicLike(mimeType)) {
-    // The boot-time probe in heic-probe.ts already loud-warned ops if
-    // libheif was missing. Per-occurrence warnings here surface in the
-    // request log so each affected upload is visible too -- silent
-    // degradation of evidence rendering is exactly the failure mode
-    // we're defending against. If the probe said unsupported, we skip
-    // the transcode entirely (no point spending CPU on a guaranteed
-    // failure) but log the upload so ops can quantify the gap.
-    if (heicSupported() === false) {
+    try {
+      const jpegBytes = await renderStoredImageToJpeg(primary.storagePath, bytes);
+      derivative = await uploadBytes(admin, accountId, jpegBytes, 'image/jpeg');
+    } catch (error) {
+      // A dependency outage is retryable and must not commit an original-only
+      // attachment row. Idempotency middleware releases 5xx claims; retrying
+      // reuses the content-addressed original and completes provenance.
+      if (error instanceof ApiError && error.status === 503) throw error;
+
+      // The exact original is already content-addressed in private storage.
+      // Keep corrupt/mislabeled input as evidence, but do not claim it has a
+      // usable rendition.
+      const sha12 = primary.hash.slice(0, 12);
       getLogger().warn(
-        `[WARN][heic] HEIC upload landed (sha=${createHash('sha256').update(bytes).digest('hex').slice(0, 12)}…) ` +
-          `but libheif is unavailable on this host; NO JPEG derivative was created. ` +
-          `The inspection-report PDF will placeholder this photo.`,
+        `[WARN][heic] HEIC rendition FAILED for upload (sha=${sha12}…). ` +
+          `Original is stored; derivative skipped; PDF will placeholder. ` +
+          `rendition error: ${error instanceof Error ? error.message : String(error)}`,
       );
-    } else {
-      try {
-        const jpegBuf = await sharp(Buffer.from(bytes))
-          .rotate() // apply EXIF orientation so portrait/landscape renders right
-          .withMetadata() // KEEP EXIF on the derivative -- date/GPS preserved
-          .jpeg({ quality: 85 })
-          .toBuffer();
-        derivative = await uploadBytes(
-          admin,
-          accountId,
-          new Uint8Array(jpegBuf.buffer, jpegBuf.byteOffset, jpegBuf.byteLength),
-          'image/jpeg',
-        );
-      } catch (e) {
-        // The probe said supported but THIS specific decode still failed
-        // (e.g. corrupt HEIC, unusual codec variant). Loud-warn -- this
-        // is the case the user told us to track.
-        const sha12 = createHash('sha256').update(bytes).digest('hex').slice(0, 12);
-        getLogger().warn(
-          `[WARN][heic] HEIC decode FAILED for upload (sha=${sha12}…). ` +
-            `Original is stored; derivative skipped; PDF will placeholder. ` +
-            `sharp error: ${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
     }
   }
 
@@ -510,6 +640,49 @@ async function findLiveAttachmentByContent(
   };
 }
 
+async function ensureDerivativeAttachment(
+  admin: ReturnType<typeof getAdminClient>,
+  input: UploadInput,
+  primaryId: string,
+  derivative: StoragePut,
+): Promise<AttachmentRow> {
+  const { data, error } = await admin
+    .from('attachments')
+    .insert({
+      account_id: input.accountId,
+      entity_type: input.entityType,
+      entity_id: input.entityId,
+      storage_path: derivative.storagePath,
+      content_hash: derivative.hash,
+      mime_type: derivative.mimeType,
+      size_bytes: derivative.sizeBytes,
+      uploaded_by: input.uploadedBy ?? null,
+      derived_from: primaryId,
+    })
+    .select('*')
+    .single();
+  if (!error && data) return data as AttachmentRow;
+
+  // A concurrent retry may have healed the same provenance edge first.
+  if (error?.code === '23505') {
+    const { data: won } = await admin
+      .from('attachments')
+      .select('*')
+      .eq('account_id', input.accountId)
+      .eq('derived_from', primaryId)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (won) return won as AttachmentRow;
+  }
+  throw new ApiError(
+    500,
+    'database_error',
+    error?.message ?? 'JPEG derivative provenance row was not created',
+  );
+}
+
 /**
  * Landlord-facing upload: stores bytes (+ HEIC derivative when applicable)
  * and inserts the corresponding attachment row(s). For HEIC uploads two
@@ -532,7 +705,21 @@ export async function uploadAttachment(input: UploadInput): Promise<UploadResult
   // exact entity, return that row instead of inserting a duplicate. The bytes
   // were already (idempotently) stored above, so re-storing them was a no-op.
   const existing = await findLiveAttachmentByContent(admin, input, stored.primary.hash);
-  if (existing) return { ...existing, deduped: true };
+  if (existing) {
+    let derivative = existing.derivative;
+    if (!derivative && stored.derivative) {
+      // Heal an original-only row left by an older deployment or by a prior
+      // derivative-row DB failure. A retry must converge to complete
+      // provenance, not upload an orphan JPEG and return early.
+      derivative = await ensureDerivativeAttachment(
+        admin,
+        input,
+        existing.primary.id,
+        stored.derivative,
+      );
+    }
+    return { primary: existing.primary, derivative, deduped: true };
+  }
 
   const { data: primaryRow, error: insErr } = await admin
     .from('attachments')
@@ -553,7 +740,18 @@ export async function uploadAttachment(input: UploadInput): Promise<UploadResult
     // (shared, content-addressed) bytes -- return it WITHOUT removing them.
     if (insErr?.code === '23505') {
       const won = await findLiveAttachmentByContent(admin, input, stored.primary.hash);
-      if (won) return { ...won, deduped: true };
+      if (won) {
+        let derivative = won.derivative;
+        if (!derivative && stored.derivative) {
+          derivative = await ensureDerivativeAttachment(
+            admin,
+            input,
+            won.primary.id,
+            stored.derivative,
+          );
+        }
+        return { primary: won.primary, derivative, deduped: true };
+      }
     }
     await admin.storage
       .from(BUCKET)
@@ -582,28 +780,15 @@ export async function uploadAttachment(input: UploadInput): Promise<UploadResult
 
   let derivativeRow: AttachmentRow | null = null;
   if (stored.derivative) {
-    const { data, error } = await admin
-      .from('attachments')
-      .insert({
-        account_id: input.accountId,
-        entity_type: input.entityType,
-        entity_id: input.entityId,
-        storage_path: stored.derivative.storagePath,
-        content_hash: stored.derivative.hash,
-        mime_type: stored.derivative.mimeType,
-        size_bytes: stored.derivative.sizeBytes,
-        uploaded_by: input.uploadedBy ?? null,
-        derived_from: (primaryRow as AttachmentRow).id,
-      })
-      .select('*')
-      .single();
-    if (error || !data) {
-      // Best effort: the original lives on. The PDF renderer will
-      // placeholder this slot. Don't fail the whole upload over this.
-      void error;
-    } else {
-      derivativeRow = data as AttachmentRow;
-    }
+    // If this fails, answer 500 and let the idempotent retry path above repair
+    // the already-committed primary row. Never report a successful HEIC upload
+    // while silently omitting its usable rendition.
+    derivativeRow = await ensureDerivativeAttachment(
+      admin,
+      input,
+      (primaryRow as AttachmentRow).id,
+      stored.derivative,
+    );
   }
 
   void safeFilename(input.filename, input.mimeType);

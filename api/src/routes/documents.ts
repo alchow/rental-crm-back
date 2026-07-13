@@ -6,7 +6,7 @@ import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { paginated } from './_lib/list-response';
 import { softDeleteStamp } from './_lib/soft-delete';
-import { MAX_BYTES, stageDocumentUpload } from '../admin/storage';
+import { MAX_BYTES, renderStoredImageToJpeg, stageDocumentUpload } from '../admin/storage';
 import { renderDocumentImagePdf } from '../admin/document-image';
 import {
   documentTemplates,
@@ -752,8 +752,19 @@ documentsApp.openapi(uploadRoute, async (c) => {
 
   if (mimeType !== 'application/pdf') {
     const originalHash = createHash('sha256').update(bytes).digest('hex');
-    const pdfBytes = await renderDocumentImagePdf(bytes, originalHash);
-    const original = await stageDocumentUpload(accountId, auth.userId, bytes, mimeType);
+    const isHeic = mimeType === 'image/heic' || mimeType === 'image/heif';
+    // Storage must receive the exact HEIC before any rendition work. Its image
+    // transform tier decodes ordinary 12/24/48 MP phone photos outside this
+    // 512 MB API process; non-HEIC web images stay on the local Sharp path.
+    const stagedHeic = isHeic
+      ? await stageDocumentUpload(accountId, auth.userId, bytes, mimeType)
+      : null;
+    const renderableBytes = stagedHeic
+      ? await renderStoredImageToJpeg(stagedHeic.storagePath, bytes)
+      : bytes;
+    const pdfBytes = await renderDocumentImagePdf(renderableBytes, originalHash);
+    const original =
+      stagedHeic ?? (await stageDocumentUpload(accountId, auth.userId, bytes, mimeType));
     const pdf = await stageDocumentUpload(
       accountId,
       auth.userId,
