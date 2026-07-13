@@ -7103,7 +7103,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description property_id requires an explicit area_id */
+                /** @description property_id has zero/multiple live units, or the supplied area_id is outside it */
                 422: {
                     headers: {
                         [name: string]: unknown;
@@ -15897,10 +15897,14 @@ export interface components {
             status: "upcoming" | "active" | "ended" | "holdover";
         };
         PatchTenancyBody: {
+            /** Format: date */
             end_date?: string | null;
             /** @enum {string} */
             status?: "upcoming" | "active" | "ended" | "holdover";
-            /** @description Correction path for a wrong move-in date. Allowed only while the tenancy has no non-voided charges or payments (409 tenancy_has_money otherwise). A future date requires status='upcoming' in the same PATCH. */
+            /**
+             * Format: date
+             * @description Correction path for a wrong move-in date. Allowed only while the tenancy has no non-voided charges or payments (409 tenancy_has_money otherwise). A future date requires status='upcoming' in the same PATCH.
+             */
             start_date?: string;
         };
         TenancyEnding: {
@@ -15932,6 +15936,7 @@ export interface components {
         EndTenancyBody: {
             /** @enum {string} */
             kind: "ended";
+            /** Format: date */
             effective_date: string;
             /**
              * @default unknown
@@ -15951,6 +15956,7 @@ export interface components {
         } | {
             /** @enum {string} */
             kind: "cancelled_before_move_in";
+            /** Format: date */
             effective_date: string;
             /**
              * @default unknown

@@ -259,6 +259,26 @@ await check('ending is readable, audited, immutable, and repeat-safe', async () 
   }
 });
 
+await check('impossible and future normal ending dates are rejected before lifecycle mutation', async () => {
+  const tenancy = await createTenancy('2026-01-01', 'active');
+  const impossible = await api('POST', `/v1/accounts/${accountId}/tenancies/${tenancy.id}/end`, {
+    token,
+    body: { kind: 'ended', effective_date: '2026-99-99' },
+  });
+  if (impossible.status !== 400) {
+    throw new Error(`impossible date expected 400, got ${impossible.status}`);
+  }
+  const future = await api('POST', `/v1/accounts/${accountId}/tenancies/${tenancy.id}/end`, {
+    token,
+    body: { kind: 'ended', effective_date: '2099-01-01' },
+  });
+  if (future.status !== 400) throw new Error(`future ending expected 400, got ${future.status}`);
+  const current = await admin.from('tenancies').select('status, end_date').eq('id', tenancy.id).single();
+  if (current.error || current.data?.status !== 'active' || current.data.end_date !== null) {
+    throw new Error(`rejected ending mutated tenancy: ${JSON.stringify(current.data)}`);
+  }
+});
+
 await check(
   'normal ending truncates current schedules and soft-deletes unbilled future schedules',
   async () => {
@@ -270,7 +290,7 @@ await check(
       token,
       body: {
         kind: 'ended',
-        effective_date: '2026-07-31',
+        effective_date: '2026-07-01',
         initiated_by: 'mutual',
         reason_code: 'mutual_surrender',
       },
@@ -284,7 +304,7 @@ await check(
     if (schedules.error) throw new Error(`read schedules: ${schedules.error.message}`);
     const current = schedules.data?.find((row) => row.id === currentScheduleId);
     const future = schedules.data?.find((row) => row.id === futureScheduleId);
-    if (current?.end_date !== '2026-07-31' || current.deleted_at !== null) {
+    if (current?.end_date !== '2026-07-01' || current.deleted_at !== null) {
       throw new Error(`current schedule not truncated: ${JSON.stringify(current)}`);
     }
     if (!future?.deleted_at)
@@ -312,7 +332,7 @@ await check(
 
     const response = await api('POST', `/v1/accounts/${accountId}/tenancies/${tenancy.id}/end`, {
       token,
-      body: { kind: 'ended', effective_date: '2026-07-31' },
+      body: { kind: 'ended', effective_date: '2026-07-01' },
     });
     if (response.status !== 200)
       throw new Error(`end with future charge returned ${response.status}`);
@@ -329,6 +349,24 @@ await check(
     }
   },
 );
+
+await check('an immutable ending cannot be erased by reopening the tenancy', async () => {
+  const tenancy = await createTenancy('2026-01-01', 'active');
+  const ended = await api('POST', `/v1/accounts/${accountId}/tenancies/${tenancy.id}/end`, {
+    token,
+    body: { kind: 'ended', effective_date: '2026-07-01' },
+  });
+  if (ended.status !== 200) throw new Error(`end before reopen probe returned ${ended.status}`);
+  const reopen = await api('PATCH', `/v1/accounts/${accountId}/tenancies/${tenancy.id}`, {
+    token,
+    body: { status: 'active', end_date: null },
+  });
+  if (reopen.status !== 400) throw new Error(`reopen expected 400, got ${reopen.status}`);
+  const current = await admin.from('tenancies').select('status, end_date').eq('id', tenancy.id).single();
+  if (current.error || current.data?.status !== 'ended' || current.data.end_date !== '2026-07-01') {
+    throw new Error(`reopen changed immutable ending: ${JSON.stringify(current.data)}`);
+  }
+});
 
 await check(
   'a cross-tenancy source is rejected and the workflow rolls back atomically',
@@ -355,7 +393,7 @@ await check(
       token,
       body: {
         kind: 'ended',
-        effective_date: '2026-07-31',
+        effective_date: '2026-07-01',
         source_interaction_id: interaction.data.id,
       },
     });

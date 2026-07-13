@@ -6,7 +6,7 @@ import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { paginated } from './_lib/list-response';
 import { softDeleteStamp } from './_lib/soft-delete';
-import { MAX_BYTES, processAndStoreBytes, storeExactBytes } from '../admin/storage';
+import { MAX_BYTES, stageDocumentUpload } from '../admin/storage';
 import { renderDocumentImagePdf } from '../admin/document-image';
 import {
   documentTemplates,
@@ -447,13 +447,8 @@ async function createTenancyDocumentFromImage(
     p_document_type: z.infer<typeof DocumentType>;
     p_title: string;
     p_requires_ack: boolean;
-    p_original_hash: string;
-    p_original_mime_type: string;
-    p_original_size_bytes: number;
-    p_original_path: string;
-    p_pdf_hash: string;
-    p_pdf_size_bytes: number;
-    p_pdf_path: string;
+    p_original_receipt_id: string;
+    p_pdf_receipt_id: string;
   },
 ): Promise<{ document: z.infer<typeof DocumentRow>; deduped: boolean }> {
   const { data, error } = await sb.rpc('create_tenancy_document_from_image', params);
@@ -473,6 +468,40 @@ async function createTenancyDocumentFromImage(
   const version = versions.get(documentId);
   if (!version)
     throw new ApiError(500, 'database_error', 'image document creation returned no version');
+  return {
+    document: { ...(result.document as object), latest_version: version } as z.infer<
+      typeof DocumentRow
+    >,
+    deduped: result.deduped ?? false,
+  };
+}
+
+async function createTenancyDocumentFromUpload(
+  sb: ReturnType<typeof getSb>,
+  params: {
+    p_account_id: string;
+    p_tenancy_id: string;
+    p_document_type: z.infer<typeof DocumentType>;
+    p_title: string;
+    p_requires_ack: boolean;
+    p_upload_receipt_id: string;
+  },
+): Promise<{ document: z.infer<typeof DocumentRow>; deduped: boolean }> {
+  const { data, error } = await sb.rpc('create_tenancy_document_from_upload', params);
+  if (error) {
+    if (error.code === 'P0002' || /(?:tenancy|upload_receipt)_not_found/.test(error.message)) {
+      throw new ApiError(404, 'not_found', 'tenancy or upload receipt not found');
+    }
+    if (error.code === '22023') throw new ApiError(400, 'invalid_request', error.message);
+    throw new ApiError(500, 'database_error', error.message);
+  }
+  const result = data as { document?: { id?: unknown }; deduped?: boolean } | null;
+  if (!result || typeof result.document?.id !== 'string') {
+    throw new ApiError(500, 'database_error', 'document upload returned no document id');
+  }
+  const versions = await latestVersions(sb, params.p_account_id, [result.document.id]);
+  const version = versions.get(result.document.id);
+  if (!version) throw new ApiError(500, 'database_error', 'document upload returned no version');
   return {
     document: { ...(result.document as object), latest_version: version } as z.infer<
       typeof DocumentRow
@@ -698,6 +727,7 @@ documentsApp.openapi(uploadRoute, async (c) => {
   }
 
   const sb = getSb(c);
+  const auth = c.get('auth');
   // Cheap tenancy pre-check before we spend bytes on storage: avoids an orphan
   // blob on the common "bad tenancy" 404. The RPC re-checks under RLS as the
   // authoritative, transactional guard.
@@ -711,10 +741,10 @@ documentsApp.openapi(uploadRoute, async (c) => {
   if (tErr) throw new ApiError(500, 'database_error', tErr.message);
   if (!tenancy) throw new ApiError(404, 'not_found', 'tenancy not found');
 
-  // Store the bytes first (service-role; content-addressed). The attachment +
+  // Store the bytes first (service-role; receipt-unique staging path). The attachment +
   // document + version ROWS are then written atomically by the RPC. A failed
   // RPC can leave a private, unreachable storage orphan for a future age-gated
-  // janitor; request-time deletion could race another upload of the same hash.
+  // janitor. Unique receipt paths let cleanup avoid identical-upload races.
   const bytes = new Uint8Array(await (file as File).arrayBuffer());
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_BYTES) {
     throw new ApiError(400, 'invalid_request', 'document file is empty or exceeds 20 MiB');
@@ -723,41 +753,36 @@ documentsApp.openapi(uploadRoute, async (c) => {
   if (mimeType !== 'application/pdf') {
     const originalHash = createHash('sha256').update(bytes).digest('hex');
     const pdfBytes = await renderDocumentImagePdf(bytes, originalHash);
-    const original = await storeExactBytes(accountId, bytes, mimeType);
-    const pdf = await storeExactBytes(accountId, pdfBytes, 'application/pdf');
+    const original = await stageDocumentUpload(accountId, auth.userId, bytes, mimeType);
+    const pdf = await stageDocumentUpload(
+      accountId,
+      auth.userId,
+      pdfBytes,
+      'application/pdf',
+      original.receiptId,
+    );
     const created = await createTenancyDocumentFromImage(sb, {
       p_account_id: accountId,
       p_tenancy_id: parsed.data.tenancy_id,
       p_document_type: parsed.data.document_type,
       p_title: parsed.data.title,
       p_requires_ack: parsed.data.requires_ack ?? false,
-      p_original_hash: original.hash,
-      p_original_mime_type: original.mimeType,
-      p_original_size_bytes: original.sizeBytes,
-      p_original_path: original.storagePath,
-      p_pdf_hash: pdf.hash,
-      p_pdf_size_bytes: pdf.sizeBytes,
-      p_pdf_path: pdf.storagePath,
+      p_original_receipt_id: original.receiptId,
+      p_pdf_receipt_id: pdf.receiptId,
     });
-    // Do not delete an apparently unreferenced content-addressed object here:
-    // another request may have uploaded the same bytes and be between storage
-    // and its DB commit. An age-gated storage janitor can safely prune genuine
-    // orphans later without racing evidence creation.
+    // Cleanup remains age-gated so transient DB failures can be retried and so
+    // request latency never depends on a compensating storage delete.
     return c.json(created.document, created.deduped ? 200 : 201);
   }
 
-  const stored = await processAndStoreBytes(accountId, bytes, mimeType);
-  const created = await createTenancyDocument(sb, {
+  const stored = await stageDocumentUpload(accountId, auth.userId, bytes, mimeType);
+  const created = await createTenancyDocumentFromUpload(sb, {
     p_account_id: accountId,
     p_tenancy_id: parsed.data.tenancy_id,
     p_document_type: parsed.data.document_type,
     p_title: parsed.data.title,
     p_requires_ack: parsed.data.requires_ack ?? false,
-    p_source: 'landlord_upload',
-    p_content_hash: stored.primary.hash,
-    p_mime_type: stored.primary.mimeType,
-    p_size_bytes: stored.primary.sizeBytes,
-    p_attachment_path: stored.primary.storagePath,
+    p_upload_receipt_id: stored.receiptId,
   });
   // 200 (existing doc) when identical bytes were already filed for this
   // tenancy + document_type; 201 on a fresh create.

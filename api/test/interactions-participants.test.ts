@@ -808,6 +808,75 @@ async function main(): Promise<void> {
     }
   });
 
+  await check('property_id: a correction can switch to a different singleton property', async () => {
+    const targetProperty = assertStatus(
+      await api('POST', `/v1/accounts/${A.accountId}/properties`, {
+        token: A.accessToken,
+        body: { name: 'Correction target property' },
+      }),
+      201,
+      'correction target property',
+    ) as { id: string };
+    const targetArea = assertStatus(
+      await api('POST', `/v1/accounts/${A.accountId}/areas`, {
+        token: A.accessToken,
+        body: { property_id: targetProperty.id, kind: 'unit', name: 'Only target unit' },
+      }),
+      201,
+      'correction target area',
+    ) as { id: string };
+    const original = assertStatus(
+      await createInteraction(
+        commBody({ property_id: A.propertyId, body: 'Initially logged at property A.' }),
+      ),
+      201,
+      'original property scope',
+    ) as InteractionRow;
+    const corrected = assertStatus(
+      await createInteraction({
+        corrects_id: original.id,
+        correction_kind: 'amend',
+        property_id: targetProperty.id,
+        body: 'Correct property is B.',
+      }),
+      201,
+      'property scope correction',
+    ) as InteractionRow;
+    if (corrected.area_id !== targetArea.id || corrected.property_id !== targetProperty.id) {
+      throw new Error(`new singleton property was not resolved: ${JSON.stringify(corrected)}`);
+    }
+  });
+
+  await check('area_id: an explicitly selected archived area is rejected', async () => {
+    const property = assertStatus(
+      await api('POST', `/v1/accounts/${A.accountId}/properties`, {
+        token: A.accessToken,
+        body: { name: 'Archived area property' },
+      }),
+      201,
+      'archived area property',
+    ) as { id: string };
+    const area = assertStatus(
+      await api('POST', `/v1/accounts/${A.accountId}/areas`, {
+        token: A.accessToken,
+        body: { property_id: property.id, kind: 'unit', name: 'Archived unit' },
+      }),
+      201,
+      'archived area',
+    ) as { id: string };
+    assertStatus(
+      await api('DELETE', `/v1/accounts/${A.accountId}/areas/${area.id}`, {
+        token: A.accessToken,
+      }),
+      204,
+      'archive area',
+    );
+    const response = await createInteraction(
+      commBody({ area_id: area.id, tenancy_id: undefined, body: 'Should not attach here.' }),
+    );
+    assertStatus(response, 404, 'explicit archived area');
+  });
+
   await check('property_id: ambiguous or empty properties require explicit area_id', async () => {
     const multiProperty = assertStatus(
       await api('POST', `/v1/accounts/${A.accountId}/properties`, {

@@ -165,7 +165,8 @@ const create = createRoute({
   responses: {
     201: { description: 'created', content: { 'application/json': { schema: Interaction } } },
     422: {
-      description: 'property_id requires an explicit area_id',
+      description:
+        'property_id has zero/multiple live units, or the supplied area_id is outside it',
       content: { 'application/json': { schema: ErrorEnvelope } },
     },
     ...errorResponses,
@@ -530,6 +531,7 @@ async function resolveInteractionScope(
       .select('id, property_id')
       .eq('account_id', accountId)
       .eq('id', explicitAreaId)
+      .is('deleted_at', null)
       .maybeSingle();
     if (error) throw new ApiError(500, 'database_error', error.message);
     if (!area) throw new ApiError(404, 'not_found', 'area_id does not belong to this account');
@@ -549,7 +551,11 @@ async function resolveInteractionScope(
   if (!property)
     throw new ApiError(404, 'not_found', 'property_id does not belong to this account');
 
-  const candidateAreaId = explicitAreaId ?? fallback.areaId;
+  // A correction that deliberately changes property must not inherit the old
+  // property's area. Resolve the new property from scratch unless its area is
+  // also supplied explicitly.
+  const candidateAreaId =
+    explicitAreaId ?? (fallback.propertyId === propertyId ? fallback.areaId : null);
   if (candidateAreaId !== null && candidateAreaId !== undefined) {
     let query = sb
       .from('areas')

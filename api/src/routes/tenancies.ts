@@ -7,6 +7,7 @@ import { keysetPage } from './_lib/cursor';
 import { parseCsvEnum } from './_lib/csv-enum';
 import { softDeleteStamp } from './_lib/soft-delete';
 import { CreateTenancyBody, TenancyStatus } from '../schemas/importable';
+import { CalendarDate } from '../schemas/calendar-date';
 
 // A tenancy is one occupancy period of one unit-kind area. The DB trigger
 // `tenancies_area_kind_check` enforces area.kind = 'unit' (a tenancy on a
@@ -31,20 +32,14 @@ const Tenancy = z
 
 const PatchTenancyBody = z
   .object({
-    end_date: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/)
-      .nullable()
-      .optional(),
+    end_date: CalendarDate.nullable().optional(),
     status: TenancyStatus.optional(),
     // Correction path for a mis-entered move-in date (usability finding C3).
     // Guarded in the handler: refused with 409 tenancy_has_money once any
     // non-voided charge or payment exists, and a future start_date must be
     // accompanied by status='upcoming' (a future-dated active/holdover/ended
     // tenancy is incoherent, and the daily sweep only advances forward).
-    start_date: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/)
+    start_date: CalendarDate
       .optional()
       .openapi({
         description:
@@ -69,7 +64,7 @@ const EndedReasonCode = z.enum([
 const CancelledReasonCode = z.enum(['applicant_withdrew', 'landlord_withdrew', 'other']);
 
 const EndingBodyFields = {
-  effective_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  effective_date: CalendarDate,
   initiated_by: EndingInitiatedBy.default('unknown'),
   reason_note: z.string().min(1).max(2000).optional(),
   source_notice_id: z.string().uuid().optional(),

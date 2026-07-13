@@ -307,6 +307,30 @@ await check('GET, list, and PATCH derive the same immutable first report', async
   if (patched.reported_by?.interaction_id !== firstInteractionId) {
     throw new Error('PATCH response replaced the original report');
   }
+
+  // The report link is an immutable fact, not a query over whichever live
+  // inbound row happens to sort first today. Soft-deleting the journal row
+  // must not cause a later follow-up to impersonate the original reporter.
+  const { createClient } = await import('@supabase/supabase-js');
+  const user = createClient(status.API_URL, status.ANON_KEY, {
+    global: { headers: { Authorization: `Bearer ${A.token}` } },
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
+  const now = new Date().toISOString();
+  const deleted = await user
+    .from('interactions')
+    .update({ deleted_at: now, updated_at: now })
+    .eq('account_id', A.accountId)
+    .eq('id', firstInteractionId);
+  if (deleted.error) throw new Error(`soft-delete source interaction: ${deleted.error.message}`);
+  const afterDelete = assertStatus(
+    await api('GET', `${base}/maintenance-requests/${requestId}`, { token: A.token }),
+    200,
+    'get after report soft-delete',
+  ) as MaintenanceRow;
+  if (afterDelete.reported_by?.interaction_id !== firstInteractionId) {
+    throw new Error(`report source changed after soft-delete: ${JSON.stringify(afterDelete)}`);
+  }
 });
 
 await check('legacy-compatible create without report returns reported_by=null', async () => {
@@ -324,6 +348,32 @@ await check('legacy-compatible create without report returns reported_by=null', 
   ) as MaintenanceRow;
   if (created.reported_by !== null)
     throw new Error(`expected null reporter: ${JSON.stringify(created.reported_by)}`);
+
+  assertStatus(
+    await api('POST', `${base}/interactions`, {
+      token: A.token,
+      body: {
+        party_type: 'tenant',
+        party_id: A.tenantId,
+        channel: 'phone',
+        direction: 'inbound',
+        body: 'Later follow-up on a landlord-observed issue.',
+        occurred_at: '2026-07-11T10:00:00.000Z',
+        maintenance_request_id: created.id,
+        area_id: A.areaId,
+      },
+    }),
+    201,
+    'later legacy follow-up',
+  );
+  const afterFollowup = assertStatus(
+    await api('GET', `${base}/maintenance-requests/${created.id}`, { token: A.token }),
+    200,
+    'get legacy request after follow-up',
+  ) as MaintenanceRow;
+  if (afterFollowup.reported_by !== null) {
+    throw new Error(`later follow-up became legacy reporter: ${JSON.stringify(afterFollowup)}`);
+  }
 });
 
 await check(

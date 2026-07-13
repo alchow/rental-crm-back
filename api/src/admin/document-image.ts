@@ -3,6 +3,34 @@ import sharp from 'sharp';
 import { createHash } from 'node:crypto';
 import { ApiError } from '../routes/_lib/error';
 
+// Covers current high-resolution phone cameras (including ~48 MP sensors)
+// while cutting Sharp's default ~268 MP decompression envelope by >80%.
+// The derived PDF only needs a screen/print rendition; the exact full-size
+// original remains separately preserved in storage.
+export const MAX_DOCUMENT_IMAGE_PIXELS = 50_000_000;
+const MAX_RENDITION_EDGE = 4096;
+
+export async function decodeDocumentImageToJpeg(
+  originalBytes: Uint8Array,
+): Promise<{ data: Buffer; width: number; height: number }> {
+  const rendered = await sharp(Buffer.from(originalBytes), {
+    limitInputPixels: MAX_DOCUMENT_IMAGE_PIXELS,
+    sequentialRead: true,
+    failOn: 'error',
+  })
+    .rotate()
+    .resize({
+      width: MAX_RENDITION_EDGE,
+      height: MAX_RENDITION_EDGE,
+      fit: 'inside',
+      withoutEnlargement: true,
+    })
+    .flatten({ background: '#ffffff' })
+    .jpeg({ quality: 92, chromaSubsampling: '4:4:4' })
+    .toBuffer({ resolveWithObject: true });
+  return { data: rendered.data, width: rendered.info.width, height: rendered.info.height };
+}
+
 /**
  * Render one uploaded phone image into a deterministic, one-page PDF.
  * The original bytes are stored separately and remain the evidence identity;
@@ -16,14 +44,10 @@ export async function renderDocumentImagePdf(
   let width: number;
   let height: number;
   try {
-    const rendered = await sharp(Buffer.from(originalBytes))
-      .rotate()
-      .flatten({ background: '#ffffff' })
-      .jpeg({ quality: 92, chromaSubsampling: '4:4:4' })
-      .toBuffer({ resolveWithObject: true });
+    const rendered = await decodeDocumentImageToJpeg(originalBytes);
     jpeg = rendered.data;
-    width = rendered.info.width;
-    height = rendered.info.height;
+    width = rendered.width;
+    height = rendered.height;
   } catch (error) {
     throw new ApiError(
       422,

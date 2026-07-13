@@ -3,6 +3,7 @@ import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 import { TenancyStatus } from '../schemas/importable';
+import { CalendarDate } from '../schemas/calendar-date';
 
 // GET /v1/accounts/{accountId}/rent-rollup
 //
@@ -83,9 +84,7 @@ const RollupQuery = z.object({
         'whenever ended is requested.',
       example: 'active,holdover,ended',
     }),
-  as_of: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
+  as_of: CalendarDate
     .optional()
     .openapi({
       description:

@@ -1,5 +1,6 @@
 import { getLogger } from '../log';
-import sharp from 'sharp';
+import { decodeDocumentImageToJpeg } from './document-image';
+import { HEVC_HEIC_FIXTURE } from './hevc-heic-fixture';
 
 // ============================================================================
 // libheif support probe.
@@ -25,18 +26,13 @@ interface ProbeResult { supported: boolean; error?: string }
 let probeResult: ProbeResult | null = null;
 
 /**
- * Encodes a 1x1 pixel to HEIF; if libvips lacks libheif, sharp throws.
- * Encode and decode capability are coupled in libheif builds, so this
- * encode-side probe is a faithful smoke test for the decode path we
- * actually use at upload.
+ * Runs a tiny HEVC-backed HEIC fixture through the exact rotate/resize/JPEG
+ * decode path used by tenancy-document uploads. Generating an AV1 HEIF at
+ * runtime can pass on AVIF-only builds while normal iPhone HEICs still fail.
  */
 export async function probeHeicSupport(): Promise<ProbeResult> {
   try {
-    await sharp({
-      create: { width: 1, height: 1, channels: 3, background: { r: 0, g: 0, b: 0 } },
-    })
-      .heif({ compression: 'av1' })
-      .toBuffer();
+    await decodeDocumentImageToJpeg(HEVC_HEIC_FIXTURE);
     return { supported: true };
   } catch (e) {
     return { supported: false, error: e instanceof Error ? e.message : String(e) };

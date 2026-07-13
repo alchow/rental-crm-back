@@ -1,5 +1,5 @@
 import { getLogger } from '../log';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { getAdminClient } from './supabase-admin';
 import { heicSupported } from './heic-probe';
@@ -17,13 +17,9 @@ import { ApiError } from '../routes/_lib/error';
 //       store (a client-supplied hash is worthless for tamper evidence);
 //   (2) the path is server-constructed; submitters never get to choose
 //       which account / entity their file lands under;
-//   (3) the storage path is content-addressed: <account>/<hash>.<ext> .
-//       The hash IS the path filename, so even if a second upload of the
-//       SAME bytes happens, the path collides and we dedupe (upsert).
-//       Putting the entity_id in the path was the Phase 8 scheme; we
-//       dropped it in Phase 9 so that the intake flow can compute the path
-//       BEFORE the maintenance_request_id exists -- the path is now a
-//       pure function of (accountId, hash, ext).
+//   (3) ordinary attachment paths are content-addressed. Document staging
+//       paths also include a service-authored receipt id, so cleanup of one
+//       abandoned upload cannot race another upload of identical bytes.
 //
 // HEIC handling (Phase 9):
 //
@@ -106,10 +102,15 @@ function safeFilename(original: string | undefined, mime: string): string {
 export interface StoragePut {
   /** sha256 hex of the bytes that landed in storage. */
   hash: string;
-  /** account-scoped storage object name: `<account>/<hash>.<ext>`. */
+  /** Server-constructed, account-scoped storage object name. */
   storagePath: string;
   mimeType: string;
   sizeBytes: number;
+}
+
+export interface AttestedStoragePut extends StoragePut {
+  /** Service-authored receipt consumed by the caller-JWT document RPC. */
+  receiptId: string;
 }
 
 export interface StoragePutResult {
@@ -144,6 +145,75 @@ export async function storeExactBytes(
     throw new ApiError(400, 'invalid_request', `unsupported mime_type ${mimeType}`);
   }
   return uploadBytes(getAdminClient(), accountId, bytes, mimeType);
+}
+
+/**
+ * Attest metadata before storing bytes, upload to the exact derived path, then
+ * mark the receipt consumable. An incomplete receipt cannot create evidence.
+ * If any step fails, the age-gated janitor clears the receipt/object pair.
+ */
+export async function stageDocumentUpload(
+  accountId: string,
+  uploadedBy: string,
+  bytes: Uint8Array,
+  mimeType: string,
+  derivedFromReceiptId?: string,
+): Promise<AttestedStoragePut> {
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_BYTES) {
+    throw new ApiError(400, 'invalid_request', 'document file is empty or exceeds 20 MiB');
+  }
+  if (!ALLOWED_MIME_TYPES.has(mimeType)) {
+    throw new ApiError(400, 'invalid_request', `unsupported mime_type ${mimeType}`);
+  }
+
+  const admin = getAdminClient();
+  // Document staging paths are receipt-unique, not shared by content hash.
+  // This lets the orphan janitor delete one abandoned upload without racing a
+  // concurrent upload of identical bytes that would otherwise share a path.
+  const receiptId = randomUUID();
+  const described = describeBytes(accountId, bytes, mimeType);
+  const put: StoragePut = {
+    ...described,
+    storagePath: `${accountId}/document-uploads/${receiptId}/${described.hash}.${mimeToExt(mimeType)}`,
+  };
+  const { data: receipt, error: receiptError } = await admin
+    .from('document_upload_receipts')
+    .insert({
+      id: receiptId,
+      account_id: accountId,
+      content_hash: put.hash,
+      storage_path: put.storagePath,
+      mime_type: put.mimeType,
+      size_bytes: put.sizeBytes,
+      uploaded_by: uploadedBy,
+      derived_from_receipt_id: derivedFromReceiptId ?? null,
+    })
+    .select('id')
+    .single();
+  if (receiptError || !receipt) {
+    throw new ApiError(
+      500,
+      'database_error',
+      receiptError?.message ?? 'document upload receipt was not created',
+    );
+  }
+
+  await uploadDescribedBytes(admin, put, bytes, false);
+  const { data: completed, error: completeError } = await admin
+    .from('document_upload_receipts')
+    .update({ stored_at: new Date().toISOString() })
+    .eq('id', receipt.id as string)
+    .is('stored_at', null)
+    .select('id')
+    .single();
+  if (completeError || !completed) {
+    throw new ApiError(
+      500,
+      'database_error',
+      completeError?.message ?? 'document upload receipt was not completed',
+    );
+  }
+  return { ...put, receiptId: receipt.id as string };
 }
 
 /**
@@ -220,17 +290,149 @@ async function uploadBytes(
   bytes: Uint8Array,
   mimeType: string,
 ): Promise<StoragePut> {
+  const put = describeBytes(accountId, bytes, mimeType);
+  await uploadDescribedBytes(admin, put, bytes);
+  return put;
+}
+
+function describeBytes(accountId: string, bytes: Uint8Array, mimeType: string): StoragePut {
   const hash = createHash('sha256').update(bytes).digest('hex');
   const ext = mimeToExt(mimeType);
   const storagePath = `${accountId}/${hash}.${ext}`;
+  return { hash, storagePath, mimeType, sizeBytes: bytes.byteLength };
+}
 
+async function uploadDescribedBytes(
+  admin: ReturnType<typeof getAdminClient>,
+  put: StoragePut,
+  bytes: Uint8Array,
+  upsert = true,
+): Promise<void> {
   const { error: upErr } = await admin.storage
     .from(BUCKET)
-    .upload(storagePath, bytes, { contentType: mimeType, upsert: true });
+    .upload(put.storagePath, bytes, { contentType: put.mimeType, upsert });
   if (upErr) {
     throw new ApiError(500, 'database_error', `storage upload failed: ${upErr.message}`);
   }
-  return { hash, storagePath, mimeType, sizeBytes: bytes.byteLength };
+}
+
+const DOCUMENT_RECEIPT_GRACE_HOURS = 48;
+const DOCUMENT_RECEIPT_PRUNE_BATCH = 100;
+const DOCUMENT_RECEIPT_PRUNE_MAX = 10_000;
+const DOCUMENT_REFERENCE_QUERY_CHUNK = 20;
+
+interface DocumentReceiptForPrune {
+  id: string;
+  account_id: string;
+  storage_path: string;
+  derived_from_receipt_id: string | null;
+  created_at: string;
+}
+
+/**
+ * Reclaim only receipt-unique storage objects backed by an expired service
+ * receipt and by no attachment row (live or soft-deleted). RPCs accept
+ * receipts for 24 hours; the 48-hour threshold adds a retry buffer. Because a
+ * path contains its receipt id, an identical concurrent upload cannot share
+ * the object being removed.
+ */
+export async function pruneDocumentUploadOrphans(): Promise<number> {
+  const admin = getAdminClient();
+  const cutoff = new Date(Date.now() - DOCUMENT_RECEIPT_GRACE_HOURS * 60 * 60 * 1000).toISOString();
+  let pruned = 0;
+  let scanned = 0;
+  let cursor: Pick<DocumentReceiptForPrune, 'created_at' | 'id'> | null = null;
+  while (scanned < DOCUMENT_RECEIPT_PRUNE_MAX) {
+    let query = admin
+      .from('document_upload_receipts')
+      .select('id, account_id, storage_path, derived_from_receipt_id, created_at')
+      .lt('created_at', cutoff)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(Math.min(DOCUMENT_RECEIPT_PRUNE_BATCH, DOCUMENT_RECEIPT_PRUNE_MAX - scanned));
+    if (cursor) {
+      query = query.or(
+        `created_at.gt.${cursor.created_at},and(created_at.eq.${cursor.created_at},id.gt.${cursor.id})`,
+      );
+    }
+    const { data, error } = await query;
+    if (error) {
+      throw new ApiError(500, 'database_error', `document receipt scan failed: ${error.message}`);
+    }
+    const receipts = (data ?? []) as DocumentReceiptForPrune[];
+    if (receipts.length === 0) break;
+    scanned += receipts.length;
+    const last = receipts.at(-1)!;
+    cursor = { created_at: last.created_at, id: last.id };
+
+    for (const accountId of new Set(receipts.map((row) => row.account_id))) {
+      const accountReceipts = receipts.filter((row) => row.account_id === accountId);
+      const paths = [...new Set(accountReceipts.map((row) => row.storage_path))];
+      const referenced = new Set<string>();
+      for (let offset = 0; offset < paths.length; offset += DOCUMENT_REFERENCE_QUERY_CHUNK) {
+        const pathChunk = paths.slice(offset, offset + DOCUMENT_REFERENCE_QUERY_CHUNK);
+        const { data: references, error: referenceError } = await admin
+          .from('attachments')
+          .select('storage_path')
+          .eq('account_id', accountId)
+          .in('storage_path', pathChunk);
+        if (referenceError) {
+          throw new ApiError(
+            500,
+            'database_error',
+            `document orphan reference check failed: ${referenceError.message}`,
+          );
+        }
+        for (const row of references ?? []) referenced.add(row.storage_path as string);
+      }
+      const unreferenced = paths.filter((path) => !referenced.has(path));
+      const clearablePaths = new Set(referenced);
+      if (unreferenced.length > 0) {
+        const { error: removeError } = await admin.storage.from(BUCKET).remove(unreferenced);
+        if (removeError) {
+          getLogger().warn(
+            {
+              event: 'document_orphan_storage_remove_failed',
+              account_id: accountId,
+              err: removeError.message,
+            },
+            'document orphan storage removal failed; receipts retained for retry',
+          );
+        } else {
+          for (const path of unreferenced) clearablePaths.add(path);
+          pruned += unreferenced.length;
+        }
+      }
+      const clearable = accountReceipts
+        .filter((row) => clearablePaths.has(row.storage_path))
+        // Delete child receipts before their parents. The FK is deliberately
+        // RESTRICT: cleanup must never cascade into a newer or referenced child.
+        .sort((a, b) => {
+          if (a.derived_from_receipt_id === b.id) return -1;
+          if (b.derived_from_receipt_id === a.id) return 1;
+          return a.id.localeCompare(b.id);
+        });
+      for (const receipt of clearable) {
+        const { error: deleteError } = await admin
+          .from('document_upload_receipts')
+          .delete()
+          .eq('id', receipt.id);
+        if (deleteError) {
+          getLogger().warn(
+            {
+              event: 'document_receipt_cleanup_failed',
+              account_id: accountId,
+              receipt_id: receipt.id,
+              err: deleteError.message,
+            },
+            'document receipt cleanup failed; retained for retry',
+          );
+        }
+      }
+    }
+    if (receipts.length < DOCUMENT_RECEIPT_PRUNE_BATCH) break;
+  }
+  return pruned;
 }
 
 export interface UploadInput {

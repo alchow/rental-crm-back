@@ -1196,7 +1196,7 @@
               "string",
               "null"
             ],
-            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            "format": "date"
           },
           "status": {
             "type": "string",
@@ -1209,7 +1209,7 @@
           },
           "start_date": {
             "type": "string",
-            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "format": "date",
             "description": "Correction path for a wrong move-in date. Allowed only while the tenancy has no non-voided charges or payments (409 tenancy_has_money otherwise). A future date requires status='upcoming' in the same PATCH."
           }
         }
@@ -1322,7 +1322,7 @@
               },
               "effective_date": {
                 "type": "string",
-                "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                "format": "date"
               },
               "initiated_by": {
                 "type": "string",
@@ -1375,7 +1375,7 @@
               },
               "effective_date": {
                 "type": "string",
-                "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                "format": "date"
               },
               "initiated_by": {
                 "type": "string",
@@ -18418,7 +18418,7 @@
           {
             "schema": {
               "type": "string",
-              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "format": "date",
               "description": "Classification date for current open balances. Defaults to the current UTC date; this is not a historical ledger snapshot."
             },
             "required": false,
@@ -20158,7 +20158,7 @@
             }
           },
           "422": {
-            "description": "property_id requires an explicit area_id",
+            "description": "property_id has zero/multiple live units, or the supplied area_id is outside it",
             "content": {
               "application/json": {
                 "schema": {

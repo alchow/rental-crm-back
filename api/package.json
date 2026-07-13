@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch --env-file=../.env.local src/index.ts",
     "start": "node dist/index.js",
-    "build": "tsup && cp -R src/static dist/static",
+    "build": "tsup && node scripts/copy-static.mjs && node test/bundle-static-smoke.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:api-isolation": "tsx test/api-isolation.test.ts",
     "test:profile": "tsx test/profile.test.ts",
@@ -53,7 +53,8 @@
   },
   "tsup": {
     "entry": [
-      "src/index.ts"
+      "src/index.ts",
+      "src/admin/document-templates.ts"
     ],
     "format": [
       "esm"

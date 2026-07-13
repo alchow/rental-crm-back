@@ -95,6 +95,7 @@ function rnd(): string {
 
 interface UserFixture {
   accessToken: string;
+  userId: string;
   accountId: string;
   propertyId: string;
   unitAreaId: string;
@@ -109,7 +110,11 @@ async function setupUser(label: string): Promise<UserFixture> {
   });
   if (su.status !== 200)
     throw new Error(`signup ${label} failed: ${su.status} ${JSON.stringify(su.body)}`);
-  const b = su.body as { account: { id: string }; session: { access_token: string } };
+  const b = su.body as {
+    account: { id: string };
+    session: { access_token: string };
+    user: { id: string };
+  };
   const accessToken = b.session.access_token;
   const accountId = b.account.id;
   const post = async <T>(p: string, body: unknown): Promise<T> => {
@@ -133,6 +138,7 @@ async function setupUser(label: string): Promise<UserFixture> {
   });
   return {
     accessToken,
+    userId: b.user.id,
     accountId,
     propertyId: property.id,
     unitAreaId: unitArea.id,
@@ -200,6 +206,8 @@ async function main(): Promise<void> {
   await admin.from('ip_rate_buckets').delete().eq('scope', 'doc_access');
 
   let uploadedDocId = '';
+  let uploadedAttachmentId = '';
+  let uploadedVersionId = '';
   let imageDocId = '';
   let bundledDocId = '';
   let linkSecret = '';
@@ -219,6 +227,7 @@ async function main(): Promise<void> {
     const body = assertStatus(r, 201, 'upload document') as {
       id: string;
       latest_version: {
+        id: string;
         content_hash: string;
         attachment_id: string;
         original_attachment_id: string;
@@ -227,6 +236,8 @@ async function main(): Promise<void> {
       };
     };
     uploadedDocId = body.id;
+    uploadedAttachmentId = body.latest_version.attachment_id;
+    uploadedVersionId = body.latest_version.id;
     if (body.latest_version.content_hash !== createHash('sha256').update(PDF_BYTES).digest('hex')) {
       throw new Error('uploaded document hash mismatch');
     }
@@ -240,6 +251,331 @@ async function main(): Promise<void> {
       body.latest_version.original_mime_type !== 'application/pdf'
     ) {
       throw new Error(`direct PDF original metadata wrong: ${JSON.stringify(body.latest_version)}`);
+    }
+  });
+
+  await check(
+    'upload receipts and attachment provenance cannot be forged or rewritten',
+    async () => {
+      const user = createClient(status.API_URL, status.ANON_KEY, {
+        global: { headers: { Authorization: `Bearer ${A.accessToken}` } },
+        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      });
+      const forgedReceipt = await user.from('document_upload_receipts').insert({
+        account_id: A.accountId,
+        content_hash: 'f'.repeat(64),
+        storage_path: `${A.accountId}/${'f'.repeat(64)}.png`,
+        mime_type: 'image/png',
+        size_bytes: 1,
+        uploaded_by: A.userId,
+      });
+      if (!forgedReceipt.error || forgedReceipt.error.code !== '42501') {
+        throw new Error(
+          `authenticated receipt insert was not denied: ${forgedReceipt.error?.code}`,
+        );
+      }
+
+      const forgedDocument = await user.rpc('create_tenancy_document_from_image', {
+        p_account_id: A.accountId,
+        p_tenancy_id: A.tenancyId,
+        p_document_type: 'other',
+        p_title: 'Forged evidence',
+        p_requires_ack: false,
+        p_original_receipt_id: crypto.randomUUID(),
+        p_pdf_receipt_id: crypto.randomUUID(),
+      });
+      if (!forgedDocument.error || forgedDocument.error.code !== 'P0002') {
+        throw new Error(`invented receipts were not rejected: ${forgedDocument.error?.code}`);
+      }
+
+      const incompleteReceiptId = crypto.randomUUID();
+      const incompleteHash = '7'.repeat(64);
+      const incompleteReceipt = await admin.from('document_upload_receipts').insert({
+        id: incompleteReceiptId,
+        account_id: A.accountId,
+        content_hash: incompleteHash,
+        storage_path: `${A.accountId}/document-uploads/${incompleteReceiptId}/${incompleteHash}.pdf`,
+        mime_type: 'application/pdf',
+        size_bytes: 1,
+        uploaded_by: A.userId,
+      });
+      if (incompleteReceipt.error) {
+        throw new Error(`seed incomplete receipt: ${incompleteReceipt.error.message}`);
+      }
+      const premature = await user.rpc('create_tenancy_document_from_upload', {
+        p_account_id: A.accountId,
+        p_tenancy_id: A.tenancyId,
+        p_document_type: 'other',
+        p_title: 'Missing bytes',
+        p_requires_ack: false,
+        p_upload_receipt_id: incompleteReceiptId,
+      });
+      if (!premature.error || premature.error.code !== 'P0002') {
+        throw new Error(`incomplete receipt was consumable: ${premature.error?.code}`);
+      }
+
+      const directRewrite = await user
+        .from('attachments')
+        .update({ content_hash: 'e'.repeat(64) })
+        .eq('id', uploadedAttachmentId);
+      if (!directRewrite.error || directRewrite.error.code !== '42501') {
+        throw new Error(
+          `authenticated attachment rewrite was not denied: ${directRewrite.error?.code}`,
+        );
+      }
+      const directPathPivot = await user.from('attachments').insert({
+        account_id: A.accountId,
+        entity_type: 'document_versions',
+        entity_id: crypto.randomUUID(),
+        storage_path: `${B.accountId}/${'d'.repeat(64)}.pdf`,
+        content_hash: 'd'.repeat(64),
+        mime_type: 'application/pdf',
+        size_bytes: 1,
+        uploaded_by: A.userId,
+      });
+      if (!directPathPivot.error || directPathPivot.error.code !== '42501') {
+        throw new Error(`authenticated path pivot was not denied: ${directPathPivot.error?.code}`);
+      }
+      const directVersionRewrite = await user
+        .from('document_versions')
+        .update({ content_hash: 'c'.repeat(64) })
+        .eq('id', uploadedVersionId);
+      if (!directVersionRewrite.error || directVersionRewrite.error.code !== '42501') {
+        throw new Error(
+          `document version rewrite was not denied: ${directVersionRewrite.error?.code}`,
+        );
+      }
+      const directForgedVersion = await user.from('document_versions').insert({
+        account_id: A.accountId,
+        document_id: uploadedDocId,
+        version_no: 99,
+        source: 'bundled_static',
+        static_template_id: 'forged',
+        static_asset_path: '../../../../etc/passwd',
+        content_hash: 'c'.repeat(64),
+        mime_type: 'application/pdf',
+        size_bytes: 1,
+        created_by: A.userId,
+      });
+      if (!directForgedVersion.error || directForgedVersion.error.code !== '42501') {
+        throw new Error(
+          `authenticated document version insert was not denied: ${directForgedVersion.error?.code}`,
+        );
+      }
+      const privilegedRewrite = await admin
+        .from('attachments')
+        .update({ storage_path: `${B.accountId}/${'e'.repeat(64)}.pdf` })
+        .eq('id', uploadedAttachmentId);
+      if (!privilegedRewrite.error || privilegedRewrite.error.code !== '23514') {
+        throw new Error(
+          `provenance trigger did not reject path pivot: ${privilegedRewrite.error?.code}`,
+        );
+      }
+      const privilegedVersionRewrite = await admin
+        .from('document_versions')
+        .update({ attachment_id: crypto.randomUUID() })
+        .eq('id', uploadedVersionId);
+      if (!privilegedVersionRewrite.error || privilegedVersionRewrite.error.code !== '23514') {
+        throw new Error(
+          `version provenance trigger did not reject attachment pivot: ${privilegedVersionRewrite.error?.code}`,
+        );
+      }
+    },
+  );
+
+  await check('age-gated janitor removes only unreferenced staged document bytes', async () => {
+    const orphanBytes = new TextEncoder().encode(`orphan-${rnd()}`);
+    const orphanHash = createHash('sha256').update(orphanBytes).digest('hex');
+    const orphanReceiptId = crypto.randomUUID();
+    const orphanPath = `${A.accountId}/document-uploads/${orphanReceiptId}/${orphanHash}.pdf`;
+    const upload = await admin.storage
+      .from('attachments')
+      .upload(orphanPath, orphanBytes, { contentType: 'application/pdf', upsert: true });
+    if (upload.error) throw new Error(`seed orphan storage: ${upload.error.message}`);
+    const receipt = await admin
+      .from('document_upload_receipts')
+      .insert({
+        id: orphanReceiptId,
+        account_id: A.accountId,
+        content_hash: orphanHash,
+        storage_path: orphanPath,
+        mime_type: 'application/pdf',
+        size_bytes: orphanBytes.byteLength,
+        uploaded_by: A.userId,
+        created_at: new Date(Date.now() - 49 * 60 * 60 * 1000).toISOString(),
+      })
+      .select('id')
+      .single();
+    if (receipt.error || !receipt.data)
+      throw new Error(`seed orphan receipt: ${receipt.error?.message}`);
+    const { pruneDocumentUploadOrphans } = await import('../src/admin/storage');
+    const pruned = await pruneDocumentUploadOrphans();
+    if (pruned < 1) throw new Error(`expected at least one orphan prune, got ${pruned}`);
+    const receiptAfter = await admin
+      .from('document_upload_receipts')
+      .select('id')
+      .eq('id', receipt.data.id)
+      .maybeSingle();
+    if (receiptAfter.error || receiptAfter.data) throw new Error('orphan receipt was not cleared');
+    const download = await admin.storage.from('attachments').download(orphanPath);
+    if (!download.error) throw new Error('orphan storage object still downloads');
+  });
+
+  await check('janitor removes an aged derived receipt before its parent', async () => {
+    const createdAt = new Date(Date.now() - 49 * 60 * 60 * 1000).toISOString();
+    const originalId = crypto.randomUUID();
+    const pdfId = crypto.randomUUID();
+    const originalBytes = new TextEncoder().encode(`orphan-image-${rnd()}`);
+    const pdfBytes = new TextEncoder().encode(`%PDF-1.4\norphan-derived-${rnd()}\n%%EOF`);
+    const originalHash = createHash('sha256').update(originalBytes).digest('hex');
+    const pdfHash = createHash('sha256').update(pdfBytes).digest('hex');
+    const originalPath = `${A.accountId}/document-uploads/${originalId}/${originalHash}.png`;
+    const pdfPath = `${A.accountId}/document-uploads/${pdfId}/${pdfHash}.pdf`;
+    for (const [path, bytes, contentType] of [
+      [originalPath, originalBytes, 'image/png'],
+      [pdfPath, pdfBytes, 'application/pdf'],
+    ] as const) {
+      const upload = await admin.storage
+        .from('attachments')
+        .upload(path, bytes, { contentType, upsert: true });
+      if (upload.error) throw new Error(`seed paired orphan object: ${upload.error.message}`);
+    }
+    const original = await admin.from('document_upload_receipts').insert({
+      id: originalId,
+      account_id: A.accountId,
+      content_hash: originalHash,
+      storage_path: originalPath,
+      mime_type: 'image/png',
+      size_bytes: originalBytes.byteLength,
+      uploaded_by: A.userId,
+      stored_at: createdAt,
+      created_at: createdAt,
+    });
+    if (original.error) throw new Error(`seed parent receipt: ${original.error.message}`);
+    const derived = await admin.from('document_upload_receipts').insert({
+      id: pdfId,
+      account_id: A.accountId,
+      content_hash: pdfHash,
+      storage_path: pdfPath,
+      mime_type: 'application/pdf',
+      size_bytes: pdfBytes.byteLength,
+      uploaded_by: A.userId,
+      derived_from_receipt_id: originalId,
+      stored_at: createdAt,
+      created_at: createdAt,
+    });
+    if (derived.error) throw new Error(`seed child receipt: ${derived.error.message}`);
+
+    const { pruneDocumentUploadOrphans } = await import('../src/admin/storage');
+    const pruned = await pruneDocumentUploadOrphans();
+    if (pruned < 2) throw new Error(`expected paired orphan prune, got ${pruned}`);
+    const receiptsAfter = await admin
+      .from('document_upload_receipts')
+      .select('id')
+      .in('id', [originalId, pdfId]);
+    if (receiptsAfter.error || (receiptsAfter.data?.length ?? 0) !== 0) {
+      throw new Error(`paired receipts survived cleanup: ${receiptsAfter.error?.message}`);
+    }
+  });
+
+  await check('janitor drains more than one 100-row receipt page per run', async () => {
+    const createdAt = new Date(Date.now() - 49 * 60 * 60 * 1000).toISOString();
+    const stale = Array.from({ length: 101 }, (_, index) => {
+      const id = crypto.randomUUID();
+      const hash = createHash('sha256').update(`bulk-orphan-${index}-${rnd()}`).digest('hex');
+      return {
+        id,
+        account_id: A.accountId,
+        content_hash: hash,
+        storage_path: `${A.accountId}/document-uploads/${id}/${hash}.pdf`,
+        mime_type: 'application/pdf',
+        size_bytes: 1,
+        uploaded_by: A.userId,
+        created_at: createdAt,
+      };
+    });
+    const seeded = await admin.from('document_upload_receipts').insert(stale);
+    if (seeded.error) throw new Error(`seed paged orphan receipts: ${seeded.error.message}`);
+    const { pruneDocumentUploadOrphans } = await import('../src/admin/storage');
+    const pruned = await pruneDocumentUploadOrphans();
+    if (pruned < stale.length) {
+      throw new Error(`janitor stopped after one page: expected ${stale.length}, got ${pruned}`);
+    }
+    const after = await admin
+      .from('document_upload_receipts')
+      .select('id', { count: 'exact', head: true })
+      .in(
+        'id',
+        stale.map((row) => row.id),
+      );
+    if (after.error || after.count !== 0) {
+      throw new Error(`paged orphan receipts survived: ${after.error?.message ?? after.count}`);
+    }
+  });
+
+  await check('deployed PDF RPC stays compatible but cannot attest nonexistent bytes', async () => {
+    const legacyBytes = new TextEncoder().encode(`%PDF-1.4\nlegacy-${rnd()}\n%%EOF`);
+    const legacyHash = createHash('sha256').update(legacyBytes).digest('hex');
+    const legacyPath = `${B.accountId}/${legacyHash}.pdf`;
+    const upload = await admin.storage
+      .from('attachments')
+      .upload(legacyPath, legacyBytes, { contentType: 'application/pdf', upsert: true });
+    if (upload.error) throw new Error(`legacy object upload failed: ${upload.error.message}`);
+    const user = createClient(status.API_URL, status.ANON_KEY, {
+      global: { headers: { Authorization: `Bearer ${B.accessToken}` } },
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+    const compatible = await user.rpc('create_tenancy_document', {
+      p_account_id: B.accountId,
+      p_tenancy_id: B.tenancyId,
+      p_document_type: 'other',
+      p_title: 'Legacy compatible PDF',
+      p_requires_ack: false,
+      p_source: 'landlord_upload',
+      p_content_hash: legacyHash,
+      p_mime_type: 'application/pdf',
+      p_size_bytes: legacyBytes.byteLength,
+      p_attachment_path: legacyPath,
+      p_static_template_id: null,
+      p_static_asset_path: null,
+    });
+    if (compatible.error || !compatible.data) {
+      throw new Error(`deployed PDF RPC compatibility failed: ${compatible.error?.message}`);
+    }
+    const absentHash = '9'.repeat(64);
+    const invented = await user.rpc('create_tenancy_document', {
+      p_account_id: B.accountId,
+      p_tenancy_id: B.tenancyId,
+      p_document_type: 'disclosure',
+      p_title: 'Invented legacy PDF',
+      p_requires_ack: false,
+      p_source: 'landlord_upload',
+      p_content_hash: absentHash,
+      p_mime_type: 'application/pdf',
+      p_size_bytes: 1,
+      p_attachment_path: `${B.accountId}/${absentHash}.pdf`,
+      p_static_template_id: null,
+      p_static_asset_path: null,
+    });
+    if (!invented.error || invented.error.code !== 'P0002') {
+      throw new Error(`invented legacy object was not rejected: ${invented.error?.code}`);
+    }
+    const forgedStatic = await user.rpc('create_tenancy_document', {
+      p_account_id: B.accountId,
+      p_tenancy_id: B.tenancyId,
+      p_document_type: 'lead_paint',
+      p_title: 'Forged static asset',
+      p_requires_ack: true,
+      p_source: 'bundled_static',
+      p_content_hash: '8'.repeat(64),
+      p_mime_type: 'application/pdf',
+      p_size_bytes: 1,
+      p_attachment_path: null,
+      p_static_template_id: 'epa_lead_pamphlet_2020',
+      p_static_asset_path: '../../../../etc/passwd',
+    });
+    if (!forgedStatic.error || forgedStatic.error.code !== '22023') {
+      throw new Error(`forged static tuple was not rejected: ${forgedStatic.error?.code}`);
     }
   });
 
@@ -319,7 +655,7 @@ async function main(): Promise<void> {
 
     const attachments = await admin
       .from('attachments')
-      .select('id, entity_id, content_hash, mime_type, derived_from')
+      .select('id, entity_id, storage_path, content_hash, mime_type, derived_from')
       .eq('account_id', A.accountId)
       .eq('entity_type', 'document_versions')
       .eq('entity_id', version.id)
@@ -337,6 +673,57 @@ async function main(): Promise<void> {
     }
     if (pdf.content_hash !== version.content_hash)
       throw new Error('version hash is not the PDF hash');
+
+    const receiptRows = await admin
+      .from('document_upload_receipts')
+      .select('id, storage_path, derived_from_receipt_id')
+      .in('storage_path', [original.storage_path, pdf.storage_path]);
+    if (receiptRows.error || receiptRows.data?.length !== 2) {
+      throw new Error(`missing upload receipt pair: ${receiptRows.error?.message}`);
+    }
+    const originalReceipt = receiptRows.data.find(
+      (row) => row.storage_path === original.storage_path,
+    );
+    const pdfReceipt = receiptRows.data.find((row) => row.storage_path === pdf.storage_path);
+    if (
+      !originalReceipt ||
+      !pdfReceipt ||
+      pdfReceipt.derived_from_receipt_id !== originalReceipt.id
+    ) {
+      throw new Error('PDF receipt is not server-bound to its source image receipt');
+    }
+    const directAttachment = await admin
+      .from('attachments')
+      .select('storage_path')
+      .eq('id', uploadedAttachmentId)
+      .single();
+    if (directAttachment.error || !directAttachment.data) {
+      throw new Error(`direct PDF attachment missing: ${directAttachment.error?.message}`);
+    }
+    const standaloneReceipt = await admin
+      .from('document_upload_receipts')
+      .select('id')
+      .eq('storage_path', directAttachment.data.storage_path)
+      .single();
+    if (standaloneReceipt.error || !standaloneReceipt.data) {
+      throw new Error(`standalone PDF receipt missing: ${standaloneReceipt.error?.message}`);
+    }
+    const user = createClient(status.API_URL, status.ANON_KEY, {
+      global: { headers: { Authorization: `Bearer ${A.accessToken}` } },
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+    const mixedReceipts = await user.rpc('create_tenancy_document_from_image', {
+      p_account_id: A.accountId,
+      p_tenancy_id: A.tenancyId,
+      p_document_type: 'other',
+      p_title: 'False derivation pair',
+      p_requires_ack: false,
+      p_original_receipt_id: originalReceipt.id,
+      p_pdf_receipt_id: standaloneReceipt.data.id,
+    });
+    if (!mixedReceipts.error || mixedReceipts.error.code !== '22023') {
+      throw new Error(`unrelated receipt pair was not rejected: ${mixedReceipts.error?.code}`);
+    }
 
     const download = await api('GET', `/v1/accounts/${A.accountId}/documents/${body.id}/download`, {
       token: A.accessToken,
@@ -593,9 +980,22 @@ async function main(): Promise<void> {
     const secret = (assertStatus(minted, 201, 'mint second link') as { secret: string }).secret;
     const bDoc = await api('POST', `/v1/accounts/${B.accountId}/documents/from-template`, {
       token: B.accessToken,
-      body: { tenancy_id: B.tenancyId, template_id: 'epa_lead_pamphlet_2020' },
+      body: {
+        tenancy_id: B.tenancyId,
+        template_id: 'epa_lead_pamphlet_2020',
+        title: 'Lead pamphlet — custom label',
+        requires_ack: false,
+      },
     });
-    const bDocId = (assertStatus(bDoc, 201, 'B template') as { id: string }).id;
+    const bTemplate = assertStatus(bDoc, 201, 'B template with presentation overrides') as {
+      id: string;
+      title: string;
+      requires_ack: boolean;
+    };
+    if (bTemplate.title !== 'Lead pamphlet — custom label' || bTemplate.requires_ack !== false) {
+      throw new Error('bundled template presentation overrides were not preserved');
+    }
+    const bDocId = bTemplate.id;
     const crossPublic = await api(
       'GET',
       `/v1/document-access/${secret}/documents/${bDocId}/download`,

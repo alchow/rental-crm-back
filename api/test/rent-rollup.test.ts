@@ -416,8 +416,15 @@ await check('(5) bogus status value -> 400 with fieldErrors.status', async () =>
   if (!err.details?.fieldErrors?.status) throw new Error('fieldErrors.status missing');
 });
 
+await check('(6) impossible as_of calendar date -> 400, not a database 500', async () => {
+  const r = await api('GET', `/v1/accounts/${acct}/rent-rollup?as_of=2026-99-99`, { token });
+  assertEq(r.status, 400, 'status');
+  const err = (r.body as { error: { code: string } }).error;
+  assertEq(err.code, 'invalid_request', 'code');
+});
+
 await check(
-  "(6) RLS floor: direct RPC with A's JWT against B's account id -> zero rows",
+  "(7) RLS floor: direct RPC with A's JWT against B's account id -> zero rows",
   async () => {
     // Bypass the API entirely: call PostgREST's RPC endpoint as user A but
     // pass account B's id. SECURITY INVOKER means RLS hides B's rows — the

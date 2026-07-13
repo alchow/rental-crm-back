@@ -95,6 +95,10 @@ const NO_SEED_REQUIRED = new Set([
   'document_versions',
   'document_access_tokens',
   'document_access_events',
+  'document_upload_receipts',
+  // Initial reporter facts are created atomically with an on-demand
+  // maintenance request; legacy fixture requests deliberately have no link.
+  'maintenance_request_reports',
   // Ending records are created only when the explicit end-tenancy workflow
   // runs; the static two-account fixture has no ended tenancy.
   'tenancy_endings',
