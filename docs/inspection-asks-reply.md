@@ -105,7 +105,14 @@ Deviations you should know about:
 - **Your Idempotency-Key plan works with zero changes** — but note it is
   *mandatory* on every account-scoped mutation in this API, DELETE included
   (400 without it).
-- Deleting the area or template cascade-deletes the row, as you preferred.
+- **Parent deletion, precisely:** the FK cascade you asked for exists but only
+  fires on a HARD delete — and the API soft-deletes areas and templates, so in
+  practice layout rows survive parent deletion. A soft-deleted *area* makes its
+  layouts unreachable (the area guard 404s the whole path); a soft-deleted
+  *template* does not — GET/PUT on its layouts still work (deliberate: the
+  delta is still your data, and it stays account-scoped either way). If you
+  need "template deleted → treat memory as gone", gate on the template's own
+  404 client-side.
 
 ## #22 — `catalog_id` backlink (#88), plus a correction
 
