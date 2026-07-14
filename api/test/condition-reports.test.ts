@@ -210,6 +210,106 @@ async function main(): Promise<void> {
     if (!cb.data.some((c) => c.field_key === 'keys/door_keys' && c.value === 2)) throw new Error('check value not stored');
   });
 
+  // --------------------------------------------------------------------------
+  // Checks lifecycle: presence-merge upsert semantics + soft-delete endpoint.
+  // --------------------------------------------------------------------------
+  interface CheckRow {
+    id: string; field_key: string; value: unknown; group_label: string | null;
+    sort_order: number | null; answered_by: string | null; answered_at: string | null;
+  }
+  const getChecks = async (inspId: string): Promise<CheckRow[]> => {
+    const r = await api('GET', `/v1/accounts/${A.accountId}/inspections/${inspId}/checks`, { token: A.accessToken });
+    return (assertStatus(r, 200, 'checks list') as { data: CheckRow[] }).data;
+  };
+
+  await check('checks: metadata-only re-save preserves value AND answered stamp', async () => {
+    const before = (await getChecks(checkinId)).find((c) => c.field_key === 'keys/door_keys');
+    if (!before || before.value !== 2) throw new Error('precondition: keys/door_keys value=2');
+    if (!before.answered_at || !before.answered_by) throw new Error('precondition: answered stamp set');
+    // Build-step style re-save: no `value` key at all.
+    const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/checks`, {
+      token: A.accessToken,
+      body: { checks: [{ field_key: 'keys/door_keys', group_label: 'Keys & access', sort_order: 42 }] },
+    });
+    assertStatus(r, 200, 'metadata-only re-save');
+    const after = (await getChecks(checkinId)).find((c) => c.field_key === 'keys/door_keys')!;
+    if (after.value !== 2) throw new Error(`value erased by metadata-only save: ${JSON.stringify(after.value)}`);
+    if (after.answered_at !== before.answered_at) throw new Error('answered_at moved on metadata-only save');
+    if (after.answered_by !== before.answered_by) throw new Error('answered_by moved on metadata-only save');
+    if (after.sort_order !== 42) throw new Error(`sort_order not updated: ${after.sort_order}`);
+  });
+
+  await check('checks: value-only re-save preserves group_label and sort_order', async () => {
+    const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/checks`, {
+      token: A.accessToken, body: { checks: [{ field_key: 'keys/door_keys', value: 3 }] },
+    });
+    assertStatus(r, 200, 'value-only re-save');
+    const after = (await getChecks(checkinId)).find((c) => c.field_key === 'keys/door_keys')!;
+    if (after.value !== 3) throw new Error(`value not updated: ${JSON.stringify(after.value)}`);
+    if (after.group_label !== 'Keys & access') throw new Error(`group_label clobbered: ${after.group_label}`);
+    if (after.sort_order !== 42) throw new Error(`sort_order clobbered: ${after.sort_order}`);
+  });
+
+  await check('checks: unanswered rows never get an answered stamp; explicit null un-answers', async () => {
+    // A brand-new check saved with NO value: must not be marked answered.
+    const create = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/checks`, {
+      token: A.accessToken,
+      body: { checks: [{ field_key: 'custom/spa_heater', label: 'Spa heater keys', group_label: 'Keys & access' }] },
+    });
+    assertStatus(create, 200, 'create unanswered');
+    let row = (await getChecks(checkinId)).find((c) => c.field_key === 'custom/spa_heater')!;
+    if (row.answered_at !== null || row.answered_by !== null) throw new Error('unanswered create was stamped answered');
+    // Answer it -> stamped.
+    await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/checks`, {
+      token: A.accessToken, body: { checks: [{ field_key: 'custom/spa_heater', value: 1 }] },
+    });
+    row = (await getChecks(checkinId)).find((c) => c.field_key === 'custom/spa_heater')!;
+    if (!row.answered_at || !row.answered_by) throw new Error('answer did not stamp');
+    // Explicit null -> un-answered again (value + stamp cleared).
+    await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/checks`, {
+      token: A.accessToken, body: { checks: [{ field_key: 'custom/spa_heater', value: null }] },
+    });
+    row = (await getChecks(checkinId)).find((c) => c.field_key === 'custom/spa_heater')!;
+    if (row.value !== null) throw new Error(`explicit null did not clear value: ${JSON.stringify(row.value)}`);
+    if (row.answered_at !== null || row.answered_by !== null) throw new Error('explicit null did not clear answered stamp');
+  });
+
+  let deletedCheckId = '';
+  await check('checks: DELETE soft-deletes; same-key retry replays 204; repeat is 404', async () => {
+    const row = (await getChecks(checkinId)).find((c) => c.field_key === 'custom/spa_heater')!;
+    deletedCheckId = row.id;
+    // Fixed key: the retry below must REPLAY, not re-execute (the api() helper
+    // mints a fresh key per call, which is why replay was never covered).
+    const idemKey = `t-replay-${crypto.randomUUID()}`;
+    const delReq = () =>
+      app.fetch(
+        new Request(`http://test/v1/accounts/${A.accountId}/inspections/${checkinId}/checks/${row.id}`, {
+          method: 'DELETE',
+          headers: { authorization: `Bearer ${A.accessToken}`, 'idempotency-key': idemKey },
+        }),
+      );
+    const del = await delReq();
+    if (del.status !== 204) throw new Error(`delete: expected 204, got ${del.status} ${await del.text()}`);
+    if ((await getChecks(checkinId)).some((c) => c.id === row.id)) throw new Error('deleted check still listed');
+    // Same-key retry (lost-response simulation): replayed 204, not a 500/404.
+    const replay = await delReq();
+    if (replay.status !== 204) throw new Error(`replay: expected 204, got ${replay.status} ${await replay.text()}`);
+    if (replay.headers.get('idempotency-replay') !== 'true') throw new Error('replay missing Idempotency-Replay header');
+    // A FRESH key on the now-deleted row is a genuine re-execution: 404.
+    const again = await api('DELETE', `/v1/accounts/${A.accountId}/inspections/${checkinId}/checks/${row.id}`, {
+      token: A.accessToken,
+    });
+    if (again.status !== 404) throw new Error(`repeat delete: expected 404, got ${again.status}`);
+  });
+
+  await check('checks: cross-account DELETE is 404', async () => {
+    const row = (await getChecks(checkinId)).find((c) => c.field_key === 'keys/door_keys')!;
+    const del = await api('DELETE', `/v1/accounts/${A.accountId}/inspections/${checkinId}/checks/${row.id}`, {
+      token: B.accessToken,
+    });
+    if (del.status !== 404 && del.status !== 403) throw new Error(`expected 404/403, got ${del.status}`);
+  });
+
   await check('upload a photo to a move-in item (pre-completion)', async () => {
     const fd = new FormData();
     fd.set('entity_type', 'inspection_items');
@@ -457,6 +557,14 @@ async function main(): Promise<void> {
     if (up.status !== 409) throw new Error(`post-completion photo expected 409, got ${up.status}`);
   });
 
+  await check('checks: DELETE on a completed inspection is 409', async () => {
+    const row = (await getChecks(checkinId)).find((c) => c.field_key === 'keys/door_keys')!;
+    const del = await api('DELETE', `/v1/accounts/${A.accountId}/inspections/${checkinId}/checks/${row.id}`, {
+      token: A.accessToken,
+    });
+    if (del.status !== 409) throw new Error(`expected 409, got ${del.status} ${JSON.stringify(del.body)}`);
+  });
+
   await check('start checkout pre-keyed from check-in (values reset)', async () => {
     const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/start-checkout`, {
       token: A.accessToken, body: {},
@@ -521,6 +629,11 @@ async function main(): Promise<void> {
     if (insp.kind !== 'move_in') throw new Error('export inspection missing kind');
     if (!data.inspectionChecks.some((c) => c.inspection_id === checkinId)) throw new Error('export missing inspection checks');
     if (!data.inspectionItems.some((it) => it.inspection_id === checkinId)) throw new Error('export missing inspection items');
+    // Evidence completeness: the soft-deleted check stays in the bundle data
+    // (rendered with a "(removed)" annotation), never silently dropped.
+    const tomb = data.inspectionChecks.find((c) => c.id === deletedCheckId);
+    if (!tomb) throw new Error('soft-deleted check missing from export data (evidence completeness)');
+    if (!tomb.deleted_at) throw new Error('tombstone check lost its deleted_at in export data');
     if (!data.attachments.some((a) => a.entity_type === 'inspection_items' && a.derived_from === null)) throw new Error('export missing item photos');
     if (!data.attachments.some((a) => a.entity_type === 'inspection_report' && a.entity_id === checkinId)) throw new Error('export missing rendered report attachment');
   });
@@ -625,6 +738,33 @@ async function main(): Promise<void> {
     if (b.attachment_id !== uploadedAttId) {
       throw new Error(`idempotency broken: got ${b.attachment_id}, expected same id ${uploadedAttId}`);
     }
+  });
+
+  await check('tenant checks upsert: presence-merge + answered_at without answered_by', async () => {
+    // Tenant answers a check via the capture route.
+    const w1 = await api('POST', `/v1/inspection-capture/${photoSecret}/checks`, {
+      body: { checks: [{ field_key: 'keys/door_keys', value: 4, group_label: 'Keys & access' }] },
+    });
+    assertStatus(w1, 200, 'tenant check write');
+    const read1 = await admin.from('inspection_checks')
+      .select('value, group_label, answered_by, answered_at')
+      .eq('inspection_id', photoInspId).eq('field_key', 'keys/door_keys').is('deleted_at', null).single();
+    if (read1.error) throw new Error(read1.error.message);
+    if (read1.data.value !== 4) throw new Error(`tenant value not stored: ${JSON.stringify(read1.data.value)}`);
+    if (!read1.data.answered_at) throw new Error('tenant answer did not stamp answered_at');
+    if (read1.data.answered_by !== null) throw new Error('tenant answer must not attribute answered_by');
+    // Metadata-only tenant re-save: value + stamp survive.
+    const w2 = await api('POST', `/v1/inspection-capture/${photoSecret}/checks`, {
+      body: { checks: [{ field_key: 'keys/door_keys', sort_order: 9 }] },
+    });
+    assertStatus(w2, 200, 'tenant metadata-only re-save');
+    const read2 = await admin.from('inspection_checks')
+      .select('value, group_label, sort_order, answered_at')
+      .eq('inspection_id', photoInspId).eq('field_key', 'keys/door_keys').is('deleted_at', null).single();
+    if (read2.error) throw new Error(read2.error.message);
+    if (read2.data.value !== 4) throw new Error('tenant metadata-only save erased value');
+    if (read2.data.group_label !== 'Keys & access') throw new Error('tenant metadata-only save erased group_label');
+    if (read2.data.answered_at !== read1.data.answered_at) throw new Error('tenant metadata-only save moved answered_at');
   });
 
   await check('tenant batch edit marks items Good; unknown item_key is a silent no-op', async () => {

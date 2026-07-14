@@ -346,6 +346,20 @@ const InspectionParam = z.object({
     .uuid()
     .openapi({ param: { name: 'inspectionId', in: 'path' } }),
 });
+const InspectionAndCheckParam = z.object({
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
+  checkId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'checkId', in: 'path' } }),
+});
 
 const ListQuery = z.object({
   cursor: z.string().optional(),
@@ -1147,6 +1161,45 @@ inspectionsApp.openapi(checksUpsertRoute, async (c) => {
   });
   if (error) throw rpcError(error);
   return c.json({ data: (data ?? []) as z.infer<typeof InspectionCheck>[] }, 200);
+});
+
+// Checks were add/rename-only until templates repeating a field_key across
+// sections minted permanent duplicate rows (FE §17). Soft-delete mirrors
+// itemRemove; the partial unique index frees the field_key for a later
+// re-seed (which will re-mint template-seeded checks -- per-unit trimming is
+// the area-inspection-layout's job, not a per-inspection delete's).
+const checksRemoveRoute = createRoute({
+  method: 'delete',
+  path: '/accounts/{accountId}/inspections/{id}/checks/{checkId}',
+  tags: ['inspection_checks'],
+  summary:
+    'Soft-delete an inspection check (rejected with 409 if the parent inspection is completed)',
+  request: { params: InspectionAndCheckParam },
+  responses: {
+    204: { description: 'deleted' },
+    ...errorResponses,
+  },
+});
+inspectionsApp.openapi(checksRemoveRoute, async (c) => {
+  const { accountId, id, checkId } = c.req.valid('param');
+  const sb = getSb(c);
+  const { data, error } = await sb
+    .from('inspection_checks')
+    .update(softDeleteStamp())
+    .eq('account_id', accountId)
+    .eq('inspection_id', id)
+    .eq('id', checkId)
+    .is('deleted_at', null)
+    .select('id')
+    .maybeSingle();
+  if (error) {
+    if (/parent inspection .* is completed/i.test(error.message)) {
+      throw new ApiError(409, 'conflict', 'parent inspection is completed; checks are immutable');
+    }
+    throw new ApiError(500, 'database_error', error.message);
+  }
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  return c.body(null, 204);
 });
 
 // Mint a tenant capture magic link for this inspection (landlord-authenticated).
