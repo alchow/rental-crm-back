@@ -1326,13 +1326,17 @@ async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
       if (report) {
         doc.fontSize(8).fillColor('#555').text(`    report sha256: ${report.content_hash}`).fillColor('#000');
       }
+      // Items/checks are loaded WITHOUT a deleted_at filter (evidence
+      // completeness, same policy as tenancies above) -- so tombstones must
+      // say so, mirroring the "(soft-deleted)" tenancy annotation.
       const items = data.inspectionItems.filter((it) => it.inspection_id === insp.id);
       for (const it of items) {
         doc.fontSize(9).fillColor('#333').text(
           `    ${it.group_label ? `${it.group_label as string} / ` : ''}${it.label as string}` +
           (it.condition ? `  condition=${it.condition as string}` : '') +
           (it.change_type ? `  change=${it.change_type as string}` : '') +
-          (it.notes ? `  notes=${String(it.notes).slice(0, 200)}` : ''),
+          (it.notes ? `  notes=${String(it.notes).slice(0, 200)}` : '') +
+          (it.deleted_at ? '  (removed)' : ''),
         ).fillColor('#000');
       }
       const checks = data.inspectionChecks.filter((ck) => ck.inspection_id === insp.id);
@@ -1344,7 +1348,8 @@ async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
               ? ck.value
               : JSON.stringify(ck.value);
         doc.fontSize(9).fillColor('#333').text(
-          `    [check] ${ck.group_label ? `${ck.group_label as string} / ` : ''}${ck.label as string}: ${v}`,
+          `    [check] ${ck.group_label ? `${ck.group_label as string} / ` : ''}${ck.label as string}: ${v}` +
+          (ck.deleted_at ? '  (removed)' : ''),
         ).fillColor('#000');
       }
     }
