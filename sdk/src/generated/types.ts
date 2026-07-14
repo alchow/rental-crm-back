@@ -17715,6 +17715,7 @@ export interface components {
             group_label: string | null;
             value?: unknown;
             sort_order: number | null;
+            input_kind: string | null;
             /** Format: uuid */
             answered_by: string | null;
             answered_at: string | null;
@@ -17769,6 +17770,8 @@ export interface components {
                 group_label?: string;
                 value?: unknown;
                 sort_order?: number;
+                /** @enum {string} */
+                input_kind?: "boolean" | "count" | "text";
             }[];
         };
         MintedCaptureLink: {
@@ -18145,6 +18148,8 @@ export interface components {
                 group_label?: string;
                 value?: unknown;
                 sort_order?: number;
+                /** @enum {string} */
+                input_kind?: "boolean" | "count" | "text";
             }[];
         };
         CaptureRoomConfirmResponse: {

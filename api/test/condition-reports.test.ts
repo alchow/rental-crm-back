@@ -151,6 +151,92 @@ async function main(): Promise<void> {
     if (b.jurisdiction !== 'US') throw new Error('jurisdiction not carried over');
   });
 
+  // --------------------------------------------------------------------------
+  // Key-stability contract (FE ask #23): schema keys are identity, labels are
+  // display. Three backend commitments, each pinned:
+  //   (1) the catalog never RENAMES a key (snapshot below -- additions and
+  //       removals show up as a deliberate diff of this literal),
+  //   (2) seed derivation is exactly <section.key>/<field.key>,
+  //   (3) template schema round-trips PATCH verbatim (no server rewriting).
+  // --------------------------------------------------------------------------
+  await check('catalog key-set snapshot: keys are add/remove-only, never renamed', async () => {
+    const { getInspectionTemplateCatalog } = await import('../src/admin/inspection-template-catalog');
+    const t = getInspectionTemplateCatalog('residential-generic-v1');
+    if (!t) throw new Error('residential-generic-v1 missing from catalog');
+    const itemKeys: string[] = [];
+    const checkKeys: string[] = [];
+    for (const s of t.schema.sections) {
+      for (const f of s.items ?? []) itemKeys.push(`${s.key}/${f.key}`);
+      for (const f of s.checks ?? []) checkKeys.push(`${s.key}/${f.key}`);
+    }
+    // v2 snapshot. If this fails you either renamed a key (NOT allowed: cloned
+    // templates + per-unit layout deltas match on keys) or added/removed a
+    // question (allowed: update the literal AND bump the catalog version).
+    const expectedChecks = [
+      'exterior/breakers_located', 'exterior/water_shutoff_located',
+      'keys/door_keys', 'keys/fobs_cards', 'keys/garage_remotes', 'keys/gate_keys', 'keys/mailbox_keys',
+      'systems/exterior_locks_tested', 'systems/smoke_alarms_count',
+      'systems/smoke_alarms_tested', 'systems/smoke_alarms_working',
+    ];
+    const gotChecks = [...checkKeys].sort();
+    if (JSON.stringify(gotChecks) !== JSON.stringify(expectedChecks)) {
+      throw new Error(`check key drift:\n got ${JSON.stringify(gotChecks)}\n exp ${JSON.stringify(expectedChecks)}`);
+    }
+    if (t.version !== '2') throw new Error(`catalog version=${t.version}, snapshot is for '2'`);
+    if (itemKeys.length !== 136) throw new Error(`item key count drift: ${itemKeys.length} != 136`);
+    if (new Set(itemKeys).size !== itemKeys.length) throw new Error('duplicate item keys in catalog');
+    if (itemKeys.includes('garage/door_remotes' as never) || checkKeys.includes('garage/door_remotes')) {
+      throw new Error('garage/door_remotes returned (deduped in v2; keys/garage_remotes is canonical)');
+    }
+    // Every check is typed -- the input_kind contract the FE renders from.
+    for (const s of t.schema.sections) {
+      for (const f of s.checks ?? []) {
+        if (f.input_kind !== 'boolean' && f.input_kind !== 'count') {
+          throw new Error(`catalog check ${s.key}/${f.key} has input_kind=${f.input_kind}`);
+        }
+      }
+    }
+  });
+
+  await check('template schema round-trips PATCH verbatim (keys never rewritten)', async () => {
+    const weird = {
+      form_code: 'custom-x',
+      sections: [{
+        key: 'sec_one', label: 'Section One',
+        items: [{ key: 'a_key', label: 'Label A', extra_client_field: 'preserved' }],
+        checks: [{ key: 'c_key', label: 'Check C', input_kind: 'count' }],
+      }],
+      client_metadata: { anything: [1, 2, 3] },
+    };
+    const created = await api('POST', `/v1/accounts/${A.accountId}/inspection-templates`, {
+      token: A.accessToken, body: { name: 'verbatim test', schema: weird },
+    });
+    const tid = (assertStatus(created, 201, 'create') as { id: string }).id;
+    // Label-only edit: keys must be untouched (labels are display, keys are identity).
+    const relabeled = structuredClone(weird);
+    relabeled.sections[0]!.items[0]!.label = 'Label A renamed';
+    const patched = await api('PATCH', `/v1/accounts/${A.accountId}/inspection-templates/${tid}`, {
+      token: A.accessToken, body: { schema: relabeled },
+    });
+    assertStatus(patched, 200, 'patch');
+    const got = await api('GET', `/v1/accounts/${A.accountId}/inspection-templates/${tid}`, { token: A.accessToken });
+    const schema = (assertStatus(got, 200, 'get') as { schema: unknown }).schema;
+    // jsonb canonicalizes object KEY ORDER (that's Postgres, not us). The
+    // contract is content: every key, label, value, and array order intact.
+    const canon = (v: unknown): unknown => {
+      if (Array.isArray(v)) return v.map(canon);
+      if (v && typeof v === 'object') {
+        return Object.fromEntries(
+          Object.entries(v as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([k, x]) => [k, canon(x)]),
+        );
+      }
+      return v;
+    };
+    if (JSON.stringify(canon(schema)) !== JSON.stringify(canon(relabeled))) {
+      throw new Error(`schema not verbatim:\n got ${JSON.stringify(schema)}\n exp ${JSON.stringify(relabeled)}`);
+    }
+  });
+
   await check('create tenancy-bound move-in inspection', async () => {
     const r = await api('POST', `/v1/accounts/${A.accountId}/inspections`, {
       token: A.accessToken,
@@ -188,6 +274,18 @@ async function main(): Promise<void> {
     if (!b.checks.some((c) => c.field_key === 'keys/door_keys')) throw new Error('keys/door_keys check not seeded');
   });
 
+  await check('seeded checks carry input_kind; deduped garage remote is absent', async () => {
+    const r = await api('GET', `/v1/accounts/${A.accountId}/inspections/${checkinId}/checks`, { token: A.accessToken });
+    const b = assertStatus(r, 200, 'checks list') as { data: { field_key: string; input_kind: string | null }[] };
+    const byKey = new Map(b.data.map((c) => [c.field_key, c.input_kind]));
+    if (byKey.get('keys/door_keys') !== 'count') throw new Error(`keys/door_keys input_kind=${byKey.get('keys/door_keys')}`);
+    if (byKey.get('systems/smoke_alarms_tested') !== 'boolean') {
+      throw new Error(`systems/smoke_alarms_tested input_kind=${byKey.get('systems/smoke_alarms_tested')}`);
+    }
+    if (byKey.get('keys/garage_remotes') !== 'count') throw new Error('keys/garage_remotes not seeded as count');
+    if (byKey.has('garage/door_remotes')) throw new Error('garage/door_remotes seeded (should be deduped out of catalog v2)');
+  });
+
   await check('seed is idempotent (re-seed adds no duplicates)', async () => {
     const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/seed-from-template`, {
       token: A.accessToken, body: {},
@@ -215,7 +313,8 @@ async function main(): Promise<void> {
   // --------------------------------------------------------------------------
   interface CheckRow {
     id: string; field_key: string; value: unknown; group_label: string | null;
-    sort_order: number | null; answered_by: string | null; answered_at: string | null;
+    sort_order: number | null; input_kind: string | null;
+    answered_by: string | null; answered_at: string | null;
   }
   const getChecks = async (inspId: string): Promise<CheckRow[]> => {
     const r = await api('GET', `/v1/accounts/${A.accountId}/inspections/${inspId}/checks`, { token: A.accessToken });
@@ -274,6 +373,28 @@ async function main(): Promise<void> {
     if (row.answered_at !== null || row.answered_by !== null) throw new Error('explicit null did not clear answered stamp');
   });
 
+  await check('checks: input_kind accepted on upsert, presence-merged, enum-validated', async () => {
+    const create = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/checks`, {
+      token: A.accessToken,
+      body: { checks: [{ field_key: 'custom/spare_fobs', label: 'Spare fobs', input_kind: 'count', value: 2 }] },
+    });
+    assertStatus(create, 200, 'create typed check');
+    let row = (await getChecks(checkinId)).find((c) => c.field_key === 'custom/spare_fobs')!;
+    if (row.input_kind !== 'count') throw new Error(`input_kind=${row.input_kind}`);
+    // Re-save without input_kind: preserved, not erased.
+    await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/checks`, {
+      token: A.accessToken, body: { checks: [{ field_key: 'custom/spare_fobs', value: 1 }] },
+    });
+    row = (await getChecks(checkinId)).find((c) => c.field_key === 'custom/spare_fobs')!;
+    if (row.input_kind !== 'count') throw new Error('input_kind erased by re-save without the key');
+    // Unknown kind rejected by the contract.
+    const bad = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/checks`, {
+      token: A.accessToken,
+      body: { checks: [{ field_key: 'custom/spare_fobs', input_kind: 'condition_text' }] },
+    });
+    if (bad.status !== 400) throw new Error(`unknown input_kind: expected 400, got ${bad.status}`);
+  });
+
   let deletedCheckId = '';
   await check('checks: DELETE soft-deletes; same-key retry replays 204; repeat is 404', async () => {
     const row = (await getChecks(checkinId)).find((c) => c.field_key === 'custom/spa_heater')!;
@@ -326,6 +447,14 @@ async function main(): Promise<void> {
     const b = assertStatus(r, 201, 'capture link') as { secret: string };
     if (!b.secret) throw new Error('no secret returned');
     captureSecret = b.secret;
+  });
+
+  await check('capture form exposes input_kind so the tenant UI can render steppers', async () => {
+    const form = await api('GET', `/v1/inspection-capture/${captureSecret}`);
+    const fb = assertStatus(form, 200, 'capture form') as { checks: { field_key: string; input_kind: string | null }[] };
+    const keysCheck = fb.checks.find((c) => c.field_key === 'keys/door_keys');
+    if (!keysCheck) throw new Error('keys/door_keys not in capture form');
+    if (keysCheck.input_kind !== 'count') throw new Error(`capture form input_kind=${keysCheck.input_kind}`);
   });
 
   await check('tenant loads form + edits an item + checks via magic link, then submits', async () => {
@@ -577,6 +706,16 @@ async function main(): Promise<void> {
     const ib = (items.body as { data: { item_key: string; condition: string | null }[] }).data;
     if (!ib.some((i) => i.item_key === 'living_room/flooring')) throw new Error('item skeleton not copied');
     if (ib.some((i) => i.condition !== null)) throw new Error('checkout conditions should reset to null');
+  });
+
+  await check('checkout skeleton copies check input_kind (move-out keeps its typing)', async () => {
+    const rows = await getChecks(checkoutId);
+    const keysCheck = rows.find((c) => c.field_key === 'keys/door_keys');
+    if (!keysCheck) throw new Error('keys/door_keys not copied to checkout');
+    if (keysCheck.input_kind !== 'count') {
+      throw new Error(`checkout lost input_kind: ${keysCheck.input_kind} (move-out would regress to Yes/No)`);
+    }
+    if (keysCheck.value !== null) throw new Error('checkout check value should reset to null');
   });
 
   await check('checkout diff shows deltas, change_type, and photo counts', async () => {

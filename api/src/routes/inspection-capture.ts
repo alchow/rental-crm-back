@@ -88,6 +88,7 @@ const UpsertChecksBody = z
           group_label: z.string().min(1).max(200).optional(),
           value: z.unknown().optional(),
           sort_order: z.number().int().optional(),
+          input_kind: z.enum(['boolean', 'count', 'text']).optional(),
         }),
       )
       .min(1)

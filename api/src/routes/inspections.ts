@@ -206,6 +206,9 @@ const InspectionCheck = z
     group_label: z.string().nullable(),
     value: z.unknown(),
     sort_order: z.number().int().nullable(),
+    // Rendering hint carried from the template catalog ('boolean' | 'count' |
+    // 'text'); null = legacy/unknown -> clients fall back to Yes/No.
+    input_kind: z.string().nullable(),
     answered_by: z.string().uuid().nullable(),
     answered_at: z.string().nullable(),
     created_at: z.string(),
@@ -224,6 +227,7 @@ const UpsertChecksBody = z
           group_label: z.string().min(1).max(200).optional(),
           value: z.unknown().optional(),
           sort_order: z.number().int().optional(),
+          input_kind: z.enum(['boolean', 'count', 'text']).optional(),
         }),
       )
       .min(1)

@@ -8154,6 +8154,12 @@
               "null"
             ]
           },
+          "input_kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "answered_by": {
             "type": [
               "string",
@@ -8188,6 +8194,7 @@
           "label",
           "group_label",
           "sort_order",
+          "input_kind",
           "answered_by",
           "answered_at",
           "created_at",
@@ -8390,6 +8397,14 @@
                 "value": {},
                 "sort_order": {
                   "type": "integer"
+                },
+                "input_kind": {
+                  "type": "string",
+                  "enum": [
+                    "boolean",
+                    "count",
+                    "text"
+                  ]
                 }
               },
               "required": [
@@ -9951,6 +9966,14 @@
                 "value": {},
                 "sort_order": {
                   "type": "integer"
+                },
+                "input_kind": {
+                  "type": "string",
+                  "enum": [
+                    "boolean",
+                    "count",
+                    "text"
+                  ]
                 }
               },
               "required": [
