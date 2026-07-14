@@ -219,6 +219,7 @@ async function main(): Promise<void> {
         kind: string;
         capture_mode: string;
         status: string;
+        template_snapshot: { schema_hash?: string | null; schema?: unknown } | null;
         engagement?: {
           link_delivered_at: string | null;
           form_opened_at: string | null;
@@ -245,6 +246,11 @@ async function main(): Promise<void> {
         b.status !== 'draft'
       ) {
         throw new Error(`wrong inspection contract: ${JSON.stringify(b)}`);
+      }
+      if (b.template_snapshot?.schema_hash !== templateSchemaHash) {
+        throw new Error(
+          `creation did not pin the reviewed template hash: ${JSON.stringify(b.template_snapshot)}`,
+        );
       }
       if (!b.engagement) throw new Error('InspectionDetail.engagement missing');
       if (b.engagement.rooms_done !== 0 || b.engagement.rooms_total !== 2) {
@@ -346,6 +352,142 @@ async function main(): Promise<void> {
     }
     if (!b.engagement || b.engagement.rooms_done !== 0 || b.engagement.rooms_total < 1) {
       throw new Error(`template-mode detail has wrong engagement: ${JSON.stringify(b.engagement)}`);
+    }
+  });
+
+  await check('atomic create: template mode rejects malformed and oversized stored schemas', async () => {
+    const cases = [
+      {
+        name: 'missing section key',
+        schema: {
+          sections: [{ label: 'Room', items: [{ key: 'wall', label: 'Wall' }] }],
+        },
+      },
+      {
+        name: 'more than 1000 items',
+        schema: {
+          sections: [{
+            key: 'room',
+            label: 'Room',
+            items: Array.from({ length: 1001 }, (_, i) => ({ key: `item_${i}`, label: `Item ${i}` })),
+          }],
+        },
+      },
+    ];
+    for (const testCase of cases) {
+      const createdTemplate = await api(
+        'POST',
+        `/v1/accounts/${A.accountId}/inspection-templates`,
+        { token: A.accessToken, body: { name: `invalid atomic ${rnd()}`, schema: testCase.schema } },
+      );
+      const template = assertStatus(createdTemplate, 201, `create ${testCase.name} template`) as {
+        id: string;
+        schema_hash: string;
+      };
+      const marker = `invalid-template-mode-${rnd()}`;
+      const createdInspection = await api(
+        'POST',
+        `/v1/accounts/${A.accountId}/inspections/from-template`,
+        {
+          token: A.accessToken,
+          body: {
+            area_id: A.unitAreaId,
+            kind: 'general',
+            capture_mode: 'landlord',
+            template_id: template.id,
+            template_schema_hash: template.schema_hash,
+            notes: marker,
+            setup: { mode: 'template' },
+          },
+        },
+      );
+      const error = assertStatus(createdInspection, 400, testCase.name) as {
+        error?: { code?: string };
+      };
+      if (error.error?.code !== 'invalid_request') {
+        throw new Error(`${testCase.name}: error.code=${error.error?.code}`);
+      }
+      const leaked = await admin
+        .from('inspections')
+        .select('id', { count: 'exact', head: true })
+        .eq('account_id', A.accountId)
+        .eq('notes', marker);
+      if (leaked.error) throw new Error(`${testCase.name}: ${leaked.error.message}`);
+      if (leaked.count !== 0) throw new Error(`${testCase.name}: partial inspection survived`);
+    }
+  });
+
+  await check('atomic create: completion preserves the exact reviewed template revision', async () => {
+    const firstSchema = {
+      sections: [{ key: 'room', label: 'Room H1', items: [{ key: 'wall', label: 'Wall H1' }] }],
+    };
+    const templateResponse = await api(
+      'POST',
+      `/v1/accounts/${A.accountId}/inspection-templates`,
+      { token: A.accessToken, body: { name: `snapshot ${rnd()}`, schema: firstSchema } },
+    );
+    const template = assertStatus(templateResponse, 201, 'create snapshot template') as {
+      id: string;
+      schema_hash: string;
+    };
+    const creation = await api(
+      'POST',
+      `/v1/accounts/${A.accountId}/inspections/from-template`,
+      {
+        token: A.accessToken,
+        body: {
+          area_id: A.unitAreaId,
+          kind: 'general',
+          capture_mode: 'landlord',
+          template_id: template.id,
+          template_schema_hash: template.schema_hash,
+          setup: {
+            mode: 'final',
+            items: [{ item_key: 'room/wall', label: 'Wall H1', group_label: 'Room H1' }],
+            checks: [],
+          },
+        },
+      },
+    );
+    const inspection = assertStatus(creation, 201, 'create snapshot inspection') as {
+      id: string;
+      template_snapshot: { schema_hash?: string; schema?: unknown } | null;
+    };
+    if (inspection.template_snapshot?.schema_hash !== template.schema_hash) {
+      throw new Error('creation snapshot did not match H1');
+    }
+
+    const secondSchema = {
+      sections: [{ key: 'room', label: 'Room H2', items: [{ key: 'wall', label: 'Wall H2' }] }],
+    };
+    const patch = await api(
+      'PATCH',
+      `/v1/accounts/${A.accountId}/inspection-templates/${template.id}`,
+      { token: A.accessToken, body: { schema: secondSchema } },
+    );
+    const edited = assertStatus(patch, 200, 'edit template to H2') as { schema_hash: string };
+    if (edited.schema_hash === template.schema_hash) throw new Error('template hash did not change');
+
+    const completion = await api(
+      'POST',
+      `/v1/accounts/${A.accountId}/inspections/${inspection.id}/complete`,
+      { token: A.accessToken },
+    );
+    const completed = assertStatus(completion, 200, 'complete H1 inspection') as {
+      inspection: { template_snapshot: { schema_hash?: string; schema?: unknown } | null };
+    };
+    const frozen = completed.inspection.template_snapshot;
+    if (frozen?.schema_hash !== template.schema_hash) {
+      throw new Error(`completion replaced H1 with H2: ${JSON.stringify(frozen)}`);
+    }
+    const frozenSchema = frozen?.schema as {
+      sections?: Array<{ label?: string; items?: Array<{ label?: string }> }>;
+    } | undefined;
+    if (
+      frozenSchema?.sections?.[0]?.label !== 'Room H1' ||
+      frozenSchema.sections[0]?.items?.[0]?.label !== 'Wall H1'
+    ) {
+      throw new Error(`completion changed the reviewed schema: ${JSON.stringify(frozen?.schema)}`);
     }
   });
 
@@ -510,6 +652,61 @@ async function main(): Promise<void> {
       }
     },
   );
+
+  await check('atomic create: simultaneous same-key requests converge on one inspection', async () => {
+    const marker = `atomic-race-${rnd()}`;
+    const key = `atomic-race-${crypto.randomUUID()}`;
+    const body = {
+      area_id: A.unitAreaId,
+      kind: 'general',
+      capture_mode: 'landlord',
+      template_id: templateId,
+      template_schema_hash: templateSchemaHash,
+      notes: marker,
+      setup: {
+        mode: 'final',
+        items: [{ item_key: 'race/item', label: 'Race item', group_label: 'Race room' }],
+        checks: [],
+      },
+    };
+    const request = () => api(
+      'POST',
+      `/v1/accounts/${A.accountId}/inspections/from-template`,
+      { token: A.accessToken, idempotencyKey: key, body },
+    );
+    const raced = await Promise.all([request(), request()]);
+    const created = raced.find((response) => response.status === 201);
+    if (!created) {
+      throw new Error(`neither simultaneous request succeeded: ${raced.map((r) => r.status)}`);
+    }
+    for (const response of raced) {
+      if (response.status !== 201 && response.status !== 409) {
+        throw new Error(`unexpected race status ${response.status}: ${JSON.stringify(response.body)}`);
+      }
+      if (response.status === 409) {
+        const raceError = response.body as { error?: { code?: string } };
+        if (raceError.error?.code !== 'idempotency_in_flight') {
+          throw new Error(`unexpected race conflict: ${JSON.stringify(response.body)}`);
+        }
+      }
+    }
+    const replay = await request();
+    const replayBody = assertStatus(replay, 201, 'post-race replay') as { id: string };
+    const createdBody = created.body as { id?: string };
+    if (replayBody.id !== createdBody.id) {
+      throw new Error(`race replay changed id: ${createdBody.id} -> ${replayBody.id}`);
+    }
+    if (replay.headers['idempotency-replay'] !== 'true') {
+      throw new Error('post-race retry did not replay the transaction result');
+    }
+    const rows = await admin
+      .from('inspections')
+      .select('id', { count: 'exact', head: true })
+      .eq('account_id', A.accountId)
+      .eq('notes', marker);
+    if (rows.error) throw new Error(`race count: ${rows.error.message}`);
+    if (rows.count !== 1) throw new Error(`same-key race created ${rows.count} inspections`);
+  });
 
   await check(
     'atomic create: invalid final setup rolls back inspection and audit rows',

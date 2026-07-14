@@ -983,13 +983,14 @@ inspectionsApp.openapi(inspComplete, async (c) => {
 
   // Build the frozen snapshots BEFORE the lock: the completion-lock trigger
   // forbids changing template_snapshot/subject_snapshot afterward, so they must
-  // land atomically with completed_at. Only needed on the FIRST completion (a
-  // retry finds completed_at already set and skips the lock update entirely).
+  // land atomically with completed_at. Atomic creation already pins the exact
+  // template revision that produced the rows; legacy inspections fall back to
+  // reading their current template here. Only needed on the FIRST completion.
   let templateSnapshot: Record<string, unknown> | null = null;
   let subjectSnapshot: Record<string, unknown> | null = null;
   const { data: pre, error: preErr } = await sb
     .from('inspections')
-    .select('area_id, template_id, tenancy_id')
+    .select('area_id, template_id, tenancy_id, template_snapshot')
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)
@@ -997,8 +998,14 @@ inspectionsApp.openapi(inspComplete, async (c) => {
     .maybeSingle();
   if (preErr) throw new ApiError(500, 'database_error', preErr.message);
   if (pre) {
-    const p = pre as { area_id: string; template_id: string | null; tenancy_id: string | null };
-    if (p.template_id) {
+    const p = pre as {
+      area_id: string;
+      template_id: string | null;
+      tenancy_id: string | null;
+      template_snapshot: Record<string, unknown> | null;
+    };
+    templateSnapshot = p.template_snapshot;
+    if (!templateSnapshot && p.template_id) {
       const tpl = await sb
         .from('inspection_templates')
         .select('id, name, jurisdiction, version, catalog_id, schema_hash, schema')

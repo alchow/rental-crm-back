@@ -34,6 +34,7 @@ declare
   v_template_id       uuid;
   v_template_hash     text;
   v_template_schema   jsonb;
+  v_template_snapshot jsonb;
   v_setup             jsonb;
   v_setup_mode        text;
   v_items             jsonb;
@@ -96,12 +97,24 @@ begin
   end if;
 
   v_template_id := nullif(p_payload->>'template_id', '')::uuid;
-  select t.schema_hash, t.schema
-    into v_template_hash, v_template_schema
+  select
+      t.schema_hash,
+      t.schema,
+      jsonb_build_object(
+        'id', t.id,
+        'name', t.name,
+        'jurisdiction', t.jurisdiction,
+        'version', t.version,
+        'catalog_id', t.catalog_id,
+        'schema_hash', t.schema_hash,
+        'schema', t.schema
+      )
+    into v_template_hash, v_template_schema, v_template_snapshot
     from public.inspection_templates t
    where t.account_id = p_account_id
      and t.id = v_template_id
-     and t.deleted_at is null;
+     and t.deleted_at is null
+   for share of t;
 
   if not found then
     raise exception 'template_not_found' using errcode = 'P0002';
@@ -133,65 +146,164 @@ begin
       raise exception 'final setup requires items and checks arrays'
         using errcode = 'check_violation';
     end if;
-    if jsonb_array_length(v_items) not between 1 and 1000
-       or jsonb_array_length(v_checks) > 1000
-    then
-      raise exception 'final setup requires 1-1000 items and at most 1000 checks'
-        using errcode = 'check_violation';
-    end if;
-
-    -- The stable keys and labels are required even though legacy item rows may
-    -- have a null item_key. Reject hidden answer/evidence fields as well as bad
-    -- scalar types so direct RPC callers get the same setup-only contract as
-    -- the HTTP route.
-    if exists (
-      select 1
-        from jsonb_array_elements(v_items) item
-       where jsonb_typeof(item) is distinct from 'object'
-          or item - array['item_key', 'label', 'group_label', 'sort_order'] <> '{}'::jsonb
-          or jsonb_typeof(item->'item_key') is distinct from 'string'
-          or jsonb_typeof(item->'label') is distinct from 'string'
-          or coalesce(item->>'item_key', '') = ''
-          or coalesce(item->>'label', '') = ''
-          or char_length(item->>'item_key') > 200
-          or char_length(item->>'label') > 200
-          or (item ? 'group_label' and jsonb_typeof(item->'group_label') is distinct from 'string')
-          or (item ? 'group_label' and coalesce(item->>'group_label', '') = '')
-          or char_length(coalesce(item->>'group_label', '')) > 200
-          or (item ? 'sort_order' and jsonb_typeof(item->'sort_order') is distinct from 'number')
-          or (jsonb_typeof(item->'sort_order') = 'number' and (item->>'sort_order') !~ '^-?[0-9]+$')
-    ) then
-      raise exception 'invalid final inspection item' using errcode = 'check_violation';
-    end if;
-
-    if exists (
-      select 1
-        from jsonb_array_elements(v_checks) check_row
-       where jsonb_typeof(check_row) is distinct from 'object'
-          or check_row - array['field_key', 'label', 'group_label', 'sort_order', 'input_kind'] <> '{}'::jsonb
-          or jsonb_typeof(check_row->'field_key') is distinct from 'string'
-          or jsonb_typeof(check_row->'label') is distinct from 'string'
-          or coalesce(check_row->>'field_key', '') = ''
-          or coalesce(check_row->>'label', '') = ''
-          or char_length(check_row->>'field_key') > 200
-          or char_length(check_row->>'label') > 200
-          or (check_row ? 'group_label' and jsonb_typeof(check_row->'group_label') is distinct from 'string')
-          or (check_row ? 'group_label' and coalesce(check_row->>'group_label', '') = '')
-          or char_length(coalesce(check_row->>'group_label', '')) > 200
-          or (check_row ? 'sort_order' and jsonb_typeof(check_row->'sort_order') is distinct from 'number')
-          or (jsonb_typeof(check_row->'sort_order') = 'number' and (check_row->>'sort_order') !~ '^-?[0-9]+$')
-          or (check_row ? 'input_kind' and jsonb_typeof(check_row->'input_kind') is distinct from 'string')
-          or (check_row->>'input_kind' is not null and check_row->>'input_kind' not in ('boolean', 'count', 'text'))
-    ) then
-      raise exception 'invalid final inspection check' using errcode = 'check_violation';
-    end if;
   elsif v_setup - 'mode' <> '{}'::jsonb then
     raise exception 'template setup contains unsupported fields' using errcode = 'check_violation';
+  else
+    -- Stored schemas are intentionally opaque at the template CRUD boundary,
+    -- but the seeder only understands sections. Validate that expansion here so
+    -- template mode cannot bypass the final-mode row limits or leak a database
+    -- constraint error for malformed keys/types.
+    if jsonb_typeof(v_template_schema) is distinct from 'object'
+       or jsonb_typeof(v_template_schema->'sections') is distinct from 'array'
+       or exists (
+         select 1
+           from jsonb_array_elements(v_template_schema->'sections') section
+          where jsonb_typeof(section) is distinct from 'object'
+             or jsonb_typeof(section->'key') is distinct from 'string'
+             or coalesce(section->>'key', '') = ''
+             or (section ? 'label'
+                 and jsonb_typeof(section->'label') not in ('string', 'null'))
+             or (section ? 'label'
+                 and jsonb_typeof(section->'label') = 'string'
+                 and (coalesce(section->>'label', '') = ''
+                      or char_length(section->>'label') > 200))
+             or (section ? 'items'
+                 and jsonb_typeof(section->'items') is distinct from 'array')
+             or (section ? 'checks'
+                 and jsonb_typeof(section->'checks') is distinct from 'array')
+       )
+    then
+      raise exception 'invalid template inspection section' using errcode = 'check_violation';
+    end if;
+
+    select coalesce(jsonb_agg(
+      jsonb_strip_nulls(jsonb_build_object(
+        'item_key', case
+          when jsonb_typeof(section->'key') = 'string'
+           and coalesce(section->>'key', '') <> ''
+           and jsonb_typeof(item->'key') = 'string'
+           and coalesce(item->>'key', '') <> ''
+          then to_jsonb((section->>'key') || '/' || (item->>'key'))
+          else 'null'::jsonb
+        end,
+        'label', case when item ? 'label' and jsonb_typeof(item->'label') <> 'null'
+          then item->'label' else item->'key' end,
+        'group_label', case when jsonb_typeof(section->'label') = 'string'
+          then section->'label' else null end,
+        'sort_order', case when item ? 'sort' then item->'sort' else null end
+      )) order by section_ord, item_ord
+    ), '[]'::jsonb)
+      into v_items
+      from jsonb_array_elements(v_template_schema->'sections')
+           with ordinality as sections(section, section_ord)
+      cross join lateral jsonb_array_elements(
+        case when jsonb_typeof(section->'items') = 'array'
+          then section->'items' else '[]'::jsonb end
+      ) with ordinality as items(item, item_ord);
+
+    select coalesce(jsonb_agg(
+      jsonb_strip_nulls(jsonb_build_object(
+        'field_key', case
+          when jsonb_typeof(section->'key') = 'string'
+           and coalesce(section->>'key', '') <> ''
+           and jsonb_typeof(check_row->'key') = 'string'
+           and coalesce(check_row->>'key', '') <> ''
+          then to_jsonb((section->>'key') || '/' || (check_row->>'key'))
+          else 'null'::jsonb
+        end,
+        'label', case when check_row ? 'label' and jsonb_typeof(check_row->'label') <> 'null'
+          then check_row->'label' else check_row->'key' end,
+        'group_label', case when jsonb_typeof(section->'label') = 'string'
+          then section->'label' else null end,
+        'sort_order', case when check_row ? 'sort' then check_row->'sort' else null end,
+        'input_kind', case when check_row ? 'input_kind'
+          then check_row->'input_kind' else null end
+      )) order by section_ord, check_ord
+    ), '[]'::jsonb)
+      into v_checks
+      from jsonb_array_elements(v_template_schema->'sections')
+           with ordinality as sections(section, section_ord)
+      cross join lateral jsonb_array_elements(
+        case when jsonb_typeof(section->'checks') = 'array'
+          then section->'checks' else '[]'::jsonb end
+      ) with ordinality as checks(check_row, check_ord);
+  end if;
+
+  if jsonb_array_length(v_items) not between 1 and 1000
+     or jsonb_array_length(v_checks) > 1000
+  then
+    raise exception 'setup requires 1-1000 items and at most 1000 checks'
+      using errcode = 'check_violation';
+  end if;
+
+  -- Stable keys and labels are required. Reject hidden answer/evidence fields,
+  -- invalid scalar types, out-of-range integers, and duplicate live keys so
+  -- direct RPC callers receive the same setup-only contract as HTTP callers.
+  if exists (
+    select 1
+      from jsonb_array_elements(v_items) item
+     where jsonb_typeof(item) is distinct from 'object'
+        or item - array['item_key', 'label', 'group_label', 'sort_order'] <> '{}'::jsonb
+        or jsonb_typeof(item->'item_key') is distinct from 'string'
+        or jsonb_typeof(item->'label') is distinct from 'string'
+        or coalesce(item->>'item_key', '') = ''
+        or coalesce(item->>'label', '') = ''
+        or char_length(item->>'item_key') > 200
+        or char_length(item->>'label') > 200
+        or (item ? 'group_label' and jsonb_typeof(item->'group_label') is distinct from 'string')
+        or (item ? 'group_label' and coalesce(item->>'group_label', '') = '')
+        or char_length(coalesce(item->>'group_label', '')) > 200
+        or (item ? 'sort_order' and not case
+          when jsonb_typeof(item->'sort_order') = 'number'
+           and (item->>'sort_order') ~ '^-?[0-9]+$'
+          then (item->>'sort_order')::numeric between -2147483648 and 2147483647
+          else false
+        end)
+  ) then
+    raise exception 'invalid inspection item' using errcode = 'check_violation';
+  end if;
+  if exists (
+    select 1 from jsonb_array_elements(v_items) item
+     group by item->>'item_key' having count(*) > 1
+  ) then
+    raise exception 'duplicate inspection item key' using errcode = 'check_violation';
+  end if;
+
+  if exists (
+    select 1
+      from jsonb_array_elements(v_checks) check_row
+     where jsonb_typeof(check_row) is distinct from 'object'
+        or check_row - array['field_key', 'label', 'group_label', 'sort_order', 'input_kind'] <> '{}'::jsonb
+        or jsonb_typeof(check_row->'field_key') is distinct from 'string'
+        or jsonb_typeof(check_row->'label') is distinct from 'string'
+        or coalesce(check_row->>'field_key', '') = ''
+        or coalesce(check_row->>'label', '') = ''
+        or char_length(check_row->>'field_key') > 200
+        or char_length(check_row->>'label') > 200
+        or (check_row ? 'group_label' and jsonb_typeof(check_row->'group_label') is distinct from 'string')
+        or (check_row ? 'group_label' and coalesce(check_row->>'group_label', '') = '')
+        or char_length(coalesce(check_row->>'group_label', '')) > 200
+        or (check_row ? 'sort_order' and not case
+          when jsonb_typeof(check_row->'sort_order') = 'number'
+           and (check_row->>'sort_order') ~ '^-?[0-9]+$'
+          then (check_row->>'sort_order')::numeric between -2147483648 and 2147483647
+          else false
+        end)
+        or (check_row ? 'input_kind' and jsonb_typeof(check_row->'input_kind') is distinct from 'string')
+        or (check_row->>'input_kind' is not null and check_row->>'input_kind' not in ('boolean', 'count', 'text'))
+  ) then
+    raise exception 'invalid inspection check' using errcode = 'check_violation';
+  end if;
+  if exists (
+    select 1 from jsonb_array_elements(v_checks) check_row
+     group by check_row->>'field_key' having count(*) > 1
+  ) then
+    raise exception 'duplicate inspection check key' using errcode = 'check_violation';
   end if;
 
   insert into public.inspections (
     account_id, area_id, template_id, kind, tenancy_id,
-    capture_mode, performed_by, performed_at, notes
+    capture_mode, performed_by, performed_at, notes, template_snapshot
   ) values (
     p_account_id,
     nullif(p_payload->>'area_id', '')::uuid,
@@ -201,83 +313,39 @@ begin
     coalesce(nullif(p_payload->>'capture_mode', ''), 'landlord'),
     (select auth.uid()),
     nullif(p_payload->>'performed_at', '')::timestamptz,
-    p_payload->>'notes'
+    p_payload->>'notes',
+    v_template_snapshot
   )
   returning * into v_inspection;
 
-  if v_setup_mode = 'final' then
-    -- The arrays are authoritative for this brand-new inspection. Insert each
-    -- final row once: no seed/update/delete churn and no false audit updates.
-    insert into public.inspection_items (
-      account_id, inspection_id, item_key, label, group_label, sort_order
-    )
-    select
-      p_account_id,
-      v_inspection.id,
-      item->>'item_key',
-      item->>'label',
-      item->>'group_label',
-      nullif(item->>'sort_order', '')::int
-    from jsonb_array_elements(v_items) item;
+  -- Both final and stored-template modes now converge on one validated shape.
+  -- Triggers still emit one truthful audit event per domain row, while each
+  -- table is populated with one set-wise INSERT.
+  insert into public.inspection_items (
+    account_id, inspection_id, item_key, label, group_label, sort_order
+  )
+  select
+    p_account_id,
+    v_inspection.id,
+    item->>'item_key',
+    item->>'label',
+    item->>'group_label',
+    nullif(item->>'sort_order', '')::int
+  from jsonb_array_elements(v_items) item;
 
-    insert into public.inspection_checks (
-      account_id, inspection_id, field_key, label, group_label,
-      sort_order, input_kind
-    )
-    select
-      p_account_id,
-      v_inspection.id,
-      check_row->>'field_key',
-      check_row->>'label',
-      check_row->>'group_label',
-      nullif(check_row->>'sort_order', '')::int,
-      check_row->>'input_kind'
-    from jsonb_array_elements(v_checks) check_row;
-  else
-    -- Expand sections set-wise. Triggers still emit one truthful audit event
-    -- per inserted domain row, but PostgreSQL executes one INSERT per table
-    -- instead of one PL/pgSQL statement per JSON element.
-    insert into public.inspection_items (
-      account_id, inspection_id, item_key, label, group_label, sort_order
-    )
-    select
-      p_account_id,
-      v_inspection.id,
-      (section->>'key') || '/' || (item->>'key'),
-      coalesce(item->>'label', item->>'key'),
-      section->>'label',
-      nullif(item->>'sort', '')::int
-    from jsonb_array_elements(
-      case when jsonb_typeof(v_template_schema->'sections') = 'array'
-        then v_template_schema->'sections' else '[]'::jsonb end
-    ) section
-    cross join lateral jsonb_array_elements(
-      case when jsonb_typeof(section->'items') = 'array'
-        then section->'items' else '[]'::jsonb end
-    ) item;
-
-    insert into public.inspection_checks (
-      account_id, inspection_id, field_key, label, group_label,
-      sort_order, input_kind
-    )
-    select
-      p_account_id,
-      v_inspection.id,
-      (section->>'key') || '/' || (check_row->>'key'),
-      coalesce(check_row->>'label', check_row->>'key'),
-      section->>'label',
-      nullif(check_row->>'sort', '')::int,
-      case when check_row->>'input_kind' in ('boolean', 'count', 'text')
-        then check_row->>'input_kind' else null end
-    from jsonb_array_elements(
-      case when jsonb_typeof(v_template_schema->'sections') = 'array'
-        then v_template_schema->'sections' else '[]'::jsonb end
-    ) section
-    cross join lateral jsonb_array_elements(
-      case when jsonb_typeof(section->'checks') = 'array'
-        then section->'checks' else '[]'::jsonb end
-    ) check_row;
-  end if;
+  insert into public.inspection_checks (
+    account_id, inspection_id, field_key, label, group_label,
+    sort_order, input_kind
+  )
+  select
+    p_account_id,
+    v_inspection.id,
+    check_row->>'field_key',
+    check_row->>'label',
+    check_row->>'group_label',
+    nullif(check_row->>'sort_order', '')::int,
+    check_row->>'input_kind'
+  from jsonb_array_elements(v_checks) check_row;
 
   -- Match GET /inspections/:id exactly: null/empty group labels share the one
   -- ungrouped room, and a room is done when any live item has a condition.
