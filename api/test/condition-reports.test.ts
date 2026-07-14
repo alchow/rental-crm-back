@@ -309,6 +309,51 @@ async function main(): Promise<void> {
     },
   );
 
+  await check('atomic create: pinned template stays aligned; legacy draft stays editable', async () => {
+    const altResponse = await api('POST', `/v1/accounts/${A.accountId}/inspection-templates`, {
+      token: A.accessToken,
+      body: {
+        name: `alternate atomic ${rnd()}`,
+        schema: { sections: [{ key: 'alt', items: [{ key: 'wall', label: 'Wall' }] }] },
+      },
+    });
+    const alt = assertStatus(altResponse, 201, 'create alternate template') as { id: string };
+
+    const pinnedPatch = await api(
+      'PATCH', `/v1/accounts/${A.accountId}/inspections/${atomicInspectionId}`,
+      { token: A.accessToken, body: { template_id: alt.id } },
+    );
+    const conflict = assertStatus(pinnedPatch, 409, 'change pinned template_id') as {
+      error?: { code?: string };
+    };
+    if (conflict.error?.code !== 'conflict') throw new Error(`error.code=${conflict.error?.code}`);
+    const pinned = await admin.from('inspections').select('template_id,template_snapshot')
+      .eq('account_id', A.accountId).eq('id', atomicInspectionId).single();
+    if (pinned.error) throw new Error(`pinned query: ${pinned.error.message}`);
+    const snapshot = pinned.data.template_snapshot as { id?: string } | null;
+    if (pinned.data.template_id !== templateId || snapshot?.id !== templateId) {
+      throw new Error(`pinned template diverged: ${JSON.stringify(pinned.data)}`);
+    }
+
+    const legacyResponse = await api('POST', `/v1/accounts/${A.accountId}/inspections`, {
+      token: A.accessToken,
+      body: { area_id: A.unitAreaId, template_id: templateId, kind: 'general' },
+    });
+    const legacy = assertStatus(legacyResponse, 201, 'create legacy draft') as {
+      id: string; template_snapshot: unknown;
+    };
+    if (legacy.template_snapshot !== null) throw new Error('legacy draft unexpectedly pinned');
+    const legacyPatch = await api('PATCH', `/v1/accounts/${A.accountId}/inspections/${legacy.id}`, {
+      token: A.accessToken, body: { template_id: alt.id },
+    });
+    const updated = assertStatus(legacyPatch, 200, 'change legacy template_id') as {
+      template_id: string | null; template_snapshot: unknown;
+    };
+    if (updated.template_id !== alt.id || updated.template_snapshot !== null) {
+      throw new Error(`legacy behavior changed: ${JSON.stringify(updated)}`);
+    }
+  });
+
   await check('atomic create: template mode expands the complete template set-wise', async () => {
     const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/from-template`, {
       token: A.accessToken,
@@ -355,6 +400,50 @@ async function main(): Promise<void> {
     }
   });
 
+  await check('atomic create: template mode deterministically keys keyless items', async () => {
+    const longLabel = 'x'.repeat(200);
+    const templateResponse = await api('POST', `/v1/accounts/${A.accountId}/inspection-templates`, {
+      token: A.accessToken,
+      body: {
+        name: `keyless atomic ${rnd()}`,
+        schema: { sections: [{ key: 'room', label: 'Room', items: [
+          { label: 'Door Handle', sort: 10 }, { label: 'Door Handle', sort: 20 },
+          { label: 'door_handle_2', sort: 30 }, { label: '***', sort: 40 },
+          { sort: 45 }, { label: '', sort: 46 }, { label: null, sort: 47 },
+          { label: longLabel, sort: 50 }, { label: longLabel, sort: 60 },
+        ] }] },
+      },
+    });
+    const template = assertStatus(templateResponse, 201, 'create keyless template') as {
+      id: string; schema_hash: string;
+    };
+    const creation = await api('POST', `/v1/accounts/${A.accountId}/inspections/from-template`, {
+      token: A.accessToken,
+      body: {
+        area_id: A.unitAreaId, kind: 'general', capture_mode: 'landlord',
+        template_id: template.id, template_schema_hash: template.schema_hash,
+        setup: { mode: 'template' },
+      },
+    });
+    const inspection = assertStatus(creation, 201, 'create keyless template inspection') as { id: string };
+    const rows = await admin.from('inspection_items').select('item_key,sort_order')
+      .eq('account_id', A.accountId).eq('inspection_id', inspection.id)
+      .is('deleted_at', null).order('sort_order');
+    if (rows.error) throw new Error(`keyless query: ${rows.error.message}`);
+    const keys = (rows.data ?? []).map((row) => row.item_key);
+    const expected = [
+      'door_handle', 'door_handle_2', 'door_handle_2_2', 'item',
+      'untitled_item', 'untitled_item_2', 'untitled_item_3',
+      longLabel, `${'x'.repeat(198)}_2`,
+    ];
+    if (JSON.stringify(keys) !== JSON.stringify(expected)) {
+      throw new Error(`keyless keys are not deterministic: ${JSON.stringify(keys)}`);
+    }
+    if (new Set(keys).size !== expected.length || keys.some((key) => !key || key.length > 200)) {
+      throw new Error(`keyless keys are not unique and bounded: ${JSON.stringify(keys)}`);
+    }
+  });
+
   await check('atomic create: template mode rejects malformed and oversized stored schemas', async () => {
     const cases = [
       {
@@ -372,6 +461,16 @@ async function main(): Promise<void> {
             items: Array.from({ length: 1001 }, (_, i) => ({ key: `item_${i}`, label: `Item ${i}` })),
           }],
         },
+      },
+      {
+        name: 'duplicate explicit item keys',
+        schema: { sections: [{ key: 'room', items: [
+          { key: 'same', label: 'First' }, { key: 'same', label: 'Second' },
+        ] }] },
+      },
+      {
+        name: 'non-string item key',
+        schema: { sections: [{ key: 'room', items: [{ key: 42, label: 'Wall' }] }] },
       },
     ];
     for (const testCase of cases) {

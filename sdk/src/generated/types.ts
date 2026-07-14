@@ -12102,7 +12102,10 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Patch an inspection (rejected with 409 if already completed) */
+        /**
+         * Patch an inspection (rejected with 409 if completed or its template is pinned)
+         * @description Legacy draft inspections without a template snapshot may change template_id. Once atomic creation pins template_snapshot, template_id cannot change independently from that evidence snapshot.
+         */
         patch: {
             parameters: {
                 query?: never;
@@ -12151,7 +12154,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
                 409: {
                     headers: {
                         [name: string]: unknown;

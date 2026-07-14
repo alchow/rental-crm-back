@@ -756,13 +756,16 @@ const inspPatch = createRoute({
   method: 'patch',
   path: '/accounts/{accountId}/inspections/{id}',
   tags: ['inspections'],
-  summary: 'Patch an inspection (rejected with 409 if already completed)',
+  summary: 'Patch an inspection (rejected with 409 if completed or its template is pinned)',
+  description:
+    'Legacy draft inspections without a template snapshot may change template_id. Once atomic creation pins template_snapshot, template_id cannot change independently from that evidence snapshot.',
   request: {
     params: AccountAndIdParam,
     body: { content: { 'application/json': { schema: PatchInspectionBody } }, required: true },
   },
   responses: {
     200: { description: 'updated', content: { 'application/json': { schema: Inspection } } },
+    ...conflictResponse,
     ...errorResponses,
   },
 });
@@ -970,6 +973,13 @@ inspectionsApp.openapi(inspPatch, async (c) => {
   if (error) {
     if (/inspection .* is completed/i.test(error.message)) {
       throw new ApiError(409, 'conflict', 'inspection is completed and cannot be modified');
+    }
+    if (/inspection .* has a pinned template snapshot/i.test(error.message)) {
+      throw new ApiError(
+        409,
+        'conflict',
+        'inspection template is pinned and template_id cannot be changed',
+      );
     }
     throw new ApiError(500, 'database_error', error.message);
   }

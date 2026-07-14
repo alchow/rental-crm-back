@@ -18,6 +18,31 @@
 -- events, and the in-transaction idempotency completion together.
 -- ----------------------------------------------------------------------------
 
+-- Atomic creation freezes the exact template revision in template_snapshot.
+-- Keep template_id aligned with that evidence even for drafts, including
+-- direct PostgREST writes and concurrent PATCHes. Legacy drafts have no
+-- snapshot and retain their existing ability to select another template.
+create or replace function public._reject_pinned_inspection_template_change()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if OLD.template_snapshot is not null
+     and NEW.template_id is distinct from OLD.template_id
+  then
+    raise exception 'inspection % has a pinned template snapshot; template_id cannot be changed', OLD.id
+      using errcode = 'check_violation';
+  end if;
+  return NEW;
+end;
+$$;
+
+drop trigger if exists inspections_reject_pinned_template_change on public.inspections;
+create trigger inspections_reject_pinned_template_change
+before update of template_id on public.inspections
+for each row execute function public._reject_pinned_inspection_template_change();
+
 create or replace function public.create_inspection_from_template(
   p_account_id         uuid,
   p_idempotency_key    text,
@@ -39,6 +64,14 @@ declare
   v_setup_mode        text;
   v_items             jsonb;
   v_checks            jsonb;
+  v_section           jsonb;
+  v_item              jsonb;
+  v_section_key       text;
+  v_item_key          text;
+  v_item_key_base     text;
+  v_item_key_suffix   int;
+  v_item_key_suffix_text text;
+  v_used_item_keys    text[] := array[]::text[];
   v_inspection        public.inspections;
   v_rooms_done        int := 0;
   v_rooms_total       int := 0;
@@ -176,30 +209,101 @@ begin
       raise exception 'invalid template inspection section' using errcode = 'check_violation';
     end if;
 
-    select coalesce(jsonb_agg(
-      jsonb_strip_nulls(jsonb_build_object(
-        'item_key', case
-          when jsonb_typeof(section->'key') = 'string'
-           and coalesce(section->>'key', '') <> ''
-           and jsonb_typeof(item->'key') = 'string'
-           and coalesce(item->>'key', '') <> ''
-          then to_jsonb((section->>'key') || '/' || (item->>'key'))
-          else 'null'::jsonb
-        end,
-        'label', case when item ? 'label' and jsonb_typeof(item->'label') <> 'null'
-          then item->'label' else item->'key' end,
-        'group_label', case when jsonb_typeof(section->'label') = 'string'
-          then section->'label' else null end,
-        'sort_order', case when item ? 'sort' then item->'sort' else null end
-      )) order by section_ord, item_ord
-    ), '[]'::jsonb)
-      into v_items
+    if exists (
+      select 1
+        from jsonb_array_elements(v_template_schema->'sections') section
+        cross join lateral jsonb_array_elements(
+          case when jsonb_typeof(section->'items') = 'array'
+            then section->'items' else '[]'::jsonb end
+        ) item
+       where jsonb_typeof(item) is distinct from 'object'
+          or (item ? 'key' and jsonb_typeof(item->'key') not in ('string', 'null'))
+    ) then
+      raise exception 'invalid template inspection item' using errcode = 'check_violation';
+    end if;
+
+    -- Reserve every explicit namespaced key up front. Duplicate explicit keys
+    -- stay duplicated and are rejected by the shared validator below; only
+    -- keyless rows receive generated identities.
+    select coalesce(array_agg(
+      (section->>'key') || '/' || (item->>'key') order by section_ord, item_ord
+    ), array[]::text[])
+      into v_used_item_keys
       from jsonb_array_elements(v_template_schema->'sections')
            with ordinality as sections(section, section_ord)
       cross join lateral jsonb_array_elements(
         case when jsonb_typeof(section->'items') = 'array'
           then section->'items' else '[]'::jsonb end
-      ) with ordinality as items(item, item_ord);
+      ) with ordinality as items(item, item_ord)
+     where jsonb_typeof(item->'key') = 'string'
+       and coalesce(item->>'key', '') <> '';
+
+    v_items := '[]'::jsonb;
+    for v_section in
+      select section
+        from jsonb_array_elements(v_template_schema->'sections')
+             with ordinality as sections(section, section_ord)
+       order by section_ord
+    loop
+      v_section_key := v_section->>'key';
+      for v_item in
+        select item
+          from jsonb_array_elements(
+            case when jsonb_typeof(v_section->'items') = 'array'
+              then v_section->'items' else '[]'::jsonb end
+          ) with ordinality as items(item, item_ord)
+         order by item_ord
+      loop
+        if jsonb_typeof(v_item->'key') = 'string'
+           and coalesce(v_item->>'key', '') <> ''
+        then
+          v_item_key := v_section_key || '/' || (v_item->>'key');
+        else
+          -- Match the Create scratchpad's deterministic key minting:
+          -- slugify(label, 'item'), then suffix _2, _3, ... on collision.
+          -- Truncation keeps every generated key inside the API/DB 200-char
+          -- bound, including its suffix.
+          v_item_key_base := trim(both '_' from regexp_replace(
+            lower(coalesce(nullif(v_item->>'label', ''), 'Untitled item')),
+            '[^a-z0-9]+', '_', 'g'
+          ));
+          if v_item_key_base = '' then
+            v_item_key_base := 'item';
+          end if;
+          v_item_key := left(v_item_key_base, 200);
+          v_item_key_suffix := 1;
+          while v_item_key = any(v_used_item_keys)
+          loop
+            v_item_key_suffix := v_item_key_suffix + 1;
+            v_item_key_suffix_text := '_' || v_item_key_suffix::text;
+            v_item_key := left(
+              v_item_key_base,
+              200 - char_length(v_item_key_suffix_text)
+            ) || v_item_key_suffix_text;
+          end loop;
+          v_used_item_keys := array_append(v_used_item_keys, v_item_key);
+        end if;
+
+        v_items := v_items || jsonb_build_array(jsonb_strip_nulls(jsonb_build_object(
+          'item_key', v_item_key,
+          'label', case
+            when v_item ? 'label'
+                 and jsonb_typeof(v_item->'label') not in ('string', 'null')
+              then v_item->'label'
+            when jsonb_typeof(v_item->'label') = 'string'
+                 and coalesce(v_item->>'label', '') <> ''
+              then v_item->'label'
+            when jsonb_typeof(v_item->'key') = 'string'
+                 and coalesce(v_item->>'key', '') <> ''
+              then v_item->'key'
+            else to_jsonb('Untitled item'::text)
+          end,
+          'group_label', case when jsonb_typeof(v_section->'label') = 'string'
+            then v_section->'label' else null end,
+          'sort_order', case when v_item ? 'sort' then v_item->'sort' else null end
+        )));
+      end loop;
+    end loop;
 
     select coalesce(jsonb_agg(
       jsonb_strip_nulls(jsonb_build_object(

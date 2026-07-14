@@ -27416,7 +27416,8 @@
         "tags": [
           "inspections"
         ],
-        "summary": "Patch an inspection (rejected with 409 if already completed)",
+        "summary": "Patch an inspection (rejected with 409 if completed or its template is pinned)",
+        "description": "Legacy draft inspections without a template snapshot may change template_id. Once atomic creation pins template_snapshot, template_id cannot change independently from that evidence snapshot.",
         "parameters": [
           {
             "schema": {
@@ -27502,7 +27503,7 @@
             }
           },
           "409": {
-            "description": "idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource",
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
             "content": {
               "application/json": {
                 "schema": {
