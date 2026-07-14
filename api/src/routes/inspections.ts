@@ -881,7 +881,7 @@ inspectionsApp.openapi(inspComplete, async (c) => {
     if (p.template_id) {
       const tpl = await sb
         .from('inspection_templates')
-        .select('id, name, jurisdiction, version, schema')
+        .select('id, name, jurisdiction, version, catalog_id, schema_hash, schema')
         .eq('account_id', accountId)
         .eq('id', p.template_id)
         .maybeSingle();

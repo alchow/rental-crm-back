@@ -716,6 +716,11 @@ async function main(): Promise<void> {
     if (!/^[a-f0-9]{64}$/.test(cb.report.content_hash)) throw new Error('bad report hash');
     if (!cb.document || cb.document.document_type !== 'move_in') throw new Error('move_in document not emitted');
     if (!cb.inspection.template_snapshot) throw new Error('template_snapshot not frozen');
+    // Frozen provenance: the snapshot carries catalog_id + schema_hash so the
+    // completion evidence records WHICH form (and which schema state) was used.
+    const snap = cb.inspection.template_snapshot as { catalog_id?: string | null; schema_hash?: string | null };
+    if (snap.catalog_id !== 'residential-generic-v1') throw new Error(`snapshot catalog_id=${snap.catalog_id}`);
+    if (!snap.schema_hash) throw new Error('snapshot missing schema_hash');
     if (cb.document_version?.content_hash !== cb.report.content_hash) throw new Error('version hash != report hash');
   });
 

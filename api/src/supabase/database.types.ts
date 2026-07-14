@@ -2029,7 +2029,8 @@ export type Database = {
           jurisdiction?: string | null;
           name: string;
           schema?: Json;
-          schema_hash?: string | null;
+          // schema_hash is GENERATED ALWAYS -- deliberately absent from
+          // Insert/Update: any explicit write (even null) raises 428C9.
           updated_at?: string;
           version?: string | null;
         };
@@ -2042,7 +2043,6 @@ export type Database = {
           jurisdiction?: string | null;
           name?: string;
           schema?: Json;
-          schema_hash?: string | null;
           updated_at?: string;
           version?: string | null;
         };
