@@ -18,20 +18,45 @@
 -- events, and the in-transaction idempotency completion together.
 -- ----------------------------------------------------------------------------
 
--- Atomic creation freezes the exact template revision in template_snapshot.
--- Keep template_id aligned with that evidence even for drafts, including
--- direct PostgREST writes and concurrent PATCHes. Legacy drafts have no
--- snapshot and retain their existing ability to select another template.
+-- Atomic creation and legacy completion freeze one exact template revision in
+-- template_snapshot. Once present, neither the snapshot nor template_id may
+-- diverge. On the legacy null -> snapshot transition, require snapshot.id to
+-- match the row's template_id at UPDATE time. This closes the deterministic
+-- completion race:
+--   read template A -> PATCH template_id to B -> try to install snapshot A
+-- The last step sees B and rolls back. Legacy drafts with no snapshot retain
+-- their existing ability to select another template.
 create or replace function public._reject_pinned_inspection_template_change()
 returns trigger
 language plpgsql
 set search_path = public
 as $$
 begin
-  if OLD.template_snapshot is not null
-     and NEW.template_id is distinct from OLD.template_id
+  if TG_OP = 'UPDATE' then
+    if OLD.template_snapshot is not null then
+      if NEW.template_snapshot is distinct from OLD.template_snapshot then
+        raise exception 'inspection % has a pinned template snapshot; template_snapshot cannot be changed', OLD.id
+          using errcode = 'check_violation';
+      end if;
+      if NEW.template_id is distinct from OLD.template_id then
+        raise exception 'inspection % has a pinned template snapshot; template_id cannot be changed', OLD.id
+          using errcode = 'check_violation';
+      end if;
+      return NEW;
+    end if;
+  end if;
+
+  -- Applies to INSERTs that already carry evidence and to the one permitted
+  -- null -> nonnull UPDATE. Compare as text so malformed JSON is rejected as a
+  -- domain check_violation instead of leaking a UUID-cast error.
+  if NEW.template_snapshot is not null
+     and (
+       jsonb_typeof(NEW.template_snapshot) is distinct from 'object'
+       or jsonb_typeof(NEW.template_snapshot->'id') is distinct from 'string'
+       or NEW.template_snapshot->>'id' is distinct from NEW.template_id::text
+     )
   then
-    raise exception 'inspection % has a pinned template snapshot; template_id cannot be changed', OLD.id
+    raise exception 'inspection % template_snapshot.id must match template_id', NEW.id
       using errcode = 'check_violation';
   end if;
   return NEW;
@@ -40,7 +65,7 @@ $$;
 
 drop trigger if exists inspections_reject_pinned_template_change on public.inspections;
 create trigger inspections_reject_pinned_template_change
-before update of template_id on public.inspections
+before insert or update of template_id, template_snapshot on public.inspections
 for each row execute function public._reject_pinned_inspection_template_change();
 
 create or replace function public.create_inspection_from_template(

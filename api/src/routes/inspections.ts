@@ -775,12 +775,15 @@ const inspComplete = createRoute({
   tags: ['inspections'],
   summary:
     'Mark an inspection complete; locks it AND stores the rendered PDF as a content-hashed attachment',
+  description:
+    'Returns conflict if a legacy draft changes templates while completion is preparing its evidence snapshot. Retry completion so it can snapshot the current template.',
   request: { params: AccountAndIdParam },
   responses: {
     200: {
       description: 'completed',
       content: { 'application/json': { schema: CompleteResponse } },
     },
+    ...conflictResponse,
     ...errorResponses,
   },
 });
@@ -1061,7 +1064,19 @@ inspectionsApp.openapi(inspComplete, async (c) => {
     .neq('status', 'voided')
     .select('*')
     .maybeSingle();
-  if (lockErr) throw new ApiError(500, 'database_error', lockErr.message);
+  if (lockErr) {
+    if (/template_snapshot\.id must match template_id/i.test(lockErr.message)) {
+      throw new ApiError(
+        409,
+        'conflict',
+        'inspection template changed while completion was preparing its snapshot; retry completion',
+      );
+    }
+    if (/has a pinned template snapshot/i.test(lockErr.message)) {
+      throw new ApiError(409, 'conflict', 'inspection template evidence is already pinned');
+    }
+    throw new ApiError(500, 'database_error', lockErr.message);
+  }
 
   // Retry-safe: if we didn't win the lock the inspection may ALREADY be
   // completed (a prior call crashed after the lock but before emitting the

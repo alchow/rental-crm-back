@@ -12196,7 +12196,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Mark an inspection complete; locks it AND stores the rendered PDF as a content-hashed attachment */
+        /**
+         * Mark an inspection complete; locks it AND stores the rendered PDF as a content-hashed attachment
+         * @description Returns conflict if a legacy draft changes templates while completion is preparing its evidence snapshot. Retry completion so it can snapshot the current template.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -12241,7 +12244,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
                 409: {
                     headers: {
                         [name: string]: unknown;

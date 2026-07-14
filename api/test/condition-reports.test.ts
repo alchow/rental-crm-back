@@ -310,6 +310,10 @@ async function main(): Promise<void> {
   );
 
   await check('atomic create: pinned template stays aligned; legacy draft stays editable', async () => {
+    const userSb = createClient(status.API_URL, status.ANON_KEY, {
+      global: { headers: { Authorization: `Bearer ${A.accessToken}` } },
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
     const altResponse = await api('POST', `/v1/accounts/${A.accountId}/inspection-templates`, {
       token: A.accessToken,
       body: {
@@ -330,9 +334,23 @@ async function main(): Promise<void> {
     const pinned = await admin.from('inspections').select('template_id,template_snapshot')
       .eq('account_id', A.accountId).eq('id', atomicInspectionId).single();
     if (pinned.error) throw new Error(`pinned query: ${pinned.error.message}`);
-    const snapshot = pinned.data.template_snapshot as { id?: string } | null;
+    const snapshot = pinned.data.template_snapshot as Record<string, unknown> | null;
     if (pinned.data.template_id !== templateId || snapshot?.id !== templateId) {
       throw new Error(`pinned template diverged: ${JSON.stringify(pinned.data)}`);
+    }
+    const mutatedSnapshot = await userSb.from('inspections')
+      .update({ template_snapshot: { ...snapshot, schema_hash: 'tampered' } })
+      .eq('account_id', A.accountId).eq('id', atomicInspectionId);
+    if (mutatedSnapshot.error?.code !== '23514' ||
+        !/template_snapshot cannot be changed/i.test(mutatedSnapshot.error.message)) {
+      throw new Error(`direct snapshot mutation was not rejected: ${JSON.stringify(mutatedSnapshot.error)}`);
+    }
+    const clearedSnapshot = await userSb.from('inspections')
+      .update({ template_snapshot: null })
+      .eq('account_id', A.accountId).eq('id', atomicInspectionId);
+    if (clearedSnapshot.error?.code !== '23514' ||
+        !/template_snapshot cannot be changed/i.test(clearedSnapshot.error.message)) {
+      throw new Error(`direct snapshot clear was not rejected: ${JSON.stringify(clearedSnapshot.error)}`);
     }
 
     const legacyResponse = await api('POST', `/v1/accounts/${A.accountId}/inspections`, {
@@ -343,6 +361,9 @@ async function main(): Promise<void> {
       id: string; template_snapshot: unknown;
     };
     if (legacy.template_snapshot !== null) throw new Error('legacy draft unexpectedly pinned');
+    // Deterministic completion-race model: completion read template A here,
+    // then a normal legacy PATCH changes the row to template B.
+    const staleSnapshotA = { id: templateId, schema_hash: templateSchemaHash };
     const legacyPatch = await api('PATCH', `/v1/accounts/${A.accountId}/inspections/${legacy.id}`, {
       token: A.accessToken, body: { template_id: alt.id },
     });
@@ -351,6 +372,27 @@ async function main(): Promise<void> {
     };
     if (updated.template_id !== alt.id || updated.template_snapshot !== null) {
       throw new Error(`legacy behavior changed: ${JSON.stringify(updated)}`);
+    }
+    const mismatchedInstall = await userSb.from('inspections')
+      .update({ template_snapshot: staleSnapshotA })
+      .eq('account_id', A.accountId).eq('id', legacy.id);
+    if (mismatchedInstall.error?.code !== '23514' ||
+        !/template_snapshot\.id must match template_id/i.test(mismatchedInstall.error.message)) {
+      throw new Error(`stale snapshot install was not rejected: ${JSON.stringify(mismatchedInstall.error)}`);
+    }
+    const afterMismatch = await admin.from('inspections').select('template_id,template_snapshot')
+      .eq('account_id', A.accountId).eq('id', legacy.id).single();
+    if (afterMismatch.error || afterMismatch.data.template_id !== alt.id ||
+        afterMismatch.data.template_snapshot !== null) {
+      throw new Error(`mismatched transition changed the row: ${JSON.stringify(afterMismatch)}`);
+    }
+    const alignedInstall = await userSb.from('inspections')
+      .update({ template_snapshot: { id: alt.id, schema_hash: 'aligned-b' } })
+      .eq('account_id', A.accountId).eq('id', legacy.id)
+      .select('template_id,template_snapshot').single();
+    const aligned = alignedInstall.data?.template_snapshot as { id?: string } | null | undefined;
+    if (alignedInstall.error || alignedInstall.data?.template_id !== alt.id || aligned?.id !== alt.id) {
+      throw new Error(`aligned snapshot transition failed: ${JSON.stringify(alignedInstall)}`);
     }
   });
 
