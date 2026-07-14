@@ -16,6 +16,7 @@
     "test:attachments": "tsx test/attachments.test.ts",
     "test:documents": "tsx test/documents.test.ts",
     "test:condition-reports": "tsx test/condition-reports.test.ts",
+    "test:area-inspection-layouts": "tsx test/area-inspection-layouts.test.ts",
     "test:phase9": "tsx test/phase9.test.ts",
     "test:auto-charge": "tsx test/auto-charge.test.ts",
     "test:rent-changes": "tsx test/rent-changes.test.ts",

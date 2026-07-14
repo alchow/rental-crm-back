@@ -288,6 +288,12 @@ jobs:
         # linkage, generated documents, and completed-report immutability.
         run: pnpm --filter ./api test:condition-reports
 
+      - name: Run area inspection-layout checks
+        # Per-unit template-trim delta store: idempotent whole-document PUT,
+        # 404-means-no-memory GET, DELETE tombstone + re-PUT revival, the
+        # cross-account-template FK 404, and the request guards.
+        run: pnpm --filter ./api test:area-inspection-layouts
+
       - name: Run ledger + pagination regression checks
         # Phase 0/1 architecture-plan guards: tenancy-scoped allocation
         # fetch (was account-wide), voided-charge unapplied credit, 400 on
