@@ -2009,34 +2009,40 @@ export type Database = {
       inspection_templates: {
         Row: {
           account_id: string;
+          catalog_id: string | null;
           created_at: string;
           deleted_at: string | null;
           id: string;
           jurisdiction: string | null;
           name: string;
           schema: Json;
+          schema_hash: string | null;
           updated_at: string;
           version: string | null;
         };
         Insert: {
           account_id: string;
+          catalog_id?: string | null;
           created_at?: string;
           deleted_at?: string | null;
           id?: string;
           jurisdiction?: string | null;
           name: string;
           schema?: Json;
+          schema_hash?: string | null;
           updated_at?: string;
           version?: string | null;
         };
         Update: {
           account_id?: string;
+          catalog_id?: string | null;
           created_at?: string;
           deleted_at?: string | null;
           id?: string;
           jurisdiction?: string | null;
           name?: string;
           schema?: Json;
+          schema_hash?: string | null;
           updated_at?: string;
           version?: string | null;
         };
