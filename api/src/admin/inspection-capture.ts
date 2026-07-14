@@ -156,7 +156,7 @@ export async function loadCaptureForm(token: CaptureTokenRow): Promise<{
 
   const checks = await admin
     .from('inspection_checks')
-    .select('id, field_key, label, group_label, value, sort_order')
+    .select('id, field_key, label, group_label, value, sort_order, input_kind')
     .eq('account_id', token.account_id)
     .eq('inspection_id', token.inspection_id)
     .is('deleted_at', null)

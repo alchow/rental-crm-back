@@ -61,11 +61,15 @@ function checks(triples: Array<[string, string, string]>): CatalogField[] {
   return triples.map(([key, label, kind], i) => ({ key, label, input_kind: kind, sort: (i + 1) * 10 }));
 }
 
+// version history: '2' dropped the Garage section's duplicate "Garage door
+// remotes" count (keys/garage_remotes is the canonical one -- handover counts
+// live in Keys & access). Catalog edits ADD or REMOVE questions, never rename
+// keys: cloned templates and per-unit layout deltas match on them.
 const RESIDENTIAL_V1: CatalogTemplate = {
   id: 'residential-generic-v1',
   name: 'Residential move-in / move-out (generic)',
   jurisdiction: 'US',
-  version: '1',
+  version: '2',
   schema: {
     form_code: 'residential-generic-v1',
     sections: [
@@ -99,7 +103,6 @@ const RESIDENTIAL_V1: CatalogTemplate = {
           ['garage_doors', 'Garage doors'],
           ['storage', 'Storage area'],
         ]),
-        checks: checks([['door_remotes', 'Garage door remotes', 'count']]),
       },
       { key: 'entry', label: 'Entry', items: room() },
       { key: 'living_room', label: 'Living room', items: room([['fireplace', 'Fireplace'], ['cabinets', 'Cabinets']]) },

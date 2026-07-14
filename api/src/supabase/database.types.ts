@@ -1857,6 +1857,7 @@ export type Database = {
           field_key: string;
           group_label: string | null;
           id: string;
+          input_kind: string | null;
           inspection_id: string;
           label: string;
           sort_order: number | null;
@@ -1872,6 +1873,7 @@ export type Database = {
           field_key: string;
           group_label?: string | null;
           id?: string;
+          input_kind?: string | null;
           inspection_id: string;
           label: string;
           sort_order?: number | null;
@@ -1887,6 +1889,7 @@ export type Database = {
           field_key?: string;
           group_label?: string | null;
           id?: string;
+          input_kind?: string | null;
           inspection_id?: string;
           label?: string;
           sort_order?: number | null;
@@ -4781,6 +4784,7 @@ export type Database = {
           field_key: string;
           group_label: string | null;
           id: string;
+          input_kind: string | null;
           inspection_id: string;
           label: string;
           sort_order: number | null;
@@ -4879,6 +4883,7 @@ export type Database = {
           field_key: string;
           group_label: string | null;
           id: string;
+          input_kind: string | null;
           inspection_id: string;
           label: string;
           sort_order: number | null;
