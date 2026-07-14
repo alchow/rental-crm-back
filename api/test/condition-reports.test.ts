@@ -275,14 +275,27 @@ async function main(): Promise<void> {
   });
 
   let deletedCheckId = '';
-  await check('checks: DELETE soft-deletes; row leaves the list; repeat is 404', async () => {
+  await check('checks: DELETE soft-deletes; same-key retry replays 204; repeat is 404', async () => {
     const row = (await getChecks(checkinId)).find((c) => c.field_key === 'custom/spa_heater')!;
     deletedCheckId = row.id;
-    const del = await api('DELETE', `/v1/accounts/${A.accountId}/inspections/${checkinId}/checks/${row.id}`, {
-      token: A.accessToken,
-    });
-    if (del.status !== 204) throw new Error(`delete: expected 204, got ${del.status} ${JSON.stringify(del.body)}`);
+    // Fixed key: the retry below must REPLAY, not re-execute (the api() helper
+    // mints a fresh key per call, which is why replay was never covered).
+    const idemKey = `t-replay-${crypto.randomUUID()}`;
+    const delReq = () =>
+      app.fetch(
+        new Request(`http://test/v1/accounts/${A.accountId}/inspections/${checkinId}/checks/${row.id}`, {
+          method: 'DELETE',
+          headers: { authorization: `Bearer ${A.accessToken}`, 'idempotency-key': idemKey },
+        }),
+      );
+    const del = await delReq();
+    if (del.status !== 204) throw new Error(`delete: expected 204, got ${del.status} ${await del.text()}`);
     if ((await getChecks(checkinId)).some((c) => c.id === row.id)) throw new Error('deleted check still listed');
+    // Same-key retry (lost-response simulation): replayed 204, not a 500/404.
+    const replay = await delReq();
+    if (replay.status !== 204) throw new Error(`replay: expected 204, got ${replay.status} ${await replay.text()}`);
+    if (replay.headers.get('idempotency-replay') !== 'true') throw new Error('replay missing Idempotency-Replay header');
+    // A FRESH key on the now-deleted row is a genuine re-execution: 404.
     const again = await api('DELETE', `/v1/accounts/${A.accountId}/inspections/${checkinId}/checks/${row.id}`, {
       token: A.accessToken,
     });

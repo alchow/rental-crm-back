@@ -142,8 +142,19 @@ export function requireIdempotency(): MiddlewareHandler {
       // The Idempotency-Replay header lets the caller distinguish an absorbed
       // retry from a fresh execution (e.g. for dedup-rate metrics); the body
       // and status are byte-identical to the original either way.
+      const replayStatus = claim.status_code ?? 200;
+      // Null-body statuses (204/205/304) reject ANY body in the Response
+      // constructor -- JSON.stringify(null) is the string "null", not no body,
+      // so a replayed DELETE would throw and surface as a 500 instead of the
+      // promised replay.
+      if (replayStatus === 204 || replayStatus === 205 || replayStatus === 304) {
+        return new Response(null, {
+          status: replayStatus,
+          headers: { 'Idempotency-Replay': 'true' },
+        });
+      }
       return new Response(JSON.stringify(claim.body), {
-        status: claim.status_code ?? 200,
+        status: replayStatus,
         headers: { 'content-type': 'application/json', 'Idempotency-Replay': 'true' },
       });
     }
