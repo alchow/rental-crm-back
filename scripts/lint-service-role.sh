@@ -186,6 +186,10 @@ EXCLUDES=(
   # assigns process.env from supabase status so the app under test sees the
   # env it gets in CI. ASSIGNED, never read into a client constructor.
   ':!api/test/tenancy-start-date.test.ts'
+  # api/test/area-inspection-layouts.test.ts: same shape as ledger.test.ts --
+  # assigns process.env from supabase status so the app under test sees the
+  # env it gets in CI. ASSIGNED, never read into a client constructor.
+  ':!api/test/area-inspection-layouts.test.ts'
 
   #   - api/test/multi-status-filters.test.ts: multi-status list-filter
   #     integration test (same shape as ledger.test.ts) -- assigns process.env

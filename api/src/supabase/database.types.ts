@@ -221,6 +221,57 @@ export type Database = {
         };
         Relationships: [];
       };
+      area_inspection_layouts: {
+        Row: {
+          account_id: string;
+          area_id: string;
+          base_template_version: string | null;
+          created_at: string;
+          deleted_at: string | null;
+          id: string;
+          layout: Json;
+          template_id: string;
+          updated_at: string;
+        };
+        Insert: {
+          account_id: string;
+          area_id: string;
+          base_template_version?: string | null;
+          created_at?: string;
+          deleted_at?: string | null;
+          id?: string;
+          layout?: Json;
+          template_id: string;
+          updated_at?: string;
+        };
+        Update: {
+          account_id?: string;
+          area_id?: string;
+          base_template_version?: string | null;
+          created_at?: string;
+          deleted_at?: string | null;
+          id?: string;
+          layout?: Json;
+          template_id?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'area_inspection_layouts_account_id_area_id_fkey';
+            columns: ['account_id', 'area_id'];
+            isOneToOne: false;
+            referencedRelation: 'areas';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'area_inspection_layouts_account_id_template_id_fkey';
+            columns: ['account_id', 'template_id'];
+            isOneToOne: false;
+            referencedRelation: 'inspection_templates';
+            referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
       areas: {
         Row: {
           account_id: string;

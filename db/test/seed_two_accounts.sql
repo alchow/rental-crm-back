@@ -175,6 +175,15 @@ begin
     (v_acc_a, v_insp_a, 'Kitchen'),
     (v_acc_b, v_insp_b, 'Kitchen');
 
+  -- Area inspection layouts (PR D): a per-unit template-trim delta document,
+  -- keyed (area x template). One per account so the isolation suite gets its
+  -- own>0 / cross==0 check on this RLS table. Empty delta == standard form.
+  insert into public.area_inspection_layouts (
+    account_id, area_id, template_id, base_template_version, layout
+  ) values
+    (v_acc_a, v_unit_a, v_tpl_a, '1', '{}'::jsonb),
+    (v_acc_b, v_unit_b, v_tpl_b, '1', '{}'::jsonb);
+
   -- Attachments & interactions
   v_att_a := gen_random_uuid(); v_att_b := gen_random_uuid();
   insert into public.attachments (
