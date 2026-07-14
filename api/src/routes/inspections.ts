@@ -38,7 +38,11 @@ const InspectionTemplate = z
     name: z.string(),
     jurisdiction: z.string().nullable(),
     version: z.string().nullable(),
+    // Provenance of a catalog-cloned template; server-set, never client-writable.
+    catalog_id: z.string().nullable(),
     schema: z.record(z.unknown()),
+    // Canonical md5(schema::text); DB-generated, drifts iff schema changes.
+    schema_hash: z.string().nullable(),
     created_at: z.string(),
     updated_at: z.string(),
     deleted_at: z.string().nullable(),
@@ -622,6 +626,8 @@ inspectionTemplatesApp.openapi(fromCatalogRoute, async (c) => {
       name: body.name ?? tpl.name,
       jurisdiction: tpl.jurisdiction,
       version: tpl.version,
+      // Server-set provenance: this row was cloned from a bundled catalog form.
+      catalog_id: tpl.id,
       schema: asJson(tpl.schema),
     })
     .select('*')
@@ -875,7 +881,7 @@ inspectionsApp.openapi(inspComplete, async (c) => {
     if (p.template_id) {
       const tpl = await sb
         .from('inspection_templates')
-        .select('id, name, jurisdiction, version, schema')
+        .select('id, name, jurisdiction, version, catalog_id, schema_hash, schema')
         .eq('account_id', accountId)
         .eq('id', p.template_id)
         .maybeSingle();

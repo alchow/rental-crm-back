@@ -17555,9 +17555,11 @@ export interface components {
             name: string;
             jurisdiction: string | null;
             version: string | null;
+            catalog_id: string | null;
             schema: {
                 [key: string]: unknown;
             };
+            schema_hash: string | null;
             created_at: string;
             updated_at: string;
             deleted_at: string | null;

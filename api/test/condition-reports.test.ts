@@ -716,6 +716,11 @@ async function main(): Promise<void> {
     if (!/^[a-f0-9]{64}$/.test(cb.report.content_hash)) throw new Error('bad report hash');
     if (!cb.document || cb.document.document_type !== 'move_in') throw new Error('move_in document not emitted');
     if (!cb.inspection.template_snapshot) throw new Error('template_snapshot not frozen');
+    // Frozen provenance: the snapshot carries catalog_id + schema_hash so the
+    // completion evidence records WHICH form (and which schema state) was used.
+    const snap = cb.inspection.template_snapshot as { catalog_id?: string | null; schema_hash?: string | null };
+    if (snap.catalog_id !== 'residential-generic-v1') throw new Error(`snapshot catalog_id=${snap.catalog_id}`);
+    if (!snap.schema_hash) throw new Error('snapshot missing schema_hash');
     if (cb.document_version?.content_hash !== cb.report.content_hash) throw new Error('version hash != report hash');
   });
 
@@ -1082,6 +1087,57 @@ async function main(): Promise<void> {
         throw new Error(`cross-token: A item "${k}" was modified: "${before?.condition}" -> "${after?.condition}"`);
       }
     }
+  });
+
+  // --- template provenance: catalog_id + generated schema_hash --------------
+  let provTemplateId = '';
+  let provHashAfterClone = '';
+
+  await check('provenance: from-catalog clone carries catalog_id and a schema_hash', async () => {
+    const r = await api('POST', `/v1/accounts/${A.accountId}/inspection-templates/from-catalog`, {
+      token: A.accessToken, body: { catalog_id: 'residential-generic-v1' },
+    });
+    const b = assertStatus(r, 201, 'prov from-catalog') as { id: string; catalog_id: string | null; schema_hash: string | null };
+    provTemplateId = b.id;
+    provHashAfterClone = b.schema_hash ?? '';
+    if (b.catalog_id !== 'residential-generic-v1') throw new Error(`catalog_id=${b.catalog_id}`);
+    if (typeof b.schema_hash !== 'string' || b.schema_hash.length === 0) throw new Error(`schema_hash empty: ${JSON.stringify(b.schema_hash)}`);
+  });
+
+  await check('provenance: plain create has null catalog_id and a schema_hash', async () => {
+    const r = await api('POST', `/v1/accounts/${A.accountId}/inspection-templates`, {
+      token: A.accessToken, body: { name: `plain ${rnd()}` },
+    });
+    const b = assertStatus(r, 201, 'prov create') as { catalog_id: string | null; schema_hash: string | null };
+    if (b.catalog_id !== null) throw new Error(`catalog_id not null: ${b.catalog_id}`);
+    // schema defaults to {}, whose md5 is still a non-empty hash.
+    if (typeof b.schema_hash !== 'string' || b.schema_hash.length === 0) throw new Error(`schema_hash empty: ${JSON.stringify(b.schema_hash)}`);
+  });
+
+  await check('provenance: schema PATCH changes schema_hash; name-only PATCH does not', async () => {
+    // Changing the schema re-derives the generated hash.
+    const r1 = await api('PATCH', `/v1/accounts/${A.accountId}/inspection-templates/${provTemplateId}`, {
+      token: A.accessToken, body: { schema: { form_code: 'residential-generic-v1', changed: true, sections: [] } },
+    });
+    const b1 = assertStatus(r1, 200, 'prov schema patch') as { schema_hash: string | null };
+    if (b1.schema_hash === provHashAfterClone) throw new Error('schema_hash did not change after schema PATCH');
+    const afterSchemaHash = b1.schema_hash;
+    // Changing only the name leaves schema (and thus its hash) untouched.
+    const r2 = await api('PATCH', `/v1/accounts/${A.accountId}/inspection-templates/${provTemplateId}`, {
+      token: A.accessToken, body: { name: `renamed ${rnd()}` },
+    });
+    const b2 = assertStatus(r2, 200, 'prov name patch') as { schema_hash: string | null };
+    if (b2.schema_hash !== afterSchemaHash) throw new Error(`schema_hash changed on name-only PATCH: ${afterSchemaHash} -> ${b2.schema_hash}`);
+  });
+
+  await check('provenance: catalog_id is not client-writable via PATCH body', async () => {
+    // PatchInspectionTemplateBody is a plain z.object, so an unknown catalog_id
+    // key is stripped by zod before the update -- provenance stays server-set.
+    const r = await api('PATCH', `/v1/accounts/${A.accountId}/inspection-templates/${provTemplateId}`, {
+      token: A.accessToken, body: { name: `x ${rnd()}`, catalog_id: 'evil' },
+    });
+    const b = assertStatus(r, 200, 'prov evil patch') as { catalog_id: string | null };
+    if (b.catalog_id !== 'residential-generic-v1') throw new Error(`catalog_id was mutated: ${b.catalog_id}`);
   });
 
   console.info('');

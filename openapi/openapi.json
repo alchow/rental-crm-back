@@ -7522,9 +7522,21 @@
               "null"
             ]
           },
+          "catalog_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "schema": {
             "type": "object",
             "additionalProperties": {}
+          },
+          "schema_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "created_at": {
             "type": "string"
@@ -7545,7 +7557,9 @@
           "name",
           "jurisdiction",
           "version",
+          "catalog_id",
           "schema",
+          "schema_hash",
           "created_at",
           "updated_at",
           "deleted_at"
