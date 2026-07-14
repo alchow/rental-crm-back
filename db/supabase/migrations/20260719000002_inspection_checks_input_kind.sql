@@ -21,6 +21,12 @@
 --     handover counts matter)
 --   * both upsert RPCs                     (presence-merge like every other
 --     column: present -> set, absent -> preserve)
+--
+-- Sanitization asymmetry, deliberate: only the SEED sanitizes. The upserts
+-- pass input_kind through to the CHECK constraint -- our routes already
+-- zod-enum it to a 400, and a direct-PostgREST caller feeding garbage gets
+-- their own batch aborted (23514 -> 409), which is theirs to fix. A template
+-- row, by contrast, is data at rest that must never make seeding raise.
 -- ----------------------------------------------------------------------------
 
 alter table public.inspection_checks

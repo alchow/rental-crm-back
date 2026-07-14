@@ -183,7 +183,65 @@ async function main(): Promise<void> {
       throw new Error(`check key drift:\n got ${JSON.stringify(gotChecks)}\n exp ${JSON.stringify(expectedChecks)}`);
     }
     if (t.version !== '2') throw new Error(`catalog version=${t.version}, snapshot is for '2'`);
-    if (itemKeys.length !== 136) throw new Error(`item key count drift: ${itemKeys.length} != 136`);
+    // Item keys pinned as a FULL literal too -- a count check alone would let
+    // a pure rename (count-preserving) slip through, and item keys are the
+    // bulk of what clones and layout deltas match on.
+    const expectedItems = [
+      'bathroom_2/ceiling_walls', 'bathroom_2/closet', 'bathroom_2/countertops', 'bathroom_2/doors_locks',
+      'bathroom_2/exhaust_fan', 'bathroom_2/flooring', 'bathroom_2/lights_fans', 'bathroom_2/outlets_switches',
+      'bathroom_2/paint', 'bathroom_2/sink_faucet', 'bathroom_2/toilet', 'bathroom_2/tub_shower',
+      'bathroom_2/window_coverings', 'bathroom_2/windows_screens',
+      'bedroom_2/ceiling_walls', 'bedroom_2/closet', 'bedroom_2/doors_locks', 'bedroom_2/flooring',
+      'bedroom_2/lights_fans', 'bedroom_2/outlets_switches', 'bedroom_2/paint', 'bedroom_2/window_coverings',
+      'bedroom_2/windows_screens',
+      'bedroom_3/ceiling_walls', 'bedroom_3/closet', 'bedroom_3/doors_locks', 'bedroom_3/flooring',
+      'bedroom_3/lights_fans', 'bedroom_3/outlets_switches', 'bedroom_3/paint', 'bedroom_3/window_coverings',
+      'bedroom_3/windows_screens',
+      'dining_room/cabinets', 'dining_room/ceiling_walls', 'dining_room/closet', 'dining_room/doors_locks',
+      'dining_room/flooring', 'dining_room/lights_fans', 'dining_room/outlets_switches', 'dining_room/paint',
+      'dining_room/window_coverings', 'dining_room/windows_screens',
+      'entry/ceiling_walls', 'entry/closet', 'entry/doors_locks', 'entry/flooring', 'entry/lights_fans',
+      'entry/outlets_switches', 'entry/paint', 'entry/window_coverings', 'entry/windows_screens',
+      'exterior/back_door', 'exterior/driveway', 'exterior/exterior_faucets', 'exterior/fences_gates',
+      'exterior/front_door', 'exterior/lawn', 'exterior/mailbox', 'exterior/patio_deck',
+      'exterior/roof_gutters', 'exterior/siding_paint',
+      'garage/auto_door_opener', 'garage/ceiling_walls', 'garage/floor', 'garage/garage_doors', 'garage/storage',
+      'hallway/ceiling_walls', 'hallway/closet', 'hallway/doors_locks', 'hallway/flooring',
+      'hallway/lights_fans', 'hallway/outlets_switches', 'hallway/paint', 'hallway/window_coverings',
+      'hallway/windows_screens',
+      'kitchen/cabinets', 'kitchen/ceiling_walls', 'kitchen/closet', 'kitchen/countertops',
+      'kitchen/dishwasher', 'kitchen/disposal', 'kitchen/doors_locks', 'kitchen/flooring',
+      'kitchen/lights_fans', 'kitchen/microwave', 'kitchen/outlets_switches', 'kitchen/oven',
+      'kitchen/paint', 'kitchen/range', 'kitchen/refrigerator', 'kitchen/sink_faucet', 'kitchen/vent_hood',
+      'kitchen/window_coverings', 'kitchen/windows_screens',
+      'living_room/cabinets', 'living_room/ceiling_walls', 'living_room/closet', 'living_room/doors_locks',
+      'living_room/fireplace', 'living_room/flooring', 'living_room/lights_fans',
+      'living_room/outlets_switches', 'living_room/paint', 'living_room/window_coverings',
+      'living_room/windows_screens',
+      'primary_bathroom/ceiling_walls', 'primary_bathroom/closet', 'primary_bathroom/countertops',
+      'primary_bathroom/doors_locks', 'primary_bathroom/exhaust_fan', 'primary_bathroom/flooring',
+      'primary_bathroom/lights_fans', 'primary_bathroom/outlets_switches', 'primary_bathroom/paint',
+      'primary_bathroom/sink_faucet', 'primary_bathroom/toilet', 'primary_bathroom/towel_fixtures',
+      'primary_bathroom/tub_shower', 'primary_bathroom/window_coverings', 'primary_bathroom/windows_screens',
+      'primary_bedroom/ceiling_walls', 'primary_bedroom/closet', 'primary_bedroom/doors_locks',
+      'primary_bedroom/flooring', 'primary_bedroom/lights_fans', 'primary_bedroom/outlets_switches',
+      'primary_bedroom/paint', 'primary_bedroom/window_coverings', 'primary_bedroom/windows_screens',
+      'systems/hvac', 'systems/thermostat', 'systems/water_heater',
+      'utility_room/ceiling_walls', 'utility_room/flooring', 'utility_room/sink_faucet',
+      'utility_room/washer_dryer_connections',
+    ];
+    const gotItems = [...itemKeys].sort();
+    if (JSON.stringify(gotItems) !== JSON.stringify(expectedItems)) {
+      const got = new Set(gotItems);
+      const exp = new Set(expectedItems);
+      const added = gotItems.filter((k) => !exp.has(k));
+      const removed = expectedItems.filter((k) => !got.has(k));
+      throw new Error(
+        `item key drift (rename = one added + one removed; NOT allowed. ` +
+        `add/remove = update this literal AND bump the catalog version):\n` +
+        ` added:   ${JSON.stringify(added)}\n removed: ${JSON.stringify(removed)}`,
+      );
+    }
     if (new Set(itemKeys).size !== itemKeys.length) throw new Error('duplicate item keys in catalog');
     if (itemKeys.includes('garage/door_remotes' as never) || checkKeys.includes('garage/door_remotes')) {
       throw new Error('garage/door_remotes returned (deduped in v2; keys/garage_remotes is canonical)');
