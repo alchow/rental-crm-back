@@ -839,12 +839,26 @@ An instance of an inspection against a specific area.
 | Method  | Path                         | Body / Notes                                                                                  |
 | ------- | ---------------------------- | --------------------------------------------------------------------------------------------- |
 | `GET`   | `/inspections`               | Supports `?area_id=` filter.                                                                  |
-| `POST`  | `/inspections`               | `area_id` (required), `template_id`\|null, `performed_at`\|null (ISO8601), `notes`\|null.     |
+| `POST`  | `/inspections`               | Legacy incremental creation: `area_id` (required), `template_id`\|null, `performed_at`\|null, `notes`\|null. |
+| `POST`  | `/inspections/from-template` | Atomically creates the inspection plus final items/checks. Requires `template_id`, `template_schema_hash`, and `setup`. |
 | `GET`   | `/inspections/{id}`          |                                                                                               |
 | `PATCH` | `/inspections/{id}`          | `template_id`\|null, `performed_at`\|null, `notes`\|null. Returns `409` if already completed. |
 | `POST`  | `/inspections/{id}/complete` | No body. Locks the inspection and renders the PDF.                                            |
 
 **Completion is irreversible.** Once `completed_at` is set, PATCH returns `409 conflict` and items can no longer be added or changed. The complete endpoint is idempotent — calling it twice returns the same result.
+
+For the Create screen, prefer the transactional route:
+
+```text
+template + landlord trims rooms/items
+  -> POST /inspections/from-template
+  -> transaction: inspection + final items + final checks
+  -> 201 InspectionDetail
+  -> Share screen
+  -> POST /inspections/{id}/capture-links (when the landlord asks for a link)
+```
+
+`setup.mode="final"` is authoritative, so omitted template rows are never created. `setup.mode="template"` copies the complete template for clients that cannot render its schema. A stale `template_schema_hash` returns `409 template_changed`. The idempotency result commits in the same transaction, so retries cannot create duplicates or expose partially prepared inspections.
 
 `POST /inspections/{id}/complete` response:
 

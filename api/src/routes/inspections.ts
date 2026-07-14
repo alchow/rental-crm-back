@@ -2,7 +2,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { asJson, type DbTableUpdate } from '../supabase/db-types';
-import { ApiError, errorResponses } from './_lib/error';
+import { ApiError, conflictResponse, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { softDeleteStamp } from './_lib/soft-delete';
 import { generateAndStoreInspectionReport } from '../admin/pdf';
@@ -143,6 +143,56 @@ const CreateInspectionBody = z
     capture_mode: CaptureMode.optional(),
   })
   .openapi('CreateInspectionBody');
+
+// Authoritative setup accepted by the transactional creation path. These are
+// deliberately setup fields only: an inspection starts unanswered, without
+// evidence or condition data. The final mode lets the Create screen send its
+// trimmed scratchpad directly instead of seed -> upsert -> serial delete.
+const CreateInspectionFromTemplateItem = z
+  .object({
+    item_key: z.string().min(1).max(200),
+    label: z.string().min(1).max(200),
+    group_label: z.string().min(1).max(200).optional(),
+    sort_order: z.number().int().min(-2147483648).max(2147483647).optional(),
+  })
+  .openapi('CreateInspectionFromTemplateItem');
+
+const CreateInspectionFromTemplateCheck = z
+  .object({
+    field_key: z.string().min(1).max(200),
+    label: z.string().min(1).max(200),
+    group_label: z.string().min(1).max(200).optional(),
+    sort_order: z.number().int().min(-2147483648).max(2147483647).optional(),
+    input_kind: z.enum(['boolean', 'count', 'text']).optional(),
+  })
+  .openapi('CreateInspectionFromTemplateCheck');
+
+const CreateInspectionFromTemplateSetup = z
+  .discriminatedUnion('mode', [
+    z.object({
+      mode: z.literal('final'),
+      items: z.array(CreateInspectionFromTemplateItem).min(1).max(1000),
+      checks: z.array(CreateInspectionFromTemplateCheck).max(1000),
+    }),
+    // Compatibility escape hatch for template schemas a client cannot render.
+    // The server copies the complete template in the same transaction.
+    z.object({ mode: z.literal('template') }),
+  ])
+  .openapi('CreateInspectionFromTemplateSetup');
+
+const CreateInspectionFromTemplateBody = z
+  .object({
+    area_id: z.string().uuid(),
+    tenancy_id: z.string().uuid().optional(),
+    kind: InspectionKind,
+    capture_mode: CaptureMode,
+    template_id: z.string().uuid(),
+    template_schema_hash: z.string().regex(/^[a-f0-9]{32}$/),
+    performed_at: z.string().datetime().optional(),
+    notes: z.string().max(20000).optional(),
+    setup: CreateInspectionFromTemplateSetup,
+  })
+  .openapi('CreateInspectionFromTemplateBody');
 
 const PatchInspectionBody = z
   .object({
@@ -679,6 +729,29 @@ const inspCreate = createRoute({
     ...errorResponses,
   },
 });
+const inspCreateFromTemplate = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/inspections/from-template',
+  tags: ['inspections'],
+  summary: 'Create a fully prepared inspection from the final trimmed template setup',
+  description:
+    'Creates the inspection, items, and checks in one transaction. The template schema hash prevents a stale Create-screen scratchpad from silently overwriting a newer template. Capture links remain a separate Share-step operation.',
+  request: {
+    params: AccountParam,
+    body: {
+      content: { 'application/json': { schema: CreateInspectionFromTemplateBody } },
+      required: true,
+    },
+  },
+  responses: {
+    201: {
+      description: 'fully prepared inspection',
+      content: { 'application/json': { schema: InspectionDetail } },
+    },
+    ...conflictResponse,
+    ...errorResponses,
+  },
+});
 const inspPatch = createRoute({
   method: 'patch',
   path: '/accounts/{accountId}/inspections/{id}',
@@ -722,6 +795,53 @@ inspectionsApp.openapi(inspList, async (c) => {
     { data: items, next_cursor: nextCursor } as z.infer<typeof InspectionListResponse>,
     200,
   );
+});
+
+inspectionsApp.openapi(inspCreateFromTemplate, async (c) => {
+  const { accountId } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const claim = c.get('idempotencyClaim');
+  if (!claim) {
+    // Every account-scoped mutation reaches the idempotency middleware first.
+    // Failing closed here protects the RPC's atomic retry guarantee if route
+    // mounting is ever changed accidentally.
+    throw new ApiError(500, 'database_error', 'idempotency claim is unavailable');
+  }
+
+  const sb = getSb(c);
+  const { data, error } = await sb.rpc('create_inspection_from_template', {
+    p_account_id: accountId,
+    p_idempotency_key: claim.key,
+    p_request_fingerprint: claim.fingerprint,
+    p_payload: asJson(body),
+  });
+  if (error) {
+    if (/template_schema_(?:changed|mismatch)/i.test(error.message)) {
+      throw new ApiError(
+        409,
+        'template_changed',
+        'the inspection template changed; refresh the Create screen and review it again',
+      );
+    }
+    if (error.code === 'P0002' || error.code === '23503' || error.code === '42501') {
+      throw new ApiError(404, 'not_found', 'area, tenancy, or template not found');
+    }
+    if (
+      error.code === '23514' ||
+      error.code === '23505' ||
+      error.code === '22023' ||
+      error.code === '22P02' ||
+      error.code === '22003'
+    ) {
+      throw new ApiError(400, 'invalid_request', error.message);
+    }
+    throw new ApiError(500, 'database_error', error.message);
+  }
+  if (!data || Array.isArray(data)) {
+    throw new ApiError(500, 'database_error', 'create_inspection_from_template returned no detail');
+  }
+  c.set('idempotencyCompletedAtomically', true);
+  return c.json(data as z.infer<typeof InspectionDetail>, 201);
 });
 
 inspectionsApp.openapi(inspGet, async (c) => {

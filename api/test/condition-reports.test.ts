@@ -49,13 +49,13 @@ interface ApiResp { status: number; body: unknown; headers: Record<string, strin
 async function api(
   method: string,
   path: string,
-  opts: { token?: string; body?: unknown; multipart?: FormData } = {},
+  opts: { token?: string; body?: unknown; multipart?: FormData; idempotencyKey?: string } = {},
 ): Promise<ApiResp> {
   const headers: Record<string, string> = { accept: 'application/json' };
   if (opts.token) headers.authorization = `Bearer ${opts.token}`;
   const mutating = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase());
   if (mutating && path.startsWith('/v1/accounts/')) {
-    headers['idempotency-key'] = `t-${crypto.randomUUID()}`;
+    headers['idempotency-key'] = opts.idempotencyKey ?? `t-${crypto.randomUUID()}`;
   }
   let init: RequestInit = { method, headers };
   if (opts.multipart) init = { ...init, body: opts.multipart };
@@ -130,6 +130,11 @@ async function main(): Promise<void> {
   await admin.from('ip_rate_buckets').delete().eq('scope', 'capture_access');
 
   let templateId = '';
+  let templateSchemaHash = '';
+  let atomicInspectionId = '';
+  let atomicCreateBody: Record<string, unknown> | null = null;
+  let atomicCreateResponseBody: unknown = null;
+  const atomicIdempotencyKey = `atomic-create-${crypto.randomUUID()}`;
   let checkinId = '';
   let livingItemId = '';
   let checkoutId = '';
@@ -145,11 +150,455 @@ async function main(): Promise<void> {
     const r = await api('POST', `/v1/accounts/${A.accountId}/inspection-templates/from-catalog`, {
       token: A.accessToken, body: { catalog_id: 'residential-generic-v1' },
     });
-    const b = assertStatus(r, 201, 'from-catalog') as { id: string; schema: { sections?: unknown[] }; jurisdiction: string | null };
+    const b = assertStatus(r, 201, 'from-catalog') as {
+      id: string;
+      schema: { sections?: unknown[] };
+      schema_hash: string | null;
+      jurisdiction: string | null;
+    };
     templateId = b.id;
+    templateSchemaHash = b.schema_hash ?? '';
     if (!b.schema.sections || b.schema.sections.length === 0) throw new Error('cloned template has no sections');
+    if (!/^[a-f0-9]{32}$/.test(templateSchemaHash)) throw new Error(`invalid schema_hash=${templateSchemaHash}`);
     if (b.jurisdiction !== 'US') throw new Error('jurisdiction not carried over');
   });
+
+  // One request crosses the product boundary from the ephemeral Create
+  // scratchpad to a durable, fully prepared inspection. The submitted arrays
+  // are authoritative: template rows omitted here must not be copied first.
+  await check(
+    'atomic create: final setup is authoritative and returns InspectionDetail',
+    async () => {
+      atomicCreateBody = {
+        area_id: A.unitAreaId,
+        tenancy_id: A.tenancyId,
+        kind: 'move_in',
+        capture_mode: 'collaborative',
+        template_id: templateId,
+        template_schema_hash: templateSchemaHash,
+        notes: `atomic-final-${rnd()}`,
+        setup: {
+          mode: 'final',
+          items: [
+            {
+              item_key: 'living_room/flooring',
+              label: 'Living room floor',
+              group_label: 'Living room',
+              sort_order: 10,
+            },
+            {
+              item_key: 'primary_bedroom/paint',
+              label: 'Bedroom paint',
+              group_label: 'Primary bedroom',
+              sort_order: 20,
+            },
+          ],
+          checks: [
+            {
+              field_key: 'keys/door_keys',
+              label: 'Door keys',
+              group_label: 'Keys & access',
+              sort_order: 30,
+              input_kind: 'count',
+            },
+          ],
+        },
+      };
+      const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/from-template`, {
+        token: A.accessToken,
+        idempotencyKey: atomicIdempotencyKey,
+        body: atomicCreateBody,
+      });
+      atomicCreateResponseBody = structuredClone(r.body);
+      const b = assertStatus(r, 201, 'atomic create') as {
+        id: string;
+        account_id: string;
+        area_id: string;
+        tenancy_id: string | null;
+        template_id: string | null;
+        kind: string;
+        capture_mode: string;
+        status: string;
+        engagement?: {
+          link_delivered_at: string | null;
+          form_opened_at: string | null;
+          form_started_at: string | null;
+          submitted_at: string | null;
+          rooms_done: number;
+          rooms_total: number;
+        };
+        items?: unknown;
+        checks?: unknown;
+      };
+      atomicInspectionId = b.id;
+      if (
+        b.account_id !== A.accountId ||
+        b.area_id !== A.unitAreaId ||
+        b.tenancy_id !== A.tenancyId
+      ) {
+        throw new Error(`wrong inspection scope: ${JSON.stringify(b)}`);
+      }
+      if (
+        b.template_id !== templateId ||
+        b.kind !== 'move_in' ||
+        b.capture_mode !== 'collaborative' ||
+        b.status !== 'draft'
+      ) {
+        throw new Error(`wrong inspection contract: ${JSON.stringify(b)}`);
+      }
+      if (!b.engagement) throw new Error('InspectionDetail.engagement missing');
+      if (b.engagement.rooms_done !== 0 || b.engagement.rooms_total !== 2) {
+        throw new Error(`unexpected room progress: ${JSON.stringify(b.engagement)}`);
+      }
+      if (
+        b.engagement.link_delivered_at !== null ||
+        b.engagement.form_opened_at !== null ||
+        b.engagement.form_started_at !== null ||
+        b.engagement.submitted_at !== null
+      ) {
+        throw new Error(
+          `fresh engagement timestamps must be null: ${JSON.stringify(b.engagement)}`,
+        );
+      }
+      if ('items' in b || 'checks' in b)
+        throw new Error('response drifted beyond InspectionDetail');
+
+      const [items, checks] = await Promise.all([
+        admin
+          .from('inspection_items')
+          .select('item_key,label,group_label,sort_order')
+          .eq('account_id', A.accountId)
+          .eq('inspection_id', atomicInspectionId)
+          .is('deleted_at', null)
+          .order('sort_order'),
+        admin
+          .from('inspection_checks')
+          .select('field_key,label,group_label,sort_order,input_kind')
+          .eq('account_id', A.accountId)
+          .eq('inspection_id', atomicInspectionId)
+          .is('deleted_at', null)
+          .order('sort_order'),
+      ]);
+      if (items.error) throw new Error(`atomic items query: ${items.error.message}`);
+      if (checks.error) throw new Error(`atomic checks query: ${checks.error.message}`);
+      const itemKeys = (items.data ?? []).map((row) => row.item_key);
+      if (
+        JSON.stringify(itemKeys) !==
+        JSON.stringify(['living_room/flooring', 'primary_bedroom/paint'])
+      ) {
+        throw new Error(`final items were not authoritative: ${JSON.stringify(items.data)}`);
+      }
+      const checkKeys = (checks.data ?? []).map((row) => row.field_key);
+      if (JSON.stringify(checkKeys) !== JSON.stringify(['keys/door_keys'])) {
+        throw new Error(`final checks were not authoritative: ${JSON.stringify(checks.data)}`);
+      }
+      if (
+        items.data?.[0]?.label !== 'Living room floor' ||
+        checks.data?.[0]?.input_kind !== 'count'
+      ) {
+        throw new Error(
+          `final metadata was not preserved: ${JSON.stringify({ items: items.data, checks: checks.data })}`,
+        );
+      }
+    },
+  );
+
+  await check('atomic create: template mode expands the complete template set-wise', async () => {
+    const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/from-template`, {
+      token: A.accessToken,
+      body: {
+        area_id: A.unitAreaId,
+        tenancy_id: A.tenancyId,
+        kind: 'move_in',
+        capture_mode: 'tenant',
+        template_id: templateId,
+        template_schema_hash: templateSchemaHash,
+        setup: { mode: 'template' },
+      },
+    });
+    const b = assertStatus(r, 201, 'atomic template create') as {
+      id: string;
+      engagement?: { rooms_done: number; rooms_total: number };
+    };
+    const [items, checks] = await Promise.all([
+      admin
+        .from('inspection_items')
+        .select('id', { count: 'exact', head: true })
+        .eq('account_id', A.accountId)
+        .eq('inspection_id', b.id)
+        .is('deleted_at', null),
+      admin
+        .from('inspection_checks')
+        .select('id', { count: 'exact', head: true })
+        .eq('account_id', A.accountId)
+        .eq('inspection_id', b.id)
+        .is('deleted_at', null),
+    ]);
+    if (items.error || checks.error) {
+      throw new Error(
+        `template-mode row query failed: ${items.error?.message ?? checks.error?.message}`,
+      );
+    }
+    if ((items.count ?? 0) < 1 || (checks.count ?? 0) < 1) {
+      throw new Error(
+        `template mode did not expand both row types: items=${items.count} checks=${checks.count}`,
+      );
+    }
+    if (!b.engagement || b.engagement.rooms_done !== 0 || b.engagement.rooms_total < 1) {
+      throw new Error(`template-mode detail has wrong engagement: ${JSON.stringify(b.engagement)}`);
+    }
+  });
+
+  await check('atomic create: full final catalog shape stays one request', async () => {
+    const { getInspectionTemplateCatalog } = await import('../src/admin/inspection-template-catalog');
+    const catalogTemplate = getInspectionTemplateCatalog('residential-generic-v1');
+    if (!catalogTemplate) throw new Error('residential-generic-v1 missing from catalog');
+    const items = catalogTemplate.schema.sections.flatMap((section) =>
+      (section.items ?? []).map((item) => ({
+        item_key: `${section.key}/${item.key}`,
+        label: item.label ?? item.key,
+        group_label: section.label,
+        ...(item.sort !== undefined ? { sort_order: item.sort } : {}),
+      })),
+    );
+    const checks = catalogTemplate.schema.sections.flatMap((section) =>
+      (section.checks ?? []).map((checkRow) => ({
+        field_key: `${section.key}/${checkRow.key}`,
+        label: checkRow.label ?? checkRow.key,
+        group_label: section.label,
+        ...(checkRow.sort !== undefined ? { sort_order: checkRow.sort } : {}),
+        ...(checkRow.input_kind ? { input_kind: checkRow.input_kind } : {}),
+      })),
+    );
+    const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/from-template`, {
+      token: A.accessToken,
+      body: {
+        area_id: A.unitAreaId,
+        tenancy_id: A.tenancyId,
+        kind: 'move_in',
+        capture_mode: 'tenant',
+        template_id: templateId,
+        template_schema_hash: templateSchemaHash,
+        setup: { mode: 'final', items, checks },
+      },
+    });
+    const b = assertStatus(r, 201, 'atomic full final create') as { id: string };
+    const [itemRows, checkRows] = await Promise.all([
+      admin.from('inspection_items').select('id', { count: 'exact', head: true })
+        .eq('account_id', A.accountId).eq('inspection_id', b.id).is('deleted_at', null),
+      admin.from('inspection_checks').select('id', { count: 'exact', head: true })
+        .eq('account_id', A.accountId).eq('inspection_id', b.id).is('deleted_at', null),
+    ]);
+    if (itemRows.error || checkRows.error) {
+      throw new Error(`full-final row query failed: ${itemRows.error?.message ?? checkRows.error?.message}`);
+    }
+    if (itemRows.count !== items.length || checkRows.count !== checks.length) {
+      throw new Error(
+        `full-final row count mismatch: items=${itemRows.count}/${items.length} checks=${checkRows.count}/${checks.length}`,
+      );
+    }
+  });
+
+  await check(
+    'atomic create: same idempotency key replays exactly with no duplicate rows or audit events',
+    async () => {
+      if (!atomicCreateBody || !atomicInspectionId || !atomicCreateResponseBody) {
+        throw new Error('atomic create precondition failed');
+      }
+      const beforeItems = await admin
+        .from('inspection_items')
+        .select('id')
+        .eq('account_id', A.accountId)
+        .eq('inspection_id', atomicInspectionId)
+        .is('deleted_at', null);
+      const beforeChecks = await admin
+        .from('inspection_checks')
+        .select('id')
+        .eq('account_id', A.accountId)
+        .eq('inspection_id', atomicInspectionId)
+        .is('deleted_at', null);
+      if (beforeItems.error || beforeChecks.error) {
+        throw new Error(
+          `atomic row query failed: ${beforeItems.error?.message ?? beforeChecks.error?.message}`,
+        );
+      }
+      const entityIds = [
+        atomicInspectionId,
+        ...(beforeItems.data ?? []).map((row) => row.id),
+        ...(beforeChecks.data ?? []).map((row) => row.id),
+      ];
+      const beforeEvents = await admin
+        .from('events')
+        .select('id', { count: 'exact', head: true })
+        .eq('account_id', A.accountId)
+        .in('entity_id', entityIds);
+      if (beforeEvents.error)
+        throw new Error(`atomic audit query failed: ${beforeEvents.error.message}`);
+      if (beforeEvents.count !== 4)
+        throw new Error(`expected four creation audit events, got ${beforeEvents.count}`);
+
+      const firstStored = await admin
+        .from('idempotency_keys')
+        .select('status_code,body,completed_at')
+        .eq('account_id', A.accountId)
+        .eq('key', atomicIdempotencyKey)
+        .single();
+      if (firstStored.error)
+        throw new Error(`idempotency row query failed: ${firstStored.error.message}`);
+      if (firstStored.data.status_code !== 201 || firstStored.data.completed_at == null) {
+        throw new Error(`idempotency completion not atomic: ${JSON.stringify(firstStored.data)}`);
+      }
+
+      const replay = await api('POST', `/v1/accounts/${A.accountId}/inspections/from-template`, {
+        token: A.accessToken,
+        idempotencyKey: atomicIdempotencyKey,
+        body: atomicCreateBody,
+      });
+      const replayBody = assertStatus(replay, 201, 'atomic replay') as { id?: string };
+      if (replay.headers['idempotency-replay'] !== 'true')
+        throw new Error('replay missing Idempotency-Replay header');
+      if (replayBody.id !== atomicInspectionId)
+        throw new Error(`replay returned another inspection: ${replayBody.id}`);
+      if (JSON.stringify(replay.body) !== JSON.stringify(atomicCreateResponseBody)) {
+        throw new Error('replayed response differs from the original HTTP response');
+      }
+      if (JSON.stringify(replay.body) !== JSON.stringify(firstStored.data.body)) {
+        throw new Error(
+          'replayed response differs from the response completed with the transaction',
+        );
+      }
+
+      const [afterInspections, afterItems, afterChecks, afterEvents] = await Promise.all([
+        admin
+          .from('inspections')
+          .select('id', { count: 'exact', head: true })
+          .eq('id', atomicInspectionId),
+        admin
+          .from('inspection_items')
+          .select('id', { count: 'exact', head: true })
+          .eq('account_id', A.accountId)
+          .eq('inspection_id', atomicInspectionId)
+          .is('deleted_at', null),
+        admin
+          .from('inspection_checks')
+          .select('id', { count: 'exact', head: true })
+          .eq('account_id', A.accountId)
+          .eq('inspection_id', atomicInspectionId)
+          .is('deleted_at', null),
+        admin
+          .from('events')
+          .select('id', { count: 'exact', head: true })
+          .eq('account_id', A.accountId)
+          .in('entity_id', entityIds),
+      ]);
+      const queryError =
+        afterInspections.error ?? afterItems.error ?? afterChecks.error ?? afterEvents.error;
+      if (queryError) throw new Error(`post-replay query failed: ${queryError.message}`);
+      if (afterInspections.count !== 1 || afterItems.count !== 2 || afterChecks.count !== 1) {
+        throw new Error(
+          `replay duplicated domain rows: ${JSON.stringify({
+            inspections: afterInspections.count,
+            items: afterItems.count,
+            checks: afterChecks.count,
+          })}`,
+        );
+      }
+      if (afterEvents.count !== beforeEvents.count) {
+        throw new Error(
+          `replay duplicated audit events: ${beforeEvents.count} -> ${afterEvents.count}`,
+        );
+      }
+    },
+  );
+
+  await check(
+    'atomic create: invalid final setup rolls back inspection and audit rows',
+    async () => {
+      const marker = `atomic-rollback-${rnd()}`;
+      const beforeEvents = await admin
+        .from('events')
+        .select('id', { count: 'exact', head: true })
+        .eq('account_id', A.accountId);
+      if (beforeEvents.error) throw new Error(`before audit query: ${beforeEvents.error.message}`);
+      const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/from-template`, {
+        token: A.accessToken,
+        body: {
+          area_id: A.unitAreaId,
+          tenancy_id: A.tenancyId,
+          kind: 'move_in',
+          capture_mode: 'collaborative',
+          template_id: templateId,
+          template_schema_hash: templateSchemaHash,
+          notes: marker,
+          setup: {
+            mode: 'final',
+            items: [
+            { item_key: 'same', label: 'First', group_label: 'Room' },
+            { item_key: 'same', label: 'Second', group_label: 'Room' },
+            ],
+            checks: [],
+          },
+        },
+      });
+      if (r.status < 400)
+        throw new Error(
+          `invalid setup unexpectedly succeeded: ${r.status} ${JSON.stringify(r.body)}`,
+        );
+      const [inspectionRows, afterEvents] = await Promise.all([
+        admin
+          .from('inspections')
+          .select('id', { count: 'exact', head: true })
+          .eq('account_id', A.accountId)
+          .eq('notes', marker),
+        admin
+          .from('events')
+          .select('id', { count: 'exact', head: true })
+          .eq('account_id', A.accountId),
+      ]);
+      if (inspectionRows.error || afterEvents.error) {
+        throw new Error(
+          `rollback query failed: ${inspectionRows.error?.message ?? afterEvents.error?.message}`,
+        );
+      }
+      if (inspectionRows.count !== 0)
+        throw new Error(`partial inspection survived failed setup: ${inspectionRows.count}`);
+      if (afterEvents.count !== beforeEvents.count) {
+        throw new Error(
+          `rolled-back setup leaked audit events: ${beforeEvents.count} -> ${afterEvents.count}`,
+        );
+      }
+    },
+  );
+
+  await check(
+    'atomic create: stale template_schema_hash is rejected before any inspection is created',
+    async () => {
+      const marker = `atomic-stale-${rnd()}`;
+      const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/from-template`, {
+        token: A.accessToken,
+        body: {
+          area_id: A.unitAreaId,
+          tenancy_id: A.tenancyId,
+          kind: 'move_in',
+          capture_mode: 'collaborative',
+          template_id: templateId,
+          template_schema_hash: '00000000000000000000000000000000',
+          notes: marker,
+          setup: { mode: 'template' },
+        },
+      });
+      const b = assertStatus(r, 409, 'stale template hash') as { error?: { code?: string } };
+      if (b.error?.code !== 'template_changed') throw new Error(`error.code=${b.error?.code}`);
+      const rows = await admin
+        .from('inspections')
+        .select('id', { count: 'exact', head: true })
+        .eq('account_id', A.accountId)
+        .eq('notes', marker);
+      if (rows.error) throw new Error(`stale-hash rollback query: ${rows.error.message}`);
+      if (rows.count !== 0) throw new Error('stale template hash left a partial inspection');
+    },
+  );
+
 
   // --------------------------------------------------------------------------
   // Key-stability contract (FE ask #23): schema keys are identity, labels are
@@ -736,7 +1185,11 @@ async function main(): Promise<void> {
 
   await check('completed inspection rejects item edits and new photos', async () => {
     const items = await api('GET', `/v1/accounts/${A.accountId}/inspections/${checkinId}/items`, { token: A.accessToken });
-    const itemId = (items.body as { data: { id: string }[] }).data[0]!.id;
+    // livingItemId already has this exact PNG from the earlier upload check;
+    // choosing it can legitimately hit the attachment dedupe replay (200)
+    // before exercising the completed-parent guard.
+    const itemId = (items.body as { data: { id: string }[] }).data
+      .find((item) => item.id !== livingItemId)!.id;
     const patch = await api('PATCH', `/v1/accounts/${A.accountId}/inspections/${checkinId}/items/${itemId}`, {
       token: A.accessToken, body: { condition: 'nope' },
     });
