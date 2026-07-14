@@ -83,6 +83,9 @@ export type ErrorCode =
   // for this key is still running -- retry shortly with the SAME key+body.
   | 'idempotency_conflict'
   | 'idempotency_in_flight'
+  // Atomic inspection setup used an older template schema hash. Refresh and
+  // review the Create-screen scratchpad before submitting it again.
+  | 'template_changed'
   // correcting/retracting an interaction that is not the current head of
   // its chain (already superseded, or the chain is closed by a retraction)
   | 'invalid_correction_target'

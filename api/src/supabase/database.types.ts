@@ -4058,6 +4058,15 @@ export type Database = {
           role: string;
         }[];
       };
+      create_inspection_from_template: {
+        Args: {
+          p_account_id: string;
+          p_idempotency_key: string;
+          p_payload: Json;
+          p_request_fingerprint: string;
+        };
+        Returns: Json;
+      };
       create_maintenance_request_with_report: {
         Args: {
           p_account_id: string;

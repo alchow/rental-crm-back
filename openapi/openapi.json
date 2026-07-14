@@ -8110,6 +8110,178 @@
           }
         ]
       },
+      "CreateInspectionFromTemplateItem": {
+        "type": "object",
+        "properties": {
+          "item_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "group_label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "sort_order": {
+            "type": "integer",
+            "minimum": -2147483648,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "item_key",
+          "label"
+        ]
+      },
+      "CreateInspectionFromTemplateCheck": {
+        "type": "object",
+        "properties": {
+          "field_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "group_label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "sort_order": {
+            "type": "integer",
+            "minimum": -2147483648,
+            "maximum": 2147483647
+          },
+          "input_kind": {
+            "type": "string",
+            "enum": [
+              "boolean",
+              "count",
+              "text"
+            ]
+          }
+        },
+        "required": [
+          "field_key",
+          "label"
+        ]
+      },
+      "CreateInspectionFromTemplateSetup": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "final"
+                ]
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CreateInspectionFromTemplateItem"
+                },
+                "minItems": 1,
+                "maxItems": 1000
+              },
+              "checks": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CreateInspectionFromTemplateCheck"
+                },
+                "maxItems": 1000
+              }
+            },
+            "required": [
+              "mode",
+              "items",
+              "checks"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "template"
+                ]
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          }
+        ]
+      },
+      "CreateInspectionFromTemplateBody": {
+        "type": "object",
+        "properties": {
+          "area_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenancy_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "move_in",
+              "move_out",
+              "periodic",
+              "general"
+            ]
+          },
+          "capture_mode": {
+            "type": "string",
+            "enum": [
+              "landlord",
+              "tenant",
+              "collaborative"
+            ]
+          },
+          "template_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "template_schema_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$"
+          },
+          "performed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "setup": {
+            "$ref": "#/components/schemas/CreateInspectionFromTemplateSetup"
+          }
+        },
+        "required": [
+          "area_id",
+          "kind",
+          "capture_mode",
+          "template_id",
+          "template_schema_hash",
+          "setup"
+        ]
+      },
       "CreateInspectionBody": {
         "type": "object",
         "properties": {
@@ -27029,6 +27201,130 @@
         }
       }
     },
+    "/v1/accounts/{accountId}/inspections/from-template": {
+      "post": {
+        "tags": [
+          "inspections"
+        ],
+        "summary": "Create a fully prepared inspection from the final trimmed template setup",
+        "description": "Creates the inspection, items, and checks in one transaction. The template schema hash prevents a stale Create-screen scratchpad from silently overwriting a newer template. Capture links remain a separate Share-step operation.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateInspectionFromTemplateBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "fully prepared inspection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InspectionDetail"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/accounts/{accountId}/inspections/{id}": {
       "get": {
         "tags": [
@@ -27120,7 +27416,8 @@
         "tags": [
           "inspections"
         ],
-        "summary": "Patch an inspection (rejected with 409 if already completed)",
+        "summary": "Patch an inspection (rejected with 409 if completed or its template is pinned)",
+        "description": "Legacy draft inspections without a template snapshot may change template_id. Once atomic creation pins template_snapshot, template_id cannot change independently from that evidence snapshot.",
         "parameters": [
           {
             "schema": {
@@ -27206,7 +27503,7 @@
             }
           },
           "409": {
-            "description": "idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource",
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
             "content": {
               "application/json": {
                 "schema": {
@@ -27253,6 +27550,7 @@
           "inspections"
         ],
         "summary": "Mark an inspection complete; locks it AND stores the rendered PDF as a content-hashed attachment",
+        "description": "Returns conflict if a legacy draft changes templates while completion is preparing its evidence snapshot. Retry completion so it can snapshot the current template.",
         "parameters": [
           {
             "schema": {
@@ -27328,7 +27626,7 @@
             }
           },
           "409": {
-            "description": "idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource",
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
             "content": {
               "application/json": {
                 "schema": {

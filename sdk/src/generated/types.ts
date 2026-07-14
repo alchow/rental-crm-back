@@ -11932,6 +11932,103 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/accounts/{accountId}/inspections/from-template": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a fully prepared inspection from the final trimmed template setup
+         * @description Creates the inspection, items, and checks in one transaction. The template schema hash prevents a stale Create-screen scratchpad from silently overwriting a newer template. Capture links remain a separate Share-step operation.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateInspectionFromTemplateBody"];
+                };
+            };
+            responses: {
+                /** @description fully prepared inspection */
+                201: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InspectionDetail"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/accounts/{accountId}/inspections/{id}": {
         parameters: {
             query?: never;
@@ -12005,7 +12102,10 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Patch an inspection (rejected with 409 if already completed) */
+        /**
+         * Patch an inspection (rejected with 409 if completed or its template is pinned)
+         * @description Legacy draft inspections without a template snapshot may change template_id. Once atomic creation pins template_snapshot, template_id cannot change independently from that evidence snapshot.
+         */
         patch: {
             parameters: {
                 query?: never;
@@ -12054,7 +12154,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -12096,7 +12196,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Mark an inspection complete; locks it AND stores the rendered PDF as a content-hashed attachment */
+        /**
+         * Mark an inspection complete; locks it AND stores the rendered PDF as a content-hashed attachment
+         * @description Returns conflict if a legacy draft changes templates while completion is preparing its evidence snapshot. Retry completion so it can snapshot the current template.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -12141,7 +12244,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -17917,6 +18020,46 @@ export interface components {
         };
         InspectionDetail: components["schemas"]["Inspection"] & {
             engagement: components["schemas"]["InspectionEngagement"];
+        };
+        CreateInspectionFromTemplateItem: {
+            item_key: string;
+            label: string;
+            group_label?: string;
+            sort_order?: number;
+        };
+        CreateInspectionFromTemplateCheck: {
+            field_key: string;
+            label: string;
+            group_label?: string;
+            sort_order?: number;
+            /** @enum {string} */
+            input_kind?: "boolean" | "count" | "text";
+        };
+        CreateInspectionFromTemplateSetup: {
+            /** @enum {string} */
+            mode: "final";
+            items: components["schemas"]["CreateInspectionFromTemplateItem"][];
+            checks: components["schemas"]["CreateInspectionFromTemplateCheck"][];
+        } | {
+            /** @enum {string} */
+            mode: "template";
+        };
+        CreateInspectionFromTemplateBody: {
+            /** Format: uuid */
+            area_id: string;
+            /** Format: uuid */
+            tenancy_id?: string;
+            /** @enum {string} */
+            kind: "move_in" | "move_out" | "periodic" | "general";
+            /** @enum {string} */
+            capture_mode: "landlord" | "tenant" | "collaborative";
+            /** Format: uuid */
+            template_id: string;
+            template_schema_hash: string;
+            /** Format: date-time */
+            performed_at?: string;
+            notes?: string;
+            setup: components["schemas"]["CreateInspectionFromTemplateSetup"];
         };
         CreateInspectionBody: {
             /** Format: uuid */

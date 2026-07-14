@@ -5,6 +5,21 @@ import { getSb } from '../supabase/request-client';
 import { ApiError, dbError } from '../routes/_lib/error';
 import { getLogger } from '../log';
 
+export type IdempotencyClaimContext = {
+  key: string;
+  fingerprint: string;
+};
+
+declare module 'hono' {
+  interface ContextVariableMap {
+    // Available only after this middleware wins a claim. Most handlers let the
+    // middleware complete it after the response; a transaction-aware RPC may
+    // complete the same claim alongside its domain writes.
+    idempotencyClaim: IdempotencyClaimContext | undefined;
+    idempotencyCompletedAtomically: boolean | undefined;
+  }
+}
+
 // Generic Idempotency-Key middleware. Mounted on every mutating endpoint
 // under /v1/accounts/:accountId/* so the contract is uniform: a client
 // retrying a POST / PATCH / PUT / DELETE with the same Idempotency-Key
@@ -31,12 +46,11 @@ import { getLogger } from '../log';
 //     client should be able to retry. We DELETE the placeholder so the
 //     next try with the same key is a fresh attempt rather than a wedged
 //     409-in-flight.
-//   - It does NOT span multiple write tables transactionally with the
-//     handler's own writes. The handler does its work in its own
-//     transaction; we record the outcome after. The narrow race window
-//     (insert handler-row + crash before we update idempotency_keys)
-//     leaves the placeholder in-flight; the placeholder expires in 24h
-//     OR a retry with a new key proceeds normally.
+//   - By default it does NOT span multiple write tables transactionally with
+//     the handler's own writes. The handler does its work in its own
+//     transaction; we record the outcome after. A narrow, explicitly designed
+//     RPC may consume `idempotencyClaim` and complete that row in its domain
+//     transaction, closing the commit/completion crash gap for that operation.
 
 const KEY_RE = /^[A-Za-z0-9_-]{8,200}$/;
 const MUTATING = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
@@ -159,6 +173,8 @@ export function requireIdempotency(): MiddlewareHandler {
       });
     }
 
+    c.set('idempotencyClaim', { key, fingerprint });
+
     // We claimed the key. Run the handler.
     let handlerError: unknown = null;
     try {
@@ -182,6 +198,11 @@ export function requireIdempotency(): MiddlewareHandler {
 
     const res = c.res;
     const status = res.status;
+
+    // A transaction-aware handler has already cached this exact response in
+    // the same commit as its domain rows. Avoid a redundant DB round trip on
+    // the latency-sensitive path.
+    if (c.get('idempotencyCompletedAtomically')) return;
 
     if (status >= 500) {
       // 5xx: don't cache. Clean up the placeholder so a retry can proceed.

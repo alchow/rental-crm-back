@@ -2,7 +2,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { asJson, type DbTableUpdate } from '../supabase/db-types';
-import { ApiError, errorResponses } from './_lib/error';
+import { ApiError, conflictResponse, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { softDeleteStamp } from './_lib/soft-delete';
 import { generateAndStoreInspectionReport } from '../admin/pdf';
@@ -143,6 +143,56 @@ const CreateInspectionBody = z
     capture_mode: CaptureMode.optional(),
   })
   .openapi('CreateInspectionBody');
+
+// Authoritative setup accepted by the transactional creation path. These are
+// deliberately setup fields only: an inspection starts unanswered, without
+// evidence or condition data. The final mode lets the Create screen send its
+// trimmed scratchpad directly instead of seed -> upsert -> serial delete.
+const CreateInspectionFromTemplateItem = z
+  .object({
+    item_key: z.string().min(1).max(200),
+    label: z.string().min(1).max(200),
+    group_label: z.string().min(1).max(200).optional(),
+    sort_order: z.number().int().min(-2147483648).max(2147483647).optional(),
+  })
+  .openapi('CreateInspectionFromTemplateItem');
+
+const CreateInspectionFromTemplateCheck = z
+  .object({
+    field_key: z.string().min(1).max(200),
+    label: z.string().min(1).max(200),
+    group_label: z.string().min(1).max(200).optional(),
+    sort_order: z.number().int().min(-2147483648).max(2147483647).optional(),
+    input_kind: z.enum(['boolean', 'count', 'text']).optional(),
+  })
+  .openapi('CreateInspectionFromTemplateCheck');
+
+const CreateInspectionFromTemplateSetup = z
+  .discriminatedUnion('mode', [
+    z.object({
+      mode: z.literal('final'),
+      items: z.array(CreateInspectionFromTemplateItem).min(1).max(1000),
+      checks: z.array(CreateInspectionFromTemplateCheck).max(1000),
+    }),
+    // Compatibility escape hatch for template schemas a client cannot render.
+    // The server copies the complete template in the same transaction.
+    z.object({ mode: z.literal('template') }),
+  ])
+  .openapi('CreateInspectionFromTemplateSetup');
+
+const CreateInspectionFromTemplateBody = z
+  .object({
+    area_id: z.string().uuid(),
+    tenancy_id: z.string().uuid().optional(),
+    kind: InspectionKind,
+    capture_mode: CaptureMode,
+    template_id: z.string().uuid(),
+    template_schema_hash: z.string().regex(/^[a-f0-9]{32}$/),
+    performed_at: z.string().datetime().optional(),
+    notes: z.string().max(20000).optional(),
+    setup: CreateInspectionFromTemplateSetup,
+  })
+  .openapi('CreateInspectionFromTemplateBody');
 
 const PatchInspectionBody = z
   .object({
@@ -679,17 +729,43 @@ const inspCreate = createRoute({
     ...errorResponses,
   },
 });
+const inspCreateFromTemplate = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/inspections/from-template',
+  tags: ['inspections'],
+  summary: 'Create a fully prepared inspection from the final trimmed template setup',
+  description:
+    'Creates the inspection, items, and checks in one transaction. The template schema hash prevents a stale Create-screen scratchpad from silently overwriting a newer template. Capture links remain a separate Share-step operation.',
+  request: {
+    params: AccountParam,
+    body: {
+      content: { 'application/json': { schema: CreateInspectionFromTemplateBody } },
+      required: true,
+    },
+  },
+  responses: {
+    201: {
+      description: 'fully prepared inspection',
+      content: { 'application/json': { schema: InspectionDetail } },
+    },
+    ...conflictResponse,
+    ...errorResponses,
+  },
+});
 const inspPatch = createRoute({
   method: 'patch',
   path: '/accounts/{accountId}/inspections/{id}',
   tags: ['inspections'],
-  summary: 'Patch an inspection (rejected with 409 if already completed)',
+  summary: 'Patch an inspection (rejected with 409 if completed or its template is pinned)',
+  description:
+    'Legacy draft inspections without a template snapshot may change template_id. Once atomic creation pins template_snapshot, template_id cannot change independently from that evidence snapshot.',
   request: {
     params: AccountAndIdParam,
     body: { content: { 'application/json': { schema: PatchInspectionBody } }, required: true },
   },
   responses: {
     200: { description: 'updated', content: { 'application/json': { schema: Inspection } } },
+    ...conflictResponse,
     ...errorResponses,
   },
 });
@@ -699,12 +775,15 @@ const inspComplete = createRoute({
   tags: ['inspections'],
   summary:
     'Mark an inspection complete; locks it AND stores the rendered PDF as a content-hashed attachment',
+  description:
+    'Returns conflict if a legacy draft changes templates while completion is preparing its evidence snapshot. Retry completion so it can snapshot the current template.',
   request: { params: AccountAndIdParam },
   responses: {
     200: {
       description: 'completed',
       content: { 'application/json': { schema: CompleteResponse } },
     },
+    ...conflictResponse,
     ...errorResponses,
   },
 });
@@ -722,6 +801,53 @@ inspectionsApp.openapi(inspList, async (c) => {
     { data: items, next_cursor: nextCursor } as z.infer<typeof InspectionListResponse>,
     200,
   );
+});
+
+inspectionsApp.openapi(inspCreateFromTemplate, async (c) => {
+  const { accountId } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const claim = c.get('idempotencyClaim');
+  if (!claim) {
+    // Every account-scoped mutation reaches the idempotency middleware first.
+    // Failing closed here protects the RPC's atomic retry guarantee if route
+    // mounting is ever changed accidentally.
+    throw new ApiError(500, 'database_error', 'idempotency claim is unavailable');
+  }
+
+  const sb = getSb(c);
+  const { data, error } = await sb.rpc('create_inspection_from_template', {
+    p_account_id: accountId,
+    p_idempotency_key: claim.key,
+    p_request_fingerprint: claim.fingerprint,
+    p_payload: asJson(body),
+  });
+  if (error) {
+    if (/template_schema_(?:changed|mismatch)/i.test(error.message)) {
+      throw new ApiError(
+        409,
+        'template_changed',
+        'the inspection template changed; refresh the Create screen and review it again',
+      );
+    }
+    if (error.code === 'P0002' || error.code === '23503' || error.code === '42501') {
+      throw new ApiError(404, 'not_found', 'area, tenancy, or template not found');
+    }
+    if (
+      error.code === '23514' ||
+      error.code === '23505' ||
+      error.code === '22023' ||
+      error.code === '22P02' ||
+      error.code === '22003'
+    ) {
+      throw new ApiError(400, 'invalid_request', error.message);
+    }
+    throw new ApiError(500, 'database_error', error.message);
+  }
+  if (!data || Array.isArray(data)) {
+    throw new ApiError(500, 'database_error', 'create_inspection_from_template returned no detail');
+  }
+  c.set('idempotencyCompletedAtomically', true);
+  return c.json(data as z.infer<typeof InspectionDetail>, 201);
 });
 
 inspectionsApp.openapi(inspGet, async (c) => {
@@ -851,6 +977,13 @@ inspectionsApp.openapi(inspPatch, async (c) => {
     if (/inspection .* is completed/i.test(error.message)) {
       throw new ApiError(409, 'conflict', 'inspection is completed and cannot be modified');
     }
+    if (/inspection .* has a pinned template snapshot/i.test(error.message)) {
+      throw new ApiError(
+        409,
+        'conflict',
+        'inspection template is pinned and template_id cannot be changed',
+      );
+    }
     throw new ApiError(500, 'database_error', error.message);
   }
   if (!data) throw new ApiError(404, 'not_found', 'not found');
@@ -863,13 +996,14 @@ inspectionsApp.openapi(inspComplete, async (c) => {
 
   // Build the frozen snapshots BEFORE the lock: the completion-lock trigger
   // forbids changing template_snapshot/subject_snapshot afterward, so they must
-  // land atomically with completed_at. Only needed on the FIRST completion (a
-  // retry finds completed_at already set and skips the lock update entirely).
+  // land atomically with completed_at. Atomic creation already pins the exact
+  // template revision that produced the rows; legacy inspections fall back to
+  // reading their current template here. Only needed on the FIRST completion.
   let templateSnapshot: Record<string, unknown> | null = null;
   let subjectSnapshot: Record<string, unknown> | null = null;
   const { data: pre, error: preErr } = await sb
     .from('inspections')
-    .select('area_id, template_id, tenancy_id')
+    .select('area_id, template_id, tenancy_id, template_snapshot')
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)
@@ -877,8 +1011,14 @@ inspectionsApp.openapi(inspComplete, async (c) => {
     .maybeSingle();
   if (preErr) throw new ApiError(500, 'database_error', preErr.message);
   if (pre) {
-    const p = pre as { area_id: string; template_id: string | null; tenancy_id: string | null };
-    if (p.template_id) {
+    const p = pre as {
+      area_id: string;
+      template_id: string | null;
+      tenancy_id: string | null;
+      template_snapshot: Record<string, unknown> | null;
+    };
+    templateSnapshot = p.template_snapshot;
+    if (!templateSnapshot && p.template_id) {
       const tpl = await sb
         .from('inspection_templates')
         .select('id, name, jurisdiction, version, catalog_id, schema_hash, schema')
@@ -924,7 +1064,19 @@ inspectionsApp.openapi(inspComplete, async (c) => {
     .neq('status', 'voided')
     .select('*')
     .maybeSingle();
-  if (lockErr) throw new ApiError(500, 'database_error', lockErr.message);
+  if (lockErr) {
+    if (/template_snapshot\.id must match template_id/i.test(lockErr.message)) {
+      throw new ApiError(
+        409,
+        'conflict',
+        'inspection template changed while completion was preparing its snapshot; retry completion',
+      );
+    }
+    if (/has a pinned template snapshot/i.test(lockErr.message)) {
+      throw new ApiError(409, 'conflict', 'inspection template evidence is already pinned');
+    }
+    throw new ApiError(500, 'database_error', lockErr.message);
+  }
 
   // Retry-safe: if we didn't win the lock the inspection may ALREADY be
   // completed (a prior call crashed after the lock but before emitting the
