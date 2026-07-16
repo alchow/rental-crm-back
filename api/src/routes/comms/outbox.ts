@@ -211,6 +211,26 @@ export function registerOutboxRoutes(app: CommsApp): void {
       });
     }
 
+    // cc_addresses is the BARE-intent arm of the landlord CC feature (see the
+    // body-schema doc): email-only like subject, and never accepted alongside
+    // thread_id — a thread leg derives its Cc from the thread's is_cc
+    // participants, so an explicit set there is a caller bug, not a merge.
+    if (body.cc_addresses !== undefined) {
+      if (body.channel !== 'email') {
+        throw new ApiError(400, 'invalid_request', 'cc_addresses is only valid on email sends', {
+          fieldErrors: { cc_addresses: ['only valid when channel=email'] },
+        });
+      }
+      if (body.thread_id !== undefined) {
+        throw new ApiError(
+          400,
+          'invalid_request',
+          'cc_addresses is only valid on bare sends; a thread leg derives its Cc from is_cc participants',
+          { fieldErrors: { cc_addresses: ['not accepted with thread_id'] } },
+        );
+      }
+    }
+
     // Provenance (mirrors the journal firewall vocabulary; the DB CHECK and
     // capacity trigger are the backstops). Three agent-authorized shapes:
     //   approved_by            -> a human approved this exact message
@@ -370,6 +390,7 @@ export function registerOutboxRoutes(app: CommsApp): void {
     let toAddress: string | null = null;
     let groupAddresses: string[] | null = null;
     let participantId: string | null = null;
+    let ccAddresses: string[] | null = null;
 
     if (isGroup) {
       // A group send addresses the whole thread; its recipient set is frozen
@@ -481,6 +502,104 @@ export function registerOutboxRoutes(app: CommsApp): void {
         toAddress = normalizeAddress(body.channel, resolved);
       }
       participantId = body.participant_ref ?? null;
+
+      // Landlord CC arm (thread arm): copy any is_cc participant of this thread
+      // as a VISIBLE Cc on the outbound mail, resolved to their REAL email —
+      // the participant_address on their ACTIVE email binding (minted at
+      // thread create from the landlord's channel identity), the same address
+      // the separate relay leg would dial. Frozen here at intent time exactly
+      // like to_address, so a binding edited while the row sits queued can't
+      // rewrite who the send is recorded as copying. Excludes the leg's own
+      // recipient (participant_ref) and any address equal to to_address. Email
+      // threads only; the DB CHECK (comm_outbox_cc_email_only) backstops the
+      // channel gate. This is additive to relay legs, not a replacement — a
+      // flagged landlord still gets their existing forwarded copy of
+      // tenant-initiated inbound; the Cc adds them to agent/owner->tenant
+      // outbound.
+      if (body.channel === 'email' && body.thread_id !== undefined) {
+        const { data: ccParts, error: ccPartErr } = await sb
+          .from('comm_thread_participants')
+          .select('id, party_type, party_id')
+          .eq('account_id', accountId)
+          .eq('thread_id', body.thread_id)
+          .eq('is_cc', true)
+          .is('left_at', null);
+        if (ccPartErr) throw commDbError(ccPartErr);
+        let flagged = (
+          (ccParts ?? []) as { id: string; party_type: string; party_id: string | null }[]
+        ).filter((p) => p.id !== body.participant_ref);
+        // Relay-echo exclusion: relaying a flagged participant's OWN inbound
+        // must not Cc them a copy of their own words (their sent mail already
+        // holds the original). The relayed journal row carries the sender's
+        // party identity — drop flagged participants that match it.
+        if (flagged.length > 0 && body.relay_of_interaction_id !== undefined) {
+          const { data: relayed, error: relErr } = await sb
+            .from('interactions')
+            .select('party_id')
+            .eq('account_id', accountId)
+            .eq('id', body.relay_of_interaction_id)
+            .maybeSingle();
+          if (relErr) throw commDbError(relErr);
+          // party_id alone: the journal maps participant party_type to its own
+          // vocabulary ('landlord_user' journals as 'landlord'), so a type+id
+          // pair can never match across the two tables. Both ids are
+          // account-scoped uuids — id equality IS identity here.
+          if (relayed && relayed.party_id !== null) {
+            flagged = flagged.filter((p) => p.party_id !== relayed.party_id);
+          }
+        }
+        if (flagged.length > 0) {
+          const { data: ccBindings, error: ccBindErr } = await sb
+            .from('thread_channel_bindings')
+            .select('participant_address')
+            .eq('account_id', accountId)
+            .eq('thread_id', body.thread_id)
+            .in(
+              'participant_id',
+              flagged.map((p) => p.id),
+            )
+            .eq('channel', 'email')
+            .eq('active', true);
+          if (ccBindErr) throw commDbError(ccBindErr);
+          // Stored bindings, not caller input: a malformed learned address is
+          // DROPPED rather than thrown — the tenant's send must not 422 on the
+          // landlord's bad identity. Lowercase = the same canonical form
+          // normalizeAddress produces.
+          const addrs = [
+            ...new Set(
+              (ccBindings ?? [])
+                .map((b) => (b.participant_address as string).toLowerCase())
+                .filter((a) => a.length <= 320 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a))
+                .filter((a) => a !== toAddress),
+            ),
+          ].slice(0, 10); // matches the comm_outbox_cc_size CHECK bound
+          if (addrs.length > 0) ccAddresses = addrs;
+        }
+      }
+
+      // Landlord CC arm (BARE arm): an explicit caller-supplied Cc on a
+      // thread-less email send (the inspection-link welcome/reminder mail).
+      // Unlike the thread arm's stored bindings above, this list is
+      // hand-authored request input — an invalid entry is a caller error and
+      // 422s field-scoped, matching to_address's contract. Lowercased,
+      // deduped, primary excluded; the opt-out trigger scrubs register hits
+      // at INSERT.
+      if (body.cc_addresses !== undefined) {
+        const seen = new Set<string>();
+        for (const [i, raw] of body.cc_addresses.entries()) {
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw) || raw.length > 320) {
+            throw new ApiError(
+              422,
+              'invalid_request',
+              `cc_addresses[${i}] is not a valid email address`,
+              { fieldErrors: { cc_addresses: [`entry ${i} is not a valid email address`] } },
+            );
+          }
+          const addr = raw.toLowerCase();
+          if (addr !== toAddress) seen.add(addr);
+        }
+        if (seen.size > 0) ccAddresses = [...seen];
+      }
     }
 
     const { data, error } = await sb
@@ -490,6 +609,7 @@ export function registerOutboxRoutes(app: CommsApp): void {
         channel: body.channel,
         to_address: toAddress,
         group_addresses: groupAddresses,
+        cc_addresses: ccAddresses,
         thread_id: body.thread_id ?? null,
         participant_id: participantId,
         body: body.body,

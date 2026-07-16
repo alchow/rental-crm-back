@@ -257,7 +257,7 @@ async function setup(platformNumber: string, tag: string): Promise<Fixture> {
 
 // --- shapes -----------------------------------------------------------------
 
-interface ParticipantShape { id: string; party_type: string; party_id: string | null }
+interface ParticipantShape { id: string; party_type: string; party_id: string | null; is_cc: boolean }
 interface BindingShape {
   id: string;
   participant_id: string;
@@ -290,6 +290,7 @@ interface OutboxShape {
   status: string;
   channel: string;
   to_address: string | null;
+  cc_addresses: string[] | null;
   subject: string | null;
   participant_id: string | null;
   thread_id: string | null;
@@ -472,6 +473,319 @@ async function main(): Promise<void> {
     assert(
       llb!.participant_address === LL_EMAIL,
       `landlord identity-resolved address: ${llb!.participant_address} (expected ${LL_EMAIL})`,
+    );
+  });
+
+  // =========================================================================
+  // (3b) Landlord CC arm (outbound) — is_cc persists at create; a tenant-leg
+  // intent freezes the flagged participant's REAL email as cc_addresses; the
+  // flagged participant's OWN leg is never self-CC'd; sms threads refuse the
+  // flag outright. Self-contained thread + fresh addresses so nothing here
+  // leaks into the shared thread-1 state.
+  // =========================================================================
+  const LLCC_EMAIL = `llcc-${SUFFIX}@e2.test`;
+  const T1CC_EMAIL = `t1cc-${SUFFIX}@e2.test`;
+  await check('landlord CC arm: is_cc persists; tenant-leg intent freezes cc_addresses; own leg is not self-CCd', async () => {
+    const r = await createThread({
+      kind: 'bridged_tenant', channel: 'email', subject: 'CC arm probe', tenancy_id: fx.tenancyId,
+      participants: [
+        { party_type: 'landlord_user', party_id: fx.landlordId, address: LLCC_EMAIL, is_cc: true },
+        { party_type: 'tenant', party_id: fx.tenant1Id, address: T1CC_EMAIL },
+      ],
+    });
+    const t = assertStatus(r, 201, 'cc thread create') as ThreadDetailShape;
+    const llp = t.participants.find((p) => p.party_type === 'landlord_user');
+    const t1p = t.participants.find((p) => p.party_type === 'tenant');
+    assert(llp !== undefined && t1p !== undefined, 'both participants present');
+    assert(llp!.is_cc === true, `landlord is_cc persisted: ${llp!.is_cc}`);
+    assert(t1p!.is_cc === false, `tenant is_cc defaults false: ${t1p!.is_cc}`);
+
+    // Agent intent to the TENANT leg (proposal-approved shape) → the flagged
+    // landlord's real email is frozen as the visible-Cc set at intent time.
+    const tenantLeg = await api('POST', `${base}/outbox`, {
+      token: fx.agentToken,
+      body: {
+        channel: 'email', thread_id: t.id, participant_ref: t1p!.id,
+        body: 'cc probe to tenant', approval_ref: 'proposal:cc-arm', approved_by: fx.landlordId,
+      },
+    });
+    const row = assertStatus(tenantLeg, 201, 'tenant-leg intent') as OutboxShape;
+    assert(row.to_address === T1CC_EMAIL, `tenant leg to_address: ${row.to_address}`);
+    assert(
+      JSON.stringify(row.cc_addresses) === JSON.stringify([LLCC_EMAIL]),
+      `cc_addresses frozen with the landlord email: ${JSON.stringify(row.cc_addresses)}`,
+    );
+
+    // Intent to the FLAGGED participant's own leg → never self-CC'd.
+    const landlordLeg = await api('POST', `${base}/outbox`, {
+      token: fx.agentToken,
+      body: {
+        channel: 'email', thread_id: t.id, participant_ref: llp!.id,
+        body: 'cc probe to landlord', approval_ref: 'proposal:cc-arm', approved_by: fx.landlordId,
+      },
+    });
+    const llRow = assertStatus(landlordLeg, 201, 'landlord-leg intent') as OutboxShape;
+    assert(llRow.cc_addresses === null, `own leg is not self-CCd: ${JSON.stringify(llRow.cc_addresses)}`);
+  });
+
+  await check('landlord CC arm: is_cc on an sms thread create → 400 (email-only)', async () => {
+    const r = await createThread({
+      kind: 'bridged_tenant', channel: 'sms',
+      participants: [
+        { party_type: 'landlord_user', party_id: fx.landlordId, is_cc: true },
+        { party_type: 'tenant', party_id: fx.tenant1Id, address: T1_PHONE },
+      ],
+    });
+    assertStatus(r, 400, 'is_cc on sms thread');
+  });
+
+  await check('landlord CC arm: is_cc on a non-landlord participant → 400 (landlord-only)', async () => {
+    const r = await createThread({
+      kind: 'bridged_tenant', channel: 'email', subject: 'CC guard probe',
+      participants: [
+        { party_type: 'landlord_user', party_id: fx.landlordId, address: `llg-${SUFFIX}@e2.test` },
+        { party_type: 'tenant', party_id: fx.tenant1Id, address: `t1g-${SUFFIX}@e2.test`, is_cc: true },
+      ],
+    });
+    assertStatus(r, 400, 'is_cc on tenant participant');
+  });
+
+  // Shared state for the CC-arm checks below.
+  let ccThreadId = '';
+  let ccTenantPartId = '';
+  let ccTenantToken = '';
+  await check('landlord CC arm: fan-out parity — landlord-composed thread message carries the Cc', async () => {
+    // Fresh CC thread (fresh addresses; the earlier CC thread's state is not
+    // reused so these checks stay independent).
+    const LL2 = `llcc2-${SUFFIX}@e2.test`;
+    const T2CC = `t1cc2-${SUFFIX}@e2.test`;
+    const r = await createThread({
+      kind: 'bridged_tenant', channel: 'email', subject: 'CC fan-out probe', tenancy_id: fx.tenancyId,
+      participants: [
+        { party_type: 'landlord_user', party_id: fx.landlordId, address: LL2, is_cc: true },
+        { party_type: 'tenant', party_id: fx.tenant1Id, address: T2CC },
+      ],
+    });
+    const t = assertStatus(r, 201, 'cc fan-out thread create') as ThreadDetailShape;
+    ccThreadId = t.id;
+    const t1p = t.participants.find((p) => p.party_type === 'tenant');
+    assert(t1p !== undefined, 'tenant participant present');
+    ccTenantPartId = t1p!.id;
+    const t1b = t.bindings.find((b) => b.participant_id === t1p!.id);
+    assert(t1b?.reply_address != null, 'tenant reply token present');
+    ccTenantToken = t1b!.reply_address!;
+
+    const msg = await api('POST', `${base}/threads/${t.id}/messages`, {
+      token: fx.landlordToken, body: { body: 'composed in-app' },
+    });
+    const legs = (assertStatus(msg, 201, 'thread message') as { data: OutboxShape[] }).data;
+    assert(legs.length === 1, `one tenant leg: ${legs.length}`);
+    assert(
+      JSON.stringify(legs[0]!.cc_addresses) === JSON.stringify([LL2]),
+      `fan-out leg carries the Cc: ${JSON.stringify(legs[0]!.cc_addresses)}`,
+    );
+  });
+
+  await check('landlord CC arm: relaying the flagged landlord’s OWN inbound does not Cc them (echo exclusion)', async () => {
+    // The landlord writes into the CC thread from their real inbox (via their
+    // reply token? No — the LANDLORD's inbound arrives on THEIR token). Here we
+    // capture an inbound FROM the landlord on the landlord's token, then relay
+    // it to the tenant leg. The flagged landlord is the relayed sender, so the
+    // relay must NOT Cc them their own words.
+    const detail = await threadDetail(ccThreadId);
+    const llp = detail.participants.find((p) => p.party_type === 'landlord_user');
+    const llb = detail.bindings.find((b) => b.participant_id === llp!.id);
+    assert(llb?.reply_address != null, 'landlord reply token present');
+    const cap = await capture({
+      provider: 'resend', provider_msg_id: `IN-ccecho-${rnd()}`, to_number: llb!.reply_address,
+      from_address: `llcc2-${SUFFIX}@e2.test`, channel: 'email', body: 'from the landlord inbox', received_at: iso(),
+    });
+    const res = assertStatus(cap, 200, 'landlord inbound') as CaptureShape;
+    assert(res.disposition === 'matched', `landlord inbound matched: ${res.disposition}`);
+
+    const relay = await api('POST', `${base}/outbox`, {
+      token: fx.agentToken,
+      body: {
+        channel: 'email', thread_id: ccThreadId, participant_ref: ccTenantPartId,
+        relay_of_interaction_id: res.interaction_id, body: 'relayed to tenant',
+        approval_ref: `thread:${ccThreadId}`,
+      },
+    });
+    const row = assertStatus(relay, 201, 'relay intent') as OutboxShape;
+    assert(row.cc_addresses === null, `relay of the landlord's own words is not self-CCd: ${JSON.stringify(row.cc_addresses)}`);
+  });
+
+  await check('landlord CC arm: relaying the TENANT’s inbound to the tenant leg still carries the Cc', async () => {
+    const cap = await capture({
+      provider: 'resend', provider_msg_id: `IN-cctenant-${rnd()}`, to_number: ccTenantToken,
+      from_address: `t1cc2-${SUFFIX}@e2.test`, channel: 'email', body: 'from the tenant', received_at: iso(),
+    });
+    const res = assertStatus(cap, 200, 'tenant inbound') as CaptureShape;
+    assert(res.disposition === 'matched', `tenant inbound matched: ${res.disposition}`);
+    // A hypothetical second counterparty leg would carry the Cc; the tenant's
+    // own leg is the only counterparty here, so relay to it (echo of the
+    // TENANT's message back to the tenant is not a real flow, but the CC
+    // resolution is identical for any non-sender counterparty leg): the
+    // flagged landlord is NOT the relayed sender, so the Cc must survive.
+    const relay = await api('POST', `${base}/outbox`, {
+      token: fx.agentToken,
+      body: {
+        channel: 'email', thread_id: ccThreadId, participant_ref: ccTenantPartId,
+        relay_of_interaction_id: res.interaction_id, body: 'relayed onward',
+        approval_ref: `thread:${ccThreadId}`,
+      },
+    });
+    const row = assertStatus(relay, 201, 'relay intent') as OutboxShape;
+    assert(
+      JSON.stringify(row.cc_addresses) === JSON.stringify([`llcc2-${SUFFIX}@e2.test`]),
+      `non-sender Cc survives on relay: ${JSON.stringify(row.cc_addresses)}`,
+    );
+  });
+
+  await check('landlord CC arm: landlord plain-reply to the TENANT’s token re-attributes as matched (no black-hole)', async () => {
+    // A CC'd landlord plain-replies from their real inbox to the tenant leg's
+    // copy — so the inbound lands on the TENANT's reply token but its FROM is
+    // the landlord's verified address. Cross-participant re-attribution routes
+    // it to the landlord participant and dispositions it 'matched' (previously a
+    // sender_mismatch black-hole).
+    const cap = await capture({
+      provider: 'resend', provider_msg_id: `IN-ccreply-${rnd()}`, to_number: ccTenantToken,
+      from_address: `llcc2-${SUFFIX}@e2.test`, channel: 'email', body: 'plain reply from the landlord inbox', received_at: iso(),
+    });
+    const res = assertStatus(cap, 200, 'landlord plain-reply inbound') as CaptureShape;
+    assert(res.disposition === 'matched', `re-attributed disposition: ${res.disposition}`);
+    assert(res.participant !== null, 'participant hydrated on re-attribution');
+    assert(res.participant!.party_type === 'landlord_user', `re-attributed party_type: ${res.participant?.party_type}`);
+    assert(res.participant!.is_cc === true, `re-attributed is_cc: ${res.participant?.is_cc}`);
+    assert(res.thread_id === ccThreadId, `re-attributed thread: ${res.thread_id}`);
+
+    // Prove relayability end-to-end: relay the landlord's re-attributed reply to
+    // the tenant leg. It reaches the tenant, and the echo exclusion (keyed on
+    // the journal row's party_id, which re-attribution set to the landlord's
+    // user id) drops the landlord from the Cc — no self-CC of their own words.
+    const relay = await api('POST', `${base}/outbox`, {
+      token: fx.agentToken,
+      body: {
+        channel: 'email', thread_id: ccThreadId, participant_ref: ccTenantPartId,
+        relay_of_interaction_id: res.interaction_id, body: 'relayed reply',
+        approval_ref: `thread:${ccThreadId}`,
+      },
+    });
+    const row = assertStatus(relay, 201, 'relay to tenant leg') as OutboxShape;
+    assert(row.to_address === `t1cc2-${SUFFIX}@e2.test`, `relay to_address: ${row.to_address}`);
+    assert(row.cc_addresses === null, `relay of the landlord's own words is not self-CCd: ${JSON.stringify(row.cc_addresses)}`);
+  });
+
+  await check('landlord CC arm: a stranger on the tenant token still parks as sender_mismatch (re-attribution is participants-only)', async () => {
+    const cap = await capture({
+      provider: 'resend', provider_msg_id: `IN-ccstranger-${rnd()}`, to_number: ccTenantToken,
+      from_address: `nobody-${SUFFIX}@evil.test`, channel: 'email', body: 'plain reply from the landlord inbox', received_at: iso(),
+    });
+    const res = assertStatus(cap, 200, 'stranger inbound') as CaptureShape;
+    assert(res.disposition === 'sender_mismatch', `stranger disposition: ${res.disposition}`);
+  });
+
+  await check('landlord CC arm: completed CC send journals the copied party as role=cc in the cast', async () => {
+    // Complete a fresh agent tenant-leg send on the CC thread, then assert the
+    // journal cast (interaction_participants) records the landlord as role='cc'
+    // — the evidentiary "who was copied" record.
+    const intent = await api('POST', `${base}/outbox`, {
+      token: fx.agentToken,
+      body: {
+        channel: 'email', thread_id: ccThreadId, participant_ref: ccTenantPartId,
+        body: 'cast probe', approval_ref: 'proposal:cc-cast', approved_by: fx.landlordId,
+      },
+    });
+    const row = assertStatus(intent, 201, 'cast-probe intent') as OutboxShape;
+    const claim = await api('POST', `${base}/outbox/${row.id}/delivery`, {
+      token: fx.agentToken, body: { status: 'sending', provider_ts: iso() },
+    });
+    assertStatus(claim, 200, 'cast-probe claim');
+    const done = await api('POST', `${base}/outbox/${row.id}/complete`, {
+      token: fx.agentToken, body: { provider: 'resend', provider_sid: `em-cast-${rnd()}` },
+    });
+    const body = assertStatus(done, 200, 'cast-probe complete') as { interaction_id: string };
+
+    const { data: cast, error } = await admin
+      .from('interaction_participants')
+      .select('role, party_type, address')
+      .eq('interaction_id', body.interaction_id);
+    assert(!error, `cast read: ${error?.message}`);
+    const cc = (cast ?? []).filter((p) => p.role === 'cc');
+    assert(cc.length === 1, `one cc cast row: ${JSON.stringify(cast)}`);
+    assert(cc[0]!.address === `llcc2-${SUFFIX}@e2.test`, `cc cast address: ${cc[0]!.address}`);
+    assert(cc[0]!.party_type === 'landlord_user', `cc cast party_type: ${cc[0]!.party_type}`);
+    const primary = (cast ?? []).filter((p) => p.role === 'recipient');
+    assert(primary.length === 1 && primary[0]!.address === `t1cc2-${SUFFIX}@e2.test`,
+      `primary cast row intact: ${JSON.stringify(primary)}`);
+  });
+
+  await check('landlord CC arm (bare): explicit cc_addresses on a thread-less email intent freezes verbatim', async () => {
+    const r = await api('POST', `${base}/outbox`, {
+      token: fx.landlordToken,
+      body: {
+        channel: 'email', to_address: `bare-t-${SUFFIX}@e2.test`,
+        cc_addresses: [`Bare-LL-${SUFFIX}@e2.test`], // mixed case → lowercased
+        subject: 'Inspection link', body: 'bare send', approval_ref: self,
+      },
+    });
+    const row = assertStatus(r, 201, 'bare cc intent') as OutboxShape;
+    assert(
+      JSON.stringify(row.cc_addresses) === JSON.stringify([`bare-ll-${SUFFIX}@e2.test`]),
+      `bare cc frozen lowercased: ${JSON.stringify(row.cc_addresses)}`,
+    );
+  });
+
+  await check('landlord CC arm (bare): guards — sms 400, with thread_id 400, invalid entry 422', async () => {
+    const sms = await api('POST', `${base}/outbox`, {
+      token: fx.landlordToken,
+      body: {
+        channel: 'sms', to_address: T1_PHONE, cc_addresses: [`x-${SUFFIX}@e2.test`],
+        body: 'nope', approval_ref: self,
+      },
+    });
+    assertStatus(sms, 400, 'cc on sms intent');
+
+    const withThread = await api('POST', `${base}/outbox`, {
+      token: fx.agentToken,
+      body: {
+        channel: 'email', thread_id: ccThreadId, participant_ref: ccTenantPartId,
+        cc_addresses: [`x-${SUFFIX}@e2.test`], body: 'nope',
+        approval_ref: 'proposal:cc-guard', approved_by: fx.landlordId,
+      },
+    });
+    assertStatus(withThread, 400, 'explicit cc on a thread leg');
+
+    const invalid = await api('POST', `${base}/outbox`, {
+      token: fx.landlordToken,
+      body: {
+        channel: 'email', to_address: `bare-t2-${SUFFIX}@e2.test`,
+        cc_addresses: ['not-an-email'], body: 'nope', approval_ref: self,
+      },
+    });
+    assertStatus(invalid, 422, 'invalid cc entry');
+  });
+
+  await check('landlord CC arm: an opted-out CC address is SCRUBBED at insert (send still 201, no Cc)', async () => {
+    const OPTED = `optcc-${SUFFIX}@e2.test`;
+    const oo = await api('POST', `${base}/opt-outs`, {
+      token: fx.agentToken,
+      body: { channel: 'email', address: OPTED, keyword: 'unsubscribe', source_ref: `m-cc-${SUFFIX}` },
+    });
+    assertStatus(oo, 200, 'register cc opt-out');
+
+    const r = await api('POST', `${base}/outbox`, {
+      token: fx.landlordToken,
+      body: {
+        channel: 'email', to_address: `bare-t3-${SUFFIX}@e2.test`,
+        cc_addresses: [OPTED, `keepcc-${SUFFIX}@e2.test`],
+        body: 'scrub probe', approval_ref: self,
+      },
+    });
+    const row = assertStatus(r, 201, 'scrubbed cc intent') as OutboxShape;
+    assert(
+      JSON.stringify(row.cc_addresses) === JSON.stringify([`keepcc-${SUFFIX}@e2.test`]),
+      `opted-out cc scrubbed, other kept: ${JSON.stringify(row.cc_addresses)}`,
     );
   });
 

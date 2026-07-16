@@ -667,6 +667,7 @@ export type Database = {
           delivered_at: string | null;
           error_code: string | null;
           error_message: string | null;
+          cc_addresses: string[] | null;
           group_addresses: string[] | null;
           id: string;
           interaction_id: string | null;
@@ -698,6 +699,7 @@ export type Database = {
           delivered_at?: string | null;
           error_code?: string | null;
           error_message?: string | null;
+          cc_addresses?: string[] | null;
           group_addresses?: string[] | null;
           id?: string;
           interaction_id?: string | null;
@@ -729,6 +731,7 @@ export type Database = {
           delivered_at?: string | null;
           error_code?: string | null;
           error_message?: string | null;
+          cc_addresses?: string[] | null;
           group_addresses?: string[] | null;
           id?: string;
           interaction_id?: string | null;
@@ -892,6 +895,7 @@ export type Database = {
           account_id: string;
           created_at: string;
           id: string;
+          is_cc: boolean;
           joined_at: string;
           left_at: string | null;
           party_id: string | null;
@@ -903,6 +907,7 @@ export type Database = {
           account_id: string;
           created_at?: string;
           id?: string;
+          is_cc?: boolean;
           joined_at?: string;
           left_at?: string | null;
           party_id?: string | null;
@@ -914,6 +919,7 @@ export type Database = {
           account_id?: string;
           created_at?: string;
           id?: string;
+          is_cc?: boolean;
           joined_at?: string;
           left_at?: string | null;
           party_id?: string | null;
@@ -4261,6 +4267,7 @@ export type Database = {
           delivered_at: string | null;
           error_code: string | null;
           error_message: string | null;
+          cc_addresses: string[] | null;
           group_addresses: string[] | null;
           id: string;
           interaction_id: string | null;
@@ -4492,6 +4499,7 @@ export type Database = {
           delivered_at: string | null;
           error_code: string | null;
           error_message: string | null;
+          cc_addresses: string[] | null;
           group_addresses: string[] | null;
           id: string;
           interaction_id: string | null;
@@ -4912,6 +4920,7 @@ export type Database = {
           delivered_at: string | null;
           error_code: string | null;
           error_message: string | null;
+          cc_addresses: string[] | null;
           group_addresses: string[] | null;
           id: string;
           interaction_id: string | null;
