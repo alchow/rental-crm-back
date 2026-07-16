@@ -416,6 +416,29 @@ export function registerThreadRoutes(app: CommsApp): void {
       }
     }
 
+    // is_cc (the landlord CC arm) is an email-only opt-in — a visible Cc has no
+    // meaning on sms/voice, and createOutbox only ever freezes cc_addresses on
+    // email legs. Reject it up front rather than storing a flag that can never
+    // take effect.
+    if (!isEmail && body.participants.some((p) => p.is_cc)) {
+      throw new ApiError(400, 'invalid_request', 'is_cc is only valid on email threads', {
+        fieldErrors: { participants: ['is_cc is only valid on email threads'] },
+      });
+    }
+    // …and landlord-only (DB CHECK comm_thread_participants_cc_landlord is the
+    // backstop): CC addresses ride outside the opt-out refusal — safe only
+    // while the copied party is the landlord copying their own conversation.
+    // A tenant/vendor flagged is_cc would route a counterparty through that
+    // blind spot.
+    if (body.participants.some((p) => p.is_cc && p.party_type !== 'landlord_user')) {
+      throw new ApiError(
+        400,
+        'invalid_request',
+        'is_cc is only valid on landlord_user participants',
+        { fieldErrors: { participants: ['is_cc is only valid on landlord_user participants'] } },
+      );
+    }
+
     const counterparties = body.participants.filter(
       (p) => p.party_type === 'tenant' || p.party_type === 'vendor',
     );
@@ -632,6 +655,7 @@ export function registerThreadRoutes(app: CommsApp): void {
             thread_id: thread.id as string,
             party_type: p.party_type,
             party_id: p.party_id ?? null,
+            is_cc: p.is_cc ?? false,
           })),
         )
         .select(PARTICIPANT_COLS);
@@ -698,12 +722,10 @@ export function registerThreadRoutes(app: CommsApp): void {
           address: resolvedAddresses.get(i)!,
         }));
       if (newIdentities.length > 0) {
-        const { error: idErr } = await sb
-          .from('channel_identities')
-          .upsert(newIdentities, {
-            onConflict: 'account_id,channel,address',
-            ignoreDuplicates: true,
-          });
+        const { error: idErr } = await sb.from('channel_identities').upsert(newIdentities, {
+          onConflict: 'account_id,channel,address',
+          ignoreDuplicates: true,
+        });
         if (idErr) throw commDbError(idErr);
       }
 
@@ -832,27 +854,52 @@ export function registerThreadRoutes(app: CommsApp): void {
       );
     }
 
+    // Landlord CC arm — fan-out parity with createOutbox: a flagged (is_cc)
+    // participant's bound email rides every landlord-composed email leg as a
+    // visible Cc, excluding the leg's own recipient. The author is deliberately
+    // NOT excluded: an app-composed message exists only in-app, so the Cc copy
+    // is the flagged landlord's email record of their own send (unlike relay
+    // echoes, where the sender already holds the original). Both lists are
+    // already loaded above; addresses were normalized at binding creation.
+    const ccParticipantIds = new Set(
+      participants.filter((p) => p.is_cc && p.left_at === null).map((p) => p.id),
+    );
+    const ccPool =
+      thread.channel === 'email' && ccParticipantIds.size > 0
+        ? [
+            ...new Set(
+              ((bindings ?? []) as { participant_id: string; participant_address: string }[])
+                .filter((b) => ccParticipantIds.has(b.participant_id))
+                .map((b) => b.participant_address),
+            ),
+          ]
+        : [];
+
     const { data: rows, error } = await sb
       .from('comm_outbox')
       .insert(
-        targets.map((t) => ({
-          account_id: accountId,
-          channel: thread.channel,
-          to_address: t.participant_address,
-          thread_id: id,
-          participant_id: t.participant_id,
-          body: body.body,
-          // No outbox subject on a thread leg: the transport renders the actual
-          // email subject from the thread's subject seed ("Re: …").
-          not_before: body.not_before ?? null,
-          // Inherit the thread's context so the message lands in the tenancy /
-          // maintenance-request feed on completion.
-          tenancy_id: thread.tenancy_id,
-          maintenance_request_id: thread.maintenance_request_id,
-          approval_ref: `self:${userId}`,
-          approved_by: userId,
-          author_type: 'landlord',
-        })),
+        targets.map((t) => {
+          const cc = ccPool.filter((a) => a !== t.participant_address).slice(0, 10);
+          return {
+            account_id: accountId,
+            channel: thread.channel,
+            to_address: t.participant_address,
+            cc_addresses: cc.length > 0 ? cc : null,
+            thread_id: id,
+            participant_id: t.participant_id,
+            body: body.body,
+            // No outbox subject on a thread leg: the transport renders the actual
+            // email subject from the thread's subject seed ("Re: …").
+            not_before: body.not_before ?? null,
+            // Inherit the thread's context so the message lands in the tenancy /
+            // maintenance-request feed on completion.
+            tenancy_id: thread.tenancy_id,
+            maintenance_request_id: thread.maintenance_request_id,
+            approval_ref: `self:${userId}`,
+            approved_by: userId,
+            author_type: 'landlord',
+          };
+        }),
       )
       .select('*');
     if (error) throw commDbError(error);

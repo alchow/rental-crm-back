@@ -136,7 +136,7 @@ export function decodeOffsetCursor(s: string): number {
 export type OutboxRow = z.infer<typeof CommOutbox>;
 export type ParticipantRow = z.infer<typeof CommThreadParticipant>;
 
-export const PARTICIPANT_COLS = 'id, thread_id, party_type, party_id, joined_at, left_at';
+export const PARTICIPANT_COLS = 'id, thread_id, party_type, party_id, joined_at, left_at, is_cc';
 // Explicit so the internal group_routing_key column (canonical member-set
 // identity, enforced DB-side) never rides along into thread responses.
 export const THREAD_COLS =

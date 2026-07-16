@@ -4974,6 +4974,15 @@
               "type": "string"
             }
           },
+          "cc_addresses": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
           "recipient_snapshot": {
             "type": [
               "array",
@@ -5002,6 +5011,12 @@
                   "type": [
                     "string",
                     "null"
+                  ]
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "cc"
                   ]
                 }
               },
@@ -5164,6 +5179,7 @@
           "channel",
           "to_address",
           "group_addresses",
+          "cc_addresses",
           "thread_id",
           "participant_id",
           "body",
@@ -5221,6 +5237,16 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 998
+          },
+          "cc_addresses": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 320
+            },
+            "minItems": 1,
+            "maxItems": 5
           },
           "approval_ref": {
             "type": "string",
@@ -5419,6 +5445,9 @@
               "string",
               "null"
             ]
+          },
+          "is_cc": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -5427,7 +5456,8 @@
           "party_type",
           "party_id",
           "joined_at",
-          "left_at"
+          "left_at",
+          "is_cc"
         ]
       },
       "CaptureCommInboundResponse": {
@@ -6749,6 +6779,9 @@
                   "type": "string",
                   "minLength": 3,
                   "maxLength": 320
+                },
+                "is_cc": {
+                  "type": "boolean"
                 }
               },
               "required": [

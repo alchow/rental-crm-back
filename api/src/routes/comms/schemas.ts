@@ -59,6 +59,12 @@ export const CommOutbox = z
      *  this is set); dialed as ONE provider group message whose provider_sid is
      *  the group_message_id; null on 1:1 rows. */
     group_addresses: z.array(z.string()).nullable(),
+    /** Frozen visible-Cc set (email only), resolved at intent time from the
+     *  thread's is_cc participants' bound email addresses — the transport adds
+     *  these as Cc on the outbound mail so a flagged participant (the landlord)
+     *  is copied on the conversation. Null when no participant is flagged (the
+     *  default) or on non-email rows. Immutable once queued, like to_address. */
+    cc_addresses: z.array(z.string()).nullable(),
     /** WHO the dialed address(es) resolved to at INTENT time — trigger-stamped
      *  from thread bindings / channel identities, immutable, and copied
      *  verbatim into the journal cast on completion, so an identity edited
@@ -71,6 +77,9 @@ export const CommOutbox = z
           party_type: z.string(),
           party_id: z.string().uuid().nullable(),
           label: z.string().nullable(),
+          /** 'cc' on copied-party entries (landlord CC arm); absent on primary
+           *  recipients and on rows frozen before the CC arm existed. */
+          role: z.enum(['cc']).optional(),
         }),
       )
       .nullable()
@@ -146,6 +155,15 @@ export const CreateOutboxBody = z
      *  400. Journaled on completion as `Subject: <subject>\n\n<body>` — one
      *  documented shape shared with the transport's template rendering. */
     subject: z.string().min(1).max(998).optional(),
+    /** Explicit visible-Cc set for BARE (thread-less) email intents — e.g. the
+     *  inspection-link welcome/reminder mail CC'ing the landlord's own inbox.
+     *  Email-only (400 otherwise) and rejected on thread-bound creates (a
+     *  thread leg's Cc derives from its is_cc participants instead — one
+     *  authority per arm). Entries are email-format validated, lowercased,
+     *  deduped, and the primary recipient is excluded; opt-out register
+     *  entries are scrubbed at INSERT (DB trigger). Frozen verbatim into
+     *  comm_outbox.cc_addresses. */
+    cc_addresses: z.array(z.string().min(3).max(320)).min(1).max(5).optional(),
     approval_ref: z.string().min(1).max(200),
     approved_by: z.string().uuid().optional(),
     not_before: z.string().datetime().optional(),
@@ -278,6 +296,10 @@ export const CommThreadParticipant = z
     party_id: z.string().uuid().nullable(),
     joined_at: z.string(),
     left_at: z.string().nullable(),
+    /** Per-thread opt-in: this participant is added as a visible Cc on the
+     *  thread's outbound email legs (the landlord CC arm) rather than reached
+     *  only via a separate relayed copy. Default false. */
+    is_cc: z.boolean(),
   })
   .openapi('CommThreadParticipant');
 
@@ -610,6 +632,10 @@ export const CreateThreadBody = z
           party_type: CommPartyType,
           party_id: z.string().uuid().optional(),
           address: z.string().min(3).max(320).optional(),
+          /** Opt this participant into the landlord CC arm: they are added as a
+           *  visible Cc on the thread's outbound email legs. Email threads only
+           *  (a Cc has no meaning on sms/voice); default false. */
+          is_cc: z.boolean().optional(),
         }),
       )
       .min(1)

@@ -17280,12 +17280,15 @@ export interface components {
             channel: "sms" | "email" | "voice";
             to_address: string | null;
             group_addresses: string[] | null;
+            cc_addresses: string[] | null;
             recipient_snapshot?: {
                 address: string | null;
                 party_type: string;
                 /** Format: uuid */
                 party_id: string | null;
                 label: string | null;
+                /** @enum {string} */
+                role?: "cc";
             }[] | null;
             /** Format: uuid */
             thread_id: string | null;
@@ -17331,6 +17334,7 @@ export interface components {
             participant_ref?: string;
             body: string;
             subject?: string;
+            cc_addresses?: string[];
             approval_ref: string;
             /** Format: uuid */
             approved_by?: string;
@@ -17384,6 +17388,7 @@ export interface components {
             party_id: string | null;
             joined_at: string;
             left_at: string | null;
+            is_cc: boolean;
         } | null;
         CaptureCommInboundResponse: {
             /** @enum {string} */
@@ -17683,6 +17688,7 @@ export interface components {
                 /** Format: uuid */
                 party_id?: string;
                 address?: string;
+                is_cc?: boolean;
             }[];
         };
         CommThreadMessageResponse: {
