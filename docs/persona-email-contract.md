@@ -89,7 +89,7 @@ inbound rcpt <addr>:
   treated as unauthenticated).
 - Report the sent Message-ID on every email `complete`.
 - When rendering an email relay leg, set `In-Reply-To:
-  <relay_source_rfc822_message_id>` and append it to `References` — relayed
+<relay_source_rfc822_message_id>` and append it to `References` — relayed
   conversations then thread natively in recipients' mail clients.
 - **Thread-leg sends (native threading, shipped with migration
   20260710000001):** thread detail messages (`GET .../comms/threads/{id}`)
@@ -177,7 +177,7 @@ Nothing new mechanically — same endpoint, same rule: relay only on
   unresolved-sender queue (sender_mismatch captures awaiting a human
   classify); `direction` filter added alongside.
 - `POST /accounts/{id}/comms/threads/{threadId}/bindings/{bindingId}/rebind
-  {address}` (owner|manager, email bindings only): after a human confirms a
+{address}` (owner|manager, email bindings only): after a human confirms a
   mismatch was really the participant on a new address, rebinding stops every
   FUTURE reply from mismatching. Reply token untouched; the address is
   learned into `channel_identities` (so persona capture recognizes it too).
@@ -220,6 +220,31 @@ Nothing new mechanically — same endpoint, same rule: relay only on
   nosniff, CSP sandbox).
 - Storage: private `comm-attachments` bucket, no authenticated policies —
   bytes move only through the API; paths are content-addressed per message.
+
+## Phase 8 — persona default + bare-send hard gate (shipped with migration 20260721000003)
+
+Product decision 2026-07-17 (owner), REVERSING the earlier "send from noreply@
+and nudge" stance recorded in the frontend branding-selection doc:
+
+- **Persona defaults to `manager`.** A BEFORE-write trigger on `accounts`
+  fills `persona_local_part = 'manager'` whenever `email_subdomain` is set and
+  the persona is null — including an explicit null clear. Existing
+  subdomain-holding accounts were backfilled. Consequence for the transport:
+  an account with a subdomain ALWAYS has a computable `persona_address`;
+  "subdomain set, persona unset" no longer exists.
+- **Bare email sends are hard-gated.** `POST /accounts/{id}/comms/outbox` with
+  `channel=email` and NO `thread_id` is refused with **422
+  `invalid_request` / message `email branding is not configured`** (stable
+  string — key on it exactly) when the account's `persona_address` is null.
+  Thread legs are exempt (token addresses reply-route on the shared domain).
+  The gate only engages when `EMAIL_PLATFORM_PARENT_DOMAIN` is configured.
+  Core-originated `system:*` rows are written server-side and bypass the
+  route; the transport's `EMAIL_FROM` fallback remains their safety net.
+- **Availability probe for the settings UI.**
+  `GET /accounts/{id}/email-branding/subdomain-availability?label=` (owner/
+  manager) returns `{ label, available, reason }` — 200 always; unavailability
+  is data (`reason` = validator string or `is already taken`), and one's own
+  current subdomain reads available. The PATCH 409 stays the race backstop.
 
 ## Known limitations (reviewed 2026-07-06; deliberate, tracked as follow-ups)
 

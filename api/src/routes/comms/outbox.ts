@@ -1,7 +1,9 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import { getSb } from '../../supabase/request-client';
-import { ApiError, errorResponses } from '../_lib/error';
+import { ApiError, dbError, errorResponses } from '../_lib/error';
+import { loadEnv } from '../../env';
+import { personaAddress } from '../_lib/subdomain';
 import { keysetPage } from '../_lib/cursor';
 import {
   AccountAndIdParam,
@@ -228,6 +230,34 @@ export function registerOutboxRoutes(app: CommsApp): void {
           'cc_addresses is only valid on bare sends; a thread leg derives its Cc from is_cc participants',
           { fieldErrors: { cc_addresses: ['not accepted with thread_id'] } },
         );
+      }
+    }
+
+    // HARD GATE (product decision 2026-07-17, reversing the earlier
+    // nudge-only stance recorded in the branding-selection doc): a BARE email
+    // send (no thread) is rendered From the account persona — when branding is
+    // incomplete the transport would fall back to the platform noreply@, whose
+    // replies are dropped. Refuse to mint the intent instead, with a stable
+    // message the frontend keys on (same exact-string pattern as the premium
+    // subdomain reason). Thread legs are exempt: token addresses carry a
+    // working reply path on the shared domain either way. Engages only when
+    // the platform parent domain is configured — without it the branding
+    // feature does not exist and blocking would brick email, not nudge setup.
+    // Core-originated system sends bypass this route (admin client) on
+    // purpose; the transport's noreply fallback stays their safety net.
+    if (body.channel === 'email' && body.thread_id === undefined) {
+      const parent = loadEnv().EMAIL_PLATFORM_PARENT_DOMAIN;
+      if (parent !== null) {
+        const { data: acct, error: acctErr } = await sb
+          .from('accounts')
+          .select('email_subdomain, persona_local_part')
+          .eq('id', accountId)
+          .maybeSingle();
+        if (acctErr) throw dbError(acctErr);
+        if (!acct) throw new ApiError(404, 'not_found', 'not found');
+        if (personaAddress(acct.persona_local_part, acct.email_subdomain, parent) === null) {
+          throw new ApiError(422, 'invalid_request', 'email branding is not configured');
+        }
       }
     }
 

@@ -16,6 +16,12 @@
 //     when local part + subdomain + parent are ALL set; reserved names, the
 //     t- token prefix, and bad formats → 422; the DB CHECK backstops the
 //     direct-PostgREST path.
+//   * persona DEFAULT (20260721000003): whenever a subdomain is set and the
+//     persona is null — including an explicit null clear — the BEFORE-write
+//     trigger fills 'manager'; "subdomain set, persona unset" is unreachable.
+//   * GET /email-branding/subdomain-availability: live claimability probe for
+//     the settings UI (owner/manager only) — 200 verdicts, never an error;
+//     one's own current subdomain reads as available.
 // ----------------------------------------------------------------------------
 
 import { execSync } from 'node:child_process';
@@ -76,7 +82,10 @@ const app = buildApp();
 
 // --- helpers ----------------------------------------------------------------
 
-interface ApiResp { status: number; body: unknown }
+interface ApiResp {
+  status: number;
+  body: unknown;
+}
 
 async function api(
   method: string,
@@ -99,26 +108,32 @@ async function api(
   return { status: res.status, body: text ? JSON.parse(text) : null };
 }
 
-function rnd(): string { return Math.random().toString(36).slice(2, 10); }
+function rnd(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
 
-interface Failure { name: string; detail: string }
+interface Failure {
+  name: string;
+  detail: string;
+}
 const failures: Failure[] = [];
 async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try { await fn(); console.info(`  PASS  ${name}`); }
-  catch (e) {
+  try {
+    await fn();
+    console.info(`  PASS  ${name}`);
+  } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     failures.push({ name, detail });
     console.error(`  FAIL  ${name}: ${detail}`);
   }
 }
 function assertStatus(r: ApiResp, expected: number, ctx: string): unknown {
-  if (r.status !== expected) throw new Error(
-    `${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`,
-  );
+  if (r.status !== expected)
+    throw new Error(`${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`);
   return r.body;
 }
 function errCode(r: ApiResp): string {
-  return ((r.body as { error?: { code?: string } })?.error?.code) ?? '';
+  return (r.body as { error?: { code?: string } })?.error?.code ?? '';
 }
 // The 422 branding envelope carries per-field reasons under
 // error.details.fieldErrors.<field> (ApiError details -> onError -> body).
@@ -130,10 +145,16 @@ function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
 }
 
-async function createAuthUser(label: string): Promise<{ id: string; email: string; password: string }> {
+async function createAuthUser(
+  label: string,
+): Promise<{ id: string; email: string; password: string }> {
   const email = `branding-${label}-${crypto.randomUUID()}@internal.test`;
   const password = `pw-${crypto.randomUUID()}`;
-  const { data, error } = await admin.auth.admin.createUser({ email, password, email_confirm: true });
+  const { data, error } = await admin.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+  });
   if (error || !data?.user) throw new Error(`createUser ${label}: ${error?.message}`);
   return { id: data.user.id, email, password };
 }
@@ -144,14 +165,32 @@ async function login(email: string, password: string): Promise<string> {
   return (r.body as { session: { access_token: string } }).session.access_token;
 }
 
-interface Signup { accountId: string; userId: string; token: string; email: string; password: string }
+interface Signup {
+  accountId: string;
+  userId: string;
+  token: string;
+  email: string;
+  password: string;
+}
 async function signup(name: string): Promise<Signup> {
   const email = `branding-owner-${rnd()}@example.test`;
   const password = `correct-horse-${rnd()}`;
-  const su = await api('POST', '/v1/auth/signup', { body: { email, password, account_name: name } });
+  const su = await api('POST', '/v1/auth/signup', {
+    body: { email, password, account_name: name },
+  });
   if (su.status !== 200) throw new Error(`signup failed: ${su.status} ${JSON.stringify(su.body)}`);
-  const b = su.body as { user: { id: string }; account: { id: string }; session: { access_token: string } };
-  return { accountId: b.account.id, userId: b.user.id, token: b.session.access_token, email, password };
+  const b = su.body as {
+    user: { id: string };
+    account: { id: string };
+    session: { access_token: string };
+  };
+  return {
+    accountId: b.account.id,
+    userId: b.user.id,
+    token: b.session.access_token,
+    email,
+    password,
+  };
 }
 
 interface BrandingShape {
@@ -175,7 +214,9 @@ async function main(): Promise<void> {
   const viewerUser = await createAuthUser('viewer');
   {
     const { error } = await admin.from('account_members').insert({
-      account_id: owner.accountId, user_id: viewerUser.id, role: 'viewer',
+      account_id: owner.accountId,
+      user_id: viewerUser.id,
+      role: 'viewer',
     });
     if (error) throw new Error(`viewer membership: ${error.message}`);
   }
@@ -186,33 +227,59 @@ async function main(): Promise<void> {
   const SUB = `acme${SUFFIX}`;
   const DUP = `dup${SUFFIX}`;
 
-  await check('GET before any PATCH: display name defaults to the account name; the rest null', async () => {
-    const r = await api('GET', base, { token: owner.token });
-    const b = assertStatus(r, 200, 'initial GET') as BrandingShape;
-    assert(b.email_subdomain === null, `email_subdomain: ${b.email_subdomain}`);
-    // Signup default (20260707000001): sender_display_name = account name.
-    assert(b.sender_display_name === 'Branding Acct A', `sender_display_name: ${b.sender_display_name}`);
-    assert(b.reply_domain === null, `reply_domain: ${b.reply_domain}`);
-    assert(b.persona_local_part === null, `persona_local_part: ${b.persona_local_part}`);
-    assert(b.persona_address === null, `persona_address: ${b.persona_address}`);
-  });
+  await check(
+    'GET before any PATCH: display name defaults to the account name; the rest null',
+    async () => {
+      const r = await api('GET', base, { token: owner.token });
+      const b = assertStatus(r, 200, 'initial GET') as BrandingShape;
+      assert(b.email_subdomain === null, `email_subdomain: ${b.email_subdomain}`);
+      // Signup default (20260707000001): sender_display_name = account name.
+      assert(
+        b.sender_display_name === 'Branding Acct A',
+        `sender_display_name: ${b.sender_display_name}`,
+      );
+      assert(b.reply_domain === null, `reply_domain: ${b.reply_domain}`);
+      assert(b.persona_local_part === null, `persona_local_part: ${b.persona_local_part}`);
+      assert(b.persona_address === null, `persona_address: ${b.persona_address}`);
+    },
+  );
 
-  await check('PATCH as owner sets both fields; reply_domain = <sub>.<parent>', async () => {
-    const r = await api('PATCH', base, {
-      token: owner.token,
-      body: { email_subdomain: SUB, sender_display_name: 'Acme Properties' },
-    });
-    const b = assertStatus(r, 200, 'owner PATCH') as BrandingShape;
-    assert(b.email_subdomain === SUB, `email_subdomain: ${b.email_subdomain}`);
-    assert(b.sender_display_name === 'Acme Properties', `sender_display_name: ${b.sender_display_name}`);
-    assert(b.reply_domain === `${SUB}.${PARENT}`, `reply_domain: ${b.reply_domain}`);
+  await check(
+    'PATCH as owner sets both fields; reply_domain = <sub>.<parent>; persona defaults to manager',
+    async () => {
+      const r = await api('PATCH', base, {
+        token: owner.token,
+        body: { email_subdomain: SUB, sender_display_name: 'Acme Properties' },
+      });
+      const b = assertStatus(r, 200, 'owner PATCH') as BrandingShape;
+      assert(b.email_subdomain === SUB, `email_subdomain: ${b.email_subdomain}`);
+      assert(
+        b.sender_display_name === 'Acme Properties',
+        `sender_display_name: ${b.sender_display_name}`,
+      );
+      assert(b.reply_domain === `${SUB}.${PARENT}`, `reply_domain: ${b.reply_domain}`);
+      // The 20260721000003 default: claiming a subdomain with no persona set
+      // fills 'manager' (a branded account always carries a persona).
+      assert(
+        b.persona_local_part === 'manager',
+        `defaulted persona_local_part: ${b.persona_local_part}`,
+      );
+      assert(
+        b.persona_address === `manager@${SUB}.${PARENT}`,
+        `defaulted persona_address: ${b.persona_address}`,
+      );
 
-    // Persisted: a fresh GET reads back the same.
-    const g = await api('GET', base, { token: owner.token });
-    const gb = assertStatus(g, 200, 'GET after PATCH') as BrandingShape;
-    assert(gb.email_subdomain === SUB, `GET email_subdomain: ${gb.email_subdomain}`);
-    assert(gb.reply_domain === `${SUB}.${PARENT}`, `GET reply_domain: ${gb.reply_domain}`);
-  });
+      // Persisted: a fresh GET reads back the same.
+      const g = await api('GET', base, { token: owner.token });
+      const gb = assertStatus(g, 200, 'GET after PATCH') as BrandingShape;
+      assert(gb.email_subdomain === SUB, `GET email_subdomain: ${gb.email_subdomain}`);
+      assert(gb.reply_domain === `${SUB}.${PARENT}`, `GET reply_domain: ${gb.reply_domain}`);
+      assert(
+        gb.persona_local_part === 'manager',
+        `GET defaulted persona: ${gb.persona_local_part}`,
+      );
+    },
+  );
 
   await check('PATCH normalizes case + trims (Acme → acme)', async () => {
     const r = await api('PATCH', base, {
@@ -370,11 +437,38 @@ async function main(): Promise<void> {
     assert(b.email_subdomain === null, `cleared email_subdomain: ${b.email_subdomain}`);
     assert(b.reply_domain === null, `reply_domain after clear: ${b.reply_domain}`);
     // sender_display_name (untouched) is preserved.
-    assert(b.sender_display_name === 'Acme Properties', `preserved display name: ${b.sender_display_name}`);
+    assert(
+      b.sender_display_name === 'Acme Properties',
+      `preserved display name: ${b.sender_display_name}`,
+    );
     // The persona is branded-subdomain-only: the local part survives, but the
     // computed address goes null with the subdomain.
-    assert(b.persona_local_part === 'riley', `preserved persona_local_part: ${b.persona_local_part}`);
+    assert(
+      b.persona_local_part === 'riley',
+      `preserved persona_local_part: ${b.persona_local_part}`,
+    );
     assert(b.persona_address === null, `persona_address after clear: ${b.persona_address}`);
+  });
+
+  await check('explicit persona null while a subdomain is set re-defaults to manager', async () => {
+    // Re-claim SUB (released when the account switched to DUP then cleared);
+    // the persona is still 'riley', so the trigger leaves it alone.
+    const claim = await api('PATCH', base, { token: owner.token, body: { email_subdomain: SUB } });
+    const cb = assertStatus(claim, 200, 're-claim SUB') as BrandingShape;
+    assert(
+      cb.persona_local_part === 'riley',
+      `chosen persona survives re-claim: ${cb.persona_local_part}`,
+    );
+
+    // Clearing the persona on a branded account is not a reachable steady
+    // state: the BEFORE-write trigger re-defaults to 'manager'.
+    const r = await api('PATCH', base, { token: owner.token, body: { persona_local_part: null } });
+    const b = assertStatus(r, 200, 'persona null clear') as BrandingShape;
+    assert(b.persona_local_part === 'manager', `re-defaulted persona: ${b.persona_local_part}`);
+    assert(
+      b.persona_address === `manager@${SUB}.${PARENT}`,
+      `re-defaulted address: ${b.persona_address}`,
+    );
   });
 
   await check('empty PATCH body → 400 (at least one field required)', async () => {
@@ -387,58 +481,123 @@ async function main(): Promise<void> {
   // account NAME, filters the ones already taken (via the manager-only
   // existence oracle), and offers a display name + persona starters.
 
-  await check('GET suggestions (owner) → 200 shape; a taken candidate is filtered out', async () => {
-    // Per-run-unique name so its derived candidates are unique to this run (the
-    // base is deterministic from the name, unlike the SUFFIX-salted subdomains
-    // above which are randomized to survive the persistent local stack).
-    const suggestAcct = await signup(`Zephyr${SUFFIX}`);
-    const firstCandidate = `zephyr${SUFFIX}`; // top candidate (core join)
+  await check(
+    'GET suggestions (owner) → 200 shape; a taken candidate is filtered out',
+    async () => {
+      // Per-run-unique name so its derived candidates are unique to this run (the
+      // base is deterministic from the name, unlike the SUFFIX-salted subdomains
+      // above which are randomized to survive the persistent local stack).
+      const suggestAcct = await signup(`Zephyr${SUFFIX}`);
+      const firstCandidate = `zephyr${SUFFIX}`; // top candidate (core join)
 
-    // Pre-claim the top candidate on a DIFFERENT account so the oracle reports
-    // it taken and the endpoint must drop it from the offered list.
-    const claimant = await signup(`Claimant${SUFFIX}`);
-    const claim = await api('PATCH', `/v1/accounts/${claimant.accountId}/email-branding`, {
-      token: claimant.token,
-      body: { email_subdomain: firstCandidate },
-    });
-    assertStatus(claim, 200, 'claimant claims the top candidate');
+      // Pre-claim the top candidate on a DIFFERENT account so the oracle reports
+      // it taken and the endpoint must drop it from the offered list.
+      const claimant = await signup(`Claimant${SUFFIX}`);
+      const claim = await api('PATCH', `/v1/accounts/${claimant.accountId}/email-branding`, {
+        token: claimant.token,
+        body: { email_subdomain: firstCandidate },
+      });
+      assertStatus(claim, 200, 'claimant claims the top candidate');
 
-    const r = await api('GET', `/v1/accounts/${suggestAcct.accountId}/email-branding/suggestions`, {
-      token: suggestAcct.token,
-    });
-    const b = assertStatus(r, 200, 'owner suggestions') as {
-      suggested_subdomains: string[];
-      suggested_display_name: string | null;
-      suggested_persona_local_parts: string[];
-    };
-    assert(Array.isArray(b.suggested_subdomains), 'suggested_subdomains is an array');
-    assert(
-      b.suggested_subdomains.length > 0,
-      `suggested_subdomains non-empty: ${JSON.stringify(b.suggested_subdomains)}`,
-    );
-    assert(b.suggested_subdomains.length <= 5, `at most 5: ${b.suggested_subdomains.length}`);
-    // The taken filter: the pre-claimed candidate must NOT be offered.
-    assert(
-      !b.suggested_subdomains.includes(firstCandidate),
-      `taken "${firstCandidate}" must be filtered: ${JSON.stringify(b.suggested_subdomains)}`,
-    );
-    // Display name defaults to the account name (signup default carried through).
-    assert(
-      b.suggested_display_name === `Zephyr${SUFFIX}`,
-      `suggested_display_name: ${b.suggested_display_name}`,
-    );
-    // Persona starters all survive persona validation, in order.
-    assert(
-      JSON.stringify(b.suggested_persona_local_parts) ===
-        JSON.stringify(['riley', 'assistant', 'office', 'hello']),
-      `persona parts: ${JSON.stringify(b.suggested_persona_local_parts)}`,
-    );
-  });
+      const r = await api(
+        'GET',
+        `/v1/accounts/${suggestAcct.accountId}/email-branding/suggestions`,
+        {
+          token: suggestAcct.token,
+        },
+      );
+      const b = assertStatus(r, 200, 'owner suggestions') as {
+        suggested_subdomains: string[];
+        suggested_display_name: string | null;
+        suggested_persona_local_parts: string[];
+      };
+      assert(Array.isArray(b.suggested_subdomains), 'suggested_subdomains is an array');
+      assert(
+        b.suggested_subdomains.length > 0,
+        `suggested_subdomains non-empty: ${JSON.stringify(b.suggested_subdomains)}`,
+      );
+      assert(b.suggested_subdomains.length <= 5, `at most 5: ${b.suggested_subdomains.length}`);
+      // The taken filter: the pre-claimed candidate must NOT be offered.
+      assert(
+        !b.suggested_subdomains.includes(firstCandidate),
+        `taken "${firstCandidate}" must be filtered: ${JSON.stringify(b.suggested_subdomains)}`,
+      );
+      // Display name defaults to the account name (signup default carried through).
+      assert(
+        b.suggested_display_name === `Zephyr${SUFFIX}`,
+        `suggested_display_name: ${b.suggested_display_name}`,
+      );
+      // Persona starters all survive persona validation, in order.
+      assert(
+        JSON.stringify(b.suggested_persona_local_parts) ===
+          JSON.stringify(['riley', 'assistant', 'office', 'hello']),
+        `persona parts: ${JSON.stringify(b.suggested_persona_local_parts)}`,
+      );
+    },
+  );
 
   await check('GET suggestions (viewer) → 403 (requireManager confines the oracle)', async () => {
     const r = await api('GET', `${base}/suggestions`, { token: viewerToken });
     assertStatus(r, 403, 'viewer suggestions');
     if (errCode(r) !== 'forbidden') throw new Error(`code: ${errCode(r)}`);
+  });
+
+  // --- subdomain availability (live probe for the settings UI) ---------------
+  // Unavailability is DATA (200 + reason), not an error; the PATCH 409 stays
+  // the race backstop. Account A holds SUB at this point (re-claimed above).
+
+  interface AvailShape {
+    label: string;
+    available: boolean;
+    reason: string | null;
+  }
+  const availUrl = (acctId: string, label: string) =>
+    `/v1/accounts/${acctId}/email-branding/subdomain-availability?label=${encodeURIComponent(label)}`;
+
+  await check('availability: a fresh label is available (canonicalized)', async () => {
+    const r = await api('GET', availUrl(owner.accountId, `  Fresh${SUFFIX}  `), {
+      token: owner.token,
+    });
+    const b = assertStatus(r, 200, 'fresh label') as AvailShape;
+    assert(b.label === `fresh${SUFFIX}`, `canonical label: ${b.label}`);
+    assert(b.available === true, 'fresh label available');
+    assert(b.reason === null, `reason null: ${b.reason}`);
+  });
+
+  await check(
+    "availability: another account's label reads taken; one's own reads available",
+    async () => {
+      const other = await api('GET', availUrl(ownerB.accountId, SUB), { token: ownerB.token });
+      const ob = assertStatus(other, 200, 'taken for B') as AvailShape;
+      assert(ob.available === false, `SUB unavailable to B`);
+      assert(ob.reason === 'is already taken', `taken reason: ${ob.reason}`);
+
+      const self = await api('GET', availUrl(owner.accountId, SUB), { token: owner.token });
+      const sb2 = assertStatus(self, 200, 'own label for A') as AvailShape;
+      assert(sb2.available === true, `own SUB available to A`);
+    },
+  );
+
+  await check('availability: premium + invalid labels return the validator reason', async () => {
+    const prem = await api('GET', availUrl(owner.accountId, 'properties'), { token: owner.token });
+    const pb = assertStatus(prem, 200, 'premium label') as AvailShape;
+    assert(pb.available === false, 'premium unavailable');
+    assert(
+      pb.reason === 'is a premium name reserved by the platform',
+      `exact premium reason: ${pb.reason}`,
+    );
+
+    const bad = await api('GET', availUrl(owner.accountId, 'not_valid'), { token: owner.token });
+    const bb = assertStatus(bad, 200, 'invalid label') as AvailShape;
+    assert(bb.available === false, 'invalid unavailable');
+    assert(bb.reason !== null && bb.reason.includes('lowercase'), `format reason: ${bb.reason}`);
+  });
+
+  await check('availability: viewer → 403 (requireManager)', async () => {
+    const r = await api('GET', availUrl(owner.accountId, `viewer${SUFFIX}`), {
+      token: viewerToken,
+    });
+    assertStatus(r, 403, 'viewer availability');
   });
 
   // --- direct-PostgREST hardening (the branding UPDATE grant is column-scoped) -
@@ -478,14 +637,17 @@ async function main(): Promise<void> {
     assert(after.name === before.name, `name mutated: ${before.name} -> ${after.name}`);
   });
 
-  await check('direct PostgREST write to accounts.deleted_at is denied (column grant)', async () => {
-    const st = await directPatch(owner.accountId, owner.token, {
-      deleted_at: new Date().toISOString(),
-    });
-    assert(st >= 400, `expected 4xx, got ${st}`);
-    const after = await readAccount(owner.accountId);
-    assert(after.deleted_at === null, `deleted_at mutated to ${after.deleted_at}`);
-  });
+  await check(
+    'direct PostgREST write to accounts.deleted_at is denied (column grant)',
+    async () => {
+      const st = await directPatch(owner.accountId, owner.token, {
+        deleted_at: new Date().toISOString(),
+      });
+      assert(st >= 400, `expected 4xx, got ${st}`);
+      const after = await readAccount(owner.accountId);
+      assert(after.deleted_at === null, `deleted_at mutated to ${after.deleted_at}`);
+    },
+  );
 
   await check('direct PostgREST reserved subdomain is rejected by the CHECK backstop', async () => {
     // The column IS grantable, so this reaches the reserved-word CHECK, not the
@@ -496,41 +658,54 @@ async function main(): Promise<void> {
     assert(after.email_subdomain !== 'postmaster', 'reserved subdomain slipped past the CHECK');
   });
 
-  await check('direct PostgREST reserved/token persona local part is rejected by the CHECKs', async () => {
-    const reserved = await directPatch(owner.accountId, owner.token, { persona_local_part: 'abuse' });
-    assert(reserved >= 400, `reserved: expected 4xx CHECK violation, got ${reserved}`);
-    const token = await directPatch(owner.accountId, owner.token, { persona_local_part: 't-0123456789abcdef' });
-    assert(token >= 400, `t- prefix: expected 4xx CHECK violation, got ${token}`);
-  });
+  await check(
+    'direct PostgREST reserved/token persona local part is rejected by the CHECKs',
+    async () => {
+      const reserved = await directPatch(owner.accountId, owner.token, {
+        persona_local_part: 'abuse',
+      });
+      assert(reserved >= 400, `reserved: expected 4xx CHECK violation, got ${reserved}`);
+      const token = await directPatch(owner.accountId, owner.token, {
+        persona_local_part: 't-0123456789abcdef',
+      });
+      assert(token >= 400, `t- prefix: expected 4xx CHECK violation, got ${token}`);
+    },
+  );
 
-  await check('direct PostgREST punycode (xn--) subdomain is rejected by the CHECK backstop', async () => {
-    // The API rejects `xn--…` labels; the DB backstop (migration 20260711000001)
-    // must too, or a direct write could claim a homoglyph receiving subdomain.
-    const punycode = 'xn--80ak6aa92e';
-    const st = await directPatch(owner.accountId, owner.token, { email_subdomain: punycode });
-    assert(st >= 400, `expected 4xx CHECK violation, got ${st}`);
-    const after = await readAccount(owner.accountId);
-    assert(after.email_subdomain !== punycode, 'punycode subdomain slipped past the CHECK');
-  });
+  await check(
+    'direct PostgREST punycode (xn--) subdomain is rejected by the CHECK backstop',
+    async () => {
+      // The API rejects `xn--…` labels; the DB backstop (migration 20260711000001)
+      // must too, or a direct write could claim a homoglyph receiving subdomain.
+      const punycode = 'xn--80ak6aa92e';
+      const st = await directPatch(owner.accountId, owner.token, { email_subdomain: punycode });
+      assert(st >= 400, `expected 4xx CHECK violation, got ${st}`);
+      const after = await readAccount(owner.accountId);
+      assert(after.email_subdomain !== punycode, 'punycode subdomain slipped past the CHECK');
+    },
+  );
 
-  await check('direct PostgREST C1 control char in sender_display_name is rejected by the CHECK backstop', async () => {
-    // U+0085 (NEL) is a C1 control the API CONTROL_RE rejects; the widened DB
-    // no-ctrl CHECK (migration 20260711000001) must reject it on the direct path.
-    const before = await readAccount(owner.accountId);
-    const st = await directPatch(owner.accountId, owner.token, {
-      sender_display_name: 'Acme\u0085Bcc: evil@x',
-    });
-    assert(st >= 400, `expected 4xx CHECK violation, got ${st}`);
-    const after = await readAccount(owner.accountId);
-    assert(
-      !String(after.sender_display_name ?? '').includes('\u0085'),
-      'C1 control char slipped past the CHECK',
-    );
-    assert(
-      after.sender_display_name === before.sender_display_name,
-      `sender_display_name mutated: ${String(before.sender_display_name)} -> ${String(after.sender_display_name)}`,
-    );
-  });
+  await check(
+    'direct PostgREST C1 control char in sender_display_name is rejected by the CHECK backstop',
+    async () => {
+      // U+0085 (NEL) is a C1 control the API CONTROL_RE rejects; the widened DB
+      // no-ctrl CHECK (migration 20260711000001) must reject it on the direct path.
+      const before = await readAccount(owner.accountId);
+      const st = await directPatch(owner.accountId, owner.token, {
+        sender_display_name: 'Acme\u0085Bcc: evil@x',
+      });
+      assert(st >= 400, `expected 4xx CHECK violation, got ${st}`);
+      const after = await readAccount(owner.accountId);
+      assert(
+        !String(after.sender_display_name ?? '').includes('\u0085'),
+        'C1 control char slipped past the CHECK',
+      );
+      assert(
+        after.sender_display_name === before.sender_display_name,
+        `sender_display_name mutated: ${String(before.sender_display_name)} -> ${String(after.sender_display_name)}`,
+      );
+    },
+  );
 
   // --- premium/ops/em reserved backstop on the direct-PostgREST path ----------
   // The premium + ops reserved list is enforced by a BEFORE-WRITE trigger that
@@ -539,26 +714,35 @@ async function main(): Promise<void> {
   // the trigger fences the direct column-granted write path (errcode 23514 →
   // PostgREST 4xx). At this point owner.email_subdomain is null (cleared above).
 
-  await check('direct PostgREST premium subdomain is rejected by the reserved trigger', async () => {
-    const st = await directPatch(owner.accountId, owner.token, { email_subdomain: 'rent' });
-    assert(st >= 400, `expected 4xx trigger rejection, got ${st}`);
-    const after = await readAccount(owner.accountId);
-    assert(after.email_subdomain !== 'rent', 'premium subdomain slipped past the trigger');
-  });
+  await check(
+    'direct PostgREST premium subdomain is rejected by the reserved trigger',
+    async () => {
+      const st = await directPatch(owner.accountId, owner.token, { email_subdomain: 'rent' });
+      assert(st >= 400, `expected 4xx trigger rejection, got ${st}`);
+      const after = await readAccount(owner.accountId);
+      assert(after.email_subdomain !== 'rent', 'premium subdomain slipped past the trigger');
+    },
+  );
 
-  await check('direct PostgREST ops subdomain (smoke) is rejected by the reserved trigger', async () => {
-    const st = await directPatch(owner.accountId, owner.token, { email_subdomain: 'smoke' });
-    assert(st >= 400, `expected 4xx trigger rejection, got ${st}`);
-    const after = await readAccount(owner.accountId);
-    assert(after.email_subdomain !== 'smoke', 'ops subdomain slipped past the trigger');
-  });
+  await check(
+    'direct PostgREST ops subdomain (smoke) is rejected by the reserved trigger',
+    async () => {
+      const st = await directPatch(owner.accountId, owner.token, { email_subdomain: 'smoke' });
+      assert(st >= 400, `expected 4xx trigger rejection, got ${st}`);
+      const after = await readAccount(owner.accountId);
+      assert(after.email_subdomain !== 'smoke', 'ops subdomain slipped past the trigger');
+    },
+  );
 
-  await check('direct PostgREST em<digits> subdomain is rejected by the reserved trigger', async () => {
-    const st = await directPatch(owner.accountId, owner.token, { email_subdomain: 'em682356' });
-    assert(st >= 400, `expected 4xx trigger rejection, got ${st}`);
-    const after = await readAccount(owner.accountId);
-    assert(after.email_subdomain !== 'em682356', 'em<digits> subdomain slipped past the trigger');
-  });
+  await check(
+    'direct PostgREST em<digits> subdomain is rejected by the reserved trigger',
+    async () => {
+      const st = await directPatch(owner.accountId, owner.token, { email_subdomain: 'em682356' });
+      assert(st >= 400, `expected 4xx trigger rejection, got ${st}`);
+      const after = await readAccount(owner.accountId);
+      assert(after.email_subdomain !== 'em682356', 'em<digits> subdomain slipped past the trigger');
+    },
+  );
 
   // --- premium-subdomain boot sync (config file → DB reconciliation) ----------
   // The premium rows in reserved_subdomain_labels are reconciled to the config
@@ -595,41 +779,59 @@ async function main(): Promise<void> {
       `expected no-op sync, got ${JSON.stringify(res)}`,
     );
     const row = await reservedRow(SALE_LABEL);
-    assert(row?.kind === 'premium', `${SALE_LABEL} should be a seeded premium row: ${JSON.stringify(row)}`);
+    assert(
+      row?.kind === 'premium',
+      `${SALE_LABEL} should be a seeded premium row: ${JSON.stringify(row)}`,
+    );
   });
 
-  await check('a released (sold) premium label becomes claimable; the next sync restores it', async () => {
-    const opsBefore = await opsRowCount();
+  await check(
+    'a released (sold) premium label becomes claimable; the next sync restores it',
+    async () => {
+      const opsBefore = await opsRowCount();
 
-    // Sale: service-role-delete the premium label from the backstop.
-    const { error: delErr } = await admin
-      .from('reserved_subdomain_labels')
-      .delete()
-      .eq('label', SALE_LABEL)
-      .eq('kind', 'premium');
-    if (delErr) throw new Error(`release ${SALE_LABEL}: ${delErr.message}`);
-    assert((await reservedRow(SALE_LABEL)) === null, 'label should be released from the backstop');
+      // Sale: service-role-delete the premium label from the backstop.
+      const { error: delErr } = await admin
+        .from('reserved_subdomain_labels')
+        .delete()
+        .eq('label', SALE_LABEL)
+        .eq('kind', 'premium');
+      if (delErr) throw new Error(`release ${SALE_LABEL}: ${delErr.message}`);
+      assert(
+        (await reservedRow(SALE_LABEL)) === null,
+        'label should be released from the backstop',
+      );
 
-    // The owner can now claim it directly against PostgREST (trigger passes).
-    const st = await directPatch(owner.accountId, owner.token, { email_subdomain: SALE_LABEL });
-    assert(st < 400, `expected the released label to be claimable, got ${st}`);
-    const afterClaim = await readAccount(owner.accountId);
-    assert(afterClaim.email_subdomain === SALE_LABEL, `claim did not land: ${afterClaim.email_subdomain}`);
+      // The owner can now claim it directly against PostgREST (trigger passes).
+      const st = await directPatch(owner.accountId, owner.token, { email_subdomain: SALE_LABEL });
+      assert(st < 400, `expected the released label to be claimable, got ${st}`);
+      const afterClaim = await readAccount(owner.accountId);
+      assert(
+        afterClaim.email_subdomain === SALE_LABEL,
+        `claim did not land: ${afterClaim.email_subdomain}`,
+      );
 
-    // Re-sync from the file → the label is restored as premium.
-    const res = await syncPremiumSubdomainLabels();
-    assert(res.inserted >= 1, `sync should re-insert the released label, got ${JSON.stringify(res)}`);
-    const restored = await reservedRow(SALE_LABEL);
-    assert(restored?.kind === 'premium', `${SALE_LABEL} should be restored: ${JSON.stringify(restored)}`);
+      // Re-sync from the file → the label is restored as premium.
+      const res = await syncPremiumSubdomainLabels();
+      assert(
+        res.inserted >= 1,
+        `sync should re-insert the released label, got ${JSON.stringify(res)}`,
+      );
+      const restored = await reservedRow(SALE_LABEL);
+      assert(
+        restored?.kind === 'premium',
+        `${SALE_LABEL} should be restored: ${JSON.stringify(restored)}`,
+      );
 
-    // Ops rows are migration-managed — the sync must never touch them.
-    assert((await opsRowCount()) === opsBefore, 'sync must not change ops rows');
+      // Ops rows are migration-managed — the sync must never touch them.
+      assert((await opsRowCount()) === opsBefore, 'sync must not change ops rows');
 
-    // Clean up: clear the account's subdomain. It now holds a re-reserved label
-    // (grandfathered by the write-only trigger); null clears without tripping it.
-    const clearSt = await directPatch(owner.accountId, owner.token, { email_subdomain: null });
-    assert(clearSt < 400, `expected clear to succeed, got ${clearSt}`);
-  });
+      // Clean up: clear the account's subdomain. It now holds a re-reserved label
+      // (grandfathered by the write-only trigger); null clears without tripping it.
+      const clearSt = await directPatch(owner.accountId, owner.token, { email_subdomain: null });
+      assert(clearSt < 400, `expected clear to succeed, got ${clearSt}`);
+    },
+  );
 
   // --- taken-oracle is service_role-only (no direct-PostgREST RPC) ------------
   // _email_subdomains_taken is SECURITY DEFINER with a service_role-only grant
@@ -669,43 +871,46 @@ async function main(): Promise<void> {
   // validator accepted. The handler must map that 23514 to the same friendly
   // 422 the validator would have produced, never a 500. Simulate the window
   // with a synthetic reserved row that is NOT in the config file.
-  await check('reserved-label drift window: DB-only reserved row → PATCH 422 (not 500)', async () => {
-    const DRIFT_LABEL = 'zz-drift-test'; // valid label; not in the config file
-    const { error: insErr } = await admin
-      .from('reserved_subdomain_labels')
-      .insert({ label: DRIFT_LABEL, kind: 'premium' });
-    if (insErr) throw new Error(`seed drift row: ${insErr.message}`);
+  await check(
+    'reserved-label drift window: DB-only reserved row → PATCH 422 (not 500)',
+    async () => {
+      const DRIFT_LABEL = 'zz-drift-test'; // valid label; not in the config file
+      const { error: insErr } = await admin
+        .from('reserved_subdomain_labels')
+        .insert({ label: DRIFT_LABEL, kind: 'premium' });
+      if (insErr) throw new Error(`seed drift row: ${insErr.message}`);
 
-    // Run the assertions, capturing any failure so cleanup ALWAYS happens
-    // before we rethrow (a throw in `finally` trips no-unsafe-finally).
-    let assertion: unknown = null;
-    try {
-      const r = await api('PATCH', base, {
-        token: owner.token,
-        body: { email_subdomain: DRIFT_LABEL },
-      });
-      assertStatus(r, 422, 'drift-window PATCH');
-      if (errCode(r) !== 'invalid_request') throw new Error(`code: ${errCode(r)}`);
-      const fe = fieldErr(r, 'email_subdomain');
-      assert(
-        Array.isArray(fe) && fe[0] === 'is a reserved name',
-        `drift fieldError: ${JSON.stringify(fe)}`,
-      );
-    } catch (e) {
-      assertion = e;
-    }
+      // Run the assertions, capturing any failure so cleanup ALWAYS happens
+      // before we rethrow (a throw in `finally` trips no-unsafe-finally).
+      let assertion: unknown = null;
+      try {
+        const r = await api('PATCH', base, {
+          token: owner.token,
+          body: { email_subdomain: DRIFT_LABEL },
+        });
+        assertStatus(r, 422, 'drift-window PATCH');
+        if (errCode(r) !== 'invalid_request') throw new Error(`code: ${errCode(r)}`);
+        const fe = fieldErr(r, 'email_subdomain');
+        assert(
+          Array.isArray(fe) && fe[0] === 'is a reserved name',
+          `drift fieldError: ${JSON.stringify(fe)}`,
+        );
+      } catch (e) {
+        assertion = e;
+      }
 
-    // Clean up the synthetic row so the table returns to config-parity. This
-    // runs AFTER the sync round-trip tests above, so no later test depends on
-    // the table state — the delete alone restores it.
-    const { error: delErr } = await admin
-      .from('reserved_subdomain_labels')
-      .delete()
-      .eq('label', DRIFT_LABEL);
+      // Clean up the synthetic row so the table returns to config-parity. This
+      // runs AFTER the sync round-trip tests above, so no later test depends on
+      // the table state — the delete alone restores it.
+      const { error: delErr } = await admin
+        .from('reserved_subdomain_labels')
+        .delete()
+        .eq('label', DRIFT_LABEL);
 
-    if (assertion) throw assertion;
-    if (delErr) throw new Error(`cleanup drift row: ${delErr.message}`);
-  });
+      if (assertion) throw assertion;
+      if (delErr) throw new Error(`cleanup drift row: ${delErr.message}`);
+    },
+  );
 
   // --- summary ---------------------------------------------------------------
   console.info('');
