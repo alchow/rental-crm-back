@@ -111,6 +111,7 @@ const refreshRoute = createRoute({
   responses: {
     200: { description: 'refreshed', content: { 'application/json': { schema: RefreshResponse } } },
     401: { description: 'refresh failed', content: { 'application/json': { schema: errorResponses[400].content['application/json'].schema } } },
+    503: { description: 'auth upstream unavailable — retry with the same refresh token', content: { 'application/json': { schema: errorResponses[400].content['application/json'].schema } } },
     ...errorResponses,
   },
 });
@@ -195,11 +196,48 @@ auth.openapi(loginRoute, async (c) => {
 });
 
 auth.openapi(refreshRoute, async (c) => {
+  // GoTrue REST directly — NEVER the shared anon client's refreshSession().
+  // gotrue-js collapses every concurrent _callRefreshToken on one client
+  // instance into a single in-flight promise REGARDLESS of which
+  // refresh_token each caller passed (auth-js GoTrueClient: "refreshing is
+  // already in progress" → returns the winner's promise). This proxy serves
+  // MANY sessions: the agent transport refreshes one session per granted
+  // account, and those land on the same tick because they were minted
+  // together at agent boot — under the shared client every account received
+  // the same winner's session, so all cross-account calls 404'd under RLS
+  // (prod incident 2026-07-17). Stateless REST per request has no shared
+  // client state to collapse on — same posture as the logout handler below.
   const body = c.req.valid('json');
-  const anon = getAnonClient();
-  const { data, error } = await anon.auth.refreshSession({ refresh_token: body.refresh_token });
-  if (error) throw new ApiError(401, 'unauthenticated', error.message);
-  return c.json({ session: data.session as unknown as z.infer<typeof Session> }, 200);
+  const env = loadEnv();
+  const url = `${env.SUPABASE_URL.replace(/\/+$/, '')}/auth/v1/token?grant_type=refresh_token`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', apikey: env.SUPABASE_ANON_KEY },
+    body: JSON.stringify({ refresh_token: body.refresh_token }),
+  });
+  const payload = (await res.json().catch(() => undefined)) as
+    | (z.infer<typeof Session> & { error_description?: string; msg?: string; error_code?: string })
+    | undefined;
+  if (!res.ok) {
+    // 4xx from GoTrue = the token is dead (used/revoked/expired) → 401, the
+    // frontend logs out. 429/5xx = upstream blip → 503 so callers RETAIN the
+    // refresh token and retry (the agent re-mints either way; the frontend
+    // keys 401→logout / 5xx→retry). The old supabase-js path collapsed
+    // everything to 401 AND carried a client-side retry we no longer have —
+    // this mapping compensates.
+    const transient = res.status === 429 || res.status >= 500;
+    throw new ApiError(
+      transient ? 503 : 401,
+      transient ? 'service_unavailable' : 'unauthenticated',
+      payload?.error_description ?? payload?.msg ?? 'refresh failed',
+    );
+  }
+  // GoTrue's token endpoint returns the session fields at the top level.
+  const parsed = Session.safeParse(payload);
+  if (!parsed.success) {
+    throw new ApiError(503, 'service_unavailable', 'auth upstream returned a malformed session');
+  }
+  return c.json({ session: parsed.data }, 200);
 });
 
 auth.openapi(logoutRoute, async (c) => {

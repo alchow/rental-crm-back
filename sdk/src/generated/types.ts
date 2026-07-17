@@ -237,11 +237,9 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                /** @description auth upstream unavailable — retry with the same refresh token */
                 503: {
                     headers: {
-                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
-                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
