@@ -120,6 +120,12 @@ function assertStatus(r: ApiResp, expected: number, ctx: string): unknown {
 function errCode(r: ApiResp): string {
   return ((r.body as { error?: { code?: string } })?.error?.code) ?? '';
 }
+// The 422 branding envelope carries per-field reasons under
+// error.details.fieldErrors.<field> (ApiError details -> onError -> body).
+function fieldErr(r: ApiResp, field: string): string[] | undefined {
+  return (r.body as { error?: { details?: { fieldErrors?: Record<string, string[]> } } })?.error
+    ?.details?.fieldErrors?.[field];
+}
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
 }
@@ -250,6 +256,35 @@ async function main(): Promise<void> {
     if (errCode(r) !== 'invalid_request') throw new Error(`code: ${errCode(r)}`);
   });
 
+  await check('premium name (properties) → 422 with the exact premium reason', async () => {
+    const r = await api('PATCH', base, {
+      token: owner.token,
+      body: { email_subdomain: 'properties' },
+    });
+    assertStatus(r, 422, 'premium subdomain');
+    if (errCode(r) !== 'invalid_request') throw new Error(`code: ${errCode(r)}`);
+    // The frontend keys on this EXACT string to render a resale upsell.
+    const fe = fieldErr(r, 'email_subdomain');
+    assert(
+      Array.isArray(fe) && fe[0] === 'is a premium name reserved by the platform',
+      `premium fieldError: ${JSON.stringify(fe)}`,
+    );
+  });
+
+  await check('ops name (smoke) → 422 reserved', async () => {
+    const r = await api('PATCH', base, {
+      token: owner.token,
+      body: { email_subdomain: 'smoke' },
+    });
+    assertStatus(r, 422, 'ops subdomain');
+    if (errCode(r) !== 'invalid_request') throw new Error(`code: ${errCode(r)}`);
+    const fe = fieldErr(r, 'email_subdomain');
+    assert(
+      Array.isArray(fe) && fe[0] === 'is a reserved name',
+      `ops fieldError: ${JSON.stringify(fe)}`,
+    );
+  });
+
   await check('display name with a newline → 422', async () => {
     const r = await api('PATCH', base, {
       token: owner.token,
@@ -347,6 +382,65 @@ async function main(): Promise<void> {
     assertStatus(r, 400, 'empty PATCH');
   });
 
+  // --- email-branding suggestions --------------------------------------------
+  // GET /email-branding/suggestions derives candidate subdomains from the
+  // account NAME, filters the ones already taken (via the manager-only
+  // existence oracle), and offers a display name + persona starters.
+
+  await check('GET suggestions (owner) → 200 shape; a taken candidate is filtered out', async () => {
+    // Per-run-unique name so its derived candidates are unique to this run (the
+    // base is deterministic from the name, unlike the SUFFIX-salted subdomains
+    // above which are randomized to survive the persistent local stack).
+    const suggestAcct = await signup(`Zephyr${SUFFIX}`);
+    const firstCandidate = `zephyr${SUFFIX}`; // top candidate (core join)
+
+    // Pre-claim the top candidate on a DIFFERENT account so the oracle reports
+    // it taken and the endpoint must drop it from the offered list.
+    const claimant = await signup(`Claimant${SUFFIX}`);
+    const claim = await api('PATCH', `/v1/accounts/${claimant.accountId}/email-branding`, {
+      token: claimant.token,
+      body: { email_subdomain: firstCandidate },
+    });
+    assertStatus(claim, 200, 'claimant claims the top candidate');
+
+    const r = await api('GET', `/v1/accounts/${suggestAcct.accountId}/email-branding/suggestions`, {
+      token: suggestAcct.token,
+    });
+    const b = assertStatus(r, 200, 'owner suggestions') as {
+      suggested_subdomains: string[];
+      suggested_display_name: string | null;
+      suggested_persona_local_parts: string[];
+    };
+    assert(Array.isArray(b.suggested_subdomains), 'suggested_subdomains is an array');
+    assert(
+      b.suggested_subdomains.length > 0,
+      `suggested_subdomains non-empty: ${JSON.stringify(b.suggested_subdomains)}`,
+    );
+    assert(b.suggested_subdomains.length <= 5, `at most 5: ${b.suggested_subdomains.length}`);
+    // The taken filter: the pre-claimed candidate must NOT be offered.
+    assert(
+      !b.suggested_subdomains.includes(firstCandidate),
+      `taken "${firstCandidate}" must be filtered: ${JSON.stringify(b.suggested_subdomains)}`,
+    );
+    // Display name defaults to the account name (signup default carried through).
+    assert(
+      b.suggested_display_name === `Zephyr${SUFFIX}`,
+      `suggested_display_name: ${b.suggested_display_name}`,
+    );
+    // Persona starters all survive persona validation, in order.
+    assert(
+      JSON.stringify(b.suggested_persona_local_parts) ===
+        JSON.stringify(['riley', 'assistant', 'office', 'hello']),
+      `persona parts: ${JSON.stringify(b.suggested_persona_local_parts)}`,
+    );
+  });
+
+  await check('GET suggestions (viewer) → 403 (requireManager confines the oracle)', async () => {
+    const r = await api('GET', `${base}/suggestions`, { token: viewerToken });
+    assertStatus(r, 403, 'viewer suggestions');
+    if (errCode(r) !== 'forbidden') throw new Error(`code: ${errCode(r)}`);
+  });
+
   // --- direct-PostgREST hardening (the branding UPDATE grant is column-scoped) -
   // The accounts_manager_update RLS policy is row-level; an owner/manager holds
   // a real GoTrue JWT and can hit PostgREST directly. These assert the column
@@ -436,6 +530,181 @@ async function main(): Promise<void> {
       after.sender_display_name === before.sender_display_name,
       `sender_display_name mutated: ${String(before.sender_display_name)} -> ${String(after.sender_display_name)}`,
     );
+  });
+
+  // --- premium/ops/em reserved backstop on the direct-PostgREST path ----------
+  // The premium + ops reserved list is enforced by a BEFORE-WRITE trigger that
+  // reads public.reserved_subdomain_labels (migration 20260721000001), NOT a
+  // CHECK — so the config file can drive the DB without a migration. These prove
+  // the trigger fences the direct column-granted write path (errcode 23514 →
+  // PostgREST 4xx). At this point owner.email_subdomain is null (cleared above).
+
+  await check('direct PostgREST premium subdomain is rejected by the reserved trigger', async () => {
+    const st = await directPatch(owner.accountId, owner.token, { email_subdomain: 'rent' });
+    assert(st >= 400, `expected 4xx trigger rejection, got ${st}`);
+    const after = await readAccount(owner.accountId);
+    assert(after.email_subdomain !== 'rent', 'premium subdomain slipped past the trigger');
+  });
+
+  await check('direct PostgREST ops subdomain (smoke) is rejected by the reserved trigger', async () => {
+    const st = await directPatch(owner.accountId, owner.token, { email_subdomain: 'smoke' });
+    assert(st >= 400, `expected 4xx trigger rejection, got ${st}`);
+    const after = await readAccount(owner.accountId);
+    assert(after.email_subdomain !== 'smoke', 'ops subdomain slipped past the trigger');
+  });
+
+  await check('direct PostgREST em<digits> subdomain is rejected by the reserved trigger', async () => {
+    const st = await directPatch(owner.accountId, owner.token, { email_subdomain: 'em682356' });
+    assert(st >= 400, `expected 4xx trigger rejection, got ${st}`);
+    const after = await readAccount(owner.accountId);
+    assert(after.email_subdomain !== 'em682356', 'em<digits> subdomain slipped past the trigger');
+  });
+
+  // --- premium-subdomain boot sync (config file → DB reconciliation) ----------
+  // The premium rows in reserved_subdomain_labels are reconciled to the config
+  // file on every API boot (admin/sync-premium-subdomains.ts). Exercise the full
+  // sale-flow round-trip: no-op sync, release a premium label, claim it, re-sync
+  // to restore, and confirm the migration-managed ops rows are never touched.
+  const { syncPremiumSubdomainLabels } = await import('../src/admin/sync-premium-subdomains');
+
+  async function reservedRow(label: string): Promise<{ label: string; kind: string } | null> {
+    const { data, error } = await admin
+      .from('reserved_subdomain_labels')
+      .select('label, kind')
+      .eq('label', label)
+      .maybeSingle();
+    if (error) throw new Error(`reserved read ${label}: ${error.message}`);
+    return data;
+  }
+  async function opsRowCount(): Promise<number> {
+    const { count, error } = await admin
+      .from('reserved_subdomain_labels')
+      .select('label', { count: 'exact', head: true })
+      .eq('kind', 'ops');
+    if (error) throw new Error(`ops count: ${error.message}`);
+    return count ?? 0;
+  }
+
+  // A real premium label the API tests do not otherwise claim.
+  const SALE_LABEL = 'brokerage';
+
+  await check('sync is a no-op when the DB seed already matches the file', async () => {
+    const res = await syncPremiumSubdomainLabels();
+    assert(
+      res.inserted === 0 && res.deleted === 0,
+      `expected no-op sync, got ${JSON.stringify(res)}`,
+    );
+    const row = await reservedRow(SALE_LABEL);
+    assert(row?.kind === 'premium', `${SALE_LABEL} should be a seeded premium row: ${JSON.stringify(row)}`);
+  });
+
+  await check('a released (sold) premium label becomes claimable; the next sync restores it', async () => {
+    const opsBefore = await opsRowCount();
+
+    // Sale: service-role-delete the premium label from the backstop.
+    const { error: delErr } = await admin
+      .from('reserved_subdomain_labels')
+      .delete()
+      .eq('label', SALE_LABEL)
+      .eq('kind', 'premium');
+    if (delErr) throw new Error(`release ${SALE_LABEL}: ${delErr.message}`);
+    assert((await reservedRow(SALE_LABEL)) === null, 'label should be released from the backstop');
+
+    // The owner can now claim it directly against PostgREST (trigger passes).
+    const st = await directPatch(owner.accountId, owner.token, { email_subdomain: SALE_LABEL });
+    assert(st < 400, `expected the released label to be claimable, got ${st}`);
+    const afterClaim = await readAccount(owner.accountId);
+    assert(afterClaim.email_subdomain === SALE_LABEL, `claim did not land: ${afterClaim.email_subdomain}`);
+
+    // Re-sync from the file → the label is restored as premium.
+    const res = await syncPremiumSubdomainLabels();
+    assert(res.inserted >= 1, `sync should re-insert the released label, got ${JSON.stringify(res)}`);
+    const restored = await reservedRow(SALE_LABEL);
+    assert(restored?.kind === 'premium', `${SALE_LABEL} should be restored: ${JSON.stringify(restored)}`);
+
+    // Ops rows are migration-managed — the sync must never touch them.
+    assert((await opsRowCount()) === opsBefore, 'sync must not change ops rows');
+
+    // Clean up: clear the account's subdomain. It now holds a re-reserved label
+    // (grandfathered by the write-only trigger); null clears without tripping it.
+    const clearSt = await directPatch(owner.accountId, owner.token, { email_subdomain: null });
+    assert(clearSt < 400, `expected clear to succeed, got ${clearSt}`);
+  });
+
+  // --- taken-oracle is service_role-only (no direct-PostgREST RPC) ------------
+  // _email_subdomains_taken is SECURITY DEFINER with a service_role-only grant
+  // (migration 20260721000001; enforced by db/test/check_definer_grants.sql). A
+  // signed-in user hitting the RPC directly off PostgREST with the anon key +
+  // their JWT MUST be refused — this is the enumeration fence the API relies on
+  // when it calls the oracle server-side via the admin client instead.
+  await check('direct RPC _email_subdomains_taken as an authenticated user is DENIED', async () => {
+    const res = await fetch(`${status.API_URL}/rest/v1/rpc/_email_subdomains_taken`, {
+      method: 'POST',
+      headers: {
+        apikey: status.ANON_KEY,
+        authorization: `Bearer ${owner.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ p_candidates: ['acme', 'rent'] }),
+    });
+    const text = await res.text();
+    // The one thing it must NOT be is a 200 that returns data — that would mean
+    // the oracle is callable by any user JWT. A denied SECURITY DEFINER function
+    // surfaces as 42501 (PostgREST 401/403) or a 404 (function not exposed to
+    // the role); accept any of those, reject a 200.
+    assert(res.status !== 200, `oracle must not return 200 to a user JWT; body=${text}`);
+    const denied =
+      res.status === 401 ||
+      res.status === 403 ||
+      res.status === 404 ||
+      text.includes('42501') ||
+      text.toLowerCase().includes('permission');
+    assert(denied, `expected a permission denial, got ${res.status} body=${text}`);
+  });
+
+  // --- reserved-label drift window → 422 (not 500) ---------------------------
+  // A label released from premium-subdomains.json passes the file-based
+  // validator immediately, but its DB backstop row lingers until the next boot
+  // sync — so the accounts write-trigger can raise 23514 for a value the API
+  // validator accepted. The handler must map that 23514 to the same friendly
+  // 422 the validator would have produced, never a 500. Simulate the window
+  // with a synthetic reserved row that is NOT in the config file.
+  await check('reserved-label drift window: DB-only reserved row → PATCH 422 (not 500)', async () => {
+    const DRIFT_LABEL = 'zz-drift-test'; // valid label; not in the config file
+    const { error: insErr } = await admin
+      .from('reserved_subdomain_labels')
+      .insert({ label: DRIFT_LABEL, kind: 'premium' });
+    if (insErr) throw new Error(`seed drift row: ${insErr.message}`);
+
+    // Run the assertions, capturing any failure so cleanup ALWAYS happens
+    // before we rethrow (a throw in `finally` trips no-unsafe-finally).
+    let assertion: unknown = null;
+    try {
+      const r = await api('PATCH', base, {
+        token: owner.token,
+        body: { email_subdomain: DRIFT_LABEL },
+      });
+      assertStatus(r, 422, 'drift-window PATCH');
+      if (errCode(r) !== 'invalid_request') throw new Error(`code: ${errCode(r)}`);
+      const fe = fieldErr(r, 'email_subdomain');
+      assert(
+        Array.isArray(fe) && fe[0] === 'is a reserved name',
+        `drift fieldError: ${JSON.stringify(fe)}`,
+      );
+    } catch (e) {
+      assertion = e;
+    }
+
+    // Clean up the synthetic row so the table returns to config-parity. This
+    // runs AFTER the sync round-trip tests above, so no later test depends on
+    // the table state — the delete alone restores it.
+    const { error: delErr } = await admin
+      .from('reserved_subdomain_labels')
+      .delete()
+      .eq('label', DRIFT_LABEL);
+
+    if (assertion) throw assertion;
+    if (delErr) throw new Error(`cleanup drift row: ${delErr.message}`);
   });
 
   // --- summary ---------------------------------------------------------------

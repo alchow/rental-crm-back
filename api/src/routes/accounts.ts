@@ -8,10 +8,15 @@ import { ApiError, dbError, errorResponses } from './_lib/error';
 import {
   brandedReplyDomain,
   personaAddress,
+  suggestEmailSubdomains,
   validateEmailSubdomain,
   validatePersonaLocalPart,
   validateSenderDisplayName,
 } from './_lib/subdomain';
+// The taken-oracle is a service_role-only RPC (migration 20260721000001), so it
+// is reachable only through the admin quarantine — same cross-import precedent
+// as routes/comms/persona.ts importing admin/persona-ack.
+import { emailSubdomainsTaken } from '../admin/subdomains-taken';
 
 // ---------------------------------------------------------------------------
 // Account-level settings — per-account email branding (branded reply subdomain
@@ -67,6 +72,26 @@ const PatchEmailBrandingBody = z
   })
   .openapi('PatchAccountEmailBrandingBody');
 
+const EmailBrandingSuggestions = z
+  .object({
+    /** Up to 5 branded subdomain labels derived from the account name that are
+     *  valid (format + reserved/premium rules) AND not already claimed by any
+     *  account. May be empty (e.g. a purely generic name whose every candidate
+     *  is reserved). Ordered brandiest-first. */
+    suggested_subdomains: z.array(z.string()).max(5),
+    /** A suggested From display name: the account's existing
+     *  sender_display_name when set, otherwise the account name (trimmed,
+     *  control-chars stripped, capped at 120 — re-submittable through PATCH).
+     *  Null only when the account name reduces to empty after stripping. */
+    suggested_display_name: z.string().nullable(),
+    /** Suggested persona LOCAL PARTS (bare labels like 'riley', NOT the full
+     *  '<local>@<sub>.<parent>' address), filtered to those that pass persona
+     *  validation. A stable starter set; the landlord may PATCH any valid value
+     *  instead. */
+    suggested_persona_local_parts: z.array(z.string()),
+  })
+  .openapi('EmailBrandingSuggestions');
+
 const getBranding = createRoute({
   method: 'get',
   path: '/accounts/{accountId}/email-branding',
@@ -92,6 +117,21 @@ const patchBranding = createRoute({
     200: {
       description: 'updated branding',
       content: { 'application/json': { schema: EmailBranding } },
+    },
+    ...errorResponses,
+  },
+});
+
+const getBrandingSuggestions = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/email-branding/suggestions',
+  tags: ['accounts'],
+  summary: "Suggest email branding for an account (owner/manager only)",
+  request: { params: AccountParam },
+  responses: {
+    200: {
+      description: 'branding suggestions',
+      content: { 'application/json': { schema: EmailBrandingSuggestions } },
     },
     ...errorResponses,
   },
@@ -126,6 +166,22 @@ function brandingResponse(row: BrandingRow): z.infer<typeof EmailBranding> {
 }
 
 const BRANDING_COLS = 'email_subdomain, sender_display_name, persona_local_part';
+
+// C0/DEL/C1 control characters — stripped from a derived display-name suggestion
+// so it is always re-submittable through PATCH (the sender_display_name validator
+// rejects these). Mirrors the 20260707000001 backfill's regexp_replace set.
+// eslint-disable-next-line no-control-regex
+const DISPLAY_CTRL_RE = /[\x00-\x1f\x7f-\x9f]/g;
+
+// Suggest a From display name: the existing sender_display_name when set,
+// otherwise the account name trimmed, control-stripped, and capped at 120 — the
+// same shape the signup default / backfill (20260707000001) produces. Null when
+// the name reduces to empty (matches that backfill's nullif('')).
+function suggestedDisplayName(existing: string | null, accountName: string): string | null {
+  if (existing !== null) return existing;
+  const derived = accountName.trim().replace(DISPLAY_CTRL_RE, '').slice(0, 120);
+  return derived.length > 0 ? derived : null;
+}
 
 accountsApp.openapi(getBranding, async (c) => {
   const { accountId } = c.req.valid('param');
@@ -195,9 +251,70 @@ accountsApp.openapi(patchBranding, async (c) => {
     if (error.code === '23505') {
       throw new ApiError(409, 'conflict', 'email_subdomain is already taken');
     }
+    // Reserved-label backstop tripped (the reserved_subdomain_labels write
+    // trigger and the branding format/reserved CHECKs raise 23514). This exists
+    // to cover the drift window: a label RELEASED from premium-subdomains.json
+    // passes the file-based validator (validateEmailSubdomain) immediately, but
+    // the DB backstop row lingers until the next boot sync reconciles the table
+    // — so a just-released label can clear the API validator yet still trip the
+    // trigger. Surface it as the same friendly validation 422 the validator
+    // would have produced, not a 500. (23505 → 409 above is unaffected.)
+    if (error.code === '23514') {
+      throw new ApiError(422, 'invalid_request', 'email branding input is invalid', {
+        fieldErrors: { email_subdomain: ['is a reserved name'] },
+      });
+    }
     throw dbError(error);
   }
   if (!data) throw new ApiError(404, 'not_found', 'not found');
 
   return c.json(brandingResponse(data as unknown as BrandingRow), 200);
+});
+
+// Persona local parts offered by default. Filtered through validatePersonaLocalPart
+// so a name that ever lands on the reserved/token lists is dropped rather than
+// suggested. Order is the presentation order.
+const PERSONA_STARTERS = ['riley', 'assistant', 'office', 'hello'] as const;
+
+interface SuggestRow extends BrandingRow {
+  name: string;
+}
+
+accountsApp.openapi(getBrandingSuggestions, async (c) => {
+  // The taken-oracle (`_email_subdomains_taken`, which reveals whether a
+  // candidate label is claimed by ANY account) is service_role-only at the DB
+  // grant — it is called server-side via the admin client (emailSubdomainsTaken),
+  // never off this user's JWT. requireManager gates the HTTP surface to
+  // owner/manager, the same principals who would learn "taken" from a 409 anyway.
+  requireManager(c);
+  const { accountId } = c.req.valid('param');
+  const sb = getSb(c);
+
+  const { data, error } = await sb
+    .from('accounts')
+    .select(`name, ${BRANDING_COLS}`)
+    .eq('id', accountId)
+    .maybeSingle();
+  if (error) throw dbError(error);
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  const row = data as unknown as SuggestRow;
+
+  // Derive candidates (pure), then a SINGLE round trip to learn which are taken.
+  const candidates = suggestEmailSubdomains(row.name);
+  let taken = new Set<string>();
+  if (candidates.length > 0) {
+    taken = new Set(await emailSubdomainsTaken(candidates));
+  }
+  const suggested_subdomains = candidates.filter((s) => !taken.has(s)).slice(0, 5);
+
+  const suggested_persona_local_parts = PERSONA_STARTERS.filter(
+    (p) => validatePersonaLocalPart(p).ok,
+  );
+
+  const body: z.infer<typeof EmailBrandingSuggestions> = {
+    suggested_subdomains,
+    suggested_display_name: suggestedDisplayName(row.sender_display_name, row.name),
+    suggested_persona_local_parts,
+  };
+  return c.json(body, 200);
 });
