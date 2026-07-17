@@ -37,6 +37,7 @@
     "test:comms-email": "tsx test/comms-email.test.ts",
     "test:comms-email-threads": "tsx test/comms-email-threads.test.ts",
     "test:accounts-branding": "tsx test/accounts-branding.test.ts",
+    "test:auth-refresh": "tsx test/auth-refresh.test.ts",
     "test:comms-persona-resolve": "tsx test/comms-persona-resolve.test.ts",
     "test:comms-persona": "tsx test/comms-persona.test.ts",
     "test:comms-evidence": "tsx test/comms-evidence.test.ts",
