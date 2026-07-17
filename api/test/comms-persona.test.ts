@@ -422,6 +422,11 @@ async function main(): Promise<void> {
   // (7) CC capture — journal-only landlord mail (phase 4)
   // =========================================================================
   const LL_EMAIL = `dave-${SUFFIX}@landlord.test`;
+  const LL_GMAIL = `persona.owner.${SUFFIX}@gmail.com`;
+  const LL_GMAIL_PHONE = `personaowner${SUFFIX}+phone@gmail.com`;
+  const LL_GMAIL_UNVERIFIED = `personaowner${SUFFIX}+unverified@gmail.com`;
+  const LL_GMAIL_REPLAY = `personaowner${SUFFIX}+replay@gmail.com`;
+  const LL_GMAIL_CONFLICT = `personaowner${SUFFIX}+conflict@gmail.com`;
   {
     // The landlord's email identity: the CC arm's sender-recognition input.
     const { error } = await admin.from('channel_identities').insert({
@@ -429,6 +434,20 @@ async function main(): Promise<void> {
       channel: 'email', address: LL_EMAIL,
     });
     if (error) throw new Error(`landlord identity: ${error.message}`);
+  }
+  {
+    const { error } = await admin.from('channel_identities').insert({
+      account_id: accountId, party_type: 'landlord_user', party_id: sub.user.id,
+      channel: 'email', address: LL_GMAIL,
+    });
+    if (error) throw new Error(`gmail landlord identity: ${error.message}`);
+  }
+  {
+    const { error } = await admin.from('channel_identities').insert({
+      account_id: accountId, party_type: 'tenant', party_id: t1Id,
+      channel: 'email', address: LL_GMAIL_CONFLICT,
+    });
+    if (error) throw new Error(`gmail conflict identity: ${error.message}`);
   }
 
   await check('landlord CCs the persona on mail To a threaded tenant → cc_journaled outbound into the thread', async () => {
@@ -470,6 +489,150 @@ async function main(): Promise<void> {
       `recipient cast: ${JSON.stringify(roles)}`);
     assert(roles.some((c) => c.role === 'cc' && c.party_type === 'platform' && c.address === PERSONA),
       `persona cc cast: ${JSON.stringify(roles)}`);
+  });
+
+  await check('phone Gmail alias replies only to persona → parent outbox restores the tenant', async () => {
+    const sent = await api('POST', `${base}/outbox`, {
+      token: landlordToken,
+      body: {
+        channel: 'email',
+        to_address: T2_EMAIL,
+        cc_addresses: [LL_GMAIL],
+        subject: 'Inspection follow-up',
+        body: 'Please review this inspection.',
+        approval_ref: `self:${sub.user.id}`,
+      },
+    });
+    const outbox = assertStatus(sent, 201, 'gmail-cc parent intent') as { id: string };
+    const parentMessageId = `<${outbox.id}@${REPLY_DOMAIN}>`;
+
+    const completed = await api('POST', `${base}/outbox/${outbox.id}/complete`, {
+      token: agentToken,
+      body: {
+        provider: 'smtp2go',
+        provider_sid: `smtp2go-${rnd()}`,
+        rfc822_message_id: parentMessageId,
+      },
+    });
+    assertStatus(completed, 200, 'gmail-cc parent complete');
+
+    const replayProviderId = `PS-gmail-replay-${rnd()}`;
+    const unverified = await personaCapture({
+      provider_msg_id: replayProviderId,
+      from_address: LL_GMAIL_UNVERIFIED,
+      to_addresses: [PERSONA],
+      cc_addresses: [],
+      subject: 'Re: Inspection follow-up',
+      body: 'This must not be attributed.',
+      rfc822_message_id: `<unverified-reply-${SUFFIX}@gmail.com>`,
+      in_reply_to: parentMessageId,
+      references: [parentMessageId],
+      auth_results: AUTH_FAIL,
+    });
+    const unverifiedRes = assertStatus(
+      unverified,
+      200,
+      'unverified phone alias persona reply',
+    ) as CaptureShape;
+    assert(unverifiedRes.disposition === 'triaged', `unverified: ${unverifiedRes.disposition}`);
+    const { count: unverifiedIdentityCount } = await admin
+      .from('channel_identities')
+      .select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId)
+      .eq('channel', 'email')
+      .eq('address', LL_GMAIL_UNVERIFIED);
+    assert((unverifiedIdentityCount ?? 0) === 0, 'failed DMARC never teaches an alias');
+
+    const changedReplay = await personaCapture({
+      provider_msg_id: replayProviderId,
+      from_address: LL_GMAIL_REPLAY,
+      to_addresses: [PERSONA],
+      cc_addresses: [],
+      subject: 'Re: Inspection follow-up',
+      body: 'Changed replay inputs must be ignored.',
+      rfc822_message_id: `<changed-replay-${SUFFIX}@gmail.com>`,
+      in_reply_to: parentMessageId,
+      references: [parentMessageId],
+    });
+    const changedReplayRes = assertStatus(
+      changedReplay,
+      200,
+      'changed replay persona reply',
+    ) as CaptureShape;
+    assert(changedReplayRes.disposition === 'triaged', 'replay keeps the original disposition');
+    const { count: replayIdentityCount } = await admin
+      .from('channel_identities')
+      .select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId)
+      .eq('channel', 'email')
+      .eq('address', LL_GMAIL_REPLAY);
+    assert((replayIdentityCount ?? 0) === 0, 'changed replay never teaches an alias');
+
+    const reply = await personaCapture({
+      from_address: LL_GMAIL_PHONE,
+      to_addresses: [PERSONA],
+      cc_addresses: [],
+      subject: 'Re: Inspection follow-up',
+      body: 'Replying from my phone.',
+      rfc822_message_id: `<phone-reply-${SUFFIX}@gmail.com>`,
+      in_reply_to: parentMessageId,
+      references: [parentMessageId],
+    });
+    const res = assertStatus(reply, 200, 'phone alias persona reply') as CaptureShape;
+    assert(res.disposition === 'cc_journaled', `disposition: ${res.disposition}`);
+    assert(res.participant?.party_id === t2Id, `parent tenant restored: ${res.participant?.party_id}`);
+    assert(res.interaction_id !== null, 'phone reply journaled');
+
+    const { data: learned, error } = await admin
+      .from('channel_identities')
+      .select('party_type, party_id')
+      .eq('account_id', accountId)
+      .eq('channel', 'email')
+      .eq('address', LL_GMAIL_PHONE)
+      .single();
+    if (error) throw new Error(`phone alias identity read: ${error.message}`);
+    assert(
+      learned.party_type === 'landlord_user' && learned.party_id === sub.user.id,
+      `authenticated phone alias learned: ${JSON.stringify(learned)}`,
+    );
+
+    const conflicted = await personaCapture({
+      from_address: LL_GMAIL_CONFLICT,
+      to_addresses: [PERSONA],
+      cc_addresses: [],
+      subject: 'Re: Inspection follow-up',
+      body: 'A conflicting identity must not be reassigned.',
+      rfc822_message_id: `<conflict-reply-${SUFFIX}@gmail.com>`,
+      in_reply_to: parentMessageId,
+      references: [parentMessageId],
+    });
+    const conflictedRes = assertStatus(conflicted, 200, 'conflicting phone alias') as CaptureShape;
+    assert(conflictedRes.disposition === 'triaged', 'conflicting alias is triaged');
+    const conflictUnmatchedId = conflictedRes.unmatched_id;
+    if (conflictUnmatchedId === null) throw new Error('conflicting alias has no triage record');
+    const { data: conflictTriage, error: conflictTriageError } = await admin
+      .from('comm_unmatched_inbound')
+      .select('reason, dmarc')
+      .eq('account_id', accountId)
+      .eq('id', conflictUnmatchedId)
+      .single();
+    if (conflictTriageError) throw new Error(`conflict triage read: ${conflictTriageError.message}`);
+    assert(
+      conflictTriage.reason === 'identity_conflict' && conflictTriage.dmarc === 'pass',
+      `conflict evidence preserved: ${JSON.stringify(conflictTriage)}`,
+    );
+    const { data: conflictIdentity, error: conflictError } = await admin
+      .from('channel_identities')
+      .select('party_type, party_id')
+      .eq('account_id', accountId)
+      .eq('channel', 'email')
+      .eq('address', LL_GMAIL_CONFLICT)
+      .single();
+    if (conflictError) throw new Error(`conflict identity read: ${conflictError.message}`);
+    assert(
+      conflictIdentity.party_type === 'tenant' && conflictIdentity.party_id === t1Id,
+      'first identity binding remains unchanged',
+    );
   });
 
   await check('reply-all two-door: the tenant reply-alls (token To + persona CC) → one journal + one duplicate', async () => {

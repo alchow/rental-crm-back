@@ -6214,7 +6214,8 @@
             "type": "string",
             "enum": [
               "unknown_sender",
-              "auth_failed"
+              "auth_failed",
+              "identity_conflict"
             ]
           },
           "received_at": {
