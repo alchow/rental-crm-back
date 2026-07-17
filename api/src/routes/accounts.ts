@@ -49,7 +49,9 @@ const EmailBranding = z
      *  otherwise (branded minting off — threads fall back to EMAIL_REPLY_DOMAIN). */
     reply_domain: z.string().nullable(),
     /** The local part of the account's persona address (e.g. 'riley'); null
-     *  when the persona feature is off for the account. */
+     *  when the persona feature is off for the account. A DB trigger
+     *  (20260721000003) defaults it to 'manager' whenever a subdomain is set,
+     *  so it is null only on subdomain-less accounts. */
     persona_local_part: z.string().nullable(),
     /** The computed full persona address
      *  (`<persona_local_part>@<subdomain>.<parent>`) when the local part, the
@@ -62,7 +64,10 @@ const EmailBranding = z
 
 const PatchEmailBrandingBody = z
   .object({
-    /** Partial update. Omit to leave unchanged; explicit null clears the field. */
+    /** Partial update. Omit to leave unchanged; explicit null clears the field.
+     *  Exception: while a subdomain is set, clearing persona_local_part
+     *  re-defaults it to 'manager' (DB trigger) — a branded account always
+     *  carries a persona. */
     email_subdomain: z.string().nullable().optional(),
     sender_display_name: z.string().nullable().optional(),
     persona_local_part: z.string().nullable().optional(),
@@ -122,11 +127,51 @@ const patchBranding = createRoute({
   },
 });
 
+const EmailSubdomainAvailability = z
+  .object({
+    /** The canonical (trimmed, lowercased) label that was checked when it is
+     *  format-valid; the raw input canonicalized best-effort otherwise. */
+    label: z.string(),
+    /** True when the label could be claimed by this account right now (or is
+     *  already this account's own subdomain — re-submitting your own value is
+     *  not a conflict). Advisory: a concurrent claim can still 409 the PATCH. */
+    available: z.boolean(),
+    /** Why the label is unavailable: a validator reason (format / 'is a
+     *  reserved name' / the stable premium string) or 'is already taken'.
+     *  Null when available. */
+    reason: z.string().nullable(),
+  })
+  .openapi('EmailSubdomainAvailability');
+
+const getSubdomainAvailability = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/email-branding/subdomain-availability',
+  tags: ['accounts'],
+  summary: 'Check whether a branded subdomain label is claimable (owner/manager only)',
+  request: {
+    params: AccountParam,
+    query: z.object({
+      label: z
+        .string()
+        .min(1)
+        .max(63)
+        .openapi({ param: { name: 'label', in: 'query' } }),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'availability verdict (unavailability is data, not an error)',
+      content: { 'application/json': { schema: EmailSubdomainAvailability } },
+    },
+    ...errorResponses,
+  },
+});
+
 const getBrandingSuggestions = createRoute({
   method: 'get',
   path: '/accounts/{accountId}/email-branding/suggestions',
   tags: ['accounts'],
-  summary: "Suggest email branding for an account (owner/manager only)",
+  summary: 'Suggest email branding for an account (owner/manager only)',
   request: { params: AccountParam },
   responses: {
     200: {
@@ -269,6 +314,44 @@ accountsApp.openapi(patchBranding, async (c) => {
   if (!data) throw new ApiError(404, 'not_found', 'not found');
 
   return c.json(brandingResponse(data as unknown as BrandingRow), 200);
+});
+
+// Live availability probe for the settings UI's subdomain field (debounced
+// as-you-type + pre-submit). Same enumeration posture as /suggestions: the
+// taken-oracle stays service_role-only behind the admin client, and the HTTP
+// surface is requireManager — the principals who would learn "taken" from a
+// PATCH 409 anyway. Unavailability is DATA (200 + reason), not an error; the
+// PATCH 409 remains the race backstop for a concurrent claim.
+accountsApp.openapi(getSubdomainAvailability, async (c) => {
+  requireManager(c);
+  const { accountId } = c.req.valid('param');
+  const { label } = c.req.valid('query');
+  const sb = getSb(c);
+
+  const res = validateEmailSubdomain(label);
+  if (!res.ok) {
+    return c.json({ label: label.trim().toLowerCase(), available: false, reason: res.reason }, 200);
+  }
+
+  // The account's own current subdomain is claimable by definition — the
+  // oracle counts it taken (it IS claimed, by this account), but re-submitting
+  // your own value must not read as a conflict.
+  const { data, error } = await sb
+    .from('accounts')
+    .select('email_subdomain')
+    .eq('id', accountId)
+    .maybeSingle();
+  if (error) throw dbError(error);
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  if (data.email_subdomain === res.value) {
+    return c.json({ label: res.value, available: true, reason: null }, 200);
+  }
+
+  const taken = await emailSubdomainsTaken([res.value]);
+  if (taken.length > 0) {
+    return c.json({ label: res.value, available: false, reason: 'is already taken' }, 200);
+  }
+  return c.json({ label: res.value, available: true, reason: null }, 200);
 });
 
 // Persona local parts offered by default. Filtered through validatePersonaLocalPart

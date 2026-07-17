@@ -455,6 +455,28 @@
           }
         }
       },
+      "EmailSubdomainAvailability": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "label",
+          "available",
+          "reason"
+        ]
+      },
       "EmailBrandingSuggestions": {
         "type": "object",
         "properties": {
@@ -11382,6 +11404,96 @@
           },
           "409": {
             "description": "idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/email-branding/subdomain-availability": {
+      "get": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Check whether a branded subdomain label is claimable (owner/manager only)",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63
+            },
+            "required": true,
+            "name": "label",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "availability verdict (unavailability is data, not an error)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailSubdomainAvailability"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
             "content": {
               "application/json": {
                 "schema": {
