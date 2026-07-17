@@ -191,6 +191,12 @@ EXCLUDES=(
   # assigns process.env from supabase status so the app under test sees the
   # env it gets in CI. ASSIGNED, never read into a client constructor.
   ':!api/test/tenancy-start-date.test.ts'
+  # api/test/tenant-email-uniqueness.test.ts: same shape as comms.test.ts --
+  # assigns process.env from supabase status so the app under test (whose
+  # tenants route now uses the service-role admin client for its email-conflict
+  # oracle) sees the CI env. ASSIGNED, never read into a client constructor in
+  # this file.
+  ':!api/test/tenant-email-uniqueness.test.ts'
   # api/test/area-inspection-layouts.test.ts: same shape as ledger.test.ts --
   # assigns process.env from supabase status so the app under test sees the
   # env it gets in CI. ASSIGNED, never read into a client constructor.

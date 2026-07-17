@@ -619,6 +619,60 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
+  // (2f-bis) tenant email colliding with an existing tenant -> row blocker
+  // (per-account email uniqueness, migration 20260721000002). The pre-check in
+  // resolveTenant blocks the row (never throws / aborts the import) and names
+  // the holder; the DB trigger is the backstop for direct writes.
+  // =========================================================================
+  await check('import row with a colliding tenant email -> duplicate_email blocker, not failure', async () => {
+    const sharedEmail = `imp-dup-${rnd()}@example.test`;
+    // Seed an existing holder via the API (different NAME so import does not
+    // reuse it by name — it must reach the email conflict check).
+    const holder = await api('POST', `/v1/accounts/${A.accountId}/tenants`, {
+      token: A.accessToken,
+      body: { full_name: 'Holder Hank', emails: [sharedEmail] },
+    });
+    assertStatus(holder, 201, 'seed existing email holder');
+
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a tenant roster with emails',
+        entity_types: [{ entity_type: 'tenant', confidence: 0.9 }],
+      }],
+      mappings: {
+        tenant: [
+          { target_field: 'full_name', source_column: 'Name', constant: null, confidence: 0.95 },
+          { target_field: 'email', source_column: 'Email', constant: null, confidence: 0.9 },
+        ],
+      },
+    }));
+    const session = await uploadCsv(A, [
+      ['Name', 'Email'],
+      ['Dan Dup', sharedEmail],       // collides with Holder Hank -> blocked
+      ['Uma Unique', `imp-ok-${rnd()}@example.test`], // fine
+    ]);
+    if (session.status !== 'awaiting_mapping') throw new Error(`expected awaiting_mapping, got ${session.status}`);
+
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/preview`, { token: A.accessToken });
+    const preview = assertStatus(previewR, 200, 'preview dup email') as {
+      result: { blockers: { field: string | null; code?: string; message: string }[]; counts: Record<string, { created: number }> };
+    };
+    const dupBlocker = preview.result.blockers.find((b) => b.code === 'duplicate_email');
+    if (!dupBlocker) {
+      throw new Error(`expected a duplicate_email blocker, got ${JSON.stringify(preview.result.blockers)}`);
+    }
+    if (dupBlocker.field !== 'emails' || !dupBlocker.message.includes('Holder Hank')) {
+      throw new Error(`expected field=emails naming the holder, got ${JSON.stringify(dupBlocker)}`);
+    }
+    // The clean row still imports (a blocker excludes one row, never fails the run).
+    if (preview.result.counts.tenant?.created !== 1) {
+      throw new Error(`expected 1 tenant created (the unique row), got ${JSON.stringify(preview.result.counts.tenant)}`);
+    }
+  });
+
+  // =========================================================================
   // (2g) notes column -> interactions (channel=import, direction=none)
   // =========================================================================
   await check('notes column imports as interactions; dates inferred; empty cells skipped', async () => {

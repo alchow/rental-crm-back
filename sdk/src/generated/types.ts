@@ -1632,7 +1632,10 @@ export interface paths {
             };
         };
         put?: never;
-        /** Create a tenant */
+        /**
+         * Create a tenant
+         * @description A 409 conflict is returned when an email is already held within the account — by another tenant, or by an owner/manager login email (details.conflicts names the holders).
+         */
         post: {
             parameters: {
                 query?: never;
@@ -1680,7 +1683,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -1864,7 +1867,10 @@ export interface paths {
         };
         options?: never;
         head?: never;
-        /** Update a tenant (partial) */
+        /**
+         * Update a tenant (partial)
+         * @description A 409 conflict is returned when a written email is already held within the account — by another tenant, or by an owner/manager login email (details.conflicts names the holders).
+         */
         patch: {
             parameters: {
                 query?: never;
@@ -1913,7 +1919,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -18410,7 +18416,7 @@ export interface components {
             content: string;
         };
         /** @enum {string} */
-        ImportBlockerCode: "missing_parent_property" | "missing_parent_area" | "parent_not_found" | "ambiguous_match" | "unmapped_required_field" | "missing_required_field" | "unparseable_value" | "date_order" | "invalid_value" | "details_on_non_unit";
+        ImportBlockerCode: "missing_parent_property" | "missing_parent_area" | "parent_not_found" | "ambiguous_match" | "unmapped_required_field" | "missing_required_field" | "unparseable_value" | "date_order" | "invalid_value" | "details_on_non_unit" | "duplicate_email";
         ImportBlocker: {
             /** @enum {string} */
             scope: "region" | "row";

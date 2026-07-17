@@ -645,6 +645,47 @@ class ExecCtx {
       this.blockRow(row, 'tenant', 'full_name', 'invalid_value', firstIssue(v.error));
       return null;
     }
+    // Per-account email uniqueness (migration 20260721000002). Pre-check via the
+    // conflict oracle BEFORE the insert: the DB trigger would otherwise raise
+    // 23505 on a tenant-holder collision and abort the whole import txn. This
+    // runs in the executor's service_role txn (which has EXECUTE on the oracle;
+    // the SECURITY DEFINER function reads auth.users for the account_user tier),
+    // so it follows the existing raw-SQL query style — no admin-wrapper import.
+    // Blocks BOTH classes (another tenant, or a landlord login email), naming the
+    // holder; a blocked row is excluded, never thrown.
+    if (v.data.emails && v.data.emails.length > 0) {
+      // tenant holders first: when an address collides with BOTH a tenant and a
+      // landlord login, the tenant holder is the actionable one to report.
+      // DEGRADE OPEN on 42883 (function missing — code deployed before the prod
+      // migration): skipping matches the pre-feature state, and the trigger that
+      // would otherwise abort the whole import txn is equally absent then.
+      let conflict: { rowCount: number | null; rows: unknown[] };
+      try {
+        conflict = await this.client.query(
+          `select email, holder_kind, holder_name
+             from public._tenant_email_conflicts($1, $2, null)
+            order by (holder_kind = 'tenant') desc, email
+            limit 1`,
+          [this.accountId, v.data.emails],
+        );
+      } catch (err) {
+        if ((err as { code?: string }).code === '42883') {
+          getLogger().warn(
+            { account_id: this.accountId },
+            '_tenant_email_conflicts missing (migration 20260721000002 not applied) — import skips the email conflict check',
+          );
+          conflict = { rowCount: 0, rows: [] };
+        } else {
+          throw err;
+        }
+      }
+      if (conflict.rowCount && conflict.rowCount > 0) {
+        const h = conflict.rows[0] as { email: string; holder_kind: string; holder_name: string };
+        const who = h.holder_kind === 'account_user' ? `account user ${h.holder_name}` : h.holder_name;
+        this.blockRow(row, 'tenant', 'emails', 'duplicate_email', `email ${h.email} already belongs to ${who}`);
+        return null;
+      }
+    }
     const ins = await this.client.query(
       `insert into tenants (account_id, full_name, emails, phones) values ($1, $2, $3, $4) returning id`,
       [this.accountId, v.data.full_name, v.data.emails ?? [], v.data.phones ?? []],

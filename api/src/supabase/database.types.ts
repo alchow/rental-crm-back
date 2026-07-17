@@ -3944,6 +3944,19 @@ export type Database = {
         Returns: string;
       };
       _storage_path_account_id: { Args: { p_name: string }; Returns: string };
+      _tenant_email_conflicts: {
+        Args: {
+          p_account_id: string;
+          p_emails: string[];
+          p_exclude_tenant_id?: string;
+        };
+        Returns: {
+          email: string;
+          holder_id: string;
+          holder_kind: string;
+          holder_name: string;
+        }[];
+      };
       _tenant_stamp_form_started: {
         Args: { p_account_id: string; p_inspection_id: string };
         Returns: undefined;
