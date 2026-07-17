@@ -39,6 +39,7 @@ comment on function public._default_persona_local_part() is
 -- triggers Postgres fires alphabetically, so the reserved-subdomain guard
 -- (accounts_email_subdomain_reserved_guard) runs first — order is immaterial
 -- here (the two touch disjoint columns).
+drop trigger if exists accounts_persona_local_part_default on public.accounts;
 create trigger accounts_persona_local_part_default
   before insert or update of email_subdomain, persona_local_part on public.accounts
   for each row

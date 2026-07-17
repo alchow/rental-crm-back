@@ -942,6 +942,25 @@ async function main(): Promise<void> {
       assertStatus(r, 422, 'unbranded bare email');
       const msg = (r.body as { error?: { message?: string } })?.error?.message;
       assert(msg === 'email branding is not configured', `stable gate message: ${msg}`);
+
+      // The AGENT principal hits the same gate — and, more importantly, its
+      // RLS read of the accounts row must survive (is_account_member is
+      // role-agnostic today; this pins it so a future policy tightening that
+      // filtered the agent's row would fail loudly here, not silently 404
+      // every agent bare send in prod).
+      const agent = await api('POST', `${base}/outbox`, {
+        token: fx.agentToken,
+        body: {
+          channel: 'email',
+          to_address: `bare-gate-agent-${SUFFIX}@e2.test`,
+          body: 'agent probe, no branding yet',
+          approval_ref: 'proposal:gate-probe',
+          approved_by: fx.landlordId,
+        },
+      });
+      assertStatus(agent, 422, 'unbranded agent bare email (not 404: RLS row visible)');
+      const agentMsg = (agent.body as { error?: { message?: string } })?.error?.message;
+      assert(agentMsg === 'email branding is not configured', `agent gate message: ${agentMsg}`);
     },
   );
 
@@ -958,6 +977,20 @@ async function main(): Promise<void> {
       });
       const b = assertStatus(r, 200, 'brand fx account') as { persona_local_part: string | null };
       assert(b.persona_local_part === 'manager', `defaulted persona: ${b.persona_local_part}`);
+
+      // Branded: the agent principal's bare send now clears the gate (201) —
+      // the positive half of the RLS pin above.
+      const agent = await api('POST', `${base}/outbox`, {
+        token: fx.agentToken,
+        body: {
+          channel: 'email',
+          to_address: `bare-gate-agent-ok-${SUFFIX}@e2.test`,
+          body: 'agent probe, branded',
+          approval_ref: 'proposal:gate-probe-ok',
+          approved_by: fx.landlordId,
+        },
+      });
+      assertStatus(agent, 201, 'branded agent bare email');
     },
   );
 
