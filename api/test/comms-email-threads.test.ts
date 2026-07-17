@@ -734,6 +734,123 @@ async function main(): Promise<void> {
       JSON.stringify(row.cc_addresses) === JSON.stringify([`bare-ll-${SUFFIX}@e2.test`]),
       `bare cc frozen lowercased: ${JSON.stringify(row.cc_addresses)}`,
     );
+
+    // No context on this intent (no tenancy_id, addresses unknown to the
+    // account): both entries must stay 'unknown' — the context tiers may
+    // never guess.
+    const { data: snapRow, error } = await admin
+      .from('comm_outbox').select('recipient_snapshot').eq('id', row.id).single();
+    assert(!error, `snapshot read: ${error?.message}`);
+    const snap = (snapRow!.recipient_snapshot ?? []) as Array<{ party_type: string; party_id: string | null }>;
+    assert(snap.length === 2 && snap.every((e) => e.party_type === 'unknown' && e.party_id === null),
+      `context-less bare snapshot stays unknown: ${JSON.stringify(snap)}`);
+  });
+
+  await check('bare send with tenancy context: snapshot resolves To→tenant member, Cc→landlord_user; journal files under the unit', async () => {
+    // A member tenant whose stored email (mixed case) matches the dialed To —
+    // the tenancy-member tier, not the address book, must resolve it.
+    const T_RES = `bare-res-t-${SUFFIX}@e2.test`;
+    const t3 = await api('POST', `/v1/accounts/${fx.accountId}/tenants`, {
+      token: fx.landlordToken,
+      body: { full_name: 'Bare Res Tenant', emails: [`Bare-Res-T-${SUFFIX}@E2.test`] },
+    });
+    const t3Id = (assertStatus(t3, 201, 'resolvable tenant') as { id: string }).id;
+    const mem = await api('POST', `/v1/accounts/${fx.accountId}/tenancies/${fx.tenancyId}/members`, {
+      token: fx.landlordToken, body: { tenant_id: t3Id, role: 'occupant' },
+    });
+    assertStatus(mem, 201, 'tenancy member add');
+
+    const r = await api('POST', `${base}/outbox`, {
+      token: fx.landlordToken,
+      body: {
+        channel: 'email', to_address: T_RES,
+        cc_addresses: [fx.landlordEmail],
+        tenancy_id: fx.tenancyId,
+        subject: 'Inspection link', body: 'context probe', approval_ref: self,
+      },
+    });
+    const row = assertStatus(r, 201, 'context intent') as OutboxShape;
+
+    const { data: snapRow, error } = await admin
+      .from('comm_outbox').select('recipient_snapshot').eq('id', row.id).single();
+    assert(!error, `snapshot read: ${error?.message}`);
+    const snap = (snapRow!.recipient_snapshot ?? []) as Array<{
+      role?: string; party_type: string; party_id: string | null; address: string; label: string | null;
+    }>;
+    const primary = snap.find((e) => (e.role ?? 'recipient') !== 'cc');
+    assert(primary?.party_type === 'tenant' && primary?.party_id === t3Id,
+      `To resolved via the tenancy: ${JSON.stringify(snap)}`);
+    assert(primary?.label === 'Bare Res Tenant', `resolved label from _party_display_name: ${primary?.label}`);
+    const ccEntry = snap.find((e) => e.role === 'cc');
+    assert(ccEntry?.party_type === 'landlord_user' && ccEntry?.party_id === fx.landlordId,
+      `Cc resolved to the account owner: ${JSON.stringify(snap)}`);
+
+    // Complete → the journal headline/cast carry the linked parties, and the
+    // row files under the tenancy's unit (area_id stored, property_id derived).
+    const claim = await api('POST', `${base}/outbox/${row.id}/delivery`, {
+      token: fx.agentToken, body: { status: 'sending', provider_ts: iso() },
+    });
+    assertStatus(claim, 200, 'context claim');
+    const done = await api('POST', `${base}/outbox/${row.id}/complete`, {
+      token: fx.agentToken, body: { provider: 'resend', provider_sid: `em-ctx-${rnd()}` },
+    });
+    const doneBody = assertStatus(done, 200, 'context complete') as { interaction_id: string };
+
+    const ten = await api('GET', `/v1/accounts/${fx.accountId}/tenancies/${fx.tenancyId}`, { token: fx.landlordToken });
+    const unitId = (assertStatus(ten, 200, 'tenancy read') as { area_id: string }).area_id;
+    const area = await api('GET', `/v1/accounts/${fx.accountId}/areas/${unitId}`, { token: fx.landlordToken });
+    const propertyId = (assertStatus(area, 200, 'area read') as { property_id: string }).property_id;
+
+    const j = await api('GET', `/v1/accounts/${fx.accountId}/interactions/${doneBody.interaction_id}`, {
+      token: fx.landlordToken,
+    });
+    const ji = assertStatus(j, 200, 'journal read') as {
+      party_type: string; party_id: string | null; area_id: string | null; property_id: string | null;
+      participants?: Array<{ role: string; party_type: string; party_id: string | null }>;
+    };
+    assert(ji.party_type === 'tenant' && ji.party_id === t3Id,
+      `journal headline linked: ${ji.party_type}/${ji.party_id}`);
+    assert(ji.area_id === unitId, `journal filed under the unit: ${ji.area_id}`);
+    assert(ji.property_id === propertyId, `property derived from area: ${ji.property_id}`);
+    const jcc = (ji.participants ?? []).find((p) => p.role === 'cc');
+    assert(jcc?.party_type === 'landlord_user' && jcc?.party_id === fx.landlordId,
+      `journal cast cc linked: ${JSON.stringify(ji.participants)}`);
+  });
+
+  await check('bare send context tiers do not preempt the address book (channel_identities still wins)', async () => {
+    // The address book says this address is Tenant One; the tenancy-member
+    // tier would say the new tenant. The learned identity must win.
+    const ADDR = `learned-${SUFFIX}@e2.test`;
+    const t5 = await api('POST', `/v1/accounts/${fx.accountId}/tenants`, {
+      token: fx.landlordToken, body: { full_name: 'Shadow Tenant', emails: [ADDR] },
+    });
+    const t5Id = (assertStatus(t5, 201, 'shadow tenant') as { id: string }).id;
+    const mem = await api('POST', `/v1/accounts/${fx.accountId}/tenancies/${fx.tenancyId}/members`, {
+      token: fx.landlordToken, body: { tenant_id: t5Id, role: 'occupant' },
+    });
+    assertStatus(mem, 201, 'shadow member add');
+    {
+      const { error } = await admin.from('channel_identities').insert({
+        account_id: fx.accountId, channel: 'email', address: ADDR,
+        party_type: 'tenant', party_id: fx.tenant1Id, label: 'Learned One',
+      });
+      assert(!error, `identity seed: ${error?.message}`);
+    }
+
+    const r = await api('POST', `${base}/outbox`, {
+      token: fx.landlordToken,
+      body: {
+        channel: 'email', to_address: ADDR, tenancy_id: fx.tenancyId,
+        body: 'precedence probe', approval_ref: self,
+      },
+    });
+    const row = assertStatus(r, 201, 'precedence intent') as OutboxShape;
+    const { data: snapRow, error } = await admin
+      .from('comm_outbox').select('recipient_snapshot').eq('id', row.id).single();
+    assert(!error, `snapshot read: ${error?.message}`);
+    const snap = (snapRow!.recipient_snapshot ?? []) as Array<{ party_type: string; party_id: string | null }>;
+    assert(snap[0]!.party_type === 'tenant' && snap[0]!.party_id === fx.tenant1Id,
+      `address book wins over tenancy context: ${JSON.stringify(snap)}`);
   });
 
   await check('landlord CC arm (bare): guards — sms 400, with thread_id 400, invalid entry 422', async () => {
