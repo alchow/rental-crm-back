@@ -250,6 +250,15 @@ jobs:
       - name: Run API-level cross-tenant isolation
         run: pnpm --filter ./api test:api-isolation
 
+      - name: Run auth token-refresh regression
+        # POST /v1/auth/refresh must NOT collapse concurrent refreshes of
+        # different sessions onto one winner (prod incident 2026-07-17): the old
+        # shared anon supabase-js client's refreshSession() returned the
+        # in-flight promise regardless of the refresh_token, cross-returning
+        # sessions. Two concurrent refreshes must each get their OWN user's
+        # session; a garbage token → 401 unauthenticated.
+        run: pnpm --filter ./api test:auth-refresh
+
       - name: Run landlord profile checks
         # GET/PATCH /v1/profile against public.users: E.164 normalisation on
         # write, 422 on un-normalisable input, null-clears, display_name vs

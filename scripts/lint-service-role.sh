@@ -182,6 +182,11 @@ EXCLUDES=(
   # manufacture. TEST code, never shipped.
   ':!api/test/tenancy-endings.test.ts'
   ':!api/test/maintenance-reporter.test.ts'
+  # api/test/auth-refresh.test.ts: same shape as api-isolation.test.ts --
+  # assigns process.env from supabase status so the app under test (whose
+  # signup path builds the admin GoTrue client) sees the CI env. ASSIGNED,
+  # never read into a client constructor in this file.
+  ':!api/test/auth-refresh.test.ts'
   # api/test/tenancy-start-date.test.ts: same shape as ledger.test.ts --
   # assigns process.env from supabase status so the app under test sees the
   # env it gets in CI. ASSIGNED, never read into a client constructor.
