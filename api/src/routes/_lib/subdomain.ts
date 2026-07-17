@@ -9,10 +9,30 @@
 // label AND must not collide with an operational or reserved name. This module
 // is a pure validator: it RETURNS a result and never throws — the caller
 // (routes/accounts.ts) maps a failure to a 422 with field errors.
+//
+// The RFC-1035 label rule (LABEL_RE), the operational reserved list
+// (RESERVED_SUBDOMAINS), and the ops list (OPS_SUBDOMAINS) are OWNED by the
+// premium-subdomains loader (./premium-subdomains) — see that file for WHY
+// (an import-cycle break). They are imported and RE-EXPORTED here so importers
+// that resolved them from subdomain.ts are unaffected.
+//
+// The PREMIUM property-category names are no longer hardcoded here: they live
+// in api/src/config/premium-subdomains.json, loaded + validated by
+// ./premium-subdomains. Removing a name there RELEASES it for the next
+// owner/manager to claim (the sale flow); adding one reserves it — both take
+// effect at the next deploy. The DB backstop (public.reserved_subdomain_labels)
+// is reconciled to that file's premium rows on every API boot
+// (admin/sync-premium-subdomains.ts), so the list evolves without a migration.
+import {
+  LABEL_RE,
+  OPS_SUBDOMAINS,
+  PREMIUM_SUBDOMAINS,
+  RESERVED_SUBDOMAINS,
+} from './premium-subdomains';
 
-// A single lowercase DNS label: 1..63 chars, starts and ends alphanumeric,
-// hyphens allowed only in the interior. Same regex the DB CHECK enforces.
-const LABEL_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+// Re-export the loader-owned lists so callers keep resolving them from
+// subdomain.ts (their pre-cycle-break home).
+export { OPS_SUBDOMAINS, PREMIUM_SUBDOMAINS, RESERVED_SUBDOMAINS };
 
 // C0/C1 control characters (incl. newlines/tabs). Rejected in a display name:
 // they have no place there and are a header-injection vector on the transport
@@ -20,22 +40,11 @@ const LABEL_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 // eslint-disable-next-line no-control-regex
 const CONTROL_RE = /[\x00-\x1f\x7f-\x9f]/;
 
-// Reserved labels a landlord may never claim: operational hostnames, mail
-// infrastructure, and support/abuse mailbox local-parts that would collide
-// with platform or provider expectations if they became a receiving subdomain.
-// MIRRORED by the accounts_email_subdomain_reserved DB CHECK (migration
-// 20260704000001) — the unbypassable backstop for direct column-granted
-// PostgREST writes. Keep the two lists identical; evolving the list means a
-// migration and an API change together.
-const RESERVED_SUBDOMAINS: readonly string[] = [
-  'www', 'mail', 'api', 'app', 'admin', 'root',
-  'smtp', 'imap', 'pop', 'pop3', 'mx', 'ns', 'ns1', 'ns2', 'ftp',
-  'webmail', 'email', 'reply', 'noreply', 'no-reply',
-  'bounce', 'bounces', 'unsubscribe',
-  'abuse', 'postmaster', 'support', 'help', 'info',
-  'billing', 'security', 'status',
-  'dev', 'staging', 'test', 'internal',
-];
+// SMTP2GO return-path labels: the provider's bounce/return-path CNAME is
+// `em<digits>.<parent>` (e.g. em682356.mail.example.com). A branded subdomain
+// matching `em\d+` would collide with that provider record, so the whole shape
+// is reserved — rejected as a reserved name (not premium).
+const EM_RETURN_PATH_RE = /^em\d+$/;
 
 export type SubdomainValidation =
   | { ok: true; value: string }
@@ -68,10 +77,102 @@ export function validateEmailSubdomain(raw: string): SubdomainValidation {
   if (value.startsWith('xn--')) {
     return { ok: false, reason: 'internationalised (xn--) labels are not allowed' };
   }
-  if (RESERVED_SUBDOMAINS.includes(value)) {
+  if (RESERVED_SUBDOMAINS.includes(value) || OPS_SUBDOMAINS.includes(value)) {
     return { ok: false, reason: 'is a reserved name' };
   }
+  // SMTP2GO return-path shape (`em<digits>`) is provider-owned — reserved.
+  if (EM_RETURN_PATH_RE.test(value)) {
+    return { ok: false, reason: 'is a reserved name' };
+  }
+  // Premium property-category names get a DISTINCT, STABLE reason string: the
+  // frontend keys on this exact text to show a "reserved for resale" upsell.
+  // Do not vary it.
+  if (PREMIUM_SUBDOMAINS.includes(value)) {
+    return { ok: false, reason: 'is a premium name reserved by the platform' };
+  }
   return { ok: true, value };
+}
+
+// Corporate-suffix / filler tokens dropped when deriving a subdomain from an
+// account name — they carry no brand identity ('Acme LLC' → 'acme').
+const SUGGEST_STOP_WORDS: readonly string[] = [
+  'llc', 'inc', 'co', 'corp', 'corporation', 'ltd', 'company',
+  'the', 'of', 'and', 'group', 'mgmt',
+];
+
+// Property-domain tokens dropped when computing the CORE label — the branded
+// subdomain hangs under a mail parent, so 'Acme Ridge Property Management' wants
+// 'acmeridge', not 'acmeridgepropertymanagement'. Also, most of these are
+// PREMIUM_SUBDOMAINS in their own right, so a core that dropped them avoids the
+// premium wall. They are kept for the fuller all-minus-stop fallbacks below.
+const SUGGEST_DOMAINY_WORDS: readonly string[] = [
+  'property', 'properties', 'management', 'realty', 'rentals', 'rental',
+  'homes', 'estates', 'real', 'estate', 'leasing', 'apartments', 'residential',
+];
+
+/**
+ * Suggest up to 8 candidate email subdomains derived from an account name, in
+ * priority order (shortest/brandiest first). Pure — no DB, no env. Every
+ * candidate is run through validateEmailSubdomain, so reserved/premium/format
+ * failures are dropped here rather than surfacing to the caller; the caller
+ * (the suggestions endpoint) additionally filters already-taken labels and
+ * caps the surfaced list. Note compounds like 'acme-properties' are LEGAL
+ * (only the exact 'properties' label is reserved), so hyphenated fallbacks that
+ * embed a domainy word survive.
+ *
+ * Data flow for 'Acme Ridge Property Management LLC':
+ *   normalize → 'acme ridge property management llc'
+ *   tokens    → [acme, ridge, property, management, llc]
+ *   core      → [acme, ridge]                (minus STOP 'llc', minus DOMAINY)
+ *   bases     → 'acmeridge', 'acme-ridge',
+ *               'acmeridgepropertymanagement', 'acme-ridge-property-management'
+ *   base(1st surviving) = 'acmeridge' → +'-hq','-team','-office','-pm'
+ */
+export function suggestEmailSubdomains(accountName: string): string[] {
+  // Normalize: strip diacritics (NFD then drop combining marks), lowercase,
+  // spell out '&', drop anything outside [a-z0-9 -], collapse whitespace.
+  const normalized = accountName
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // drop the combining diacritical marks NFD split off
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9 -]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (normalized.length === 0) return [];
+
+  const tokens = normalized.split(' ').filter((t) => t.length > 0);
+  const minusStop = tokens.filter((t) => !SUGGEST_STOP_WORDS.includes(t));
+  const core = minusStop.filter((t) => !SUGGEST_DOMAINY_WORDS.includes(t));
+  // Degenerate all-stopword name (e.g. 'The Of And'): fall back to all tokens
+  // so we still emit something rather than an empty base.
+  const fallback = minusStop.length > 0 ? minusStop : tokens;
+
+  // Base candidates in priority order; skip empties (core may be empty when the
+  // name is entirely stop/domainy words).
+  const bases: string[] = [];
+  if (core.length > 0) {
+    bases.push(core.join(''), core.join('-'));
+  }
+  bases.push(fallback.join(''), fallback.join('-'));
+
+  // The first base that passes validation seeds the '-hq'/'-team'/… variants.
+  const base = bases.find((b) => b.length > 0 && validateEmailSubdomain(b).ok);
+  const candidates = [...bases];
+  if (base) {
+    candidates.push(`${base}-hq`, `${base}-team`, `${base}-office`, `${base}-pm`);
+  }
+
+  // Validate, dedupe preserving order, cap at 8.
+  const out: string[] = [];
+  for (const cand of candidates) {
+    if (cand.length === 0) continue;
+    if (!validateEmailSubdomain(cand).ok) continue;
+    if (out.includes(cand)) continue;
+    out.push(cand);
+    if (out.length >= 8) break;
+  }
+  return out;
 }
 
 /**

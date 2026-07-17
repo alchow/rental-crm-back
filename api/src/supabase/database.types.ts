@@ -3132,6 +3132,24 @@ export type Database = {
           },
         ];
       };
+      reserved_subdomain_labels: {
+        Row: {
+          created_at: string;
+          kind: string;
+          label: string;
+        };
+        Insert: {
+          created_at?: string;
+          kind: string;
+          label: string;
+        };
+        Update: {
+          created_at?: string;
+          kind?: string;
+          label?: string;
+        };
+        Relationships: [];
+      };
       scheduled_task_runs: {
         Row: {
           account_id: string;
@@ -3881,6 +3899,7 @@ export type Database = {
       };
       _comm_journal_channel: { Args: { p_channel: string }; Returns: string };
       _comm_normalize_msgid: { Args: { p_raw: string }; Returns: string };
+      _email_subdomains_taken: { Args: { p_candidates: string[] }; Returns: string[] };
       _party_display_name: {
         Args: { p_account_id: string; p_party_id: string; p_party_type: string };
         Returns: string;

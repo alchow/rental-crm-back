@@ -3,6 +3,7 @@ import { buildApp } from './app';
 import { loadEnv } from './env';
 import { getLogger } from './log';
 import { closePool } from './admin/db-pool';
+import { syncPremiumSubdomainLabels } from './admin/sync-premium-subdomains';
 
 const env = loadEnv();
 const log = getLogger();
@@ -28,6 +29,17 @@ const server = serve(
     log.info({ port: info.port }, 'api listening');
   },
 );
+
+// Reconcile the DB premium-subdomain backstop (public.reserved_subdomain_labels)
+// to the config file on boot. Fire-and-forget: this must NOT block or crash the
+// server — the API layer already enforces the file, so a sync failure only means
+// the direct-PostgREST backstop may lag the config file until the next boot.
+void syncPremiumSubdomainLabels().catch((err: unknown) => {
+  log.error(
+    { err },
+    'premium subdomain sync failed — DB backstop may lag the config file until next boot',
+  );
+});
 
 // Render (and any supervisor) sends SIGTERM on every deploy. Stop accepting
 // new connections, let in-flight requests finish, drain the import pg pool,
