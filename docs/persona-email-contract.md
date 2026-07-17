@@ -190,9 +190,10 @@ Nothing new mechanically — same endpoint, same rule: relay only on
   (`comm_unmatched_inbound`) carrying their own copy of the message — they
   outlive the raw-tier prune. `unmatched_id` in the persona capture response
   is now real (and stable across replays).
-- `reason` distinguishes `unknown_sender` from `auth_failed` (a RECOGNIZED
-  tenant/vendor/landlord identity whose mail failed DMARC — the suspicious
-  kind).
+- `reason` distinguishes `unknown_sender`, `auth_failed` (a recognized identity
+  whose mail failed DMARC), and `identity_conflict` (an authenticated alias
+  matched a frozen outbound snapshot but its exact address was already bound
+  to another party). The latter two always require human review.
 - Landlord surface (owner|manager): `GET /accounts/{id}/comms/unmatched`
   (queue, status filter), `GET …/unmatched/{id}` (detail + read-time
   suggestions: exact contact-email hits, trigram name matches),

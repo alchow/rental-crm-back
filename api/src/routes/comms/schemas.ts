@@ -795,9 +795,10 @@ export const CommUnmatchedInbound = z
     dkim: z.string().nullable(),
     dmarc: z.string().nullable(),
     /** unknown_sender: nobody recognizes the address. auth_failed: a
-     *  RECOGNIZED identity (tenant/vendor/landlord) whose mail failed DMARC —
-     *  the suspicious kind; never attributable without a human. */
-    reason: z.enum(['unknown_sender', 'auth_failed']),
+     *  RECOGNIZED identity whose mail failed DMARC. identity_conflict: the
+     *  authenticated alias matches an outbound snapshot but its exact address
+     *  is already bound to another party. Both require human review. */
+    reason: z.enum(['unknown_sender', 'auth_failed', 'identity_conflict']),
     received_at: z.string(),
     status: z.enum(['pending', 'linked', 'dismissed']),
     resolved_by: z.string().uuid().nullable(),

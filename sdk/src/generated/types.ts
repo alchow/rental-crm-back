@@ -17713,7 +17713,7 @@ export interface components {
             dkim: string | null;
             dmarc: string | null;
             /** @enum {string} */
-            reason: "unknown_sender" | "auth_failed";
+            reason: "unknown_sender" | "auth_failed" | "identity_conflict";
             received_at: string;
             /** @enum {string} */
             status: "pending" | "linked" | "dismissed";
