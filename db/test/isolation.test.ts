@@ -61,6 +61,11 @@ const NOT_ACCOUNT_SCOPED = new Set([
   // SECURITY DEFINER RPCs only.
   'comm_opt_outs',
   'inbound_raw',
+  // Premium/ops reserved subdomain labels (20260721000001): a platform-wide
+  // policy list, not tenant data — keyed by label, deliberately no account_id.
+  // Deny-all via FORCE RLS-without-policies + REVOKE; only the SECURITY
+  // DEFINER accounts write-trigger and the service-role boot sync touch it.
+  'reserved_subdomain_labels',
 ]);
 // Tables we do NOT seed with domain rows. They still get the cross-tenant
 // isolation check (cross-account count == 0), but we skip the
