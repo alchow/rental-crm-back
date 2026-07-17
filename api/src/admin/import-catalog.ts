@@ -246,6 +246,7 @@ export const BLOCKER_CODES = [
   'date_order', // end date precedes start date
   'invalid_value', // failed the same Zod validation an HTTP POST would
   'details_on_non_unit', // unit_details mapped onto a non-unit area kind
+  'duplicate_email', // tenant email already held in the account (another tenant or a landlord login)
 ] as const;
 export type BlockerCode = (typeof BLOCKER_CODES)[number];
 
