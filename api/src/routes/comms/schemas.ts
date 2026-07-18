@@ -81,15 +81,17 @@ export const CommOutbox = z
            *  recipients and on rows frozen before the CC arm existed. */
           role: z.enum(['cc']).optional(),
           /** WHICH tier resolved this entry (persona routing v2):
-           *  thread_participant | tenancy_member | account_member
-           *  (authoritative context), then the claims resolver's winning tier
-           *  (human_link | authoritative_record | verified_claim |
-           *  provider_learned | legacy — PR 2), then unknown.
+           *  caller_intent (the caller stated the party via to_party/cc_parties
+           *  and core re-verified it — PR 3), then thread_participant |
+           *  tenancy_member | account_member (authoritative context), then the
+           *  claims resolver's winning tier (human_link | authoritative_record |
+           *  verified_claim | provider_learned | legacy — PR 2), then unknown.
            *  'learned_identity' appears on rows frozen by the PR 1 stamp.
            *  Absent on rows frozen before the stamp existed and on group-MMS
            *  snapshots. */
           resolution_source: z
             .enum([
+              'caller_intent',
               'thread_participant',
               'tenancy_member',
               'account_member',
@@ -186,6 +188,38 @@ export const CreateOutboxBody = z
      *  entries are scrubbed at INSERT (DB trigger). Frozen verbatim into
      *  comm_outbox.cc_addresses. */
     cc_addresses: z.array(z.string().min(3).max(320)).min(1).max(5).optional(),
+    /** Explicit PRIMARY-recipient party for a BARE (thread-less) email intent
+     *  — the caller states what it already knows (persona routing v2 PR 3) so
+     *  core need not re-derive the party from the To address. Bare email only
+     *  (400 otherwise) and requires to_address. Core re-verifies independently
+     *  before freezing: the party must belong to the account, a tenant must be
+     *  a member of tenancy_id when supplied, and to_address must resolve to
+     *  this party at an authoritative claim tier — otherwise 422. Frozen into
+     *  the recipient snapshot as resolution_source='caller_intent'. */
+    to_party: z
+      .object({
+        party_type: z.enum(['tenant', 'vendor']),
+        party_id: z.string().uuid(),
+      })
+      .optional(),
+    /** Explicit party for each visible Cc of a BARE email intent (e.g. the
+     *  inspection-link mail CC'ing the landlord). Bare email only, requires
+     *  cc_addresses, and every entry's address MUST equal (case-insensitive)
+     *  one cc_addresses entry (400 otherwise). Each cc party must be an
+     *  owner/manager account member whose address verifies the same way (422).
+     *  One address claimed by two different parties is a 409 conflict. Frozen
+     *  as resolution_source='caller_intent'. */
+    cc_parties: z
+      .array(
+        z.object({
+          address: z.string().min(3).max(320),
+          party_type: z.literal('landlord_user'),
+          party_id: z.string().uuid(),
+        }),
+      )
+      .min(1)
+      .max(5)
+      .optional(),
     approval_ref: z.string().min(1).max(200),
     approved_by: z.string().uuid().optional(),
     not_before: z.string().datetime().optional(),

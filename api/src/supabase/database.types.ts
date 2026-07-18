@@ -700,6 +700,9 @@ export type Database = {
           tenancy_id: string | null;
           thread_id: string | null;
           to_address: string | null;
+          to_party_type: string | null;
+          to_party_id: string | null;
+          cc_parties: Json | null;
           updated_at: string;
         };
         Insert: {
@@ -732,6 +735,9 @@ export type Database = {
           tenancy_id?: string | null;
           thread_id?: string | null;
           to_address?: string | null;
+          to_party_type?: string | null;
+          to_party_id?: string | null;
+          cc_parties?: Json | null;
           updated_at?: string;
         };
         Update: {
@@ -764,6 +770,9 @@ export type Database = {
           tenancy_id?: string | null;
           thread_id?: string | null;
           to_address?: string | null;
+          to_party_type?: string | null;
+          to_party_id?: string | null;
+          cc_parties?: Json | null;
           updated_at?: string;
         };
         Relationships: [
@@ -4094,6 +4103,21 @@ export type Database = {
           p_status: number;
         };
         Returns: undefined;
+      };
+      check_outbox_party_intent: {
+        Args: {
+          p_account_id: string;
+          p_tenancy_id: string | null;
+          p_to_party_type: string | null;
+          p_to_party_id: string | null;
+          p_to_address: string | null;
+          p_cc_parties: Json | null;
+        };
+        Returns: {
+          slot: string;
+          hint_address: string;
+          verdict: string;
+        }[];
       };
       complete_send: {
         Args: {

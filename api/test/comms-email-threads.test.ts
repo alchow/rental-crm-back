@@ -1307,6 +1307,286 @@ async function main(): Promise<void> {
     },
   );
 
+  // --- explicit caller party intent (persona routing v2 PR 3) ---------------
+  // The account is still branded here (`bare<SUFFIX>`), so the bare-send gate
+  // is open and the persona reply below can resolve a receiving domain. to_party
+  // / cc_parties let the caller STATE the party it already knows; core
+  // re-verifies each hint independently before freezing it as
+  // resolution_source='caller_intent'.
+
+  // A FOREIGN account + tenant — proves account scoping (wrong-account 422 and
+  // the forged-hint trigger backstop below).
+  let foreignTenantId = '';
+  {
+    const fEmail = `commset-foreign-${rnd()}@example.test`;
+    const fPw = `correct-horse-${rnd()}`;
+    const fsu = await api('POST', '/v1/auth/signup', {
+      body: { email: fEmail, password: fPw, account_name: 'Foreign Acct' },
+    });
+    const fb = assertStatus(fsu, 200, 'foreign signup') as {
+      account: { id: string };
+      session: { access_token: string };
+    };
+    const ft = await api('POST', `/v1/accounts/${fb.account.id}/tenants`, {
+      token: fb.session.access_token,
+      body: { full_name: 'Foreign Tenant', emails: [`foreign-t-${SUFFIX}@e2.test`] },
+    });
+    foreignTenantId = (assertStatus(ft, 201, 'foreign tenant') as { id: string }).id;
+  }
+
+  // The account persona (subdomain `bare<SUFFIX>`, persona defaulted 'manager').
+  const CI_PERSONA = `manager@bare${SUFFIX}.brand-${SUFFIX}.test`;
+  const CI_AUTH_PASS = { spf: 'pass', dkim: 'pass', dmarc: 'pass' } as const;
+
+  await check(
+    'to_party + cc_parties + tenancy_id → 201; both snapshot entries frozen caller_intent; a persona reply routes via the parent',
+    async () => {
+      // The primary recipient: a tenant whose stored email is the To address and
+      // who is a member of the intent's tenancy.
+      const CI_TO = `ci-tenant-${SUFFIX}@e2.test`;
+      const ct = await api('POST', `/v1/accounts/${fx.accountId}/tenants`, {
+        token: fx.landlordToken,
+        body: { full_name: 'Caller Intent Tenant', emails: [CI_TO] },
+      });
+      const ciTenantId = (assertStatus(ct, 201, 'ci tenant') as { id: string }).id;
+      const mem = await api(
+        'POST',
+        `/v1/accounts/${fx.accountId}/tenancies/${fx.tenancyId}/members`,
+        { token: fx.landlordToken, body: { tenant_id: ciTenantId, role: 'occupant' } },
+      );
+      assertStatus(mem, 201, 'ci tenancy member');
+
+      const r = await api('POST', `${base}/outbox`, {
+        token: fx.landlordToken,
+        body: {
+          channel: 'email',
+          to_address: CI_TO,
+          to_party: { party_type: 'tenant', party_id: ciTenantId },
+          cc_addresses: [fx.landlordEmail],
+          cc_parties: [
+            {
+              address: fx.landlordEmail.toLowerCase(),
+              party_type: 'landlord_user',
+              party_id: fx.landlordId,
+            },
+          ],
+          tenancy_id: fx.tenancyId,
+          subject: 'Inspection link',
+          body: 'caller intent probe',
+          approval_ref: self,
+        },
+      });
+      const row = assertStatus(r, 201, 'caller intent intent') as OutboxShape;
+
+      // Both snapshot entries are frozen from the caller's stated party.
+      const { data: snapRow, error } = await admin
+        .from('comm_outbox')
+        .select('recipient_snapshot')
+        .eq('id', row.id)
+        .single();
+      assert(!error, `snapshot read: ${error?.message}`);
+      const snap = (snapRow!.recipient_snapshot ?? []) as Array<{
+        role?: string;
+        party_type: string;
+        party_id: string | null;
+        resolution_source?: string;
+      }>;
+      const primary = snap.find((e) => (e.role ?? 'recipient') !== 'cc');
+      assert(
+        primary?.party_type === 'tenant' &&
+          primary?.party_id === ciTenantId &&
+          primary?.resolution_source === 'caller_intent',
+        `To frozen from caller intent: ${JSON.stringify(snap)}`,
+      );
+      const ccEntry = snap.find((e) => e.role === 'cc');
+      assert(
+        ccEntry?.party_type === 'landlord_user' &&
+          ccEntry?.party_id === fx.landlordId &&
+          ccEntry?.resolution_source === 'caller_intent',
+        `Cc frozen from caller intent: ${JSON.stringify(snap)}`,
+      );
+
+      // Complete → the row is a valid parent (sent, Message-ID stamped).
+      const parentMsgId = `<ci-parent-${SUFFIX}@sender>`;
+      const done = await api('POST', `${base}/outbox/${row.id}/complete`, {
+        token: fx.agentToken,
+        body: { provider: 'resend', provider_sid: `ci-${rnd()}`, rfc822_message_id: parentMsgId },
+      });
+      assertStatus(done, 200, 'caller intent parent complete');
+
+      // The tenant replies through the persona; In-Reply-To names the parent.
+      const reply = await api(`POST`, `/v1/accounts/${fx.accountId}/comms/inbound-persona`, {
+        token: fx.agentToken,
+        body: {
+          provider: 'ses',
+          provider_msg_id: `CI-reply-${rnd()}`,
+          persona_address: CI_PERSONA,
+          from_address: CI_TO,
+          to_addresses: [CI_PERSONA],
+          cc_addresses: [],
+          subject: 'Re: Inspection link',
+          body: 'tenant reply via persona',
+          rfc822_message_id: `<ci-reply-${SUFFIX}@sender>`,
+          in_reply_to: parentMsgId,
+          references: [parentMsgId],
+          auth_results: CI_AUTH_PASS,
+          received_at: iso(),
+        },
+      });
+      const res = assertStatus(reply, 200, 'caller intent reply') as CaptureShape;
+      assert(res.disposition === 'matched', `reply matched: ${res.disposition}`);
+      assert(
+        res.participant?.party_type === 'tenant' && res.participant.party_id === ciTenantId,
+        `reply routed to the parent's tenant: ${JSON.stringify(res.participant)}`,
+      );
+    },
+  );
+
+  await check('caller intent: wrong-account party id → 422', async () => {
+    const r = await api('POST', `${base}/outbox`, {
+      token: fx.landlordToken,
+      body: {
+        channel: 'email',
+        to_address: `ci-wrong-${SUFFIX}@e2.test`,
+        to_party: { party_type: 'tenant', party_id: foreignTenantId },
+        body: 'x',
+        approval_ref: self,
+      },
+    });
+    assertStatus(r, 422, 'wrong-account to_party');
+    assert(errCode(r) === 'invalid_request', `code: ${errCode(r)}`);
+  });
+
+  await check('caller intent: tenant not a member of the supplied tenancy → 422', async () => {
+    const CI_NM = `ci-nonmember-${SUFFIX}@e2.test`;
+    const t = await api('POST', `/v1/accounts/${fx.accountId}/tenants`, {
+      token: fx.landlordToken,
+      body: { full_name: 'Non-member', emails: [CI_NM] },
+    });
+    const tId = (assertStatus(t, 201, 'non-member tenant') as { id: string }).id;
+    const r = await api('POST', `${base}/outbox`, {
+      token: fx.landlordToken,
+      body: {
+        channel: 'email',
+        to_address: CI_NM,
+        to_party: { party_type: 'tenant', party_id: tId },
+        tenancy_id: fx.tenancyId,
+        body: 'x',
+        approval_ref: self,
+      },
+    });
+    assertStatus(r, 422, 'tenant not in tenancy');
+  });
+
+  await check('caller intent: address does not resolve to the hinted party → 422', async () => {
+    const CI_A = `ci-hasmail-${SUFFIX}@e2.test`;
+    const t = await api('POST', `/v1/accounts/${fx.accountId}/tenants`, {
+      token: fx.landlordToken,
+      body: { full_name: 'Has Mail', emails: [CI_A] },
+    });
+    const tId = (assertStatus(t, 201, 'address tenant') as { id: string }).id;
+    const mem = await api(
+      'POST',
+      `/v1/accounts/${fx.accountId}/tenancies/${fx.tenancyId}/members`,
+      { token: fx.landlordToken, body: { tenant_id: tId, role: 'occupant' } },
+    );
+    assertStatus(mem, 201, 'address tenant member');
+    // The party is real and in the tenancy, but the To address is a DIFFERENT
+    // address that resolves to nobody — the hint must not be trusted.
+    const r = await api('POST', `${base}/outbox`, {
+      token: fx.landlordToken,
+      body: {
+        channel: 'email',
+        to_address: `ci-other-${SUFFIX}@e2.test`,
+        to_party: { party_type: 'tenant', party_id: tId },
+        tenancy_id: fx.tenancyId,
+        body: 'x',
+        approval_ref: self,
+      },
+    });
+    assertStatus(r, 422, 'address does not verify');
+  });
+
+  await check('caller intent: cc_parties entry with no matching cc_addresses → 400', async () => {
+    const r = await api('POST', `${base}/outbox`, {
+      token: fx.landlordToken,
+      body: {
+        channel: 'email',
+        to_address: `ci-t-${SUFFIX}@e2.test`,
+        cc_addresses: [fx.landlordEmail],
+        cc_parties: [
+          {
+            address: `ci-notcc-${SUFFIX}@e2.test`,
+            party_type: 'landlord_user',
+            party_id: fx.landlordId,
+          },
+        ],
+        body: 'x',
+        approval_ref: self,
+      },
+    });
+    assertStatus(r, 400, 'cc_parties without a matching cc_addresses entry');
+  });
+
+  await check('caller intent: to_party with thread_id → 400', async () => {
+    const r = await api('POST', `${base}/outbox`, {
+      token: fx.landlordToken,
+      body: {
+        channel: 'email',
+        thread_id: thread1Id,
+        to_party: { party_type: 'tenant', party_id: fx.tenant1Id },
+        body: 'x',
+        approval_ref: self,
+      },
+    });
+    assertStatus(r, 400, 'to_party is bare-only');
+  });
+
+  await check('caller intent: one address claimed by two different parties → 409', async () => {
+    const r = await api('POST', `${base}/outbox`, {
+      token: fx.landlordToken,
+      body: {
+        channel: 'email',
+        to_address: `ci-conf-${SUFFIX}@e2.test`,
+        cc_addresses: [fx.landlordEmail],
+        cc_parties: [
+          {
+            address: fx.landlordEmail.toLowerCase(),
+            party_type: 'landlord_user',
+            party_id: fx.landlordId,
+          },
+          {
+            address: fx.landlordEmail.toLowerCase(),
+            party_type: 'landlord_user',
+            party_id: crypto.randomUUID(),
+          },
+        ],
+        body: 'x',
+        approval_ref: self,
+      },
+    });
+    assertStatus(r, 409, 'duplicate address, two parties');
+  });
+
+  await check(
+    'caller intent backstop: a FORGED hint on a direct admin insert is REJECTED by the trigger',
+    async () => {
+      // The API pre-check never runs here; the snapshot trigger independently
+      // re-verifies and RAISEs on a party from another account.
+      const { error } = await admin.from('comm_outbox').insert({
+        account_id: fx.accountId,
+        channel: 'email',
+        to_address: `ci-forged-${SUFFIX}@e2.test`,
+        to_party_type: 'tenant',
+        to_party_id: foreignTenantId,
+        body: 'forged',
+        approval_ref: self,
+        author_type: 'landlord',
+      });
+      assert(error !== null, 'trigger must reject a forged caller-intent hint');
+    },
+  );
+
   // NOTE: the fixture account STAYS branded (`bare<SUFFIX>`) through the
   // inbound/Message-ID sections below — thread legs are gate-exempt and the
   // headed-intent check (rfc822_message_id stamping) rides a bare send, which

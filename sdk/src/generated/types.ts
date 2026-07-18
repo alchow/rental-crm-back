@@ -17458,7 +17458,7 @@ export interface components {
                 /** @enum {string} */
                 role?: "cc";
                 /** @enum {string} */
-                resolution_source?: "thread_participant" | "tenancy_member" | "account_member" | "human_link" | "authoritative_record" | "verified_claim" | "provider_learned" | "legacy" | "learned_identity" | "unknown";
+                resolution_source?: "caller_intent" | "thread_participant" | "tenancy_member" | "account_member" | "human_link" | "authoritative_record" | "verified_claim" | "provider_learned" | "legacy" | "learned_identity" | "unknown";
             }[] | null;
             /** Format: uuid */
             thread_id: string | null;
@@ -17505,6 +17505,19 @@ export interface components {
             body: string;
             subject?: string;
             cc_addresses?: string[];
+            to_party?: {
+                /** @enum {string} */
+                party_type: "tenant" | "vendor";
+                /** Format: uuid */
+                party_id: string;
+            };
+            cc_parties?: {
+                address: string;
+                /** @enum {string} */
+                party_type: "landlord_user";
+                /** Format: uuid */
+                party_id: string;
+            }[];
             approval_ref: string;
             /** Format: uuid */
             approved_by?: string;
