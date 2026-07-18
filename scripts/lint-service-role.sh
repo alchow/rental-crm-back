@@ -14,11 +14,20 @@ PATTERNS=(
   'SUPABASE_SERVICE_ROLE_KEY'
   "['\"]service_role['\"]"
 )
+SOURCE_PATHSPEC=':(glob)api/src/**/*.ts'
+
+# Guard the guard: Git's plain `api/src/**/*.ts` pathspec omits files directly
+# under api/src. app.ts is intentionally checked here because it is the most
+# load-bearing top-level runtime file.
+if ! git ls-files -- "$SOURCE_PATHSPEC" | grep -qx 'api/src/app.ts'; then
+  echo "FAIL: service-role source pathspec does not include api/src/app.ts." >&2
+  exit 1
+fi
 
 violations=0
 for pattern in "${PATTERNS[@]}"; do
   if matches=$(git grep --untracked -nE -- "$pattern" -- \
-    'api/src/**/*.ts' \
+    "$SOURCE_PATHSPEC" \
     ':!api/src/admin/**' 2>/dev/null); then
     echo "Service-role reference outside api/src/admin/:"
     echo "$matches"

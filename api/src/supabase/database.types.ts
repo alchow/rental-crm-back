@@ -2181,7 +2181,7 @@ export type Database = {
           jurisdiction?: string | null;
           name: string;
           schema?: Json;
-          schema_hash?: string | null;
+          schema_hash?: never;
           updated_at?: string;
           version?: string | null;
         };
@@ -2194,7 +2194,7 @@ export type Database = {
           jurisdiction?: string | null;
           name?: string;
           schema?: Json;
-          schema_hash?: string | null;
+          schema_hash?: never;
           updated_at?: string;
           version?: string | null;
         };
