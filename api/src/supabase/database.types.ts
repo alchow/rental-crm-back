@@ -4670,6 +4670,18 @@ export type Database = {
           deposit_held_cents: number;
         }[];
       };
+      resolve_relay_landlord_recipient: {
+        Args: {
+          p_account_id: string;
+          p_user_id: string;
+          p_source_interaction_id: string;
+          p_fallback_address: string | null;
+        };
+        Returns: {
+          to_address: string | null;
+          already_delivered: boolean;
+        }[];
+      };
       search_entities: {
         Args: {
           p_account_id: string;

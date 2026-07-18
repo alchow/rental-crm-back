@@ -110,6 +110,12 @@ export type ErrorCode =
   // refused BEFORE any intent was recorded (nothing happened, no journal
   // trace). Not retryable until the counterparty opts back in.
   | 'opted_out'
+  // comms: an email relay leg to a landlord_user participant was refused
+  // because the relayed interaction's cast already carries the resolved
+  // landlord address (canonical email compare) — the landlord physically
+  // received the original (e.g. as a visible Cc). Nothing was created; the
+  // transport should treat the relay as satisfied, never retry.
+  | 'relay_already_delivered'
   // ADR-0012 rent-change conflicts. Fine-grained (invalid_correction_target
   // precedent) so clients can build recovery UX per cause instead of echoing
   // message text: each code implies a distinct next action.
