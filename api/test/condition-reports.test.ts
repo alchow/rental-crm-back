@@ -1,4 +1,10 @@
-import { execSync } from 'node:child_process';
+import {
+  assertStatus,
+  configureIntegrationEnv,
+  createApiClient,
+  createCheckHarness,
+  randomToken,
+} from './helpers/integration';
 
 // ----------------------------------------------------------------------------
 // Phase 27 condition-reports integration test (HTTP, against a local Supabase
@@ -8,31 +14,7 @@ import { execSync } from 'node:child_process';
 // -> immutability -> start-checkout -> diff, plus cross-account isolation.
 // ----------------------------------------------------------------------------
 
-interface SupabaseStatus { API_URL: string; DB_URL: string; ANON_KEY: string; SERVICE_ROLE_KEY: string }
-
-function readSupabaseStatus(): SupabaseStatus {
-  const out = execSync('supabase status --output env --workdir db', {
-    cwd: process.cwd().endsWith('/api') ? '..' : '.',
-    encoding: 'utf8',
-  });
-  const lines = out.split('\n');
-  const get = (k: string) => {
-    const line = lines.find((l) => l.startsWith(k + '='));
-    if (!line) throw new Error(`supabase status missing: ${k}`);
-    return line.slice(k.length + 1).replace(/^"|"$/g, '');
-  };
-  return { API_URL: get('API_URL'), DB_URL: get('DB_URL'), ANON_KEY: get('ANON_KEY'), SERVICE_ROLE_KEY: get('SERVICE_ROLE_KEY') };
-}
-
-const status = readSupabaseStatus();
-process.env.NODE_ENV = 'test';
-process.env.PORT = '8787';
-process.env.SUPABASE_URL = status.API_URL;
-process.env.SUPABASE_ANON_KEY = status.ANON_KEY;
-process.env.SUPABASE_SERVICE_ROLE_KEY = status.SERVICE_ROLE_KEY;
-process.env.SUPABASE_JWKS_URL = `${status.API_URL}/auth/v1/.well-known/jwks.json`;
-process.env.SUPABASE_JWT_ISSUER = `${status.API_URL}/auth/v1`;
-process.env.SUPABASE_JWT_AUDIENCE = 'authenticated';
+const status = configureIntegrationEnv('8787');
 
 const { _resetEnvCacheForTests } = await import('../src/env');
 _resetEnvCacheForTests();
@@ -44,35 +26,8 @@ const { buildApp } = await import('../src/app');
 
 const app = buildApp();
 
-interface ApiResp { status: number; body: unknown; headers: Record<string, string> }
-
-async function api(
-  method: string,
-  path: string,
-  opts: { token?: string; body?: unknown; multipart?: FormData; idempotencyKey?: string } = {},
-): Promise<ApiResp> {
-  const headers: Record<string, string> = { accept: 'application/json' };
-  if (opts.token) headers.authorization = `Bearer ${opts.token}`;
-  const mutating = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase());
-  if (mutating && path.startsWith('/v1/accounts/')) {
-    headers['idempotency-key'] = opts.idempotencyKey ?? `t-${crypto.randomUUID()}`;
-  }
-  let init: RequestInit = { method, headers };
-  if (opts.multipart) init = { ...init, body: opts.multipart };
-  else if (opts.body !== undefined) {
-    headers['content-type'] = 'application/json';
-    init = { ...init, body: JSON.stringify(opts.body) };
-  }
-  const res = await app.fetch(new Request(`http://test${path}`, init));
-  const text = await res.text();
-  let body: unknown = null;
-  try { body = text ? JSON.parse(text) : null; } catch { body = text; }
-  const h: Record<string, string> = {};
-  res.headers.forEach((v, k) => { h[k] = v; });
-  return { status: res.status, body, headers: h };
-}
-
-function rnd(): string { return Math.random().toString(36).slice(2, 10); }
+const api = createApiClient(app);
+const rnd = randomToken;
 
 interface UserFixture { accessToken: string; accountId: string; unitAreaId: string; tenancyId: string; tenantId: string }
 
@@ -108,16 +63,7 @@ const PNG_1x1 = Buffer.from(
 );
 function pngFile(): File { return new File([PNG_1x1], 'photo.png', { type: 'image/png' }); }
 
-interface Failure { name: string; detail: string }
-const failures: Failure[] = [];
-async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try { await fn(); console.info(`  PASS  ${name}`); }
-  catch (e) { const detail = e instanceof Error ? e.message : String(e); failures.push({ name, detail }); console.error(`  FAIL  ${name}: ${detail}`); }
-}
-function assertStatus(r: ApiResp, expected: number, ctx: string): unknown {
-  if (r.status !== expected) throw new Error(`${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`);
-  return r.body;
-}
+const { failures, check } = createCheckHarness();
 
 async function main(): Promise<void> {
   console.info('Phase 27 condition-reports checks');

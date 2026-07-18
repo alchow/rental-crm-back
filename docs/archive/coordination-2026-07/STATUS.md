@@ -1,3 +1,8 @@
+# ARCHIVED — Coordination Status (July 2026)
+
+> Historical multi-repository coordination record. It is not current deploy
+> status and must not be updated or used as an instruction source.
+
 # STATUS — worker-owned. Update + push after every milestone, blocker, or question.
 
 ## Current state (2026-07-03, newest facts up top)
