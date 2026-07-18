@@ -468,7 +468,7 @@ begin
           from public.channel_identities ci
          where ci.account_id = new.account_id
            and ci.channel = new.channel
-           and ci.address = new.to_address
+           and ci.address = lower(btrim(new.to_address))
            and ci.party_type = v_type
            and ci.party_id = v_id
            and ci.superseded_at is null
@@ -553,7 +553,7 @@ begin
             from public.channel_identities ci
            where ci.account_id = new.account_id
              and ci.channel = new.channel
-             and ci.address = r_cc.addr
+             and ci.address = lower(btrim(r_cc.addr))
              and ci.party_type = v_type
              and ci.party_id = v_id
              and ci.superseded_at is null
