@@ -53,7 +53,8 @@
     "test:agent-membership-divergence": "tsx test/agent-membership-divergence.test.ts",
     "test:imports-live": "tsx test/imports-live.test.ts",
     "bench:import": "tsx test/bench-import.ts",
-    "test:unit": "vitest run"
+    "test:unit": "vitest run",
+    "ci:integration": "node test/run-test-group.mjs integration"
   },
   "tsup": {
     "entry": [

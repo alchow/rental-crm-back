@@ -21,9 +21,16 @@
     "check:render-env": "node scripts/check-render-env-drift.mjs",
     "check:drift": "bash scripts/check-contract-drift.sh",
     "check:guide-drift": "tsx scripts/check-guide-drift.ts",
+    "check:test-manifest": "node scripts/check-test-manifest.mjs",
+    "check:source-size": "node scripts/check-source-size.mjs",
+    "db:generate": "bash scripts/generate-db-artifacts.sh",
+    "check:db-generated": "bash scripts/generate-db-artifacts.sh --check",
+    "db:migration:new": "node scripts/new-migration.mjs",
     "secrets:scan": "gitleaks git --staged --no-banner --redact -v",
     "secrets:scan-all": "gitleaks git . --no-banner --redact -v",
-    "check": "pnpm lint && pnpm typecheck && pnpm lint:service-role && pnpm lint:admin-quarantine && pnpm check:render-env && pnpm check:drift && pnpm check:guide-drift",
+    "check:static": "pnpm lint && pnpm typecheck && pnpm lint:service-role && pnpm lint:admin-quarantine && pnpm check:render-env && pnpm check:drift && pnpm check:guide-drift && pnpm check:test-manifest && pnpm check:source-size",
+    "check:fast": "pnpm check:static && pnpm --filter ./api test:unit && pnpm --filter ./api build",
+    "check": "pnpm check:fast",
     "prepare": "husky"
   },
   "devDependencies": {

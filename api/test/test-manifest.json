@@ -1,0 +1,94 @@
+{
+  "unit": [
+    {
+      "script": "test:unit",
+      "description": "Fast Vitest suites that do not require the local Supabase stack."
+    }
+  ],
+  "integration": [
+    { "script": "test:api-isolation", "description": "API-level cross-account RLS isolation." },
+    { "script": "test:auth-refresh", "description": "Concurrent auth refresh isolation." },
+    { "script": "test:profile", "description": "Authenticated landlord profile behavior." },
+    { "script": "test:search", "description": "Entity search ranking and account isolation." },
+    {
+      "script": "test:intake",
+      "description": "Public intake token fencing and audit attribution."
+    },
+    {
+      "script": "test:attachments",
+      "description": "Attachment storage, hashing, and access isolation."
+    },
+    { "script": "test:documents", "description": "Document vault workflows and access controls." },
+    {
+      "script": "test:condition-reports",
+      "description": "Condition report and tenant capture workflows."
+    },
+    {
+      "script": "test:area-inspection-layouts",
+      "description": "Per-unit inspection layout delta storage."
+    },
+    { "script": "test:ledger", "description": "Ledger accounting and pagination regressions." },
+    {
+      "script": "test:rent-rollup",
+      "description": "Account rent rollup parity with tenancy ledgers."
+    },
+    { "script": "test:tenancy-start-date", "description": "Tenancy start-date correction guards." },
+    { "script": "test:tenancy-endings", "description": "Atomic tenancy-ending workflow." },
+    {
+      "script": "test:tenant-email-uniqueness",
+      "description": "Per-account tenant email uniqueness."
+    },
+    {
+      "script": "test:multi-status-filters",
+      "description": "Multi-status list filters and pagination."
+    },
+    { "script": "test:maintenance-reporter", "description": "Maintenance reporter provenance." },
+    { "script": "test:imports", "description": "Onboarding import pipeline with a fake LLM." },
+    {
+      "script": "test:agent-principal",
+      "description": "Agent principal classification and journal firewall."
+    },
+    { "script": "test:agent-grants", "description": "Agent grant lifecycle." },
+    { "script": "test:agent-tokens", "description": "Per-account agent token exchange." },
+    {
+      "script": "test:agent-membership-divergence",
+      "description": "Agent grant and membership invariant."
+    },
+    {
+      "script": "test:interactions-journal",
+      "description": "Append-only journal correction chains."
+    },
+    {
+      "script": "test:interactions-participants",
+      "description": "Interaction participant casts and attestations."
+    },
+    { "script": "test:comms", "description": "Communications ledger and outbox ordering." },
+    { "script": "test:comms-group", "description": "Group MMS thread behavior." },
+    { "script": "test:comms-email", "description": "Email outbox and unsubscribe behavior." },
+    { "script": "test:comms-email-threads", "description": "Token-routed email threads." },
+    { "script": "test:accounts-branding", "description": "Per-account email branding." },
+    { "script": "test:comms-persona-resolve", "description": "Persona address resolution." },
+    { "script": "test:comms-persona", "description": "Persona inbound capture." },
+    { "script": "test:comms-persona-usecases", "description": "Persona routing use-case matrix." },
+    {
+      "script": "test:comms-evidence",
+      "description": "Communications evidence archive and legal holds."
+    },
+    { "script": "test:events-feed", "description": "Lossless events feed and ledger as-of reads." },
+    {
+      "script": "test:phase9",
+      "description": "Phase 9 cron, media, rate-limit, and storage checks."
+    },
+    { "script": "test:phase10", "description": "Evidence export bundle checks." },
+    { "script": "test:phase11", "description": "Chain sweep, pruning, and CLI checks." },
+    { "script": "test:phase12", "description": "Guide/spec and generated SDK reachability." },
+    { "script": "test:auto-charge", "description": "Automatic rent charging." },
+    { "script": "test:rent-changes", "description": "Instrument-anchored rent changes." }
+  ],
+  "manual": [
+    {
+      "script": "test:imports-live",
+      "description": "Opt-in live Anthropic smoke test; requires real credentials and is intentionally excluded from CI."
+    }
+  ]
+}

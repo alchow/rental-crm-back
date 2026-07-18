@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Postgres schema, RLS policies, triggers, and seeds. Source of truth for the data spine.",
   "scripts": {
-    "migrate:new": "supabase migration new",
+    "migrate:new": "node ../scripts/new-migration.mjs",
     "migrate:up": "supabase db push --db-url \"$SUPABASE_DB_URL\"",
     "migrate:reset": "bash ../scripts/assert-local-db.sh && supabase db reset --db-url \"$SUPABASE_DB_URL\"",
     "test:isolation": "tsx test/isolation.test.ts",

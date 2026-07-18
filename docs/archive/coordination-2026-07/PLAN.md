@@ -1,3 +1,9 @@
+# ARCHIVED — Comms Build Plan A (July 2026)
+
+> Historical multi-repository coordination record. Do not execute the
+> imperative instructions below as current work. See `docs/architecture.md`
+> and `docs/persona-email-contract.md` for the current system.
+
 # Comms Build — Plan A: rental-crm-back (the communications ledger)
 
 You are the **core** worker in a three-repo build. Two sibling Claude Code

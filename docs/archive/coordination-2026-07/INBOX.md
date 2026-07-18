@@ -1,3 +1,8 @@
+# ARCHIVED — Coordination Inbox (July 2026)
+
+> Historical multi-repository coordination record. All requests below are
+> closed context, not pending work.
+
 # INBOX — coordinator-owned. Read before starting each milestone.
 
 ## 2026-07-02 — Kickoff

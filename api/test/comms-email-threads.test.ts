@@ -37,43 +37,17 @@
 //     journaled — evidence).
 // ----------------------------------------------------------------------------
 
-import { execSync } from 'node:child_process';
+import {
+  assert,
+  assertStatus,
+  configureIntegrationEnv,
+  createApiClient,
+  createCheckHarness,
+  randomToken,
+  type ApiResponse as ApiResp,
+} from './helpers/integration';
 
-interface SupabaseStatus {
-  API_URL: string;
-  DB_URL: string;
-  ANON_KEY: string;
-  SERVICE_ROLE_KEY: string;
-}
-
-function readSupabaseStatus(): SupabaseStatus {
-  const out = execSync('supabase status --output env --workdir db', {
-    cwd: process.cwd().endsWith('/api') ? '..' : '.',
-    encoding: 'utf8',
-  });
-  const lines = out.split('\n');
-  const get = (k: string) => {
-    const line = lines.find((l) => l.startsWith(k + '='));
-    if (!line) throw new Error(`supabase status missing: ${k}`);
-    return line.slice(k.length + 1).replace(/^"|"$/g, '');
-  };
-  return {
-    API_URL: get('API_URL'),
-    DB_URL: get('DB_URL'),
-    ANON_KEY: get('ANON_KEY'),
-    SERVICE_ROLE_KEY: get('SERVICE_ROLE_KEY'),
-  };
-}
-
-const status = readSupabaseStatus();
-process.env.NODE_ENV = 'test';
-process.env.PORT = '8798';
-process.env.SUPABASE_URL = status.API_URL;
-process.env.SUPABASE_ANON_KEY = status.ANON_KEY;
-process.env.SUPABASE_SERVICE_ROLE_KEY = status.SERVICE_ROLE_KEY;
-process.env.SUPABASE_JWKS_URL = `${status.API_URL}/auth/v1/.well-known/jwks.json`;
-process.env.SUPABASE_JWT_ISSUER = `${status.API_URL}/auth/v1`;
-process.env.SUPABASE_JWT_AUDIENCE = 'authenticated';
+configureIntegrationEnv('8798');
 
 // E2-A: the receiving domain the API mints per-(thread,participant) reply
 // tokens into. It must be set at BOOT, before the env/app modules snapshot it,
@@ -118,71 +92,16 @@ const app = buildApp();
 
 // --- helpers ----------------------------------------------------------------
 
-interface ApiResp {
-  status: number;
-  body: unknown;
-  headers: Record<string, string>;
-}
-
-async function api(
-  method: string,
-  path: string,
-  opts: { token?: string; body?: unknown; idempotencyKey?: string } = {},
-): Promise<ApiResp> {
-  const headers: Record<string, string> = { accept: 'application/json' };
-  if (opts.token) headers.authorization = `Bearer ${opts.token}`;
-  const mutating = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase());
-  if (mutating && path.startsWith('/v1/accounts/')) {
-    headers['idempotency-key'] = opts.idempotencyKey ?? `t-${crypto.randomUUID()}`;
-  }
-  let init: RequestInit = { method, headers };
-  if (opts.body !== undefined) {
-    headers['content-type'] = 'application/json';
-    init = { ...init, body: JSON.stringify(opts.body) };
-  }
-  const res = await app.fetch(new Request(`http://test${path}`, init));
-  const responseHeaders: Record<string, string> = {};
-  res.headers.forEach((v, k) => {
-    responseHeaders[k] = v;
-  });
-  const text = await res.text();
-  return { status: res.status, body: text ? JSON.parse(text) : null, headers: responseHeaders };
-}
-
-function rnd(): string {
-  return Math.random().toString(36).slice(2, 10);
-}
+const api = createApiClient(app);
+const rnd = randomToken;
 function iso(): string {
   return new Date().toISOString();
 }
 
-interface Failure {
-  name: string;
-  detail: string;
-}
-const failures: Failure[] = [];
-async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try {
-    await fn();
-    console.info(`  PASS  ${name}`);
-  } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
-    failures.push({ name, detail });
-    console.error(`  FAIL  ${name}: ${detail}`);
-  }
-}
-function assertStatus(r: ApiResp, expected: number, ctx: string): unknown {
-  if (r.status !== expected)
-    throw new Error(`${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`);
-  return r.body;
-}
+const { failures, check } = createCheckHarness();
 function errCode(r: ApiResp): string {
   return (r.body as { error?: { code?: string } })?.error?.code ?? '';
 }
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
-
 async function login(email: string, password: string): Promise<string> {
   const r = await api('POST', '/v1/auth/login', { body: { email, password } });
   if (r.status !== 200) throw new Error(`login failed: ${r.status}`);
