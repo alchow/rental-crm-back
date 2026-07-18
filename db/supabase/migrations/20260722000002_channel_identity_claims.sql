@@ -491,8 +491,8 @@ begin
    where s.party_id is not null
    order by array_position(
      array['thread_participant', 'tenancy_member', 'account_member',
-           'verified_identity', 'snapshot_frozen', 'learned_identity',
-           'snapshot_learned'],
+           'verified_identity', 'snapshot_frozen', 'snapshot_learned',
+           'learned_identity'],
      s.tier)
    limit 1;
 
