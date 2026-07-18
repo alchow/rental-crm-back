@@ -22,8 +22,10 @@ import {
   assertOutboxInAccount,
   commDbError,
   normalizeAddress,
+  pickPreferredIdentity,
   requireTransport,
   type CommsApp,
+  type IdentityClaimPick,
   type OutboxRow,
 } from './shared';
 
@@ -507,17 +509,19 @@ export function registerOutboxRoutes(app: CommsApp): void {
         if (bErr) throw commDbError(bErr);
         let resolved = binding?.participant_address ?? null;
         if (resolved === null && participant && participant.party_id !== null) {
-          const { data: ident, error: iErr } = await sb
+          // Several live claims may exist for the party now; pick
+          // deterministically (human_link, then verified, then newest).
+          const { data: idents, error: iErr } = await sb
             .from('channel_identities')
-            .select('address')
+            .select('address, source, verified_at, created_at')
             .eq('account_id', accountId)
             .eq('channel', body.channel)
             .eq('party_type', participant.party_type)
             .eq('party_id', participant.party_id)
-            .limit(1)
-            .maybeSingle();
+            .is('superseded_at', null);
           if (iErr) throw commDbError(iErr);
-          resolved = ident?.address ?? null;
+          resolved =
+            pickPreferredIdentity((idents ?? []) as IdentityClaimPick[])?.address ?? null;
         }
         if (resolved === null) {
           throw new ApiError(

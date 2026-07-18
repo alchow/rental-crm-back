@@ -109,6 +109,37 @@ export function normalizeAddress(channel: string, raw: string): string {
   return e164;
 }
 
+// One party can now hold several live claims for the same channel (persona
+// routing v2 PR 2: channel_identities is one row per claim, not per address).
+// When a route only needs ONE address to dial, pick deterministically instead
+// of trusting row order: a human-linked claim first, then a verified one
+// (verified_at, or a source that implies verification), then the newest.
+// Callers must already have filtered to live rows (.is('superseded_at', null)).
+export interface IdentityClaimPick {
+  address: string;
+  source: string;
+  verified_at: string | null;
+  created_at: string;
+}
+export function pickPreferredIdentity<T extends IdentityClaimPick>(rows: T[]): T | null {
+  const verified = (r: T): boolean =>
+    r.verified_at !== null ||
+    ['thread_rebind', 'parent_recipient', 'authoritative_import'].includes(r.source);
+  const ranked = [...rows].sort((a, b) => {
+    const human = Number(b.source === 'human_link') - Number(a.source === 'human_link');
+    if (human !== 0) return human;
+    const ver = Number(verified(b)) - Number(verified(a));
+    if (ver !== 0) return ver;
+    return b.created_at.localeCompare(a.created_at);
+  });
+  return ranked[0] ?? null;
+}
+
+// The claim key (PostgREST on_conflict target) — matches the DB's
+// channel_identities_claim_key unique constraint.
+export const IDENTITY_CLAIM_KEY =
+  'account_id,channel,address,party_type,party_id,scope_type,scope_id';
+
 // Tiny offset cursor for the opt-out list: the global register has no uuid id
 // to keyset on (PK is channel/address). SQL still applies the limit/offset so
 // a landlord listing one page never pulls the whole visible register into API

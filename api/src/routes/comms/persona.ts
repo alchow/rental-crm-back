@@ -238,6 +238,8 @@ export function registerPersonaRoutes(app: CommsApp): void {
       body.auth_results.dmarc === 'pass' &&
       fromAddress !== lower(body.persona_address)
     ) {
+      // Any LIVE landlord claim suppresses the ack (superseded claims do
+      // not); limit(1) because one address can carry several claims now.
       const { data: landlordIdentity, error: identityErr } = await sb
         .from('channel_identities')
         .select('id')
@@ -245,6 +247,8 @@ export function registerPersonaRoutes(app: CommsApp): void {
         .eq('channel', 'email')
         .eq('party_type', 'landlord_user')
         .eq('address', fromAddress)
+        .is('superseded_at', null)
+        .limit(1)
         .maybeSingle();
       // Fail closed: an identity-read failure must never cause a mis-targeted
       // email, and a recognized landlord identity is never a stranger.

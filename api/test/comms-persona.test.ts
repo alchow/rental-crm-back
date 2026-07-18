@@ -209,7 +209,7 @@ async function main(): Promise<void> {
   {
     const { error } = await admin.from('channel_identities').insert({
       account_id: accountId, party_type: 'tenant', party_id: t2Id,
-      channel: 'email', address: T2_EMAIL,
+      channel: 'email', address: T2_EMAIL, source: 'provider_learned',
     });
     if (error) throw new Error(`t2 identity: ${error.message}`);
   }
@@ -431,21 +431,21 @@ async function main(): Promise<void> {
     // The landlord's email identity: the CC arm's sender-recognition input.
     const { error } = await admin.from('channel_identities').insert({
       account_id: accountId, party_type: 'landlord_user', party_id: sub.user.id,
-      channel: 'email', address: LL_EMAIL,
+      channel: 'email', address: LL_EMAIL, source: 'provider_learned',
     });
     if (error) throw new Error(`landlord identity: ${error.message}`);
   }
   {
     const { error } = await admin.from('channel_identities').insert({
       account_id: accountId, party_type: 'landlord_user', party_id: sub.user.id,
-      channel: 'email', address: LL_GMAIL,
+      channel: 'email', address: LL_GMAIL, source: 'provider_learned',
     });
     if (error) throw new Error(`gmail landlord identity: ${error.message}`);
   }
   {
     const { error } = await admin.from('channel_identities').insert({
       account_id: accountId, party_type: 'tenant', party_id: t1Id,
-      channel: 'email', address: LL_GMAIL_CONFLICT,
+      channel: 'email', address: LL_GMAIL_CONFLICT, source: 'provider_learned',
     });
     if (error) throw new Error(`gmail conflict identity: ${error.message}`);
   }
@@ -768,27 +768,37 @@ async function main(): Promise<void> {
   const ptAId = await createTenant('Parent Reply Tenant', PV2_TENANT_EMAIL);
   await pv2Member(tenancyAId, ptAId);
   const pv2OtherId = await createTenant('Other Known Tenant', PV2_OTHER_EMAIL);
-  const pv2DualId = await createTenant('Dual Role Tenant', PV2_DUAL_EMAIL);
-  void pv2DualId;
+  // The dual tenant's RECORD email is a different address on purpose: the
+  // conflict below must come from two live CLAIMS at the same tier, not from
+  // the authoritative record book (which would outrank a learned claim).
+  const pv2DualId = await createTenant('Dual Role Tenant', `pv2-dual-record-${SUFFIX}@tenant.test`);
   const pv2TwoTenId = await createTenant('Two Tenancy Tenant', PV2_TWOTEN_EMAIL);
   await pv2Member(tenancyCId, pv2TwoTenId);
   await pv2Member(tenancyDId, pv2TwoTenId);
   // The incident's bad account-wide claim: the tenant's address learned as the
-  // LANDLORD. Parent tenancy context must beat it; capture must not delete it.
+  // LANDLORD (a pre-claims 'legacy' row). Parent tenancy context must beat
+  // it; capture must not delete or supersede it.
   {
     const { error } = await admin.from('channel_identities').insert({
       account_id: accountId, party_type: 'landlord_user', party_id: sub.user.id,
-      channel: 'email', address: PV2_TENANT_EMAIL,
+      channel: 'email', address: PV2_TENANT_EMAIL, source: 'legacy',
     });
     if (error) throw new Error(`pv2 bad claim seed: ${error.message}`);
   }
-  // Dual-role fixture: same address carries a landlord claim AND a tenant
-  // contact-book record (tenants.emails) — two honest candidates, no context.
+  // Dual-role fixture (PR 2 shape): the same address carries TWO LIVE CLAIMS
+  // at the same tier — landlord and tenant, both provider_learned. Neither
+  // outranks the other, so a no-context capture must conflict honestly.
   {
-    const { error } = await admin.from('channel_identities').insert({
-      account_id: accountId, party_type: 'landlord_user', party_id: sub.user.id,
-      channel: 'email', address: PV2_DUAL_EMAIL,
-    });
+    const { error } = await admin.from('channel_identities').insert([
+      {
+        account_id: accountId, party_type: 'landlord_user', party_id: sub.user.id,
+        channel: 'email', address: PV2_DUAL_EMAIL, source: 'provider_learned',
+      },
+      {
+        account_id: accountId, party_type: 'tenant', party_id: pv2DualId,
+        channel: 'email', address: PV2_DUAL_EMAIL, source: 'provider_learned',
+      },
+    ]);
     if (error) throw new Error(`pv2 dual claim seed: ${error.message}`);
   }
 
@@ -864,13 +874,29 @@ async function main(): Promise<void> {
     if (thrErr) throw new Error(`pv2 thread read: ${thrErr.message}`);
     assert(thr!.tenancy_id === tenancyAId, `thread tenancy = parent tenancy: ${thr!.tenancy_id}`);
 
-    // The contradictory claim is preserved (repair is a later, audited step)…
-    const { data: claim, error: claimErr } = await admin
-      .from('channel_identities').select('party_type, party_id')
-      .eq('account_id', accountId).eq('channel', 'email').eq('address', PV2_TENANT_EMAIL)
-      .single();
+    // The contradictory claim is preserved (repair is a later, audited step)
+    // AND the route's own learning is now recorded per-party (PR 2): the
+    // tenant's provider_learned claim lives ALONGSIDE the bad landlord row
+    // instead of being swallowed by the old one-row-per-address key.
+    const { data: claims, error: claimErr } = await admin
+      .from('channel_identities')
+      .select('party_type, party_id, source, superseded_at')
+      .eq('account_id', accountId).eq('channel', 'email').eq('address', PV2_TENANT_EMAIL);
     if (claimErr) throw new Error(`pv2 claim read: ${claimErr.message}`);
-    assert(claim!.party_type === 'landlord_user', `bad claim untouched: ${claim!.party_type}`);
+    const claimRows = (claims ?? []) as {
+      party_type: string; party_id: string; source: string; superseded_at: string | null;
+    }[];
+    assert(claimRows.length === 2, `two live claims recorded: ${JSON.stringify(claimRows)}`);
+    assert(
+      claimRows.some((x) => x.party_type === 'landlord_user' && x.source === 'legacy'
+        && x.superseded_at === null),
+      `bad claim untouched: ${JSON.stringify(claimRows)}`,
+    );
+    assert(
+      claimRows.some((x) => x.party_type === 'tenant' && x.party_id === ptAId
+        && x.source === 'provider_learned' && x.superseded_at === null),
+      `tenant claim learned per-party: ${JSON.stringify(claimRows)}`,
+    );
 
     // …and recorded in the frozen routing decision (v2 drift-guard smoke).
     const { data: raw, error: rawErr } = await admin
@@ -972,6 +998,7 @@ async function main(): Promise<void> {
   });
 
   await check('v2(6) dual-role sender, no parent, no context → identity_conflict (not unknown_sender)', async () => {
+    // PR 2: the conflict comes from two LIVE claims at the same tier.
     const r = await personaCapture({
       from_address: PV2_DUAL_EMAIL,
       body: 'who am i today',
@@ -984,6 +1011,14 @@ async function main(): Promise<void> {
       .from('comm_unmatched_inbound').select('reason').eq('id', res.unmatched_id!).single();
     if (error) throw new Error(`dual-role triage read: ${error.message}`);
     assert(u!.reason === 'identity_conflict', `reason: ${u!.reason}`);
+
+    // Conflict never auto-deletes or supersedes a claim (§8): both stay live.
+    const { data: dualClaims } = await admin
+      .from('channel_identities').select('party_type, superseded_at')
+      .eq('account_id', accountId).eq('channel', 'email').eq('address', PV2_DUAL_EMAIL);
+    const live = ((dualClaims ?? []) as { party_type: string; superseded_at: string | null }[])
+      .filter((x) => x.superseded_at === null);
+    assert(live.length === 2, `both claims still live: ${JSON.stringify(dualClaims)}`);
   });
 
   await check('v2(7) thread-less parent with a tenancy pins the thread to THAT tenancy, and reuses it', async () => {
@@ -1149,6 +1184,340 @@ async function main(): Promise<void> {
     }).routing_decision;
     assert(decision?.parent_match === 'none' && decision.parent_outbox_id === null,
       `probe ignored the queued row: ${JSON.stringify(decision)}`);
+  });
+
+  // =========================================================================
+  // (7c) Conflict-aware identity claims (persona routing v2, PR 2 — plan §9.2)
+  // =========================================================================
+  // Data flow under test: channel_identities is now one row per CLAIM
+  // (address + party + scope, with a named source and a supersession stamp).
+  // Resolution walks named tiers over LIVE, scope-applicable claims; a human
+  // link supersedes learned claims and actually takes effect afterwards.
+
+  // Two tenants share one inbox (use case I): tenancy-scoped human claims.
+  const SHARED_EMAIL = `pv2-shared-${SUFFIX}@tenant.test`;
+  const shUnitA = await pv2Unit('PV2 Shared Unit A');
+  const shUnitB = await pv2Unit('PV2 Shared Unit B');
+  const shTenancyA = await pv2Tenancy(shUnitA, '2026-01-01');
+  const shTenancyB = await pv2Tenancy(shUnitB, '2026-01-01');
+  const shTenantA = await createTenant('Shared Inbox A', `pv2-shared-a-${SUFFIX}@tenant.test`);
+  const shTenantB = await createTenant('Shared Inbox B', `pv2-shared-b-${SUFFIX}@tenant.test`);
+  await pv2Member(shTenancyA, shTenantA);
+  await pv2Member(shTenancyB, shTenantB);
+  {
+    const { error } = await admin.from('channel_identities').insert([
+      {
+        account_id: accountId, party_type: 'tenant', party_id: shTenantA,
+        channel: 'email', address: SHARED_EMAIL, source: 'human_link',
+        scope_type: 'tenancy', scope_id: shTenancyA,
+      },
+      {
+        account_id: accountId, party_type: 'tenant', party_id: shTenantB,
+        channel: 'email', address: SHARED_EMAIL, source: 'human_link',
+        scope_type: 'tenancy', scope_id: shTenancyB,
+      },
+    ]);
+    if (error) throw new Error(`shared inbox claim seed: ${error.message}`);
+  }
+
+  await check('claims(1) shared inbox: parent tenancy context selects its tenant; cold mail stays triaged', async () => {
+    const parent = await pv2Parent({ to: SHARED_EMAIL, tenancyId: shTenancyA });
+    const sharedMsg = `PS-shared-${rnd()}`;
+    const r = await personaCapture({
+      provider_msg_id: sharedMsg,
+      from_address: SHARED_EMAIL,
+      to_addresses: [PERSONA],
+      subject: 'Re: Inspection welcome',
+      body: 'reply from the shared inbox',
+      rfc822_message_id: `<pv2-shared-1-${SUFFIX}@sender>`,
+      in_reply_to: parent.msgid,
+    });
+    const res = assertStatus(r, 200, 'shared parent reply') as CaptureShape;
+    assert(res.disposition === 'matched', `disposition: ${res.disposition}`);
+    assert(res.participant?.party_id === shTenantA,
+      `tenancy A's tenant selected: ${JSON.stringify(res.participant)}`);
+    const { data: thr } = await admin
+      .from('comm_threads').select('tenancy_id').eq('id', res.thread_id!).single();
+    assert(thr!.tenancy_id === shTenancyA, `thread pinned to tenancy A: ${thr!.tenancy_id}`);
+    const { data: raw } = await admin
+      .from('inbound_raw').select('payload').eq('provider_msg_id', sharedMsg).single();
+    const decision = (raw!.payload as {
+      routing_decision?: { party_source: string | null };
+    }).routing_decision;
+    assert(decision?.party_source === 'verified_identity',
+      `selected via the scoped human claim: ${JSON.stringify(decision)}`);
+
+    // A cold email with NO conversation context: neither tenancy-scoped claim
+    // applies, both tenants remain possible -> honest triage.
+    const cold = assertStatus(await personaCapture({
+      from_address: SHARED_EMAIL,
+      body: 'no context this time',
+      rfc822_message_id: `<pv2-shared-2-${SUFFIX}@sender>`,
+    }), 200, 'shared cold capture') as CaptureShape;
+    assert(cold.disposition === 'triaged', `cold disposition: ${cold.disposition}`);
+    const { data: u } = await admin
+      .from('comm_unmatched_inbound').select('reason').eq('id', cold.unmatched_id!).single();
+    assert(u!.reason === 'unknown_sender', `cold reason: ${u!.reason}`);
+  });
+
+  // A human claim outranks a provider-learned claim within its scope, and
+  // provider learning can never replace the human claim.
+  const HV_EMAIL = `pv2-hv-${SUFFIX}@dual.test`;
+  const hvTenantId = await createTenant('Human Claimed', `pv2-hv-record-${SUFFIX}@tenant.test`);
+  {
+    const { error } = await admin.from('channel_identities').insert([
+      {
+        account_id: accountId, party_type: 'landlord_user', party_id: sub.user.id,
+        channel: 'email', address: HV_EMAIL, source: 'provider_learned',
+      },
+      {
+        account_id: accountId, party_type: 'tenant', party_id: hvTenantId,
+        channel: 'email', address: HV_EMAIL, source: 'human_link',
+      },
+    ]);
+    if (error) throw new Error(`human-vs-learned seed: ${error.message}`);
+  }
+
+  await check('claims(2) human claim outranks provider-learned; capture learning never replaces it', async () => {
+    const hvMsg = `PS-hv-${rnd()}`;
+    const r = await personaCapture({
+      provider_msg_id: hvMsg,
+      from_address: HV_EMAIL,
+      body: 'the human said i am the tenant',
+      rfc822_message_id: `<pv2-hv-1-${SUFFIX}@sender>`,
+    });
+    const res = assertStatus(r, 200, 'human-tier capture') as CaptureShape;
+    assert(res.disposition === 'matched', `disposition: ${res.disposition}`);
+    assert(res.participant?.party_type === 'tenant' && res.participant.party_id === hvTenantId,
+      `human claim wins: ${JSON.stringify(res.participant)}`);
+    const { data: raw } = await admin
+      .from('inbound_raw').select('payload').eq('provider_msg_id', hvMsg).single();
+    const decision = (raw!.payload as {
+      routing_decision?: { party_source: string | null };
+    }).routing_decision;
+    assert(decision?.party_source === 'human_link', `party_source: ${JSON.stringify(decision)}`);
+
+    // Capture's learning is additive-only: the human row is not downgraded,
+    // the contradicting learned landlord row is not superseded, nothing new
+    // appears (the same-party insert collides on the claim key).
+    const { data: rows } = await admin
+      .from('channel_identities').select('party_type, source, superseded_at')
+      .eq('account_id', accountId).eq('channel', 'email').eq('address', HV_EMAIL);
+    const hv = (rows ?? []) as { party_type: string; source: string; superseded_at: string | null }[];
+    assert(hv.length === 2, `still exactly two claims: ${JSON.stringify(hv)}`);
+    assert(hv.every((x) => x.superseded_at === null), `capture superseded nothing: ${JSON.stringify(hv)}`);
+    assert(hv.some((x) => x.party_type === 'tenant' && x.source === 'human_link'),
+      `human claim intact: ${JSON.stringify(hv)}`);
+    assert(hv.some((x) => x.party_type === 'landlord_user' && x.source === 'provider_learned'),
+      `learned claim intact: ${JSON.stringify(hv)}`);
+
+    // And the next capture still routes by the human tier.
+    const again = assertStatus(await personaCapture({
+      from_address: HV_EMAIL, body: 'still the tenant',
+      rfc822_message_id: `<pv2-hv-2-${SUFFIX}@sender>`,
+    }), 200, 'human-tier capture 2') as CaptureShape;
+    assert(again.disposition === 'matched' && again.participant?.party_id === hvTenantId,
+      `still the human-claimed tenant: ${JSON.stringify(again.participant)}`);
+  });
+
+  // The incident's learning bug, regression-pinned: a dual-role address is
+  // human-linked as the tenant; the link SUPERSEDES the learned landlord
+  // claim (stamped, not deleted) and the next inbound resolves as the tenant.
+  const SUP_EMAIL = `pv2-sup-${SUFFIX}@dual.test`;
+  const supTenantId = await createTenant('Sup Linked', `pv2-sup-record-${SUFFIX}@tenant.test`);
+  {
+    const { error } = await admin.from('channel_identities').insert([
+      {
+        account_id: accountId, party_type: 'landlord_user', party_id: sub.user.id,
+        channel: 'email', address: SUP_EMAIL, source: 'provider_learned',
+      },
+      {
+        account_id: accountId, party_type: 'tenant', party_id: supTenantId,
+        channel: 'email', address: SUP_EMAIL, source: 'provider_learned',
+      },
+    ]);
+    if (error) throw new Error(`supersession seed: ${error.message}`);
+  }
+
+  await check('claims(3) human link supersedes the learned claim and TAKES EFFECT (incident regression)', async () => {
+    const first = assertStatus(await personaCapture({
+      from_address: SUP_EMAIL, body: 'dual role, no context',
+      rfc822_message_id: `<pv2-sup-1-${SUFFIX}@sender>`,
+    }), 200, 'dual capture') as CaptureShape;
+    assert(first.disposition === 'triaged', `pre-link disposition: ${first.disposition}`);
+    const { data: u } = await admin
+      .from('comm_unmatched_inbound').select('reason').eq('id', first.unmatched_id!).single();
+    assert(u!.reason === 'identity_conflict', `pre-link reason: ${u!.reason}`);
+
+    const link = await api('POST', `${base}/unmatched/${first.unmatched_id}/link`, {
+      token: landlordToken, body: { party_type: 'tenant', party_id: supTenantId },
+    });
+    const linked = assertStatus(link, 200, 'human link') as { thread_id: string };
+
+    // The learned landlord claim is SUPERSEDED (stamped, still queryable);
+    // the tenant claim is upgraded to a live human_link claim.
+    const { data: rows } = await admin
+      .from('channel_identities').select('party_type, source, superseded_at')
+      .eq('account_id', accountId).eq('channel', 'email').eq('address', SUP_EMAIL);
+    const sup = (rows ?? []) as { party_type: string; source: string; superseded_at: string | null }[];
+    assert(sup.length === 2, `superseded claim retained as evidence: ${JSON.stringify(sup)}`);
+    assert(
+      sup.some((x) => x.party_type === 'landlord_user' && x.superseded_at !== null),
+      `landlord claim superseded, not deleted: ${JSON.stringify(sup)}`,
+    );
+    assert(
+      sup.some((x) => x.party_type === 'tenant' && x.source === 'human_link'
+        && x.superseded_at === null),
+      `tenant claim live as human_link: ${JSON.stringify(sup)}`,
+    );
+
+    // THE regression: the link is in effect — new mail from the address now
+    // resolves as the tenant into the linked conversation (before PR 2 the
+    // link's learning silently no-opped against the landlord row).
+    const next = assertStatus(await personaCapture({
+      from_address: SUP_EMAIL, body: 'me again, post-link',
+      rfc822_message_id: `<pv2-sup-2-${SUFFIX}@sender>`,
+    }), 200, 'post-link capture') as CaptureShape;
+    assert(next.disposition === 'matched', `post-link disposition: ${next.disposition}`);
+    assert(next.participant?.party_id === supTenantId,
+      `resolves as the linked tenant: ${JSON.stringify(next.participant)}`);
+    assert(next.thread_id === linked.thread_id, `into the linked thread: ${next.thread_id}`);
+  });
+
+  // Two humans who disagree are reconciled by humans: linking against a
+  // DIFFERENT party's live human claim fails loudly and changes nothing.
+  const HC_EMAIL = `pv2-hc-${SUFFIX}@dual.test`;
+  const hcTenantX = await createTenant('Human Claim X', `pv2-hc-x-${SUFFIX}@tenant.test`);
+  const hcTenantY = await createTenant('Human Claim Y', `pv2-hc-y-${SUFFIX}@tenant.test`);
+  {
+    const { error } = await admin.from('channel_identities').insert({
+      account_id: accountId, party_type: 'tenant', party_id: hcTenantX,
+      channel: 'email', address: HC_EMAIL, source: 'human_link',
+    });
+    if (error) throw new Error(`human-conflict seed: ${error.message}`);
+  }
+
+  await check('claims(4) linking against a different human claim → 409 conflicting human claim', async () => {
+    // An auth-failed capture from the human-claimed address triages (the
+    // claim makes it auth_failed, not unknown) — giving a linkable row.
+    const r = assertStatus(await personaCapture({
+      from_address: HC_EMAIL, body: 'could not authenticate',
+      rfc822_message_id: `<pv2-hc-1-${SUFFIX}@sender>`, auth_results: AUTH_FAIL,
+    }), 200, 'auth-fail capture') as CaptureShape;
+    assert(r.disposition === 'triaged', `disposition: ${r.disposition}`);
+    const { data: u } = await admin
+      .from('comm_unmatched_inbound').select('reason').eq('id', r.unmatched_id!).single();
+    assert(u!.reason === 'auth_failed', `reason: ${u!.reason}`);
+
+    const bad = await api('POST', `${base}/unmatched/${r.unmatched_id}/link`, {
+      token: landlordToken, body: { party_type: 'tenant', party_id: hcTenantY },
+    });
+    assertStatus(bad, 409, 'link against a human claim');
+    assert(JSON.stringify(bad.body).includes('conflicting human claim'),
+      `explicit error: ${JSON.stringify(bad.body)}`);
+
+    // The claim is untouched, and linking to the SAME human-claimed party
+    // still works (attested — the stored verdicts failed).
+    const { data: claim } = await admin
+      .from('channel_identities').select('party_id, source, superseded_at')
+      .eq('account_id', accountId).eq('channel', 'email').eq('address', HC_EMAIL)
+      .single();
+    assert(claim!.party_id === hcTenantX && claim!.source === 'human_link'
+      && claim!.superseded_at === null, `claim untouched: ${JSON.stringify(claim)}`);
+    const ok = await api('POST', `${base}/unmatched/${r.unmatched_id}/link`, {
+      token: landlordToken, body: { party_type: 'tenant', party_id: hcTenantX },
+    });
+    const okRes = assertStatus(ok, 200, 'link to the claimed party') as { interaction_id: string };
+    const { data: j } = await admin
+      .from('interactions').select('attestation').eq('id', okRes.interaction_id).single();
+    assert(j!.attestation === 'attested', `attestation: ${j!.attestation}`);
+  });
+
+  // Mixed-case addresses normalize to one lookup key at the door.
+  const MC_EMAIL_LOWER = `pv2-mixed-${SUFFIX}@tenant.test`;
+  const mcTenantId = await createTenant('Mixed Case', `pv2-mc-record-${SUFFIX}@tenant.test`);
+
+  await check('claims(5) mixed-case writes normalize to one claim; resolution hits it', async () => {
+    {
+      const { error } = await admin.from('channel_identities').insert({
+        account_id: accountId, party_type: 'tenant', party_id: mcTenantId,
+        channel: 'email', address: `  PV2-Mixed-${SUFFIX}@Tenant.TEST `, source: 'provider_learned',
+      });
+      if (error) throw new Error(`mixed-case seed: ${error.message}`);
+    }
+    const { data: stored } = await admin
+      .from('channel_identities').select('address')
+      .eq('account_id', accountId).eq('channel', 'email')
+      .eq('party_type', 'tenant').eq('party_id', mcTenantId);
+    assert(stored?.length === 1 && stored[0]!.address === MC_EMAIL_LOWER,
+      `stored normalized: ${JSON.stringify(stored)}`);
+
+    // Re-upserting the same claim under a different casing collides on the
+    // claim key instead of minting a second row.
+    const { error: dupErr } = await admin.from('channel_identities').upsert(
+      {
+        account_id: accountId, party_type: 'tenant', party_id: mcTenantId,
+        channel: 'email', address: `PV2-MIXED-${SUFFIX}@tenant.test`, source: 'provider_learned',
+      },
+      {
+        onConflict: 'account_id,channel,address,party_type,party_id,scope_type,scope_id',
+        ignoreDuplicates: true,
+      },
+    );
+    assert(!dupErr, `dup upsert: ${dupErr?.message}`);
+    const { count } = await admin
+      .from('channel_identities').select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId).eq('channel', 'email').eq('address', MC_EMAIL_LOWER);
+    assert(count === 1, `one claim after case-variant upsert: ${count}`);
+
+    const r = assertStatus(await personaCapture({
+      from_address: MC_EMAIL_LOWER, body: 'case folded',
+      rfc822_message_id: `<pv2-mc-1-${SUFFIX}@sender>`,
+    }), 200, 'mixed-case capture') as CaptureShape;
+    assert(r.disposition === 'matched' && r.participant?.party_id === mcTenantId,
+      `one lookup key: ${JSON.stringify(r.participant)}`);
+  });
+
+  // Snapshot resolution records the selected source and ignores superseded
+  // claims.
+  const SS_EMAIL = `pv2-snap-${SUFFIX}@dual.test`;
+  const ssTenantId = await createTenant('Snap Human', `pv2-snap-record-${SUFFIX}@tenant.test`);
+  {
+    const { error } = await admin.from('channel_identities').insert([
+      {
+        account_id: accountId, party_type: 'landlord_user', party_id: sub.user.id,
+        channel: 'email', address: SS_EMAIL, source: 'provider_learned',
+        superseded_at: iso(),
+      },
+      {
+        account_id: accountId, party_type: 'tenant', party_id: ssTenantId,
+        channel: 'email', address: SS_EMAIL, source: 'human_link',
+      },
+    ]);
+    if (error) throw new Error(`snapshot seed: ${error.message}`);
+  }
+
+  await check('claims(6) outbox snapshot stamps the winning claim tier; superseded claims are invisible', async () => {
+    const sent = await api('POST', `${base}/outbox`, {
+      token: landlordToken,
+      body: {
+        channel: 'email',
+        to_address: SS_EMAIL,
+        subject: 'Claim-resolved send',
+        body: 'snapshot source probe',
+        approval_ref: `self:${sub.user.id}`,
+      },
+    });
+    const row = assertStatus(sent, 201, 'snapshot intent') as { id: string };
+    const { data: snapRow } = await admin
+      .from('comm_outbox').select('recipient_snapshot').eq('id', row.id).single();
+    const snap = (snapRow!.recipient_snapshot ?? []) as Array<{
+      party_type: string; party_id: string | null; resolution_source?: string;
+    }>;
+    assert(snap[0]!.party_type === 'tenant' && snap[0]!.party_id === ssTenantId,
+      `live human claim resolved (superseded landlord ignored): ${JSON.stringify(snap)}`);
+    assert(snap[0]!.resolution_source === 'human_link',
+      `winning tier stamped: ${JSON.stringify(snap)}`);
   });
 
   // =========================================================================

@@ -1193,6 +1193,7 @@ async function main(): Promise<void> {
           party_type: 'tenant',
           party_id: fx.tenant1Id,
           label: 'Learned One',
+          source: 'provider_learned',
         });
         assert(!error, `identity seed: ${error?.message}`);
       }
@@ -2291,7 +2292,8 @@ async function main(): Promise<void> {
       assert(res.disposition === 'matched', `post-rebind disposition: ${res.disposition}`);
       assert(res.participant?.id === tenant1ParticipantId, 'attributed to the tenant participant');
 
-      // Learned account-wide.
+      // Learned as a THREAD-scoped thread_rebind claim (PR 2: rebind no
+      // longer writes an account-wide first-writer-wins row).
       const { data: ident } = await admin
         .from('channel_identities')
         .select('party_id, party_type')

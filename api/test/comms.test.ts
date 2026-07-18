@@ -218,7 +218,7 @@ async function setup(): Promise<Fixture> {
   {
     const { error } = await admin.from('channel_identities').insert({
       account_id: accountId, party_type: 'tenant', party_id: tenant.id,
-      channel: 'sms', address: TENANT_ADDR,
+      channel: 'sms', address: TENANT_ADDR, source: 'provider_learned',
     });
     if (error) throw new Error(`channel identity: ${error.message}`);
   }

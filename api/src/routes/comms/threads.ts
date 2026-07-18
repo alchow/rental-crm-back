@@ -24,12 +24,15 @@ import type { CommOutboxStatus, CommRelayLeg, CommThread } from './schemas';
 import {
   BINDING_COLS,
   commDbError,
+  IDENTITY_CLAIM_KEY,
   normalizeAddress,
   PARTICIPANT_COLS,
+  pickPreferredIdentity,
   requireAgentOrManager,
   requireManager,
   THREAD_COLS,
   type CommsApp,
+  type IdentityClaimPick,
   type OutboxRow,
   type ParticipantRow,
 } from './shared';
@@ -466,16 +469,18 @@ export function registerThreadRoutes(app: CommsApp): void {
         continue;
       }
       if (p.party_id !== undefined) {
-        const { data: ident, error: iErr } = await sb
+        // A party may hold several live claims now; pick deterministically
+        // (human_link, then verified, then newest) — never row order.
+        const { data: idents, error: iErr } = await sb
           .from('channel_identities')
-          .select('address')
+          .select('address, source, verified_at, created_at')
           .eq('account_id', accountId)
           .eq('channel', body.channel)
           .eq('party_type', p.party_type)
           .eq('party_id', p.party_id)
-          .limit(1)
-          .maybeSingle();
+          .is('superseded_at', null);
         if (iErr) throw commDbError(iErr);
+        const ident = pickPreferredIdentity((idents ?? []) as IdentityClaimPick[]);
         if (ident) {
           resolvedAddresses.set(i, ident.address);
           continue;
@@ -707,7 +712,13 @@ export function registerThreadRoutes(app: CommsApp): void {
         throw commDbError(bindErr);
       }
 
-      // Remember explicit addresses for future attribution/resolution.
+      // Remember explicit addresses for future attribution/resolution as
+      // account-wide 'thread_rebind' claims (verified tier): the caller
+      // EXPLICITLY supplied this address for this party at create time, and
+      // bare sends/casts keep resolving off it account-wide (unchanged
+      // behavior). Additive on the claim key — a different party's claim on
+      // the same address now coexists instead of being silently dropped, and
+      // the resolver ranks the claims instead of trusting write order.
       const newIdentities = body.participants
         .map((p, i) => ({ p, i }))
         .filter(
@@ -720,10 +731,12 @@ export function registerThreadRoutes(app: CommsApp): void {
           party_id: p.party_id!,
           channel: body.channel,
           address: resolvedAddresses.get(i)!,
+          source: 'thread_rebind',
+          created_by: c.get('auth').userId,
         }));
       if (newIdentities.length > 0) {
         const { error: idErr } = await sb.from('channel_identities').upsert(newIdentities, {
-          onConflict: 'account_id,channel,address',
+          onConflict: IDENTITY_CLAIM_KEY,
           ignoreDuplicates: true,
         });
         if (idErr) throw commDbError(idErr);
@@ -948,17 +961,13 @@ export function registerThreadRoutes(app: CommsApp): void {
       .single();
     if (uErr) throw commDbError(uErr);
 
-    // Learn the new address so attribution/resolution (incl. persona capture)
-    // recognizes it account-wide, not just on this leg.
-    //
-    // KNOWN LIMITATION (review, deliberate): ignoreDuplicates means an address
-    // that ALREADY maps to a different party keeps its OLD mapping — the
-    // address book stays first-writer-wins (same semantics as the capture
-    // paths' learning upserts). The binding update above is still the primary
-    // outcome (replies on THIS leg verify), but future cold/persona mail from
-    // a shared address may attribute to the previously-mapped party. Changing
-    // the book to last-human-wins is a cross-cutting decision tracked in
-    // docs/persona-email-contract.md § Known limitations.
+    // Learn the new address as a THREAD-scoped 'thread_rebind' claim: the
+    // human bound this address to THIS conversation leg, so replies routed by
+    // the parent/thread context recognize it — without granting the claim
+    // account-wide reach. This replaces the old first-writer-wins address
+    // book: a different party's claim on the same address now coexists as its
+    // own row (the resolver ranks human/verified claims above learned ones,
+    // and only link_unmatched_inbound — a human — ever supersedes a claim).
     const { data: participant, error: pErr } = await sb
       .from('comm_thread_participants')
       .select('party_type, party_id')
@@ -977,8 +986,12 @@ export function registerThreadRoutes(app: CommsApp): void {
           party_id: participant.party_id,
           channel: 'email',
           address,
+          source: 'thread_rebind',
+          scope_type: 'thread',
+          scope_id: binding.thread_id,
+          created_by: c.get('auth').userId,
         },
-        { onConflict: 'account_id,channel,address', ignoreDuplicates: true },
+        { onConflict: IDENTITY_CLAIM_KEY, ignoreDuplicates: true },
       );
       if (idErr) throw commDbError(idErr);
     }
