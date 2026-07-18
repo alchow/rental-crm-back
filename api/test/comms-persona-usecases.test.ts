@@ -517,10 +517,12 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
-  // UC-G — valid parent but authentication fails
+  // UC-G — valid parent but authentication fails (unverified-journal tier)
   // =========================================================================
-  await check('UC-G: valid parent + failed DMARC -> auth_failed triage; nothing journaled or learned', async () => {
+  await check('UC-G: valid parent + failed DMARC from the KNOWN tenant -> journaled_unverified into the parent conversation; never trusted, never learned', async () => {
+    const provId = `UC-G-${rnd()}`;
     const r = await personaCapture({
+      provider_msg_id: provId,
       from_address: A_TENANT,
       body: 'this reply fails dmarc',
       rfc822_message_id: `<uc-g-reply-${SUFFIX}@sender>`,
@@ -528,6 +530,38 @@ async function main(): Promise<void> {
       auth_results: AUTH_FAIL,
     });
     const res = assertStatus(r, 200, 'UC-G capture') as CaptureShape;
+    assert(res.disposition === 'journaled_unverified', `disposition: ${res.disposition}`);
+    assert(res.thread_id === ucaThreadId, `RIGHT thread (the parent conversation): ${res.thread_id}`);
+    assert(res.interaction_id !== null && res.unmatched_id === null, 'journaled, not triaged');
+    assert(res.participant?.party_type === 'tenant' && res.participant.party_id === albaId,
+      `claimed tenant attributed: ${JSON.stringify(res.participant)}`);
+    const { data: j } = await admin
+      .from('interactions').select('attestation, direction')
+      .eq('id', res.interaction_id!).single();
+    assert(j!.attestation === 'unverified' && j!.direction === 'inbound',
+      `unverified inbound: ${JSON.stringify(j)}`);
+    // Failed auth still never learns: the claim set is unchanged (the legacy
+    // landlord row + UC-A's learned tenant row).
+    const { data: claims } = await admin
+      .from('channel_identities').select('party_type, source')
+      .eq('account_id', accountId).eq('channel', 'email').eq('address', A_TENANT);
+    assert((claims ?? []).length === 2, `no new claim rows: ${JSON.stringify(claims)}`);
+    const d = await readDecision(provId);
+    assert(d.disposition === 'journaled_unverified' && d.reason === 'unverified_single_claim',
+      `decision: ${JSON.stringify(d)}`);
+    assert(d.parent_match === 'unique' && d.parent_outbox_id === parent1.id,
+      `parent recorded: ${JSON.stringify(d)}`);
+  });
+
+  await check('UC-G2: valid parent + failed DMARC from a STRANGER -> auth_failed triage (a parent never rescues DMARC)', async () => {
+    const r = await personaCapture({
+      from_address: `uc-g2-stranger-${SUFFIX}@somewhere.test`,
+      body: 'forged reply from an unknown address',
+      rfc822_message_id: `<uc-g2-reply-${SUFFIX}@sender>`,
+      in_reply_to: parent1.msgid,
+      auth_results: AUTH_FAIL,
+    });
+    const res = assertStatus(r, 200, 'UC-G2 capture') as CaptureShape;
     assert(res.disposition === 'triaged', `disposition: ${res.disposition}`);
     assert(res.interaction_id === null && res.thread_id === null, 'nothing journaled');
     assert(res.unmatched_id !== null, 'triage row returned');

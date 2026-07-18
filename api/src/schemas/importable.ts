@@ -191,7 +191,12 @@ export const CreateParticipantPartyType = z.enum([
   'unknown',
 ]);
 export const ParticipantSource = z.enum(['capture', 'comms', 'backfill']);
-export const Attestation = z.enum(['provider_verified', 'attested', 'imported']);
+/** Trust tier of a journal row. 'unverified' (20260723000003) marks a persona
+ *  inbound whose sender claim failed DMARC but named exactly one known
+ *  tenant/vendor — the receipt is journaled (receipt is the operative fact),
+ *  the identity is claimed, never asserted. It can be retracted-with-reason or
+ *  human-confirmed to 'attested' via the comms endpoints. */
+export const Attestation = z.enum(['provider_verified', 'attested', 'imported', 'unverified']);
 
 export const InteractionParticipant = z
   .object({

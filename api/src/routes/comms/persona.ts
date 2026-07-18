@@ -13,9 +13,13 @@ import {
   CapturePersonaInboundBody,
   CapturePersonaInboundResponse,
   CommUnmatchedInbound,
+  ConfirmSenderResponse,
+  InteractionAttachmentParams,
   LinkUnmatchedBody,
   LinkUnmatchedResponse,
   ResolvePersonaAddressResponse,
+  RetractUnverifiedBody,
+  RetractUnverifiedResponse,
   UnmatchedDetailResponse,
   UnmatchedListResponse,
 } from './schemas';
@@ -138,6 +142,55 @@ export function registerPersonaRoutes(app: CommsApp): void {
     },
   });
 
+  // Unverified-journal tier follow-ups (owner|manager). A journaled_unverified
+  // row is a receipt whose sender is claimed, not asserted: it can be
+  // retracted (soft delete with a mandatory reason; the raw receipt survives)
+  // or confirmed ("yes, that really was them" — attested + human_link claim).
+  const retractUnverified = createRoute({
+    method: 'post',
+    path: '/accounts/{accountId}/interactions/{interactionId}/retract',
+    tags: ['interactions'],
+    summary:
+      'Retract an UNVERIFIED journal entry (owner|manager): soft-deletes the ' +
+      'row with a mandatory reason (deleted_at/by/reason stamped; hidden from ' +
+      'default timeline reads). Only attestation=unverified rows qualify — ' +
+      'anything else is 409. The inbound_raw receipt is untouched.',
+    request: {
+      params: InteractionAttachmentParams,
+      body: {
+        content: { 'application/json': { schema: RetractUnverifiedBody } },
+        required: true,
+      },
+    },
+    responses: {
+      200: {
+        description: 'retracted',
+        content: { 'application/json': { schema: RetractUnverifiedResponse } },
+      },
+      ...errorResponses,
+    },
+  });
+
+  const confirmSender = createRoute({
+    method: 'post',
+    path: '/accounts/{accountId}/interactions/{interactionId}/confirm-sender',
+    tags: ['interactions'],
+    summary:
+      'Confirm the claimed sender of an UNVERIFIED journal entry ' +
+      '(owner|manager): flips attestation to attested and human-links the ' +
+      'sender address to the entry\'s party (link semantics: differing ' +
+      'learned/legacy claims superseded; a differing live human claim is a ' +
+      '409). Future mail from the address then resolves normally.',
+    request: { params: InteractionAttachmentParams },
+    responses: {
+      200: {
+        description: 'confirmed',
+        content: { 'application/json': { schema: ConfirmSenderResponse } },
+      },
+      ...errorResponses,
+    },
+  });
+
   const resolvePersonaAddress = createRoute({
     method: 'get',
     path: '/comms/resolve-persona-address',
@@ -218,7 +271,13 @@ export function registerPersonaRoutes(app: CommsApp): void {
     if (error) throw commDbError(error);
     const result = (
       data as {
-        disposition: 'matched' | 'triaged' | 'duplicate' | 'opted_out' | 'cc_journaled';
+        disposition:
+          | 'matched'
+          | 'triaged'
+          | 'duplicate'
+          | 'opted_out'
+          | 'cc_journaled'
+          | 'journaled_unverified';
         interaction_id: string | null;
         thread_id: string | null;
         participant_id: string | null;
@@ -429,6 +488,46 @@ export function registerPersonaRoutes(app: CommsApp): void {
     });
     if (error) throw commDbError(error);
     return c.json(data as UnmatchedRow, 200);
+  });
+
+  app.openapi(retractUnverified, async (c) => {
+    requireManager(c);
+    const { accountId, interactionId } = c.req.valid('param');
+    const body = c.req.valid('json');
+    const sb = getSb(c);
+    const { data, error } = await sb.rpc('retract_unverified_interaction', {
+      p_account_id: accountId,
+      p_interaction_id: interactionId,
+      p_reason: body.reason,
+    });
+    if (error) throw commDbError(error);
+    const result = (
+      data as { id: string; deleted_at: string; deleted_reason: string }[]
+    )[0];
+    if (!result) throw new ApiError(500, 'internal_error', 'retract returned no result');
+    return c.json(result, 200);
+  });
+
+  app.openapi(confirmSender, async (c) => {
+    requireManager(c);
+    const { accountId, interactionId } = c.req.valid('param');
+    const sb = getSb(c);
+    const { data, error } = await sb.rpc('confirm_unverified_sender', {
+      p_account_id: accountId,
+      p_interaction_id: interactionId,
+    });
+    if (error) throw commDbError(error);
+    const result = (
+      data as {
+        id: string;
+        attestation: 'attested';
+        party_type: 'tenant' | 'vendor';
+        party_id: string;
+        address: string;
+      }[]
+    )[0];
+    if (!result) throw new ApiError(500, 'internal_error', 'confirm returned no result');
+    return c.json(result, 200);
   });
 
   app.openapi(resolvePersonaAddress, async (c) => {

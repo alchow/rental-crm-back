@@ -422,8 +422,21 @@ export const CapturePersonaInboundResponse = z
      *  register — relay nothing.
      *  cc_journaled: reserved for the phase-4 landlord CC arm — journal-only;
      *  relay nothing.
+     *  journaled_unverified: the mail failed DMARC but its From named exactly
+     *  one KNOWN tenant/vendor — the receipt is journaled into that party's
+     *  conversation with attestation='unverified' (claimed, never asserted).
+     *  Nothing is learned, no ack is sent, and the transport must relay
+     *  nothing. Owner/manager can later retract it (with a reason) or confirm
+     *  the sender via the interactions retract / confirm-sender endpoints.
      *  Forward-compat rule: relay nothing on any unrecognized disposition. */
-    disposition: z.enum(['matched', 'triaged', 'duplicate', 'opted_out', 'cc_journaled']),
+    disposition: z.enum([
+      'matched',
+      'triaged',
+      'duplicate',
+      'opted_out',
+      'cc_journaled',
+      'journaled_unverified',
+    ]),
     interaction_id: z.string().uuid().nullable(),
     thread_id: z.string().uuid().nullable(),
     participant: CommThreadParticipant.nullable(),
@@ -857,13 +870,18 @@ export const CommUnmatchedInbound = z
     spf: z.string().nullable(),
     dkim: z.string().nullable(),
     dmarc: z.string().nullable(),
-    /** unknown_sender: nobody recognizes the address. auth_failed: a
-     *  RECOGNIZED identity (or a reply citing a real outbound parent) whose
-     *  mail failed DMARC. identity_conflict: the sender's identity evidence
-     *  contradicts itself (dual-role address with no selecting context, or an
-     *  authenticated alias whose exact address is already bound to another
-     *  party). parent_sender_mismatch: an authenticated sender replied to a
-     *  real outbound message they were never a recipient of. All but
+    /** unknown_sender: nobody recognizes the address. auth_failed: DMARC
+     *  failed and something still recognizes the claim — a single
+     *  landlord_user claimant, or a valid parent reference with no resolvable
+     *  candidate. (Since the unverified-journal tier, a failed-DMARC mail
+     *  whose From names exactly ONE known tenant/vendor no longer triages —
+     *  it journals as 'journaled_unverified' — so auth_failed is unreachable
+     *  for those senders; the value remains for historical rows.)
+     *  identity_conflict: the sender's identity evidence contradicts itself
+     *  (dual-role address with no selecting context, or an authenticated
+     *  alias whose exact address is already bound to another party).
+     *  parent_sender_mismatch: an authenticated sender replied to a real
+     *  outbound message they were never a recipient of. All but
      *  unknown_sender require human review. */
     reason: z.enum([
       'unknown_sender',
@@ -924,6 +942,41 @@ export const LinkUnmatchedResponse = z
     interaction_id: z.string().uuid(),
   })
   .openapi('LinkCommUnmatchedResponse');
+
+// ---------------------------------------------------------------------------
+// Unverified-journal tier (20260723000003) — human follow-ups on a
+// journaled_unverified row. Both endpoints are owner|manager, account-pinned.
+// ---------------------------------------------------------------------------
+
+export const RetractUnverifiedBody = z
+  .object({
+    /** Why the entry is being removed from the record (kept as evidence on
+     *  the soft-deleted row; the raw receipt in inbound_raw is untouched). */
+    reason: z.string().min(1).max(500),
+  })
+  .openapi('RetractUnverifiedInteractionBody');
+
+export const RetractUnverifiedResponse = z
+  .object({
+    id: z.string().uuid(),
+    deleted_at: z.string(),
+    deleted_reason: z.string(),
+  })
+  .openapi('RetractUnverifiedInteractionResponse');
+
+export const ConfirmSenderResponse = z
+  .object({
+    id: z.string().uuid(),
+    /** The row's new trust tier: a human vouched for the claimed sender. */
+    attestation: z.literal('attested'),
+    party_type: z.enum(['tenant', 'vendor']),
+    party_id: z.string().uuid(),
+    /** The sender address now human-linked to the party (account-wide claim,
+     *  link_unmatched_inbound semantics) — future mail from it resolves
+     *  normally. */
+    address: z.string(),
+  })
+  .openapi('ConfirmUnverifiedSenderResponse');
 
 export const RebindBody = z
   .object({

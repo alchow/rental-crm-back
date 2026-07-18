@@ -2396,10 +2396,14 @@ export type Database = {
           author_type: string | null;
           body: string | null;
           channel: string;
+          confirmed_at: string | null;
+          confirmed_by: string | null;
           correction_kind: string | null;
           corrects_id: string | null;
           created_at: string;
           deleted_at: string | null;
+          deleted_by: string | null;
+          deleted_reason: string | null;
           direction: string;
           entry_type: string | null;
           external_ref: string | null;
@@ -2429,10 +2433,14 @@ export type Database = {
           author_type?: string | null;
           body?: string | null;
           channel: string;
+          confirmed_at?: string | null;
+          confirmed_by?: string | null;
           correction_kind?: string | null;
           corrects_id?: string | null;
           created_at?: string;
           deleted_at?: string | null;
+          deleted_by?: string | null;
+          deleted_reason?: string | null;
           direction: string;
           entry_type?: string | null;
           external_ref?: string | null;
@@ -2462,10 +2470,14 @@ export type Database = {
           author_type?: string | null;
           body?: string | null;
           channel?: string;
+          confirmed_at?: string | null;
+          confirmed_by?: string | null;
           correction_kind?: string | null;
           corrects_id?: string | null;
           created_at?: string;
           deleted_at?: string | null;
+          deleted_by?: string | null;
+          deleted_reason?: string | null;
           direction?: string;
           entry_type?: string | null;
           external_ref?: string | null;
@@ -4128,6 +4140,16 @@ export type Database = {
         };
         Returns: string;
       };
+      confirm_unverified_sender: {
+        Args: { p_account_id: string; p_interaction_id: string };
+        Returns: {
+          id: string;
+          attestation: string;
+          party_type: string;
+          party_id: string;
+          address: string;
+        }[];
+      };
       create_account_for_new_user: {
         Args: { p_account_name: string; p_display_name?: string };
         Returns: {
@@ -4680,6 +4702,14 @@ export type Database = {
         Returns: {
           to_address: string | null;
           already_delivered: boolean;
+        }[];
+      };
+      retract_unverified_interaction: {
+        Args: { p_account_id: string; p_interaction_id: string; p_reason: string };
+        Returns: {
+          id: string;
+          deleted_at: string;
+          deleted_reason: string;
         }[];
       };
       search_entities: {

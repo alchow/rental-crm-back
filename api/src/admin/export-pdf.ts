@@ -587,6 +587,28 @@ export function interactionCastDisplay(
   return parts.join(' · ');
 }
 
+// Marker line for a RETRACTED journal row (today only unverified-journal
+// receipts are soft-deletable — 20260723000003). The row is INCLUDED in the
+// export but renders as this marker alone, never its body/labels: silent
+// omission from a legal bundle looks like spoliation, while the stamped
+// retraction IS the audit trail — mirroring the "(removed)" inspection-item
+// and "(soft-deleted)" tenancy annotations. The content is withheld because
+// the entry was withdrawn precisely for its repudiated identity claim.
+// Exported for unit testing (mirrors interactionPartyDisplay).
+export function retractedInteractionMarker(
+  row: Record<string, unknown>,
+  userNames: Map<string, string>,
+): string {
+  const by = row.deleted_by
+    ? (userNames.get(String(row.deleted_by)) ?? `user:${String(row.deleted_by)}`)
+    : 'unknown';
+  const att = row.attestation ? `${String(row.attestation)} entry ` : 'entry ';
+  const reason = row.deleted_reason
+    ? String(row.deleted_reason).slice(0, 400)
+    : 'no reason recorded';
+  return `(retracted ${att}— by ${by} on ${String(row.deleted_at)}: ${reason})`;
+}
+
 export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   const admin = getAdminClient();
 
@@ -756,10 +778,14 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     events = await loadEventsForEntityIds(admin, scope.accountId, eventEntityIds);
   }
 
-  // Resolve uploader display names for chain-of-custody.
+  // Resolve uploader display names for chain-of-custody. The same map names
+  // who retracted a soft-deleted journal row (the unverified-tier marker).
   const uploaderIds = new Set<string>();
   for (const att of attachments) {
     if (att.uploaded_by) uploaderIds.add(att.uploaded_by);
+  }
+  for (const r of interactions) {
+    if (r.deleted_at && r.deleted_by) uploaderIds.add(String(r.deleted_by));
   }
   const uploaderNames = new Map<string, string>();
   if (uploaderIds.size > 0) {
@@ -1190,7 +1216,10 @@ async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
   // logged_at, labeled Corrected/Retracted. Retracted entries stay visible,
   // withdrawn with their reason. Showing only the latest would make a
   // good-faith correction look like a concealed edit -- completeness is the
-  // point of this artifact.
+  // point of this artifact. A SOFT-DELETED row (an unverified-journal receipt
+  // retracted with a reason, 20260723000003) renders as a marker line only —
+  // present (never silently omitted from a legal bundle) but stripped of the
+  // repudiated content (retractedInteractionMarker).
   section(doc, 'Interactions');
   if (data.interactions.length === 0) {
     italicNote(doc, '(no interactions in scope)');
@@ -1198,6 +1227,12 @@ async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
     doc.fontSize(9).fillColor('#333');
     for (const chain of groupInteractionChains(data.interactions)) {
       const root = chain.root;
+      if (root.deleted_at) {
+        doc.text(
+          `• ${root.occurred_at as string}  ${retractedInteractionMarker(root, data.uploaderNames)}`,
+        );
+        continue;
+      }
       const what =
         root.kind === 'note'
           ? 'note'.padEnd(19)

@@ -72,7 +72,7 @@ _resetJwksCacheForTests();
 const { _resetAdminClientForTests, getAdminClient } = await import('../src/admin/supabase-admin');
 _resetAdminClientForTests();
 const { _resetIntakeIpBucketsForTests } = await import('../src/admin/intake');
-const { groupInteractionChains, loadExportData, interactionPartyDisplay } = await import('../src/admin/export-pdf');
+const { groupInteractionChains, loadExportData, interactionPartyDisplay, retractedInteractionMarker } = await import('../src/admin/export-pdf');
 const { buildApp } = await import('../src/app');
 
 const app = buildApp();
@@ -632,6 +632,51 @@ async function main(): Promise<void> {
     }
 
     // And the real artifact still builds end-to-end with chains in scope.
+    await createExportAndWait(A.accessToken, A.accountId, { tenancy_id: A.tenancyId });
+  });
+
+  // A soft-deleted journal row (an unverified-journal receipt retracted with a
+  // reason — 20260723000003) must be INCLUDED in the bundle (silent omission
+  // looks like spoliation) but render as its retraction marker alone: the
+  // stamped retraction is the audit trail, and the repudiated content must not
+  // pass as a genuine attributed interaction.
+  await check('export: a retracted unverified receipt is included and renders as a MARKER, never its body', async () => {
+    const deletedAt = '2026-04-20T12:00:00.000Z';
+    const { data: seeded, error } = await admin.from('interactions').insert({
+      account_id: A.accountId, actor: 'system:comm-persona', author_type: 'tenant',
+      kind: 'communication', channel: 'email', direction: 'inbound',
+      party_type: 'tenant', party_id: null,
+      body: 'FORGED-BODY-MUST-NOT-RENDER',
+      occurred_at: '2026-04-12T10:00:00.000Z', tenancy_id: A.tenancyId,
+      attestation: 'unverified',
+      deleted_at: deletedAt, deleted_by: A.userId,
+      deleted_reason: 'confirmed forgery with the tenant by phone',
+    }).select('id').single();
+    if (error) throw new Error(`retracted-unverified seed: ${error.message}`);
+
+    const data = await loadExportData({
+      accountId: A.accountId, tenancyId: A.tenancyId,
+      fromDate: '2026-04-01', toDate: '2026-04-30', exporter: null,
+    });
+    const got = data.interactions.find((x) => String(x.id) === seeded!.id);
+    if (!got) throw new Error('retracted row silently omitted from the export data (spoliation shape)');
+
+    const marker = retractedInteractionMarker(got, data.uploaderNames);
+    if (!marker.includes('retracted unverified entry')) {
+      throw new Error(`marker names the trust tier: ${marker}`);
+    }
+    if (!/by .+ on 2026-04-20/.test(marker)) {
+      throw new Error(`marker names the retractor + date: ${marker}`);
+    }
+    if (!marker.includes('confirmed forgery with the tenant by phone')) {
+      throw new Error(`marker carries the reason: ${marker}`);
+    }
+    if (marker.includes('FORGED-BODY-MUST-NOT-RENDER')) {
+      throw new Error(`marker must not leak the retracted body: ${marker}`);
+    }
+
+    // And the real artifact still builds end-to-end with the retracted row
+    // in scope (the renderer takes the marker branch, not the full row).
     await createExportAndWait(A.accessToken, A.accountId, { tenancy_id: A.tenancyId });
   });
 
