@@ -207,10 +207,14 @@ as $$
 declare
   cc record;
 begin
+  -- Same roles as the send path (outbox POST): a viewer may not use this as a
+  -- within-account address→party confirm-oracle (it can resolve owner/manager
+  -- emails via the resolver, which reads auth.users under definer rights).
   if auth.uid() is null or not exists (
     select 1 from public.account_members m
      where m.user_id = auth.uid()
        and m.account_id = p_account_id
+       and m.role in ('owner', 'manager', 'agent')
        and m.deleted_at is null
   ) then
     raise exception 'not authorized' using errcode = '42501';
@@ -379,6 +383,11 @@ revoke execute on function public._comm_resolve_parent_recipient(uuid, uuid, uui
 -- resolution_source='caller_intent', ABOVE the recomputed tenancy/account
 -- context; an unverifiable hint RAISEs (check_violation) — the API pre-check
 -- should have caught it. No hint -> the PR 2 tier ladder is unchanged.
+-- INERT BY DESIGN: a cc_parties entry whose address is absent from
+-- cc_addresses (or any hint on a group/thread insert, where this tier is
+-- skipped) is stored but never verified and never frozen — nothing reads
+-- cc_parties at routing time (parent resolution reads recipient_snapshot
+-- only), so a forged orphan entry can persist only dead data.
 create or replace function public._comm_outbox_snapshot_recipients()
 returns trigger
 language plpgsql

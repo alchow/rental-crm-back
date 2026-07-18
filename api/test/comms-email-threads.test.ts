@@ -1584,6 +1584,10 @@ async function main(): Promise<void> {
         author_type: 'landlord',
       });
       assert(error !== null, 'trigger must reject a forged caller-intent hint');
+      assert(
+        /to_party hint failed verification/.test(error!.message),
+        `rejected for the RIGHT reason (hint verification), got: ${error!.message}`,
+      );
     },
   );
 
