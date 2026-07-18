@@ -95,23 +95,24 @@ begin
        group by 1, 2
       having count(*) > 1
     ) d;
-  if v_dupes = 0 then
-    execute
-      'create unique index comm_outbox_email_msgid_uniq
-         on public.comm_outbox (account_id, public._comm_normalize_msgid(rfc822_message_id))
-         where channel = ''email'' and rfc822_message_id is not null';
-  else
+  if v_dupes > 0 then
     raise notice
       'comm_outbox has % duplicated (account_id, normalized Message-ID) email pairs; '
-      'creating a NON-unique lookup index instead — write a repair report before '
-      'attempting uniqueness. The classifier treats multi-parent matches as conflicts.',
+      'write a repair report before attempting uniqueness.',
       v_dupes;
-    execute
-      'create index comm_outbox_email_msgid_idx
-         on public.comm_outbox (account_id, public._comm_normalize_msgid(rfc822_message_id))
-         where channel = ''email'' and rfc822_message_id is not null';
   end if;
 end $$;
+
+-- NON-unique on purpose (review finding): complete_send stamps
+-- rfc822_message_id with no unique_violation handler, so a UNIQUE index here
+-- would turn a duplicate Message-ID from a provider retry/reconcile echo into
+-- a 500 on the send-completion hot path. Uniqueness is not load-bearing for
+-- routing — the classifier treats a multi-parent match as identity_conflict —
+-- so enforcement waits for the cleanup PR, which adds graceful
+-- unique_violation handling to complete_send first.
+create index comm_outbox_email_msgid_idx
+  on public.comm_outbox (account_id, public._comm_normalize_msgid(rfc822_message_id))
+  where channel = 'email' and rfc822_message_id is not null;
 
 -- ============================================================================
 -- (C) Helpers — named tiers, explicit branches, no numeric scoring
@@ -432,7 +433,7 @@ begin
    where s.party_id is not null
    order by array_position(
      array['thread_participant', 'tenancy_member', 'account_member',
-           'snapshot_frozen', 'learned_identity', 'snapshot_learned'],
+           'snapshot_frozen', 'snapshot_learned', 'learned_identity'],
      s.tier)
    limit 1;
 

@@ -1062,6 +1062,95 @@ async function main(): Promise<void> {
     assert(door2.interaction_id === door1.interaction_id, 'points at the token-journaled original');
   });
 
+  await check('v2(10) a completed parent in ANOTHER account is invisible to the probe', async () => {
+    // Account B with its own completed send; a reply into account A reusing
+    // B's Message-ID must not see it (invariant §5.6, use case L).
+    const su2 = await api('POST', '/v1/auth/signup', {
+      body: {
+        email: `pcap-owner-b-${rnd()}@example.test`,
+        password: `correct-horse-${rnd()}`,
+        account_name: 'Persona Capture Acct B',
+      },
+    });
+    if (su2.status !== 200) throw new Error(`signup B: ${su2.status} ${JSON.stringify(su2.body)}`);
+    const subB = su2.body as { account: { id: string }; user: { id: string } };
+    const crossMsgid = `<pv2-cross-${SUFFIX}@other-account>`;
+    const { data: obRow, error: obErr } = await admin.from('comm_outbox').insert({
+      account_id: subB.account.id, channel: 'email', to_address: PV2_OTHER_EMAIL,
+      body: 'other account parent', approval_ref: `self:${subB.user.id}`,
+      approved_by: subB.user.id, author_type: 'landlord',
+      rfc822_message_id: crossMsgid,
+    }).select('id').single();
+    if (obErr) throw new Error(`account B parent seed: ${obErr.message}`);
+    const { error: obUpErr } = await admin.from('comm_outbox')
+      .update({ status: 'sent', provider: 'smtp2go', provider_sid: `pv2-b-${rnd()}` })
+      .eq('id', obRow!.id);
+    if (obUpErr) throw new Error(`account B parent sent: ${obUpErr.message}`);
+
+    const r = await personaCapture({
+      provider_msg_id: `PS-pv2-cross-${rnd()}`,
+      from_address: PV2_OTHER_EMAIL,
+      to_addresses: [PERSONA],
+      body: 'reply quoting a foreign message id',
+      rfc822_message_id: `<pv2-reply10-${SUFFIX}@sender>`,
+      in_reply_to: crossMsgid,
+    });
+    const res = assertStatus(r, 200, 'cross-account capture') as CaptureShape;
+    // The sender is a known single-claim tenant in account A: the capture must
+    // fall through to the NO-PARENT path (their own thread), never B's parent.
+    assert(res.disposition === 'matched', `disposition: ${res.disposition}`);
+    assert(res.thread_id === pv2OtherThreadId, `own thread, not via parent: ${res.thread_id}`);
+    const { data: raws, error: rawsErr } = await admin
+      .from('inbound_raw').select('payload')
+      .eq('matched_interaction_id', res.interaction_id!)
+      .order('received_at', { ascending: false }).limit(1);
+    if (rawsErr) throw new Error(`raw read: ${rawsErr.message}`);
+    const decision = (raws?.[0]?.payload as {
+      routing_decision?: { parent_match: string; parent_outbox_id: string | null };
+    }).routing_decision;
+    assert(decision?.parent_match === 'none' && decision.parent_outbox_id === null,
+      `probe saw no parent: ${JSON.stringify(decision)}`);
+  });
+
+  await check('v2(11) a non-completed (queued) parent is invisible to the probe', async () => {
+    // A queued intent in account A that somehow carries a Message-ID must not
+    // be a parent (invariant §5.7: only sent/delivered rows qualify).
+    const intent = await api('POST', `${base}/outbox`, {
+      token: landlordToken,
+      body: {
+        channel: 'email', to_address: PV2_OTHER_EMAIL,
+        subject: 'never sent', body: 'queued intent',
+        approval_ref: `self:${sub.user.id}`,
+      },
+    });
+    const row = assertStatus(intent, 201, 'queued intent') as { id: string };
+    const queuedMsgid = `<pv2-queued-${SUFFIX}@${REPLY_DOMAIN}>`;
+    const { error: upErr } = await admin.from('comm_outbox')
+      .update({ rfc822_message_id: queuedMsgid }).eq('id', row.id);
+    if (upErr) throw new Error(`queued msgid stamp: ${upErr.message}`);
+
+    const r = await personaCapture({
+      from_address: PV2_OTHER_EMAIL,
+      to_addresses: [PERSONA],
+      body: 'reply to a message that was never sent',
+      rfc822_message_id: `<pv2-reply11-${SUFFIX}@sender>`,
+      in_reply_to: queuedMsgid,
+    });
+    const res = assertStatus(r, 200, 'queued-parent capture') as CaptureShape;
+    assert(res.disposition === 'matched', `disposition: ${res.disposition}`);
+    assert(res.thread_id === pv2OtherThreadId, `own thread, not via queued parent: ${res.thread_id}`);
+    const { data: raws, error: rawsErr } = await admin
+      .from('inbound_raw').select('payload')
+      .eq('matched_interaction_id', res.interaction_id!)
+      .order('received_at', { ascending: false }).limit(1);
+    if (rawsErr) throw new Error(`raw read: ${rawsErr.message}`);
+    const decision = (raws?.[0]?.payload as {
+      routing_decision?: { parent_match: string; parent_outbox_id: string | null };
+    }).routing_decision;
+    assert(decision?.parent_match === 'none' && decision.parent_outbox_id === null,
+      `probe ignored the queued row: ${JSON.stringify(decision)}`);
+  });
+
   // =========================================================================
   // (8) Unknown-sender triage (phase 6)
   // =========================================================================
