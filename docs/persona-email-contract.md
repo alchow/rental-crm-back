@@ -1,281 +1,361 @@
-# Persona email — core ↔ transport contract
+# Persona email — core ↔ transport contract (routing v2)
 
-Accumulating contract notes for the persona-address feature ("Riley"), one
-section per shipped core phase. Audience: the transport (landlord-agent repo).
+The deterministic contract for mail addressed to an account persona
+(`riley@<subdomain>.<EMAIL_PLATFORM_PARENT_DOMAIN>`). Audience: the transport
+(landlord-agent repo) and anyone asking "which account, party, and thread
+received this evidence — and why?".
 
-## Standing rules
+This document describes the CURRENT behavior, implemented by the persona
+routing v2 migration stack:
 
-- **Unrecognized disposition ⇒ do not relay.** Future phases add capture
-  disposition values; a transport that sees a disposition it does not know
-  must journal nothing further and relay nothing (fail-safe forward compat).
-- Tokens (`t-<32hex>@…`) remain the relay-leg routing mechanism, resolved via
-  `GET /v1/comms/resolve-reply-address` exactly as today. The persona address
-  is an ADDITIONAL receiving surface, never a replacement.
-- Deploy ordering: core ships first; the transport starts routing persona
-  mail only after the corresponding core endpoint exists in prod.
+- `db/supabase/migrations/20260722000001_persona_routing_v2.sql` — the
+  canonical parent-first classifier, `parent_sender_mismatch`, snapshot
+  precedence flip, the Message-ID lookup index, the drift guard.
+- `db/supabase/migrations/20260722000002_channel_identity_claims.sql` — the
+  multi-claim identity model (sources, scopes, supersession) and the one
+  resolver every reader uses.
+- `db/supabase/migrations/20260722000003_comm_outbox_party_intent.sql` —
+  explicit caller party intent for bare sends (`to_party`, `cc_parties`,
+  `resolution_source='caller_intent'`).
+- `db/supabase/migrations/20260723000001_persona_routing_v2_cleanup.sql` —
+  drops the dormant pre-v2 classifier, makes `complete_send` degrade
+  gracefully on a duplicate Message-ID, and (when data is clean) enforces
+  per-account outbound Message-ID uniqueness.
 
-## Phase 1 — persona identity + resolution (shipped with migration 20260707000001)
+Pre-v2 phase-by-phase history lives in git; this file no longer accumulates
+phases.
 
-**What exists**
+## Standing rules (unchanged)
 
-- Accounts may carry `persona_local_part` alongside the existing branding
-  fields. `GET/PATCH /v1/accounts/{accountId}/email-branding` now reads/writes
-  it (owner/manager write) and the response adds two fields:
-  - `persona_local_part: string | null`
-  - `persona_address: string | null` — computed
-    `<local>@<email_subdomain>.<EMAIL_PLATFORM_PARENT_DOMAIN>`; non-null only
-    when the local part, the branded subdomain, AND the platform parent env
-    are all set. **The persona is branded-subdomain-only** — nothing on the
-    shared `EMAIL_REPLY_DOMAIN` ever resolves as a persona.
-- `GET /v1/comms/resolve-persona-address?address=<full address>` — the
-  transport's cold-inbound directory lookup. Same posture as
-  `resolve-reply-address`: mounted outside `/accounts/*`, authenticated with
-  the transport's normal per-account session, RLS + agent-role fenced,
-  **uniform 404** for unknown local parts, unknown subdomains, foreign
-  domains, multi-label subdomains, non-persona accounts, and accounts the
-  caller does not transport. 200 body: `{ "account_id": "<uuid>" }`.
-  Matching is trim + lowercase on the full address.
-- `sender_display_name` now DEFAULTS to the account name at signup and has
-  been backfilled for existing accounts — the transport's
-  `"<display name>" <t-…@domain>` From rendering no longer needs its bare-hex
-  fallback for typical accounts (keep the fallback; the value is still
-  nullable).
+- **Relay only on `matched`.** Never relay on `cc_journaled`, `triaged`,
+  `duplicate`, `opted_out`, or any disposition the transport does not
+  recognize (fail-safe forward compatibility).
+- Tokens (`t-<32hex>@…`) remain the thread-leg routing mechanism, resolved via
+  `GET /v1/comms/resolve-reply-address`. The persona address is an ADDITIONAL
+  receiving surface, never a replacement. Persona local parts can never start
+  with `t-` (DB CHECK), so the prefix test is a safe discriminator forever.
+- The transport resolves the account with
+  `GET /v1/comms/resolve-persona-address?address=…` (uniform 404 for anything
+  that is not this caller's persona surface) and then posts to
+  `POST /v1/accounts/{id}/comms/inbound-persona` (transport-only;
+  `auth_results` REQUIRED). Core owns all party/thread policy; the agent must
+  not maintain its own account/subdomain map.
+- No LLM runs anywhere on this path. Routing is deterministic SQL.
+- Deploy ordering: core ships first; the transport starts depending on new
+  behavior only after it exists in prod.
 
-**What the transport should do with it (routing sketch)**
+## The ordered routing algorithm
 
-```
-inbound rcpt <addr>:
-  local starts with 't-'  → resolve-reply-address → existing token capture
-  else                    → resolve-persona-address
-                              404 → not ours / drop per current policy
-                              200 → HOLD until Phase 3 (no persona capture
-                                    endpoint exists yet — do not call
-                                    /comms/inbound with persona mail; it
-                                    would only ever produce orphans)
-```
+One canonical coordinator (`capture_persona_inbound`) does, in order:
 
-**Namespace guarantee**: persona local parts can never start with `t-`
-(DB CHECK), so the `t-` prefix test above is a safe discriminator forever.
-
-## Phase 2 — RFC822 headers + `duplicate` disposition (shipped with migration 20260707000002)
-
-**What exists**
-
-- `POST /accounts/{id}/comms/inbound` accepts five NEW optional email-only
-  fields (a 400 on any other channel): `subject`, `rfc822_message_id`,
-  `in_reply_to`, `references[]`, and
-  `auth_results {spf, dkim, dmarc}` (RFC 7601 verdict enums). All ride into
-  the raw capture; the normalized Message-ID also lands on the journal row.
-  Message-IDs are normalized trim + strip-one-`<>` + lowercase server-side.
-- **New capture disposition `duplicate`**: the token resolved AND this
-  email's own Message-ID already journaled into the SAME thread — the second
-  delivery door of one send. Nothing new is written;
-  `interaction_id/thread_id/participant` point at the ORIGINAL row. Treat as
-  success-no-op; relay nothing. (Reminder of the standing rule: relay
-  nothing on ANY unrecognized disposition.)
-- `POST /accounts/{id}/comms/outbox/{id}/complete` accepts optional
-  `rfc822_message_id` — the Message-ID the provider stamped on the SENT
-  mail. It is recorded on the outbox row (`rfc822_message_id` in reads) and
-  the journal entry.
-- Outbox reads (`GET .../comms/outbox`, `GET .../comms/outbox/{id}`) expose
-  `relay_source_rfc822_message_id` on email relay legs: the Message-ID of
-  the inbound original the leg relays.
-
-**What the transport should do with it**
-
-- Pass `rfc822_message_id`, `subject`, `in_reply_to`, `references`, and the
-  provider's auth verdicts on every email capture (phases 3–4 gate
-  attribution and auto-acks on the verdicts — captures without them will be
-  treated as unauthenticated).
-- Report the sent Message-ID on every email `complete`.
-- When rendering an email relay leg, set `In-Reply-To:
-<relay_source_rfc822_message_id>` and append it to `References` — relayed
-  conversations then thread natively in recipients' mail clients.
-- **Thread-leg sends (native threading, shipped with migration
-  20260710000001):** thread detail messages (`GET .../comms/threads/{id}`)
-  expose `rfc822_message_id` on every email journal row — the sender-stamped
-  id on inbound captures, the id you reported on `complete` for sends (null
-  on non-email rows and rows predating the header work). When rendering a
-  thread leg (landlord-composed reply), derive `In-Reply-To` from the newest
-  prior message that has an id, and `References` from the thread's ids
-  oldest→newest. Keep `References` from growing unbounded (many clients cap
-  it): past ~10 entries, drop ids from the MIDDLE of the chain, keeping the
-  root and the most recent ones. Message-IDs are stored bracket-stripped:
-  re-wrap in `<...>` when emitting headers.
-
-## Phase 3 — persona capture: known senders + auto-ack (shipped with migration 20260708000001)
-
-**What exists**
-
-- `POST /v1/accounts/{accountId}/comms/inbound-persona` (transport-only) —
-  capture for mail addressed to the persona. Body mirrors token capture plus:
-  `persona_address`, `from_display_name?`, `to_addresses[]`, `cc_addresses[]`,
-  and **`auth_results` is REQUIRED** (sender identity is the routing key, so
-  attribution is DMARC-gated; a capture without verdicts is treated as
-  unauthenticated). Same `provider_msg_id` idempotency space as token capture.
-- Dispositions (standing rule still applies — relay nothing on anything
-  unrecognized):
-  - `matched` — sender resolved to a known tenant/vendor AND DMARC passed;
-    journaled into their active email thread. When none existed, the thread
-    was **created atomically**: counterparty token minted under the branded
-    domain (their FUTURE replies ride the token path), landlord participant =
-    the account owner (bound only if an email identity is on file — in-app
-    reply works regardless). **Relay onward like any thread inbound**
-    (`approval_ref='thread:<id>'` relay legs).
-  - `triaged` — unknown sender, or a claimed-known sender that failed DMARC.
-    Raw-tier captured; nothing journaled; **relay nothing**. Phase 6 adds the
-    visible triage queue; `unmatched_id` stays null until then.
-  - `duplicate` — this email's Message-ID already journaled into the resolved
-    thread (the token door landed first). Success-no-op; relay nothing.
-  - `opted_out` — journaled; relay nothing.
-  - `cc_journaled` — reserved for phase 4.
-- **Auto-ack**: a `triaged` capture from an unknown sender with DMARC pass
-  queues at most ONE `system:persona_ack` email intent per sender per day
-  (and ≤20/account/day) — the transport dispatches it like any other system
-  send. Nothing for the transport to do at capture time; the intent shows up
-  in the normal outbox scan.
-
-**Routing update (supersedes the phase-1 HOLD)**
-
-```
-inbound rcpt <addr>:
-  local starts with 't-'  → resolve-reply-address → POST /comms/inbound
-  else                    → resolve-persona-address
-                              404 → not ours / drop per current policy
-                              200 → POST /accounts/{id}/comms/inbound-persona
-                                    (relay ONLY on 'matched')
+```text
+authorize agent principal for the account
+  -> advisory lock on provider_msg_id
+  -> frozen replay return (same provider_msg_id + account => original result)
+  -> raw-first evidence insert (inbound_raw)
+  -> parent probe (always runs; recorded even on triage)
+  -> authentication gate
+  -> parent-first party resolution, else no-parent fallback
+  -> same-thread RFC Message-ID duplicate check
+  -> journal/triage atomically
+  -> freeze routing_decision (version 2) on the raw row
 ```
 
-## Phase 4 — CC journal-only capture (shipped with migration 20260708000002)
+### 1. Authentication
 
-**What exists**
+`auth_results.dmarc = 'pass'` is the sender-trust bar. A capture that fails it
+is triaged — with reason `auth_failed` when anything recognizes the claimed
+identity (a valid parent reference or any LIVE identity claim), else
+`unknown_sender`. A matching `In-Reply-To` never rescues failed DMARC (reply
+headers can be copied or forged), and failed auth never learns an identity.
 
-- `POST /comms/inbound-persona` now recognizes the account's OWN landlord as
-  the sender (their email identity + **DMARC pass** — a landlord From that
-  fails DMARC is triaged, never attributed). The mail is journaled
-  **outbound, landlord-authored** into the conversation matched by a To/CC
-  address bound in an active email thread; when no thread exists but a To/CC
-  address resolves to a known tenant/vendor, the thread is created
-  outbound-cold (the landlord opened the conversation from their own inbox;
-  they are bound with their own address + a minted token). Unknown
-  counterparties → `triaged`.
-- **Disposition `cc_journaled`: journal-only. Relay NOTHING** — both humans
-  already have the mail; re-sending would duplicate the conversation.
-- The reply-all two-door is closed in both orders: one email arriving via a
-  reply token AND via the persona CC produces one journal row + one
-  `duplicate`.
+### 2. Parent probe
 
-**What the transport should do with it**
+Normalize `In-Reply-To` and `References` (trim, strip one `<>`, lowercase) and
+match against `comm_outbox` rows that are, all at once:
 
-Nothing new mechanically — same endpoint, same rule: relay only on
-`matched`. The practical upshot for rendering/UX: landlords can be told
-"CC riley@… from your own inbox and it lands in the file."
+```text
+same account
+channel = 'email'
+status in ('sent', 'delivered')
+non-null normalized rfc822_message_id
+```
 
-## Phase 5 — mismatch hygiene (no migration; FE/landlord-facing)
+`In-Reply-To` is probed first; `References` newest-to-oldest only when it
+found nothing. One matching row is a `unique` parent. Several rows for one
+Message-ID is a collision → `identity_conflict` triage, never "pick the
+newest" (the cleanup migration's unique index makes this state impossible for
+new sends where historical data was clean). Cross-account rows and
+non-completed (queued/failed) rows are invisible to the probe. Legacy parents
+that were completed without a Message-ID simply never match — such replies use
+the no-parent fallback.
 
-- `GET /accounts/{id}/interactions?party_type=unspecified` is the
-  unresolved-sender queue (sender_mismatch captures awaiting a human
-  classify); `direction` filter added alongside.
-- `POST /accounts/{id}/comms/threads/{threadId}/bindings/{bindingId}/rebind
-{address}` (owner|manager, email bindings only): after a human confirms a
-  mismatch was really the participant on a new address, rebinding stops every
-  FUTURE reply from mismatching. Reply token untouched; the address is
-  learned into `channel_identities` (so persona capture recognizes it too).
-- Transport impact: none — capture verification just starts passing for the
-  rebound address.
+### 3. Parent-first resolution (a unique parent exists)
 
-## Phase 6 — unknown-sender triage (shipped with migration 20260709000001)
+The authenticated sender is compared against the parent's PHYSICAL recipients
+(`to_address` + `cc_addresses`) — exact lowercase equality, with
+Gmail/Googlemail dot/plus canonicalization for those domains only. `To` vs
+`Cc` is a message role, never a party type.
 
-- `triaged` persona captures now land in a durable, member-visible store
-  (`comm_unmatched_inbound`) carrying their own copy of the message — they
-  outlive the raw-tier prune. `unmatched_id` in the persona capture response
-  is now real (and stable across replays).
-- `reason` distinguishes `unknown_sender`, `auth_failed` (a recognized identity
-  — or a reply citing a real outbound parent — whose mail failed DMARC),
-  `identity_conflict` (the sender's identity evidence contradicts itself: a
-  dual-role address with no selecting context, or an authenticated alias whose
-  exact address is already bound to another party), and, since persona routing
-  v2 (migration 20260722000001), `parent_sender_mismatch` (an authenticated
-  sender replied to a real outbound message they were never a recipient of).
-  All but `unknown_sender` always require human review.
-- Landlord surface (owner|manager): `GET /accounts/{id}/comms/unmatched`
-  (queue, status filter), `GET …/unmatched/{id}` (detail + read-time
-  suggestions: exact contact-email hits, trigram name matches),
-  `POST …/unmatched/{id}/link {party_type, party_id}` (journals the stored
-  original into the party's thread — created atomically if needed;
-  `provider_verified` when the stored DMARC passed, else `attested`; learns
-  the address so future mail auto-resolves), `POST …/unmatched/{id}/dismiss`.
-- Transport impact: none beyond reading `unmatched_id` if useful for
-  logging. A linked sender's future mail starts resolving as `matched`.
+Each matched recipient address resolves to its intended party through named
+tiers, top wins:
 
-## Phase 7 — attachment ingestion (shipped with migration 20260709000002)
+```text
+thread_participant   active binding on the parent's thread
+tenancy_member /     authoritative context RECOMPUTED from the physical
+account_member       parent row (its tenancy's members; the account's
+                     owner/manager users)
+verified_identity    the claims resolver's winner at an authoritative tier
+                     (human_link / authoritative_record / verified_claim)
+snapshot_frozen      an authoritatively-sourced frozen snapshot entry
+                     (resolution_source in thread_participant / tenancy_member
+                     / account_member / human_link / authoritative_record /
+                     caller_intent)
+snapshot_learned     any other frozen snapshot entry (belief, not authority)
+learned_identity     live provider_learned / legacy claims
+```
 
-- After a capture returns `matched` / `cc_journaled`, the transport may store
-  the original attachment bytes:
-  `POST /accounts/{id}/interactions/{interactionId}/attachments`
-  `{filename, content_type, data_b64}` — ≤10 MiB decoded per file, ≤10 per
-  message, base64. Idempotent per (interaction, content-hash): retries return
-  the existing row. **Skip on `duplicate`** (the original already carries
-  them) and on `triaged` (nothing journaled; the triage row keeps the
-  provider media URLs).
-- Only provider-verified capture rows accept attachments (400 otherwise);
-  the endpoint is transport-only (403).
-- Members list via GET on the same path and stream bytes from
-  `…/attachments/{attachmentId}/download` (forced Content-Disposition,
-  nosniff, CSP sandbox).
-- Storage: private `comm-attachments` bucket, no authenticated policies —
-  bytes move only through the API; paths are content-addressed per message.
+Outcomes:
 
-## Phase 8 — persona default + bare-send hard gate (shipped with migration 20260721000003)
+- sender = exactly one tenant/vendor parent recipient → **`matched`**
+  (inbound, tenant/vendor-authored, relayed);
+- sender = exactly one landlord parent recipient → **`cc_journaled`**
+  (outbound, landlord-authored, journaled into the parent's PRIMARY
+  recipient's conversation; relay nothing);
+- sender matches no parent recipient → triage **`parent_sender_mismatch`**
+  (never rerouted into the sender's own unrelated thread);
+- matches resolve to more than one distinct party, or a leg's claims tie at
+  their winning tier → triage **`identity_conflict`**;
+- matches resolve to no party at all → triage `unknown_sender`.
 
-Product decision 2026-07-17 (owner), REVERSING the earlier "send from noreply@
-and nudge" stance recorded in the frontend branding-selection doc:
+A live claim that names a DIFFERENT party than the route selected does not
+stop an authoritative-tier route — it is RECORDED in the routing decision
+(`conflict_party_*`) for audited repair. If the route's own tier is merely
+learned, the contradiction fails closed as `identity_conflict`.
 
-- **Persona defaults to `manager`.** A BEFORE-write trigger on `accounts`
-  fills `persona_local_part = 'manager'` whenever `email_subdomain` is set and
-  the persona is null — including an explicit null clear. Existing
-  subdomain-holding accounts were backfilled. Consequence for the transport:
-  an account with a subdomain ALWAYS has a computable `persona_address`;
-  "subdomain set, persona unset" no longer exists.
-- **Bare email sends are hard-gated.** `POST /accounts/{id}/comms/outbox` with
-  `channel=email` and NO `thread_id` is refused with **422
-  `invalid_request` / message `email branding is not configured`** (stable
-  string — key on it exactly) when the account's `persona_address` is null.
-  Thread legs are exempt (token addresses reply-route on the shared domain).
-  The gate only engages when `EMAIL_PLATFORM_PARENT_DOMAIN` is configured.
-  Core-originated `system:*` rows are written server-side and bypass the
-  route; the transport's `EMAIL_FROM` fallback remains their safety net.
-- **Availability probe for the settings UI.**
-  `GET /accounts/{id}/email-branding/subdomain-availability?label=` (owner/
-  manager) returns `{ label, available, reason }` — 200 always; unavailability
-  is data (`reason` = validator string or `is already taken`), and one's own
-  current subdomain reads available. The PATCH 409 stays the race backstop.
+Thread selection with a parent:
 
-## Known limitations (reviewed 2026-07-06; deliberate, tracked as follow-ups)
+- the parent's active thread is reused only while the selected party is still
+  a participant;
+- a closed thread or departed participant is never silently reopened: a new
+  active thread is created, constrained to the parent's exact tenancy
+  (`parent_outbox_id` stays in the routing decision);
+- a thread-less parent with a tenancy finds-or-creates the party's active
+  thread IN that tenancy — "the party's most recent tenancy" inference never
+  runs against explicit parent context;
+- a tenant whose parent named a conversation but left no usable tenancy is
+  triaged, not guessed.
 
-- **Address book is first-writer-wins.** Every learning upsert
-  (capture, rebind, triage link) uses on-conflict-do-nothing: an address that
-  already maps to a different party keeps its OLD mapping. Consequence: on a
-  genuinely shared address (a couple sharing one inbox), cold/persona mail
-  attributes to whichever party was learned first, even after a human rebinds
-  or links the other party. Moving to last-human-wins is a cross-cutting
-  decision (it must not let a capture path overwrite a human's mapping).
-- **Shared `tenants.emails` fallback picks the oldest tenant** (stable
-  `created_at` order) and the learning step makes that sticky. Same root as
-  above.
+### 4. No-parent fallback
+
+Only when no valid parent reference exists:
+
+1. All non-superseded, scope-applicable claims for the authenticated sender
+   (the claims resolver, below) — exactly one party proceeds; zero →
+   `unknown_sender`; several at the winning tier → `identity_conflict`.
+2. A landlord sender enters the CC arm: the conversation comes from a To/Cc
+   address bound in an active email thread, else a To/Cc address resolving
+   (uniquely, tenant/vendor only) to a known counterparty — outbound-cold
+   thread creation — else triage.
+3. A tenant/vendor sender journals into their active thread, creating one
+   (single active/holdover tenancy for tenants) when none exists.
+
+### 5. Duplicate and opt-out
+
+Token door and persona door of one email (same normalized RFC Message-ID, same
+thread) produce ONE journal row; the second door returns `duplicate` pointing
+at the original. Opted-out known senders still journal (`opted_out`; relay
+nothing).
+
+## Identity claims (`channel_identities`)
+
+One row per CLAIM: unique
+`(account_id, channel, address, party_type, party_id, scope_type, scope_id)
+NULLS NOT DISTINCT`. Addresses are trigger-normalized (lower/trim) at the
+door.
+
+- **Sources** (closed vocabulary): `human_link`, `thread_rebind`,
+  `parent_recipient`, `provider_learned`, `authoritative_import`, `legacy`.
+- **Scopes**: account-wide is stored as `scope_type NULL / scope_id NULL` (the
+  only representation); `('tenancy', <id>)` and `('thread', <id>)` claims
+  apply only inside that conversation scope.
+- **Supersession**: `superseded_at` is a stamp, never a delete — superseded
+  claims are invisible to routing but remain queryable evidence.
+
+**The one resolver** (`_comm_resolve_identity_claims`) returns ALL distinct
+parties at the single highest non-empty tier over live, scope-applicable
+claims plus the authoritative record books:
+
+```text
+human_link            a human said so
+authoritative_record  tenants.emails match / owner-manager member email match
+verified_claim        verified_at set, or source in thread_rebind /
+                      parent_recipient / authoritative_import
+provider_learned      capture-time learning
+legacy                pre-claims rows (unknown provenance)
+```
+
+One winner routes; several winners at the same tier is a conflict the caller
+fails closed on. Every consumer — persona capture, outbox snapshots, thread
+creation, triage link, `complete_send`'s legacy fallback — reads through this
+resolver.
+
+Write rules:
+
+- **Capture learns additively only** (`source='provider_learned'`): landlord
+  aliases account-wide, counterparty learning scoped to the resolved tenancy
+  when there is one. Capture never supersedes or overwrites anything; a
+  contradiction rides the routing decision instead.
+- **A human link takes effect**: `link_unmatched_inbound` writes an
+  account-wide `human_link` claim, supersedes differing learned/legacy claims,
+  and upgrades/revives a same-party row. A differing LIVE human claim fails
+  the link loudly (409 `conflicting human claim…`) — two humans who disagree
+  are reconciled by humans, not write order.
+
+## Worked example — use case A (the incident this stack fixed)
+
+```text
+Parent outbox: bare send, To tenant@example.test, Cc owner@example.test,
+               tenancy A, completed with Message-ID <m1>
+Bad claim:     channel_identities says tenant@example.test -> landlord_user
+Inbound:       From tenant@example.test, DMARC pass, In-Reply-To <m1>
+
+riley@acme.mail.example.com
+  -> subdomain "acme" resolves the account (resolve-persona-address)
+  -> DMARC pass: the From is trusted
+  -> <m1> matches exactly one sent outbox row of the account: unique parent
+  -> sender equals the parent's physical To recipient
+  -> that address resolves through the ladder: tenancy A's member list names
+     the TENANT (tier tenancy_member) — the learned landlord claim is
+     outranked, recorded as conflict_party_*, and left untouched
+  -> the parent is thread-less but names tenancy A: the tenant's active
+     thread in tenancy A is found or created
+  -> disposition 'matched'; the interaction is tenant-authored, filed under
+     tenancy A; the transport relays it
+```
+
+## Dispositions and triage reasons
+
+Capture dispositions (relay ONLY on `matched`):
+`matched` | `cc_journaled` | `triaged` | `duplicate` | `opted_out`.
+
+`comm_unmatched_inbound.reason` (all but `unknown_sender` require human
+review):
+
+- `unknown_sender` — nobody recognizes the address (or a known party has no
+  safely selectable conversation).
+- `auth_failed` — a recognized identity, or a reply citing a real outbound
+  parent, whose mail failed DMARC.
+- `identity_conflict` — the evidence contradicts itself: a Message-ID
+  collision across parents, a dual-role address with no selecting context,
+  claims tied at their winning tier, or a learned-tier route contradicted by
+  another live claim.
+- `parent_sender_mismatch` — an authenticated sender replied to a real
+  outbound message they were never a recipient of.
+
+Triage rows land in the member-visible queue
+(`GET/POST …/comms/unmatched[…]`; link/dismiss as before). `unmatched_id` is
+stable across replays.
+
+## The frozen `routing_decision` (v2)
+
+Every fresh capture freezes its decision onto `inbound_raw.payload
+.routing_decision` — identifiers and enums only, never message bodies, and
+never mutated on replay:
+
+```json
+{
+  "version": 2,
+  "account_source": "persona_subdomain",
+  "auth": "pass",
+  "parent_match": "none | unique | multiple",
+  "parent_outbox_id": "uuid | null",
+  "party_source": "tier name | null",
+  "candidate_count": 1,
+  "selected_party_type": "tenant | vendor | landlord_user | null",
+  "selected_party_id": "uuid | null",
+  "selected_thread_id": "uuid | null",
+  "selected_tenancy_id": "uuid | null",
+  "disposition": "matched | cc_journaled | triaged | duplicate | opted_out",
+  "reason": "parent_unique_match | sender_unique_claim | duplicate_rfc822_message_id | <triage reason>",
+  "conflict_party_type": "…| null",
+  "conflict_party_id": "uuid | null"
+}
+```
+
+`party_source` carries the winning tier name — a parent-ladder tier
+(`thread_participant`, `tenancy_member`, `account_member`,
+`verified_identity`, `snapshot_frozen`, `snapshot_learned`,
+`learned_identity`) on parent routes, or a resolver tier (`human_link`,
+`authoritative_record`, `verified_claim`, `provider_learned`, `legacy`) on
+no-parent routes.
+
+## Outbox snapshot `resolution_source`
+
+`_comm_outbox_snapshot_recipients` stamps every 1:1/cc snapshot entry with the
+tier that resolved it (caller-supplied snapshots are always discarded):
+
+```text
+caller_intent         an explicit, independently VERIFIED to_party/cc_parties
+                      hint (PR 3; an unverifiable hint fails the insert)
+thread_participant    active binding on the intent's thread
+tenancy_member        the intent's tenancy resolves the address to a tenant
+account_member        the address is an owner/manager member's email
+human_link | authoritative_record | verified_claim
+                      | provider_learned | legacy
+                      the claims resolver's winning tier (single winner only;
+                      a tie freezes 'unknown')
+unknown               nothing resolved the address
+```
+
+Parent routing trusts frozen entries whose source is authoritative
+(`thread_participant`, `tenancy_member`, `account_member`, `human_link`,
+`authoritative_record`, `caller_intent`) above learned ones; entries frozen
+before v2 have no `resolution_source` and rank as learned belief.
+
+Bare email sends may state what the caller already knows —
+`to_party {party_type, party_id}` and
+`cc_parties [{address, party_type, party_id}]`, pre-checked via
+`check_outbox_party_intent` (stable field-scoped 422s) and independently
+re-verified by the trigger before freezing.
+
+## Outbound Message-ID integrity
+
+- `POST …/outbox/{id}/complete` records the provider-stamped
+  `rfc822_message_id` (normalized) on the outbox row and journal entry — this
+  is what makes the row a findable parent. Report it on every email complete.
+- Per-account uniqueness: completing a send whose Message-ID already lives on
+  a DIFFERENT email row of the account stamps NULL instead (WARNING with both
+  row ids; the completion itself never fails) — evidence stays on the first
+  row. Where historical data was clean, the partial unique index
+  `comm_outbox_email_msgid_uniq` enforces the invariant structurally.
+
+## Deploy drift guard
+
+- `select public.comm_persona_routing_version();` → `2` (authenticated
+  callable) — the cheap "which routing generation is live?" probe after every
+  deploy.
+- Every fresh capture carries `routing_decision.version = 2`.
+- For byte-level certainty, compare
+  `md5(pg_get_functiondef('public.capture_persona_inbound(uuid,text,text,text,text,text,text[],text[],text,text,jsonb,text,text,text[],text,text,text,timestamptz,text)'::regprocedure))`
+  in prod against a freshly-migrated local database. Do not trust the
+  migration version row alone (that failure mode is why this guard exists).
+
+## Current limitations (reviewed at v2 cleanup; deliberate)
+
 - **A landlord CC addressed to multiple known recipients journals into ONE
-  thread** (most-recently-active binding wins); the other recipients' threads
-  carry no record of that mail. Multi-thread fan-out of a single CC capture is
-  a deliberate follow-up, not v1.
-- **The CC arm requires `landlord_user` email identities.** They are created
-  when a landlord makes an email thread with an explicit address, on rebind,
-  or by ops. Until an account has one, that landlord's CCs land in triage
-  (they are never acked — the stranger ack suppresses recognized landlords
-  and, defensively, anyone until identities exist means: unknown senders only).
-- **Attachment filenames are printable-ASCII only** (rejected otherwise):
-  the value is rendered into download response headers. The transport should
-  transliterate or generically rename non-ASCII filenames before upload.
-- **`channel_identities.address` is trusted-lowercase, not enforced.** All
-  in-repo writers normalize; a future writer that stores mixed case would
-  silently miss the exact-hit lookups. A normalization trigger is a candidate
-  hardening.
+  thread** (most-recently-active binding wins). Multi-thread fan-out of one CC
+  capture remains a follow-up.
+- **The human-link scope is account-wide** — the triage UI offers no scope
+  picker yet, so a link on a genuinely shared inbox speaks for the address
+  account-wide until scoped links ship.
+- **Attachment filenames are printable-ASCII only** (rendered into download
+  headers); the transport should transliterate or rename before upload.
+
+Retired v1 limitations (no longer true): first-writer-wins address book and
+silent no-op human links (claims model + supersession), oldest-tenant
+`tenants.emails` fallback (account-unique tenant emails since 20260721000002 +
+conflict-aware resolution), trusted-but-unenforced lowercase addresses
+(normalization trigger), and the CC arm's hard dependency on pre-existing
+`landlord_user` identities (owner/manager member emails now resolve at the
+authoritative_record tier).

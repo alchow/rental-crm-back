@@ -41,6 +41,7 @@
     "test:auth-refresh": "tsx test/auth-refresh.test.ts",
     "test:comms-persona-resolve": "tsx test/comms-persona-resolve.test.ts",
     "test:comms-persona": "tsx test/comms-persona.test.ts",
+    "test:comms-persona-usecases": "tsx test/comms-persona-usecases.test.ts",
     "test:comms-evidence": "tsx test/comms-evidence.test.ts",
     "retention:evidence": "tsx src/admin/run-evidence-retention.ts",
     "janitors:maintenance": "tsx src/admin/run-maintenance-janitors.ts",
