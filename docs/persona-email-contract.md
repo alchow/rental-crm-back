@@ -21,6 +21,12 @@ routing v2 migration stack:
   drops the dormant pre-v2 classifier, makes `complete_send` degrade
   gracefully on a duplicate Message-ID, and (when data is clean) enforces
   per-account outbound Message-ID uniqueness.
+- `db/supabase/migrations/20260723000003_unverified_journal_tier.sql` — the
+  unverified-journal tier: non-DMARC mail from exactly one KNOWN tenant/vendor
+  claimant journals as `journaled_unverified` (attestation `'unverified'`)
+  instead of triaging; adds the owner/manager retract / confirm-sender
+  follow-ups. This file also holds the CURRENT `capture_persona_inbound`
+  body (the digest-check target below).
 
 Pre-v2 phase-by-phase history lives in git; this file no longer accumulates
 phases.
@@ -28,8 +34,8 @@ phases.
 ## Standing rules (unchanged)
 
 - **Relay only on `matched`.** Never relay on `cc_journaled`, `triaged`,
-  `duplicate`, `opted_out`, or any disposition the transport does not
-  recognize (fail-safe forward compatibility).
+  `duplicate`, `opted_out`, `journaled_unverified`, or any disposition the
+  transport does not recognize (fail-safe forward compatibility).
 - Tokens (`t-<32hex>@…`) remain the thread-leg routing mechanism, resolved via
   `GET /v1/comms/resolve-reply-address`. The persona address is an ADDITIONAL
   receiving surface, never a replacement. Persona local parts can never start
@@ -87,13 +93,40 @@ authorize agent principal for the account
   -> freeze routing_decision (version 2) on the raw row
 ```
 
-### 1. Authentication
+### 1. Authentication — and the unverified-journal tier
 
-`auth_results.dmarc = 'pass'` is the sender-trust bar. A capture that fails it
-is triaged — with reason `auth_failed` when anything recognizes the claimed
-identity (a valid parent reference or any LIVE identity claim), else
-`unknown_sender`. A matching `In-Reply-To` never rescues failed DMARC (reply
-headers can be copied or forged), and failed auth never learns an identity.
+`auth_results.dmarc = 'pass'` is still the sender-TRUST bar, but failing it no
+longer always triages. PRODUCT DECISION (on record; legal rationale: notice
+law makes RECEIPT the operative fact, a triage queue nobody processes is a
+liability, and receipt ≠ attribution): a failed-DMARC capture runs the SAME
+account-scope candidate resolution the no-parent arm uses
+(`_comm_resolve_persona_candidates`), plus — when a unique parent exists — the
+parent ladder's tier-1 `thread_participant` match (a parent-named recipient is
+a candidate even when the address carries no live claim). Then:
+
+- **exactly one tenant/vendor candidate** → the receipt is JOURNALED into that
+  party's conversation (find-or-create exactly as the matched path; parent
+  context honored when the sender is a physical parent recipient) with
+  `attestation = 'unverified'` — the claimed-not-asserted marker. The
+  disposition is **`journaled_unverified`**, the frozen reason
+  `unverified_single_claim`, and the sender cast label is the ADDRESS, not a
+  display name. Invariants: NO identity learning, no stranger ack, no relay
+  (relay only on `matched`), the same-thread rfc822 dedupe still applies, and
+  replays stay frozen;
+- **exactly one landlord_user candidate** → triage `auth_failed` (an
+  unverified OUTBOUND-authored journal row would put words in the landlord's
+  mouth);
+- **zero candidates** → triage `auth_failed` when a valid parent reference
+  recognizes the mail, else `unknown_sender`;
+- **multiple candidates** → triage `identity_conflict`.
+
+A matching `In-Reply-To` never rescues failed DMARC into a TRUSTED route
+(reply headers can be copied or forged), and failed auth never learns an
+identity. `auth_failed` is therefore unreachable for tenant/vendor
+single-claim senders; the enum value remains for historical rows.
+
+An unverified row has two human follow-ups (owner|manager, below): retract it
+with a reason, or confirm the sender — it is never trusted on its own.
 
 ### 2. Parent probe
 
@@ -263,15 +296,19 @@ riley@acme.mail.example.com
 ## Dispositions and triage reasons
 
 Capture dispositions (relay ONLY on `matched`):
-`matched` | `cc_journaled` | `triaged` | `duplicate` | `opted_out`.
+`matched` | `cc_journaled` | `triaged` | `duplicate` | `opted_out` |
+`journaled_unverified`.
 
 `comm_unmatched_inbound.reason` (all but `unknown_sender` require human
 review):
 
 - `unknown_sender` — nobody recognizes the address (or a known party has no
   safely selectable conversation).
-- `auth_failed` — a recognized identity, or a reply citing a real outbound
-  parent, whose mail failed DMARC.
+- `auth_failed` — DMARC failed and something still recognizes the claim: a
+  single landlord_user claimant, or a valid parent reference with no
+  resolvable candidate. (Unreachable for tenant/vendor single-claim senders
+  since the unverified-journal tier — those journal instead; the value stays
+  for historical rows.)
 - `identity_conflict` — the evidence contradicts itself: a Message-ID
   collision across parents, a dual-role address with no selecting context,
   claims tied at their winning tier, or a learned-tier route contradicted by
@@ -282,6 +319,29 @@ review):
 Triage rows land in the member-visible queue
 (`GET/POST …/comms/unmatched[…]`; link/dismiss as before). `unmatched_id` is
 stable across replays.
+
+## Unverified journal rows — retract / confirm (owner|manager)
+
+A `journaled_unverified` row is a receipt whose sender is claimed, never
+asserted. Two account-pinned follow-ups exist (both 403 for viewers and the
+agent principal; both only apply to `attestation='unverified'` rows — anything
+else is 409):
+
+- `POST /v1/accounts/{id}/interactions/{iid}/retract` with body
+  `{ "reason": "<1..500 chars>" }` — soft-deletes the row (`deleted_at` /
+  `deleted_by` / `deleted_reason` stamped, `updated_at` advances with it), so
+  it disappears from every default timeline read. The `inbound_raw` receipt is
+  untouched — the evidence that the mail ARRIVED survives the retraction.
+  Retracting an already-retracted row is 409; a foreign/missing id is 404.
+- `POST /v1/accounts/{id}/interactions/{iid}/confirm-sender` (no body) — "yes,
+  that really was them": flips attestation to `'attested'` (stamping
+  `confirmed_by`/`confirmed_at`; the ONLY legal attestation transition,
+  enforced at the trigger) and writes an account-wide `human_link` claim for
+  (sender address → the row's party) with the SAME semantics as
+  `link_unmatched_inbound` — differing learned/legacy claims are superseded, a
+  differing live human claim fails the whole call with 409 `conflicting human
+  claim…`. Future mail from that address then resolves normally (DMARC pass →
+  `matched`). Confirming a retracted row is 404.
 
 ## The frozen `routing_decision` (v2)
 
@@ -302,8 +362,8 @@ never mutated on replay:
   "selected_party_id": "uuid | null",
   "selected_thread_id": "uuid | null",
   "selected_tenancy_id": "uuid | null",
-  "disposition": "matched | cc_journaled | triaged | duplicate | opted_out",
-  "reason": "parent_unique_match | sender_unique_claim | duplicate_rfc822_message_id | <triage reason>",
+  "disposition": "matched | cc_journaled | triaged | duplicate | opted_out | journaled_unverified",
+  "reason": "parent_unique_match | sender_unique_claim | unverified_single_claim | duplicate_rfc822_message_id | <triage reason>",
   "conflict_party_type": "…| null",
   "conflict_party_id": "uuid | null"
 }

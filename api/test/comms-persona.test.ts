@@ -308,13 +308,61 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
-  // (3) DMARC gates attribution
+  // (3) DMARC gates TRUST; receipt from a known claimant is journaled
+  //     unverified (the unverified-journal tier, 20260723000003)
   // =========================================================================
-  await check('KNOWN sender with DMARC fail → triaged, nothing journaled, no ack', async () => {
-    const r = await personaCapture({ from_address: T1_EMAIL, body: 'spoof?', auth_results: AUTH_FAIL });
+  let unvIid = '';
+  const UNV_RFC = `<Unv-${SUFFIX}@sender>`;
+  const UNV_PROVIDER_ID = `PS-unv-${rnd()}`;
+  await check('KNOWN tenant with DMARC fail → journaled_unverified into her thread; nothing learned, no ack', async () => {
+    const r = await personaCapture({
+      provider_msg_id: UNV_PROVIDER_ID,
+      from_address: T1_EMAIL, body: 'spoof?', rfc822_message_id: UNV_RFC,
+      auth_results: AUTH_FAIL,
+    });
     const res = assertStatus(r, 200, 'dmarc-fail capture') as CaptureShape;
-    assert(res.disposition === 'triaged', `disposition: ${res.disposition}`);
-    assert(res.interaction_id === null && res.thread_id === null, 'nothing journaled');
+    assert(res.disposition === 'journaled_unverified', `disposition: ${res.disposition}`);
+    assert(res.thread_id === t1ThreadId, `into the RIGHT (existing) thread: ${res.thread_id}`);
+    assert(res.interaction_id !== null && res.unmatched_id === null, 'journaled, not triaged');
+    assert(res.participant?.party_type === 'tenant' && res.participant.party_id === t1Id,
+      `claimed tenant attributed: ${JSON.stringify(res.participant)}`);
+    unvIid = res.interaction_id!;
+
+    // attestation = the claimed-not-asserted marker; sender cast label is the
+    // ADDRESS (a display name would assert the identity this tier refuses).
+    const { data: j } = await admin
+      .from('interactions').select('attestation, direction, party_type, party_id')
+      .eq('id', unvIid).single();
+    assert(j!.attestation === 'unverified', `attestation: ${j!.attestation}`);
+    assert(j!.direction === 'inbound' && j!.party_type === 'tenant' && j!.party_id === t1Id,
+      `journal shape: ${JSON.stringify(j)}`);
+    const { data: cast } = await admin
+      .from('interaction_participants').select('role, address, label')
+      .eq('interaction_id', unvIid);
+    const sender = ((cast ?? []) as { role: string; address: string | null; label: string | null }[])
+      .find((c) => c.role === 'sender');
+    assert(sender?.label === T1_EMAIL.toLowerCase(),
+      `sender label = the address: ${JSON.stringify(sender)}`);
+
+    // Invariant (a): NO learning — still exactly the one claim from (1).
+    const { data: claims } = await admin
+      .from('channel_identities').select('source, superseded_at')
+      .eq('account_id', accountId).eq('channel', 'email').eq('address', T1_EMAIL.toLowerCase());
+    assert((claims ?? []).length === 1 && claims![0]!.source === 'provider_learned',
+      `no new claim rows: ${JSON.stringify(claims)}`);
+
+    // The routing decision is frozen with the new reason.
+    const { data: raw } = await admin
+      .from('inbound_raw').select('payload, disposition').eq('provider_msg_id', UNV_PROVIDER_ID).single();
+    assert(raw!.disposition === 'journaled_unverified', `raw disposition: ${raw!.disposition}`);
+    const decision = (raw!.payload as {
+      routing_decision?: { version: number; disposition: string; reason: string; candidate_count: number };
+    }).routing_decision;
+    assert(decision?.version === 2 && decision.disposition === 'journaled_unverified'
+      && decision.reason === 'unverified_single_claim' && decision.candidate_count === 1,
+      `routing decision recorded: ${JSON.stringify(decision)}`);
+
+    // Invariant (b): no ack for non-triaged mail.
     await sleep(300);
     const { count } = await admin
       .from('comm_outbox')
@@ -322,6 +370,175 @@ async function main(): Promise<void> {
       .eq('account_id', accountId).eq('to_address', T1_EMAIL.toLowerCase())
       .eq('approval_ref', 'system:persona_ack');
     assert((count ?? 0) === 0, `no ack for auth-failed mail: ${count}`);
+  });
+
+  await check('unverified dedupe: the same rfc822 Message-ID through the persona door again → duplicate', async () => {
+    const r = await personaCapture({
+      from_address: T1_EMAIL, body: 'spoof again', rfc822_message_id: UNV_RFC,
+      auth_results: AUTH_FAIL,
+    });
+    const res = assertStatus(r, 200, 'unverified dedupe') as CaptureShape;
+    assert(res.disposition === 'duplicate', `disposition: ${res.disposition}`);
+    assert(res.interaction_id === unvIid, 'points at the unverified original');
+  });
+
+  await check('unverified replay: same provider_msg_id returns the frozen journaled_unverified original', async () => {
+    const r = await personaCapture({
+      provider_msg_id: UNV_PROVIDER_ID,
+      from_address: STRANGER, body: 'changed inputs', auth_results: AUTH_PASS,
+    });
+    const res = assertStatus(r, 200, 'unverified replay') as CaptureShape;
+    assert(res.disposition === 'journaled_unverified', `frozen disposition: ${res.disposition}`);
+    assert(res.interaction_id === unvIid && res.thread_id === t1ThreadId,
+      `frozen ids: ${JSON.stringify(res)}`);
+  });
+
+  // ---- retract: only unverified rows, only with a reason, owner|manager ----
+  let t2UnvIid = '';
+  await check('retract guards: provider_verified row → 409, missing reason → 400, agent → 403', async () => {
+    const wrongTier = await api('POST',
+      `/v1/accounts/${accountId}/interactions/${t1FirstIid}/retract`,
+      { token: landlordToken, body: { reason: 'not unverified' } });
+    assertStatus(wrongTier, 409, 'retract a provider_verified row');
+
+    // A fresh unverified row (t2's claim is the single candidate).
+    const r = assertStatus(await personaCapture({
+      from_address: T2_EMAIL, body: 'forged t2 mail', auth_results: AUTH_FAIL,
+      rfc822_message_id: `<Unv-t2-${SUFFIX}@sender>`,
+    }), 200, 't2 unverified capture') as CaptureShape;
+    assert(r.disposition === 'journaled_unverified', `t2 capture: ${r.disposition}`);
+    t2UnvIid = r.interaction_id!;
+
+    const noReason = await api('POST',
+      `/v1/accounts/${accountId}/interactions/${t2UnvIid}/retract`,
+      { token: landlordToken, body: {} });
+    assertStatus(noReason, 400, 'retract without a reason');
+
+    const agentTry = await api('POST',
+      `/v1/accounts/${accountId}/interactions/${t2UnvIid}/retract`,
+      { token: agentToken, body: { reason: 'agent may not' } });
+    assertStatus(agentTry, 403, 'agent retract');
+  });
+
+  await check('retract happy path: soft-deleted with reason, hidden from reads, raw receipt untouched; replay → 409', async () => {
+    const ok = await api('POST',
+      `/v1/accounts/${accountId}/interactions/${t2UnvIid}/retract`,
+      { token: landlordToken, body: { reason: 'confirmed forgery with the tenant by phone' } });
+    const res = assertStatus(ok, 200, 'retract') as {
+      id: string; deleted_at: string; deleted_reason: string;
+    };
+    assert(res.id === t2UnvIid && res.deleted_at !== null
+      && res.deleted_reason === 'confirmed forgery with the tenant by phone',
+      `retract stamps: ${JSON.stringify(res)}`);
+
+    const { data: row } = await admin
+      .from('interactions').select('deleted_at, deleted_by, deleted_reason, updated_at')
+      .eq('id', t2UnvIid).single();
+    assert(row!.deleted_at !== null && row!.deleted_by === sub.user.id
+      && row!.deleted_at === row!.updated_at,
+      `softDeleteStamp convention (deleted_at/updated_at together) + provenance: ${JSON.stringify(row)}`);
+
+    // Hidden from the default read surfaces.
+    const read = await api('GET', `/v1/accounts/${accountId}/interactions/${t2UnvIid}`, {
+      token: landlordToken,
+    });
+    assertStatus(read, 404, 'retracted row read');
+
+    // inbound_raw untouched: the receipt evidence outlives the retraction.
+    const { data: raw } = await admin
+      .from('inbound_raw').select('disposition, matched_interaction_id')
+      .eq('matched_interaction_id', t2UnvIid).maybeSingle();
+    assert(raw !== null && raw!.disposition === 'journaled_unverified',
+      `raw receipt untouched: ${JSON.stringify(raw)}`);
+
+    const again = await api('POST',
+      `/v1/accounts/${accountId}/interactions/${t2UnvIid}/retract`,
+      { token: landlordToken, body: { reason: 'again' } });
+    assertStatus(again, 409, 'double retract');
+
+    // A retracted row is gone: confirm-sender answers 404.
+    const confirmGone = await api('POST',
+      `/v1/accounts/${accountId}/interactions/${t2UnvIid}/confirm-sender`,
+      { token: landlordToken });
+    assertStatus(confirmGone, 404, 'confirm a retracted row');
+  });
+
+  // ---- confirm-sender: attested + human_link claim, link semantics --------
+  await check('confirm-sender flips to attested, stamps confirmed_by, and teaches a human_link claim', async () => {
+    const agentTry = await api('POST',
+      `/v1/accounts/${accountId}/interactions/${unvIid}/confirm-sender`,
+      { token: agentToken });
+    assertStatus(agentTry, 403, 'agent confirm');
+
+    const ok = await api('POST',
+      `/v1/accounts/${accountId}/interactions/${unvIid}/confirm-sender`,
+      { token: landlordToken });
+    const res = assertStatus(ok, 200, 'confirm') as {
+      id: string; attestation: string; party_type: string; party_id: string; address: string;
+    };
+    assert(res.attestation === 'attested' && res.party_type === 'tenant'
+      && res.party_id === t1Id && res.address === T1_EMAIL.toLowerCase(),
+      `confirm shape: ${JSON.stringify(res)}`);
+
+    const { data: row } = await admin
+      .from('interactions').select('attestation, confirmed_by, confirmed_at')
+      .eq('id', unvIid).single();
+    assert(row!.attestation === 'attested' && row!.confirmed_by === sub.user.id
+      && row!.confirmed_at !== null, `confirm stamps: ${JSON.stringify(row)}`);
+
+    // The learning step, human edition: the existing same-party learned claim
+    // is UPGRADED to human_link in place (still exactly one row).
+    const { data: claims } = await admin
+      .from('channel_identities').select('party_type, party_id, source, superseded_at')
+      .eq('account_id', accountId).eq('channel', 'email').eq('address', T1_EMAIL.toLowerCase());
+    assert((claims ?? []).length === 1
+      && claims![0]!.source === 'human_link' && claims![0]!.superseded_at === null
+      && claims![0]!.party_id === t1Id,
+      `human_link claim taught: ${JSON.stringify(claims)}`);
+
+    // Future mail from the address resolves normally.
+    const next = assertStatus(await personaCapture({
+      from_address: T1_EMAIL, body: 'real mail after the confirm',
+    }), 200, 'post-confirm capture') as CaptureShape;
+    assert(next.disposition === 'matched' && next.thread_id === t1ThreadId,
+      `resolves normally: ${JSON.stringify(next)}`);
+
+    const again = await api('POST',
+      `/v1/accounts/${accountId}/interactions/${unvIid}/confirm-sender`,
+      { token: landlordToken });
+    assertStatus(again, 409, 'confirm an already-attested row');
+  });
+
+  await check('confirm-sender against a DIFFERING live human claim → 409; the row stays unverified', async () => {
+    const cfxEmail = `unv-cfx-${SUFFIX}@tenant.test`;
+    const cfxId = await createTenant('Unv Confirm X', cfxEmail);
+    const cfyId = await createTenant('Unv Confirm Y', `unv-cfy-${SUFFIX}@tenant.test`);
+    const r = assertStatus(await personaCapture({
+      from_address: cfxEmail, body: 'forged mail from x', auth_results: AUTH_FAIL,
+      rfc822_message_id: `<Unv-cfx-${SUFFIX}@sender>`,
+    }), 200, 'cfx unverified capture') as CaptureShape;
+    assert(r.disposition === 'journaled_unverified'
+      && r.participant?.party_id === cfxId, `cfx capture: ${JSON.stringify(r)}`);
+
+    // A human later links the address to a DIFFERENT party: two humans who
+    // disagree are reconciled by humans, not write order.
+    const { error } = await admin.from('channel_identities').insert({
+      account_id: accountId, party_type: 'tenant', party_id: cfyId,
+      channel: 'email', address: cfxEmail, source: 'human_link',
+    });
+    if (error) throw new Error(`cfy human claim seed: ${error.message}`);
+
+    const conflicted = await api('POST',
+      `/v1/accounts/${accountId}/interactions/${r.interaction_id}/confirm-sender`,
+      { token: landlordToken });
+    assertStatus(conflicted, 409, 'confirm vs differing human claim');
+    assert(JSON.stringify(conflicted.body).includes('conflicting human claim'),
+      `explicit error: ${JSON.stringify(conflicted.body)}`);
+    const { data: j } = await admin
+      .from('interactions').select('attestation, confirmed_by')
+      .eq('id', r.interaction_id!).single();
+    assert(j!.attestation === 'unverified' && j!.confirmed_by === null,
+      `row untouched: ${JSON.stringify(j)}`);
   });
 
   // =========================================================================
@@ -360,10 +577,13 @@ async function main(): Promise<void> {
     assert((count ?? 0) === 1, `ack count after cap: ${count}`);
   });
 
-  await check('unknown sender with DMARC fail → triaged, no ack', async () => {
+  await check('unknown sender with DMARC fail → unknown_sender triage unchanged, no ack', async () => {
     const r = await personaCapture({ from_address: STRANGER2, body: '??', auth_results: AUTH_FAIL });
     const res = assertStatus(r, 200, 'stranger dmarc-fail') as CaptureShape;
     assert(res.disposition === 'triaged', `disposition: ${res.disposition}`);
+    const { data: u } = await admin
+      .from('comm_unmatched_inbound').select('reason').eq('id', res.unmatched_id!).single();
+    assert(u!.reason === 'unknown_sender', `reason: ${u!.reason}`);
     await sleep(400);
     const { count } = await admin
       .from('comm_outbox')
@@ -690,7 +910,10 @@ async function main(): Promise<void> {
     assert(d.bindings.some((b) => b.participant_address === freshEmail), 'tenant bound');
   });
 
-  await check('landlord sender with DMARC fail → triaged, never landlord-attributed', async () => {
+  await check('landlord sender with DMARC fail → triaged (auth_failed), never landlord-attributed, never journaled unverified', async () => {
+    // A landlord_user single-candidate keeps the triage behavior: an
+    // unverified OUTBOUND-authored journal row would put words in the
+    // landlord's mouth.
     const r = await personaCapture({
       from_address: LL_EMAIL, to_addresses: [T1_EMAIL],
       body: 'forged?', auth_results: AUTH_FAIL,
@@ -698,6 +921,9 @@ async function main(): Promise<void> {
     const res = assertStatus(r, 200, 'forged landlord') as CaptureShape;
     assert(res.disposition === 'triaged', `disposition: ${res.disposition}`);
     assert(res.interaction_id === null, 'nothing journaled');
+    const { data: u } = await admin
+      .from('comm_unmatched_inbound').select('reason').eq('id', res.unmatched_id!).single();
+    assert(u!.reason === 'auth_failed', `reason: ${u!.reason}`);
   });
 
   await check('landlord CC about an unknown counterparty → triaged, and the landlord is NEVER acked', async () => {
@@ -1021,6 +1247,23 @@ async function main(): Promise<void> {
     assert(live.length === 2, `both claims still live: ${JSON.stringify(dualClaims)}`);
   });
 
+  await check('v2(6b) dual-role sender with FAILED DMARC → identity_conflict triage unchanged (never journaled unverified)', async () => {
+    // Two candidates: contradictory identity evidence stays a human problem,
+    // authenticated or not — the unverified tier requires EXACTLY one.
+    const r = await personaCapture({
+      from_address: PV2_DUAL_EMAIL,
+      body: 'who am i today, unauthenticated edition',
+      rfc822_message_id: `<pv2-reply6b-${SUFFIX}@sender>`,
+      auth_results: AUTH_FAIL,
+    });
+    const res = assertStatus(r, 200, 'dual-role dmarc-fail capture') as CaptureShape;
+    assert(res.disposition === 'triaged', `disposition: ${res.disposition}`);
+    assert(res.interaction_id === null, 'nothing journaled');
+    const { data: u } = await admin
+      .from('comm_unmatched_inbound').select('reason').eq('id', res.unmatched_id!).single();
+    assert(u!.reason === 'identity_conflict', `reason: ${u!.reason}`);
+  });
+
   await check('v2(7) thread-less parent with a tenancy pins the thread to THAT tenancy, and reuses it', async () => {
     const first = assertStatus(await personaCapture({
       from_address: PV2_TWOTEN_EMAIL,
@@ -1184,6 +1427,123 @@ async function main(): Promise<void> {
     }).routing_decision;
     assert(decision?.parent_match === 'none' && decision.parent_outbox_id === null,
       `probe ignored the queued row: ${JSON.stringify(decision)}`);
+  });
+
+  await check('v2(12) parent + DMARC fail + parent-recipient sender → journaled_unverified into the PARENT thread', async () => {
+    // A completed parent BOUND to the incident thread; the failed-DMARC reply
+    // from its recipient must journal (unverified) into that same thread.
+    const msgid = `<pv2-unv-parent-${SUFFIX}@${REPLY_DOMAIN}>`;
+    const { data: pRow, error: pErr } = await admin.from('comm_outbox').insert({
+      account_id: accountId, channel: 'email', to_address: PV2_TENANT_EMAIL,
+      thread_id: pv2ThreadId, tenancy_id: tenancyAId,
+      body: 'thread-bound parent', approval_ref: `self:${sub.user.id}`,
+      approved_by: sub.user.id, author_type: 'landlord',
+      rfc822_message_id: msgid,
+    }).select('id').single();
+    if (pErr) throw new Error(`unv parent seed: ${pErr.message}`);
+    const { error: upErr } = await admin.from('comm_outbox')
+      .update({ status: 'sent', provider: 'smtp2go', provider_sid: `pv2-unv-${rnd()}` })
+      .eq('id', pRow!.id);
+    if (upErr) throw new Error(`unv parent sent: ${upErr.message}`);
+
+    const provId = `PS-pv2-unv-${rnd()}`;
+    const r = assertStatus(await personaCapture({
+      provider_msg_id: provId,
+      from_address: PV2_TENANT_EMAIL,
+      body: 'unauthenticated reply into the parent conversation',
+      rfc822_message_id: `<pv2-unv-reply-${SUFFIX}@sender>`,
+      in_reply_to: msgid,
+      auth_results: AUTH_FAIL,
+    }), 200, 'unv parent capture') as CaptureShape;
+    assert(r.disposition === 'journaled_unverified', `disposition: ${r.disposition}`);
+    assert(r.thread_id === pv2ThreadId, `parent thread reused: ${r.thread_id}`);
+    assert(r.participant?.party_id === ptAId, `parent tenant claimed: ${JSON.stringify(r.participant)}`);
+    const { data: j } = await admin
+      .from('interactions').select('attestation, tenancy_id')
+      .eq('id', r.interaction_id!).single();
+    assert(j!.attestation === 'unverified' && j!.tenancy_id === tenancyAId,
+      `unverified in the parent tenancy: ${JSON.stringify(j)}`);
+    const { data: raw } = await admin
+      .from('inbound_raw').select('payload').eq('provider_msg_id', provId).single();
+    const decision = (raw!.payload as {
+      routing_decision?: { parent_match: string; parent_outbox_id: string | null; reason: string };
+    }).routing_decision;
+    assert(decision?.parent_match === 'unique' && decision.parent_outbox_id === pRow!.id
+      && decision.reason === 'unverified_single_claim',
+      `parent recorded on the unverified decision: ${JSON.stringify(decision)}`);
+  });
+
+  await check('v2(13) claimless rebound address: the parent thread participant ALONE is the candidate', async () => {
+    // A tenant thread rebound to a brand-new address whose learned claims are
+    // then superseded: the address is recognizable ONLY through the parent
+    // thread binding (the tier-1 arm of the unverified candidate union).
+    const rbEmail = `pv2-rb-${SUFFIX}@tenant.test`;
+    const rbNew = `pv2-rb-new-${SUFFIX}@tenant.test`;
+    const rbTenant = await createTenant('Rebound Tenant', rbEmail);
+    const seed = assertStatus(await personaCapture({
+      from_address: rbEmail, body: 'seed thread',
+      rfc822_message_id: `<pv2-rb-seed-${SUFFIX}@sender>`,
+    }), 200, 'rb seed') as CaptureShape;
+    assert(seed.disposition === 'matched' && seed.participant?.party_id === rbTenant,
+      `rb seed: ${JSON.stringify(seed)}`);
+    const rbThread = seed.thread_id!;
+    const d = assertStatus(
+      await api('GET', `${base}/threads/${rbThread}`, { token: landlordToken }),
+      200, 'rb thread read',
+    ) as { bindings: { id: string; participant_address: string }[] };
+    const binding = d.bindings.find((b) => b.participant_address === rbEmail);
+    assert(binding, 'rb binding present');
+    assertStatus(await api('POST', `${base}/threads/${rbThread}/bindings/${binding!.id}/rebind`, {
+      token: landlordToken, body: { address: rbNew },
+    }), 200, 'rebind');
+    // Supersede every live claim on the new address (stamp, never delete).
+    const { error: supErr } = await admin.from('channel_identities')
+      .update({ superseded_at: iso() })
+      .eq('account_id', accountId).eq('channel', 'email').eq('address', rbNew);
+    if (supErr) throw new Error(`rb supersede: ${supErr.message}`);
+
+    const msgid = `<pv2-rb-parent-${SUFFIX}@${REPLY_DOMAIN}>`;
+    const { data: pRow, error: pErr } = await admin.from('comm_outbox').insert({
+      account_id: accountId, channel: 'email', to_address: rbNew,
+      thread_id: rbThread,
+      body: 'thread-bound parent to the rebound address',
+      approval_ref: `self:${sub.user.id}`,
+      approved_by: sub.user.id, author_type: 'landlord',
+      rfc822_message_id: msgid,
+    }).select('id').single();
+    if (pErr) throw new Error(`rb parent seed: ${pErr.message}`);
+    const { error: upErr } = await admin.from('comm_outbox')
+      .update({ status: 'sent', provider: 'smtp2go', provider_sid: `pv2-rb-${rnd()}` })
+      .eq('id', pRow!.id);
+    if (upErr) throw new Error(`rb parent sent: ${upErr.message}`);
+
+    const provId = `PS-pv2-rb-${rnd()}`;
+    const r = assertStatus(await personaCapture({
+      provider_msg_id: provId,
+      from_address: rbNew,
+      body: 'unauthenticated reply from the rebound address',
+      rfc822_message_id: `<pv2-rb-reply-${SUFFIX}@sender>`,
+      in_reply_to: msgid,
+      auth_results: AUTH_FAIL,
+    }), 200, 'rb capture') as CaptureShape;
+    assert(r.disposition === 'journaled_unverified', `disposition: ${r.disposition}`);
+    assert(r.thread_id === rbThread, `parent thread: ${r.thread_id}`);
+    assert(r.participant?.party_id === rbTenant, `binding participant claimed: ${JSON.stringify(r.participant)}`);
+    const { data: raw } = await admin
+      .from('inbound_raw').select('payload').eq('provider_msg_id', provId).single();
+    const decision = (raw!.payload as {
+      routing_decision?: { party_source: string | null; reason: string };
+    }).routing_decision;
+    assert(decision?.party_source === 'thread_participant'
+      && decision.reason === 'unverified_single_claim',
+      `tier-1 candidate recorded: ${JSON.stringify(decision)}`);
+    // Still nothing learned for the claimless address.
+    const { data: rbClaims } = await admin
+      .from('channel_identities').select('superseded_at')
+      .eq('account_id', accountId).eq('channel', 'email').eq('address', rbNew);
+    assert(((rbClaims ?? []) as { superseded_at: string | null }[])
+      .every((x) => x.superseded_at !== null),
+      `no live claim minted by the unverified capture: ${JSON.stringify(rbClaims)}`);
   });
 
   // =========================================================================
@@ -1386,20 +1746,17 @@ async function main(): Promise<void> {
 
   // Two humans who disagree are reconciled by humans: linking against a
   // DIFFERENT party's live human claim fails loudly and changes nothing.
+  // (Since the unverified-journal tier, a failed-DMARC mail from an address
+  // with a single live tenant claim JOURNALS instead of triaging — so the
+  // linkable triage row is captured while the address is still unknown, and
+  // the human claim is seeded afterwards.)
   const HC_EMAIL = `pv2-hc-${SUFFIX}@dual.test`;
   const hcTenantX = await createTenant('Human Claim X', `pv2-hc-x-${SUFFIX}@tenant.test`);
   const hcTenantY = await createTenant('Human Claim Y', `pv2-hc-y-${SUFFIX}@tenant.test`);
-  {
-    const { error } = await admin.from('channel_identities').insert({
-      account_id: accountId, party_type: 'tenant', party_id: hcTenantX,
-      channel: 'email', address: HC_EMAIL, source: 'human_link',
-    });
-    if (error) throw new Error(`human-conflict seed: ${error.message}`);
-  }
 
   await check('claims(4) linking against a different human claim → 409 conflicting human claim', async () => {
-    // An auth-failed capture from the human-claimed address triages (the
-    // claim makes it auth_failed, not unknown) — giving a linkable row.
+    // An auth-failed capture from the not-yet-claimed address triages
+    // (unknown_sender) — giving a linkable row.
     const r = assertStatus(await personaCapture({
       from_address: HC_EMAIL, body: 'could not authenticate',
       rfc822_message_id: `<pv2-hc-1-${SUFFIX}@sender>`, auth_results: AUTH_FAIL,
@@ -1407,8 +1764,18 @@ async function main(): Promise<void> {
     assert(r.disposition === 'triaged', `disposition: ${r.disposition}`);
     const { data: u } = await admin
       .from('comm_unmatched_inbound').select('reason').eq('id', r.unmatched_id!).single();
-    assert(u!.reason === 'auth_failed', `reason: ${u!.reason}`);
+    assert(u!.reason === 'unknown_sender', `reason: ${u!.reason}`);
 
+    // NOW a human links the address to X…
+    {
+      const { error } = await admin.from('channel_identities').insert({
+        account_id: accountId, party_type: 'tenant', party_id: hcTenantX,
+        channel: 'email', address: HC_EMAIL, source: 'human_link',
+      });
+      if (error) throw new Error(`human-conflict seed: ${error.message}`);
+    }
+
+    // …so linking the row to Y collides with X's live human claim.
     const bad = await api('POST', `${base}/unmatched/${r.unmatched_id}/link`, {
       token: landlordToken, body: { party_type: 'tenant', party_id: hcTenantY },
     });
@@ -1571,9 +1938,12 @@ async function main(): Promise<void> {
     assert(mine!.from_address === LATER_EMAIL && mine!.subject === 'About unit 4B',
       `stored copy: ${JSON.stringify(mine)}`);
     assert(mine!.reason === 'unknown_sender', `reason: ${mine!.reason}`);
-    // The KNOWN-sender DMARC failure from (3) is flagged as the suspicious kind.
-    assert(rows.some((x) => x.from_address === T1_EMAIL.toLowerCase() && x.reason === 'auth_failed'),
-      'the known-sender DMARC failure carries reason=auth_failed');
+    // The KNOWN-sender DMARC failure from (3) no longer triages — it lives in
+    // the journal as an unverified row; the queue only carries the stranger.
+    assert(!rows.some((x) => x.from_address === T1_EMAIL.toLowerCase()),
+      'the known-sender DMARC failure is journaled unverified, not queued');
+    assert(rows.some((x) => x.from_address === STRANGER2 && x.reason === 'unknown_sender'),
+      'the stranger DMARC failure stays unknown_sender triage');
   });
 
   await check('detail computes suggestions at read time (email_exact for a late-added tenant)', async () => {
@@ -1646,21 +2016,23 @@ async function main(): Promise<void> {
     assertStatus(agentLink, 403, 'agent link');
   });
 
-  await check('linking an auth_failed row journals as attested (human vouches, provider could not)', async () => {
+  await check('linking a DMARC-failed triage row journals as attested (human vouches, provider could not)', async () => {
+    // The tenant/vendor auth_failed shape is gone (those journal unverified
+    // now); the stranger's DMARC-fail row from (4) carries the failed
+    // verdicts and stays linkable.
     const { data: failRow } = await admin
       .from('comm_unmatched_inbound')
-      .select('id')
+      .select('id, dmarc')
       .eq('account_id', accountId)
-      .eq('from_address', T1_EMAIL.toLowerCase())
-      .eq('reason', 'auth_failed')
+      .eq('from_address', STRANGER2)
       .eq('status', 'pending')
       .limit(1)
       .maybeSingle();
-    assert(failRow, 'the auth_failed row from (3) is pending');
+    assert(failRow && failRow.dmarc === 'fail', 'the stranger DMARC-fail row is pending');
     const link = await api('POST', `${base}/unmatched/${failRow!.id}/link`, {
       token: landlordToken, body: { party_type: 'tenant', party_id: t1Id },
     });
-    const res = assertStatus(link, 200, 'link auth_failed') as { interaction_id: string };
+    const res = assertStatus(link, 200, 'link dmarc-failed row') as { interaction_id: string };
     const { data: j } = await admin
       .from('interactions')
       .select('attestation')
