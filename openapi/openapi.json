@@ -5076,6 +5076,11 @@
                     "thread_participant",
                     "tenancy_member",
                     "account_member",
+                    "human_link",
+                    "authoritative_record",
+                    "verified_claim",
+                    "provider_learned",
+                    "legacy",
                     "learned_identity",
                     "unknown"
                   ]

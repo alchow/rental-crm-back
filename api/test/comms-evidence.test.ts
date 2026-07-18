@@ -594,6 +594,7 @@ async function main(): Promise<void> {
           channel: 'sms',
           address: driftAddr,
           label: 'Snapshot Tenant One',
+          source: 'provider_learned',
         })
         .select('id')
         .single();

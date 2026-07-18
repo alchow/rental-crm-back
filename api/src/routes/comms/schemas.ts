@@ -81,8 +81,11 @@ export const CommOutbox = z
            *  recipients and on rows frozen before the CC arm existed. */
           role: z.enum(['cc']).optional(),
           /** WHICH tier resolved this entry (persona routing v2):
-           *  thread_participant | tenancy_member | account_member (authoritative
-           *  context) > learned_identity (channel_identities) > unknown.
+           *  thread_participant | tenancy_member | account_member
+           *  (authoritative context), then the claims resolver's winning tier
+           *  (human_link | authoritative_record | verified_claim |
+           *  provider_learned | legacy — PR 2), then unknown.
+           *  'learned_identity' appears on rows frozen by the PR 1 stamp.
            *  Absent on rows frozen before the stamp existed and on group-MMS
            *  snapshots. */
           resolution_source: z
@@ -90,6 +93,11 @@ export const CommOutbox = z
               'thread_participant',
               'tenancy_member',
               'account_member',
+              'human_link',
+              'authoritative_record',
+              'verified_claim',
+              'provider_learned',
+              'legacy',
               'learned_identity',
               'unknown',
             ])

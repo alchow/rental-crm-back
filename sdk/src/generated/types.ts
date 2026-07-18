@@ -17458,7 +17458,7 @@ export interface components {
                 /** @enum {string} */
                 role?: "cc";
                 /** @enum {string} */
-                resolution_source?: "thread_participant" | "tenancy_member" | "account_member" | "learned_identity" | "unknown";
+                resolution_source?: "thread_participant" | "tenancy_member" | "account_member" | "human_link" | "authoritative_record" | "verified_claim" | "provider_learned" | "legacy" | "learned_identity" | "unknown";
             }[] | null;
             /** Format: uuid */
             thread_id: string | null;
