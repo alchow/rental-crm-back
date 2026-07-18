@@ -721,6 +721,348 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
+  // (7b) Parent-first routing v2 (persona routing v2, PR 1 — plan §6.4/§6.5)
+  // =========================================================================
+  // Data flow under test: a completed outbox row (the parent) carries the
+  // authoritative conversation context — its tenancy, its physical To/Cc
+  // addresses — and an authenticated reply whose In-Reply-To names that parent
+  // must be routed from THAT context, never from an account-wide learned
+  // channel_identities claim.
+
+  const PV2_TENANT_EMAIL = `pv2-tenant-${SUFFIX}@tenant.test`;
+  const PV2_UNKNOWN_EMAIL = `pv2-unknown-${SUFFIX}@somewhere.test`;
+  const PV2_OTHER_EMAIL = `pv2-other-${SUFFIX}@tenant.test`;
+  const PV2_DUAL_EMAIL = `pv2-dual-${SUFFIX}@tenant.test`;
+  const PV2_TWOTEN_EMAIL = `pv2-twoten-${SUFFIX}@tenant.test`;
+
+  const pv2Post = async <T>(p: string, body: unknown): Promise<T> => {
+    const r = await api('POST', p, { token: landlordToken, body });
+    if (r.status !== 201) throw new Error(`pv2 setup POST ${p}: ${r.status} ${JSON.stringify(r.body)}`);
+    return r.body as T;
+  };
+  // Property + three units; tenancy A is the incident tenancy, C/D are the
+  // two-tenancy pin fixture (D is the newer one the OLD code would pick).
+  const pv2Property = await pv2Post<{ id: string }>(`/v1/accounts/${accountId}/properties`, {
+    name: 'PV2 Parent-Routing Prop',
+  });
+  const pv2Unit = async (name: string) =>
+    (await pv2Post<{ id: string }>(`/v1/accounts/${accountId}/areas`, {
+      property_id: pv2Property.id, kind: 'unit', name,
+    })).id;
+  const pv2UnitA = await pv2Unit('PV2 Unit A');
+  const pv2UnitC = await pv2Unit('PV2 Unit C');
+  const pv2UnitD = await pv2Unit('PV2 Unit D');
+  const pv2Tenancy = async (areaId: string, start: string) =>
+    (await pv2Post<{ id: string }>(`/v1/accounts/${accountId}/tenancies`, {
+      area_id: areaId, start_date: start, status: 'active',
+    })).id;
+  const tenancyAId = await pv2Tenancy(pv2UnitA, '2026-01-01');
+  const tenancyCId = await pv2Tenancy(pv2UnitC, '2026-01-01');
+  const tenancyDId = await pv2Tenancy(pv2UnitD, '2026-03-01');
+  const pv2Member = async (tenancyId: string, tenantId: string) => {
+    const r = await api('POST', `/v1/accounts/${accountId}/tenancies/${tenancyId}/members`, {
+      token: landlordToken, body: { tenant_id: tenantId, role: 'primary' },
+    });
+    if (r.status !== 201) throw new Error(`pv2 member: ${r.status} ${JSON.stringify(r.body)}`);
+  };
+  const ptAId = await createTenant('Parent Reply Tenant', PV2_TENANT_EMAIL);
+  await pv2Member(tenancyAId, ptAId);
+  const pv2OtherId = await createTenant('Other Known Tenant', PV2_OTHER_EMAIL);
+  const pv2DualId = await createTenant('Dual Role Tenant', PV2_DUAL_EMAIL);
+  void pv2DualId;
+  const pv2TwoTenId = await createTenant('Two Tenancy Tenant', PV2_TWOTEN_EMAIL);
+  await pv2Member(tenancyCId, pv2TwoTenId);
+  await pv2Member(tenancyDId, pv2TwoTenId);
+  // The incident's bad account-wide claim: the tenant's address learned as the
+  // LANDLORD. Parent tenancy context must beat it; capture must not delete it.
+  {
+    const { error } = await admin.from('channel_identities').insert({
+      account_id: accountId, party_type: 'landlord_user', party_id: sub.user.id,
+      channel: 'email', address: PV2_TENANT_EMAIL,
+    });
+    if (error) throw new Error(`pv2 bad claim seed: ${error.message}`);
+  }
+  // Dual-role fixture: same address carries a landlord claim AND a tenant
+  // contact-book record (tenants.emails) — two honest candidates, no context.
+  {
+    const { error } = await admin.from('channel_identities').insert({
+      account_id: accountId, party_type: 'landlord_user', party_id: sub.user.id,
+      channel: 'email', address: PV2_DUAL_EMAIL,
+    });
+    if (error) throw new Error(`pv2 dual claim seed: ${error.message}`);
+  }
+
+  // A completed bare outbox row = a valid parent (sent, Message-ID stamped).
+  const pv2Parent = async (opts: { to: string; cc?: string[]; tenancyId?: string }) => {
+    const sent = await api('POST', `${base}/outbox`, {
+      token: landlordToken,
+      body: {
+        channel: 'email',
+        to_address: opts.to,
+        ...(opts.cc ? { cc_addresses: opts.cc } : {}),
+        ...(opts.tenancyId ? { tenancy_id: opts.tenancyId } : {}),
+        subject: 'Inspection welcome',
+        body: 'synthetic parent send',
+        approval_ref: `self:${sub.user.id}`,
+      },
+    });
+    const row = assertStatus(sent, 201, 'pv2 parent intent') as { id: string };
+    const msgid = `<pv2-${row.id}@${REPLY_DOMAIN}>`;
+    const done = await api('POST', `${base}/outbox/${row.id}/complete`, {
+      token: agentToken,
+      body: { provider: 'smtp2go', provider_sid: `pv2-${rnd()}`, rfc822_message_id: msgid },
+    });
+    assertStatus(done, 200, 'pv2 parent complete');
+    return { id: row.id, msgid };
+  };
+  const pv2Parent1 = await pv2Parent({
+    to: PV2_TENANT_EMAIL, cc: [ownerEmail], tenancyId: tenancyAId,
+  });
+  const pv2Parent2 = await pv2Parent({ to: PV2_UNKNOWN_EMAIL });
+  const pv2Parent3 = await pv2Parent({ to: PV2_TWOTEN_EMAIL, tenancyId: tenancyCId });
+
+  // The mismatch fixture needs a KNOWN tenant with an ACTIVE thread — the
+  // forged parent reference must NOT route into it.
+  let pv2OtherThreadId = '';
+  {
+    const r = await personaCapture({ from_address: PV2_OTHER_EMAIL, body: 'unrelated thread seed' });
+    const res = assertStatus(r, 200, 'pv2 other-tenant seed') as CaptureShape;
+    if (res.disposition !== 'matched' || res.thread_id === null) {
+      throw new Error(`pv2 other-tenant seed not matched: ${JSON.stringify(res)}`);
+    }
+    pv2OtherThreadId = res.thread_id;
+    void pv2OtherId;
+  }
+
+  let pv2ThreadId = '';
+  let pv2FirstIid = '';
+  const PV2_INCIDENT_PROVIDER_ID = `PS-pv2-incident-${rnd()}`;
+
+  await check('v2(1) parent tenancy beats a bad learned landlord claim → matched (the incident)', async () => {
+    const r = await personaCapture({
+      provider_msg_id: PV2_INCIDENT_PROVIDER_ID,
+      from_address: PV2_TENANT_EMAIL,
+      to_addresses: [PERSONA],
+      cc_addresses: [ownerEmail],
+      subject: 'Re: Inspection welcome',
+      body: 'tenant reply through the persona',
+      rfc822_message_id: `<pv2-reply1-${SUFFIX}@sender>`,
+      in_reply_to: pv2Parent1.msgid,
+      references: [pv2Parent1.msgid],
+    });
+    const res = assertStatus(r, 200, 'incident capture') as CaptureShape;
+    assert(res.disposition === 'matched', `disposition: ${res.disposition}`);
+    assert(res.participant?.party_type === 'tenant' && res.participant.party_id === ptAId,
+      `tenant wins from parent tenancy: ${JSON.stringify(res.participant)}`);
+    assert(res.thread_id !== null && res.interaction_id !== null, 'journaled into a thread');
+    pv2ThreadId = res.thread_id!;
+    pv2FirstIid = res.interaction_id!;
+
+    // The conversation is filed under the PARENT's tenancy.
+    const { data: thr, error: thrErr } = await admin
+      .from('comm_threads').select('tenancy_id').eq('id', pv2ThreadId).single();
+    if (thrErr) throw new Error(`pv2 thread read: ${thrErr.message}`);
+    assert(thr!.tenancy_id === tenancyAId, `thread tenancy = parent tenancy: ${thr!.tenancy_id}`);
+
+    // The contradictory claim is preserved (repair is a later, audited step)…
+    const { data: claim, error: claimErr } = await admin
+      .from('channel_identities').select('party_type, party_id')
+      .eq('account_id', accountId).eq('channel', 'email').eq('address', PV2_TENANT_EMAIL)
+      .single();
+    if (claimErr) throw new Error(`pv2 claim read: ${claimErr.message}`);
+    assert(claim!.party_type === 'landlord_user', `bad claim untouched: ${claim!.party_type}`);
+
+    // …and recorded in the frozen routing decision (v2 drift-guard smoke).
+    const { data: raw, error: rawErr } = await admin
+      .from('inbound_raw').select('payload')
+      .eq('provider_msg_id', PV2_INCIDENT_PROVIDER_ID).single();
+    if (rawErr) throw new Error(`pv2 raw read: ${rawErr.message}`);
+    const decision = (raw!.payload as {
+      routing_decision?: {
+        version: number; parent_match: string; parent_outbox_id: string | null;
+        party_source: string | null; conflict_party_type: string | null;
+      };
+    }).routing_decision;
+    assert(decision?.version === 2, `routing_decision.version: ${JSON.stringify(decision)}`);
+    assert(decision!.parent_match === 'unique' && decision!.parent_outbox_id === pv2Parent1.id,
+      `parent recorded: ${JSON.stringify(decision)}`);
+    assert(decision!.party_source === 'tenancy_member', `party_source: ${decision!.party_source}`);
+    assert(decision!.conflict_party_type === 'landlord_user',
+      `contradictory claim traced: ${JSON.stringify(decision)}`);
+  });
+
+  await check('v2(2) landlord replies from the visible Cc address → cc_journaled into the tenant conversation', async () => {
+    const r = await personaCapture({
+      from_address: ownerEmail,
+      to_addresses: [PERSONA],
+      body: 'landlord reply from the cc leg',
+      rfc822_message_id: `<pv2-reply2-${SUFFIX}@sender>`,
+      in_reply_to: pv2Parent1.msgid,
+    });
+    const res = assertStatus(r, 200, 'cc reply capture') as CaptureShape;
+    assert(res.disposition === 'cc_journaled', `disposition: ${res.disposition}`);
+    assert(res.thread_id === pv2ThreadId, `into the tenant's conversation: ${res.thread_id}`);
+    assert(res.participant?.party_id === ptAId, `counterparty = tenant: ${JSON.stringify(res.participant)}`);
+    const { data: row, error } = await admin
+      .from('interactions').select('direction, author_type, party_type, party_id')
+      .eq('id', res.interaction_id!).single();
+    if (error) throw new Error(`cc journal read: ${error.message}`);
+    assert(row!.direction === 'outbound' && row!.author_type === 'landlord',
+      `landlord-authored outbound: ${row!.direction}/${row!.author_type}`);
+    assert(row!.party_type === 'tenant' && row!.party_id === ptAId,
+      `party = counterparty: ${row!.party_type}/${row!.party_id}`);
+  });
+
+  await check('v2(3) mobile reply strips To/Cc: persona-only headers still resolve via the parent', async () => {
+    const r = await personaCapture({
+      from_address: PV2_TENANT_EMAIL,
+      to_addresses: [PERSONA],
+      cc_addresses: [],
+      body: 'sent from my phone',
+      rfc822_message_id: `<pv2-reply3-${SUFFIX}@sender>`,
+      in_reply_to: pv2Parent1.msgid,
+    });
+    const res = assertStatus(r, 200, 'mobile reply capture') as CaptureShape;
+    assert(res.disposition === 'matched', `disposition: ${res.disposition}`);
+    assert(res.thread_id === pv2ThreadId, `same conversation: ${res.thread_id}`);
+    assert(res.participant?.party_id === ptAId, `tenant participant: ${JSON.stringify(res.participant)}`);
+  });
+
+  await check('v2(4) authenticated non-recipient replying to a real parent → parent_sender_mismatch', async () => {
+    // The sender IS a known tenant with an active thread; a forwarded/forged
+    // parent reference must not route the mail into that unrelated thread.
+    const r = await personaCapture({
+      from_address: PV2_OTHER_EMAIL,
+      to_addresses: [PERSONA],
+      body: 'i found this message id somewhere',
+      rfc822_message_id: `<pv2-reply4-${SUFFIX}@sender>`,
+      in_reply_to: pv2Parent1.msgid,
+    });
+    const res = assertStatus(r, 200, 'mismatch capture') as CaptureShape;
+    assert(res.disposition === 'triaged', `disposition: ${res.disposition}`);
+    assert(res.thread_id === null && res.interaction_id === null,
+      `not routed into the sender's own thread (${pv2OtherThreadId}): ${JSON.stringify(res)}`);
+    assert(res.unmatched_id !== null, 'triage row returned');
+    const { data: u, error } = await admin
+      .from('comm_unmatched_inbound').select('reason').eq('id', res.unmatched_id!).single();
+    if (error) throw new Error(`mismatch triage read: ${error.message}`);
+    assert(u!.reason === 'parent_sender_mismatch', `reason: ${u!.reason}`);
+  });
+
+  await check('v2(5) valid parent but failed authentication → auth_failed (a parent never rescues DMARC)', async () => {
+    const r = await personaCapture({
+      from_address: PV2_UNKNOWN_EMAIL,
+      to_addresses: [PERSONA],
+      body: 'this reply fails dmarc',
+      rfc822_message_id: `<pv2-reply5-${SUFFIX}@sender>`,
+      in_reply_to: pv2Parent2.msgid,
+      auth_results: AUTH_FAIL,
+    });
+    const res = assertStatus(r, 200, 'auth-fail capture') as CaptureShape;
+    assert(res.disposition === 'triaged', `disposition: ${res.disposition}`);
+    assert(res.interaction_id === null, 'nothing journaled');
+    const { data: u, error } = await admin
+      .from('comm_unmatched_inbound').select('reason').eq('id', res.unmatched_id!).single();
+    if (error) throw new Error(`auth-fail triage read: ${error.message}`);
+    assert(u!.reason === 'auth_failed', `reason: ${u!.reason}`);
+    const { count } = await admin
+      .from('channel_identities').select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId).eq('channel', 'email').eq('address', PV2_UNKNOWN_EMAIL);
+    assert((count ?? 0) === 0, 'failed auth never learns an identity');
+  });
+
+  await check('v2(6) dual-role sender, no parent, no context → identity_conflict (not unknown_sender)', async () => {
+    const r = await personaCapture({
+      from_address: PV2_DUAL_EMAIL,
+      body: 'who am i today',
+      rfc822_message_id: `<pv2-reply6-${SUFFIX}@sender>`,
+    });
+    const res = assertStatus(r, 200, 'dual-role capture') as CaptureShape;
+    assert(res.disposition === 'triaged', `disposition: ${res.disposition}`);
+    assert(res.unmatched_id !== null, 'triage row returned');
+    const { data: u, error } = await admin
+      .from('comm_unmatched_inbound').select('reason').eq('id', res.unmatched_id!).single();
+    if (error) throw new Error(`dual-role triage read: ${error.message}`);
+    assert(u!.reason === 'identity_conflict', `reason: ${u!.reason}`);
+  });
+
+  await check('v2(7) thread-less parent with a tenancy pins the thread to THAT tenancy, and reuses it', async () => {
+    const first = assertStatus(await personaCapture({
+      from_address: PV2_TWOTEN_EMAIL,
+      to_addresses: [PERSONA],
+      body: 'reply about the older tenancy',
+      rfc822_message_id: `<pv2-reply7a-${SUFFIX}@sender>`,
+      in_reply_to: pv2Parent3.msgid,
+    }), 200, 'two-tenancy first reply') as CaptureShape;
+    assert(first.disposition === 'matched', `disposition: ${first.disposition}`);
+    const { data: thr, error } = await admin
+      .from('comm_threads').select('tenancy_id').eq('id', first.thread_id!).single();
+    if (error) throw new Error(`two-tenancy thread read: ${error.message}`);
+    assert(thr!.tenancy_id === tenancyCId,
+      `parent tenancy (${tenancyCId}) pinned, not the newest (${tenancyDId}): ${thr!.tenancy_id}`);
+
+    const second = assertStatus(await personaCapture({
+      from_address: PV2_TWOTEN_EMAIL,
+      to_addresses: [PERSONA],
+      body: 'follow-up in the same conversation',
+      rfc822_message_id: `<pv2-reply7b-${SUFFIX}@sender>`,
+      in_reply_to: pv2Parent3.msgid,
+    }), 200, 'two-tenancy second reply') as CaptureShape;
+    assert(second.disposition === 'matched', `disposition: ${second.disposition}`);
+    assert(second.thread_id === first.thread_id, `thread reused: ${second.thread_id}`);
+  });
+
+  await check('v2(8) replay with changed From/auth/references returns the frozen original', async () => {
+    const r = await personaCapture({
+      provider_msg_id: PV2_INCIDENT_PROVIDER_ID,
+      from_address: PV2_OTHER_EMAIL,
+      body: 'completely different content',
+      rfc822_message_id: `<pv2-reply8-${SUFFIX}@sender>`,
+      auth_results: AUTH_FAIL,
+    });
+    const res = assertStatus(r, 200, 'changed replay') as CaptureShape;
+    assert(res.disposition === 'matched', `frozen disposition: ${res.disposition}`);
+    assert(res.interaction_id === pv2FirstIid, `frozen interaction: ${res.interaction_id}`);
+    assert(res.thread_id === pv2ThreadId, `frozen thread: ${res.thread_id}`);
+  });
+
+  await check('v2(9) reply-all across token and persona doors with parent headers → one journal + one duplicate', async () => {
+    const rfcId = `pv2-twodoor-${SUFFIX}@sender`;
+    const d = assertStatus(
+      await api('GET', `${base}/threads/${pv2ThreadId}`, { token: landlordToken }),
+      200, 'pv2 thread read',
+    ) as {
+      participants: { id: string; party_type: string; party_id: string | null }[];
+      bindings: { participant_id: string; participant_address: string; reply_address: string | null }[];
+    };
+    // Address the TENANT participant's binding explicitly — the bad landlord
+    // claim can leave the landlord bound under the same address.
+    const tenantPart = d.participants.find((p) => p.party_type === 'tenant' && p.party_id === ptAId);
+    const token = d.bindings.find((b) => b.participant_id === tenantPart?.id)?.reply_address;
+    assert(token, 'tenant token minted on the parent-routed thread');
+
+    const door1 = assertStatus(await api('POST', `${base}/inbound`, {
+      token: agentToken,
+      body: {
+        provider: 'ses', provider_msg_id: `PS-pv2-door1-${rnd()}`, to_number: token,
+        from_address: PV2_TENANT_EMAIL, channel: 'email', body: 'reply all', received_at: iso(),
+        rfc822_message_id: `<${rfcId}>`,
+      },
+    }), 200, 'token door') as CaptureShape;
+    assert(door1.disposition === 'matched', `token door: ${door1.disposition}`);
+
+    const door2 = assertStatus(await personaCapture({
+      from_address: PV2_TENANT_EMAIL,
+      to_addresses: [PERSONA],
+      body: 'reply all',
+      rfc822_message_id: `<${rfcId}>`,
+      in_reply_to: pv2Parent1.msgid,
+    }), 200, 'persona door') as CaptureShape;
+    assert(door2.disposition === 'duplicate', `persona door: ${door2.disposition}`);
+    assert(door2.interaction_id === door1.interaction_id, 'points at the token-journaled original');
+  });
+
+  // =========================================================================
   // (8) Unknown-sender triage (phase 6)
   // =========================================================================
   let triageRowId = '';

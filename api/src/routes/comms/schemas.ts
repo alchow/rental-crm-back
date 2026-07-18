@@ -80,6 +80,20 @@ export const CommOutbox = z
           /** 'cc' on copied-party entries (landlord CC arm); absent on primary
            *  recipients and on rows frozen before the CC arm existed. */
           role: z.enum(['cc']).optional(),
+          /** WHICH tier resolved this entry (persona routing v2):
+           *  thread_participant | tenancy_member | account_member (authoritative
+           *  context) > learned_identity (channel_identities) > unknown.
+           *  Absent on rows frozen before the stamp existed and on group-MMS
+           *  snapshots. */
+          resolution_source: z
+            .enum([
+              'thread_participant',
+              'tenancy_member',
+              'account_member',
+              'learned_identity',
+              'unknown',
+            ])
+            .optional(),
         }),
       )
       .nullable()
@@ -795,10 +809,19 @@ export const CommUnmatchedInbound = z
     dkim: z.string().nullable(),
     dmarc: z.string().nullable(),
     /** unknown_sender: nobody recognizes the address. auth_failed: a
-     *  RECOGNIZED identity whose mail failed DMARC. identity_conflict: the
-     *  authenticated alias matches an outbound snapshot but its exact address
-     *  is already bound to another party. Both require human review. */
-    reason: z.enum(['unknown_sender', 'auth_failed', 'identity_conflict']),
+     *  RECOGNIZED identity (or a reply citing a real outbound parent) whose
+     *  mail failed DMARC. identity_conflict: the sender's identity evidence
+     *  contradicts itself (dual-role address with no selecting context, or an
+     *  authenticated alias whose exact address is already bound to another
+     *  party). parent_sender_mismatch: an authenticated sender replied to a
+     *  real outbound message they were never a recipient of. All but
+     *  unknown_sender require human review. */
+    reason: z.enum([
+      'unknown_sender',
+      'auth_failed',
+      'identity_conflict',
+      'parent_sender_mismatch',
+    ]),
     received_at: z.string(),
     status: z.enum(['pending', 'linked', 'dismissed']),
     resolved_by: z.string().uuid().nullable(),
