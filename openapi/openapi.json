@@ -5073,6 +5073,7 @@
                 "resolution_source": {
                   "type": "string",
                   "enum": [
+                    "caller_intent",
                     "thread_participant",
                     "tenancy_member",
                     "account_member",
@@ -5310,6 +5311,56 @@
               "type": "string",
               "minLength": 3,
               "maxLength": 320
+            },
+            "minItems": 1,
+            "maxItems": 5
+          },
+          "to_party": {
+            "type": "object",
+            "properties": {
+              "party_type": {
+                "type": "string",
+                "enum": [
+                  "tenant",
+                  "vendor"
+                ]
+              },
+              "party_id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "required": [
+              "party_type",
+              "party_id"
+            ]
+          },
+          "cc_parties": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "address": {
+                  "type": "string",
+                  "minLength": 3,
+                  "maxLength": 320
+                },
+                "party_type": {
+                  "type": "string",
+                  "enum": [
+                    "landlord_user"
+                  ]
+                },
+                "party_id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "required": [
+                "address",
+                "party_type",
+                "party_id"
+              ]
             },
             "minItems": 1,
             "maxItems": 5

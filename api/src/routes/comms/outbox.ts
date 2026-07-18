@@ -1,6 +1,7 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import { getSb } from '../../supabase/request-client';
+import { asJson } from '../../supabase/db-types';
 import { ApiError, dbError, errorResponses } from '../_lib/error';
 import { loadEnv } from '../../env';
 import { personaAddress } from '../_lib/subdomain';
@@ -233,6 +234,41 @@ export function registerOutboxRoutes(app: CommsApp): void {
           { fieldErrors: { cc_addresses: ['not accepted with thread_id'] } },
         );
       }
+    }
+
+    // Explicit party intent (persona routing v2 PR 3): to_party / cc_parties
+    // let a bare-send caller state the party it already knows instead of
+    // making core re-derive it from the address. Same shape gate as
+    // cc_addresses — bare email only — plus the presence coupling the DB
+    // trigger backstops. The account/tenancy/address VERIFICATION runs below
+    // (after cc_addresses is normalized), before the insert.
+    if (body.to_party !== undefined || body.cc_parties !== undefined) {
+      if (body.channel !== 'email') {
+        throw new ApiError(
+          400,
+          'invalid_request',
+          'party intent (to_party/cc_parties) is only valid on email sends',
+          { fieldErrors: { to_party: ['only valid when channel=email'] } },
+        );
+      }
+      if (body.thread_id !== undefined) {
+        throw new ApiError(
+          400,
+          'invalid_request',
+          'party intent (to_party/cc_parties) is only valid on bare sends; a thread leg derives parties from its participants',
+          { fieldErrors: { to_party: ['not accepted with thread_id'] } },
+        );
+      }
+    }
+    if (body.to_party !== undefined && body.to_address === undefined) {
+      throw new ApiError(400, 'invalid_request', 'to_party requires to_address', {
+        fieldErrors: { to_party: ['requires to_address'] },
+      });
+    }
+    if (body.cc_parties !== undefined && body.cc_addresses === undefined) {
+      throw new ApiError(400, 'invalid_request', 'cc_parties requires cc_addresses', {
+        fieldErrors: { cc_parties: ['requires cc_addresses'] },
+      });
     }
 
     // HARD GATE (product decision 2026-07-17, reversing the earlier
@@ -636,6 +672,89 @@ export function registerOutboxRoutes(app: CommsApp): void {
       }
     }
 
+    // Persona routing v2 PR 3: verify the explicit party intent BEFORE the
+    // insert, mapping each hint to a stable, field-scoped error. The DB
+    // snapshot trigger re-verifies with the same predicate as an independent
+    // backstop — this pre-check exists for the specific status codes.
+    let ccPartiesPayload: { address: string; party_type: string; party_id: string }[] | null =
+      null;
+    if (body.to_party !== undefined || body.cc_parties !== undefined) {
+      // (a) Every cc_parties address must name one normalized cc_addresses
+      // entry — a Cc party hint annotates a Cc the caller actually asked for.
+      const ccSet = new Set(ccAddresses ?? []);
+      if (body.cc_parties !== undefined) {
+        ccPartiesPayload = body.cc_parties.map((p) => ({
+          address: p.address.toLowerCase(),
+          party_type: p.party_type,
+          party_id: p.party_id,
+        }));
+        for (const [i, p] of ccPartiesPayload.entries()) {
+          if (!ccSet.has(p.address)) {
+            throw new ApiError(
+              400,
+              'invalid_request',
+              `cc_parties[${i}].address must match a cc_addresses entry`,
+              { fieldErrors: { cc_parties: [`entry ${i} address is not in cc_addresses`] } },
+            );
+          }
+        }
+      }
+
+      // (b) One address claimed by two different hinted parties -> 409. (Cc
+      // already excludes to_address, so this catches duplicate cc_parties.)
+      const claimed = new Map<string, string>();
+      const allHints: { address: string; key: string }[] = [];
+      if (body.to_party !== undefined && toAddress !== null) {
+        allHints.push({
+          address: toAddress,
+          key: `${body.to_party.party_type}:${body.to_party.party_id}`,
+        });
+      }
+      for (const p of ccPartiesPayload ?? []) {
+        allHints.push({ address: p.address, key: `${p.party_type}:${p.party_id}` });
+      }
+      for (const h of allHints) {
+        const prev = claimed.get(h.address);
+        if (prev !== undefined && prev !== h.key) {
+          throw new ApiError(
+            409,
+            'conflict',
+            `address ${h.address} is claimed by two different parties`,
+          );
+        }
+        claimed.set(h.address, h.key);
+      }
+
+      // (c) Account membership, tenancy membership, and address resolution —
+      // judged in the DB by the same predicate the snapshot trigger applies.
+      const { data: verdicts, error: vErr } = await sb.rpc('check_outbox_party_intent', {
+        p_account_id: accountId,
+        p_tenancy_id: body.tenancy_id ?? null,
+        p_to_party_type: body.to_party?.party_type ?? null,
+        p_to_party_id: body.to_party?.party_id ?? null,
+        p_to_address: body.to_party !== undefined ? toAddress : null,
+        p_cc_parties: ccPartiesPayload !== null ? asJson(ccPartiesPayload) : null,
+      });
+      if (vErr) throw commDbError(vErr);
+      for (const row of (verdicts ?? []) as {
+        slot: string;
+        hint_address: string;
+        verdict: string;
+      }[]) {
+        if (row.verdict === 'ok') continue;
+        const field = row.slot === 'to' ? 'to_party' : 'cc_parties';
+        const msg =
+          row.verdict === 'wrong_account'
+            ? 'the referenced party does not belong to this account'
+            : row.verdict === 'not_in_tenancy'
+              ? 'the referenced tenant is not a member of the supplied tenancy'
+              : 'the address does not resolve to the referenced party';
+        throw new ApiError(422, 'invalid_request', msg, {
+          fieldErrors: { [field]: [`${row.hint_address}: ${row.verdict}`] },
+        });
+      }
+    }
+
     const { data, error } = await sb
       .from('comm_outbox')
       .insert({
@@ -644,6 +763,9 @@ export function registerOutboxRoutes(app: CommsApp): void {
         to_address: toAddress,
         group_addresses: groupAddresses,
         cc_addresses: ccAddresses,
+        to_party_type: body.to_party?.party_type ?? null,
+        to_party_id: body.to_party?.party_id ?? null,
+        cc_parties: ccPartiesPayload !== null ? asJson(ccPartiesPayload) : null,
         thread_id: body.thread_id ?? null,
         participant_id: participantId,
         body: body.body,

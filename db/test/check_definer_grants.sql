@@ -62,6 +62,10 @@ DECLARE
     -- persona triage resolution (20260709000001): owner|manager self-defense
     -- inside (the agent principal may not resolve identity doubt)
     'link_unmatched_inbound',
+    -- Party-intent pre-check for bare sends: self-defends on live
+    -- owner/manager/agent membership of the target account; every downstream
+    -- query is account-pinned, so it is not a cross-account oracle.
+    'check_outbox_party_intent',
     'dismiss_unmatched_inbound',
     'record_opt_out',
     'list_account_opt_outs',
