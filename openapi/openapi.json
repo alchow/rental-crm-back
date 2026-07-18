@@ -5069,6 +5069,16 @@
                   "enum": [
                     "cc"
                   ]
+                },
+                "resolution_source": {
+                  "type": "string",
+                  "enum": [
+                    "thread_participant",
+                    "tenancy_member",
+                    "account_member",
+                    "learned_identity",
+                    "unknown"
+                  ]
                 }
               },
               "required": [
@@ -6215,7 +6225,8 @@
             "enum": [
               "unknown_sender",
               "auth_failed",
-              "identity_conflict"
+              "identity_conflict",
+              "parent_sender_mismatch"
             ]
           },
           "received_at": {

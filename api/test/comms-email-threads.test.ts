@@ -1026,10 +1026,15 @@ async function main(): Promise<void> {
       const snap = (snapRow!.recipient_snapshot ?? []) as Array<{
         party_type: string;
         party_id: string | null;
+        resolution_source?: string;
       }>;
       assert(
         snap.length === 2 && snap.every((e) => e.party_type === 'unknown' && e.party_id === null),
         `context-less bare snapshot stays unknown: ${JSON.stringify(snap)}`,
+      );
+      assert(
+        snap.every((e) => e.resolution_source === 'unknown'),
+        `unknown entries carry resolution_source=unknown: ${JSON.stringify(snap)}`,
       );
     },
   );
@@ -1081,6 +1086,7 @@ async function main(): Promise<void> {
         party_id: string | null;
         address: string;
         label: string | null;
+        resolution_source?: string;
       }>;
       const primary = snap.find((e) => (e.role ?? 'recipient') !== 'cc');
       assert(
@@ -1091,10 +1097,18 @@ async function main(): Promise<void> {
         primary?.label === 'Bare Res Tenant',
         `resolved label from _party_display_name: ${primary?.label}`,
       );
+      assert(
+        primary?.resolution_source === 'tenancy_member',
+        `To resolution source stamped: ${primary?.resolution_source}`,
+      );
       const ccEntry = snap.find((e) => e.role === 'cc');
       assert(
         ccEntry?.party_type === 'landlord_user' && ccEntry?.party_id === fx.landlordId,
         `Cc resolved to the account owner: ${JSON.stringify(snap)}`,
+      );
+      assert(
+        ccEntry?.resolution_source === 'account_member',
+        `Cc resolution source stamped: ${ccEntry?.resolution_source}`,
       );
 
       // Complete → the journal headline/cast carry the linked parties, and the
@@ -1149,10 +1163,13 @@ async function main(): Promise<void> {
   );
 
   await check(
-    'bare send context tiers do not preempt the address book (channel_identities still wins)',
+    'bare send context tiers PREEMPT the address book (tenancy context outranks channel_identities)',
     async () => {
-      // The address book says this address is Tenant One; the tenancy-member
-      // tier would say the new tenant. The learned identity must win.
+      // Persona routing v2 (plan §9.1.3): the address book says this address
+      // is Tenant One, but the intent's own tenancy says the new member
+      // tenant. Explicit bare-intent context is authoritative — the unverified
+      // account-wide learned identity must NOT preempt it. (This check
+      // previously enshrined the opposite precedence; that was the incident.)
       const ADDR = `learned-${SUFFIX}@e2.test`;
       const t5 = await api('POST', `/v1/accounts/${fx.accountId}/tenants`, {
         token: fx.landlordToken,
@@ -1200,10 +1217,15 @@ async function main(): Promise<void> {
       const snap = (snapRow!.recipient_snapshot ?? []) as Array<{
         party_type: string;
         party_id: string | null;
+        resolution_source?: string;
       }>;
       assert(
-        snap[0]!.party_type === 'tenant' && snap[0]!.party_id === fx.tenant1Id,
-        `address book wins over tenancy context: ${JSON.stringify(snap)}`,
+        snap[0]!.party_type === 'tenant' && snap[0]!.party_id === t5Id,
+        `tenancy context wins over the address book: ${JSON.stringify(snap)}`,
+      );
+      assert(
+        snap[0]!.resolution_source === 'tenancy_member',
+        `resolution source stamped: ${JSON.stringify(snap)}`,
       );
     },
   );

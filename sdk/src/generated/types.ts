@@ -17457,6 +17457,8 @@ export interface components {
                 label: string | null;
                 /** @enum {string} */
                 role?: "cc";
+                /** @enum {string} */
+                resolution_source?: "thread_participant" | "tenancy_member" | "account_member" | "learned_identity" | "unknown";
             }[] | null;
             /** Format: uuid */
             thread_id: string | null;
@@ -17713,7 +17715,7 @@ export interface components {
             dkim: string | null;
             dmarc: string | null;
             /** @enum {string} */
-            reason: "unknown_sender" | "auth_failed" | "identity_conflict";
+            reason: "unknown_sender" | "auth_failed" | "identity_conflict" | "parent_sender_mismatch";
             received_at: string;
             /** @enum {string} */
             status: "pending" | "linked" | "dismissed";
