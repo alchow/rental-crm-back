@@ -44,6 +44,32 @@ phases.
 - Deploy ordering: core ships first; the transport starts depending on new
   behavior only after it exists in prod.
 
+## Relay legs to a landlord are notifications
+
+The visible Cc is the DIY landlord's primary conversation surface; the relay
+leg of a tenant-initiated mail is a mere notification. Two consequences on
+`POST …/comms/outbox` for an EMAIL relay leg (`relay_of_interaction_id` set)
+whose target participant is a `landlord_user`:
+
+- **Authoritative recipient.** The leg dials the account's owner/manager
+  email for that participant's user (auth.users via account_members —
+  `resolve_relay_landlord_recipient`), NOT the thread binding: bindings are
+  minted from `channel_identities` at thread creation, and a bad claim once
+  froze the TENANT's own address as the landlord leg (the tenant was relayed
+  their own message back). The binding / explicit `to_address` is only the
+  fallback when no authoritative email exists. The chosen address freezes at
+  intent time exactly as before.
+- **CC-overlap suppression.** When the relayed interaction's cast already
+  contains the resolved address (canonical compare via
+  `_comm_canonical_email_address`, so gmail dot/+tag aliases count), the
+  landlord already physically received the mail — e.g. as a visible Cc on a
+  reply-all. The intent is refused with 409
+  `error.code='relay_already_delivered'` and NO row is created. The transport
+  must treat this as "already satisfied", never as a retryable failure.
+
+Non-landlord relay legs (tenant/vendor), sms relays, and all non-relay sends
+are byte-identical.
+
 ## The ordered routing algorithm
 
 One canonical coordinator (`capture_persona_inbound`) does, in order:

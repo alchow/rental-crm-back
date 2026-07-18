@@ -2,7 +2,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import { getSb } from '../../supabase/request-client';
 import { asJson } from '../../supabase/db-types';
-import { ApiError, dbError, errorResponses } from '../_lib/error';
+import { ApiError, conflictResponse, dbError, errorResponses } from '../_lib/error';
 import { loadEnv } from '../../env';
 import { personaAddress } from '../_lib/subdomain';
 import { keysetPage } from '../_lib/cursor';
@@ -39,6 +39,16 @@ export function registerOutboxRoutes(app: CommsApp): void {
       'Create a send intent (status queued). Transport or landlord. The intent is ' +
       'durable BEFORE any provider call (ADR-0007); the journal entry is appended ' +
       'only by the completion path, never here.',
+    description:
+      'An email RELAY leg (relay_of_interaction_id set) whose target participant is a ' +
+      'landlord_user is a notification, not the conversation surface: it dials the ' +
+      "account's authoritative owner/manager email for that participant, falling back to " +
+      'the thread binding when no authoritative email exists. When the relayed ' +
+      "interaction's cast already contains the resolved address (canonical email compare " +
+      '— the landlord physically received the original, e.g. as a visible Cc), the intent ' +
+      'is refused with 409 error.code=relay_already_delivered and no row is created. ' +
+      'Other 409 codes: conflict (closed thread / departed participant / an address ' +
+      'claimed by two hinted parties).',
     request: {
       params: AccountParam,
       body: { content: { 'application/json': { schema: CreateOutboxBody } }, required: true },
@@ -49,6 +59,7 @@ export function registerOutboxRoutes(app: CommsApp): void {
         content: { 'application/json': { schema: CommOutbox } },
       },
       ...errorResponses,
+      ...conflictResponse,
     },
   });
 
@@ -529,6 +540,23 @@ export function registerOutboxRoutes(app: CommsApp): void {
         participant = part;
       }
 
+      // Relay demoted to notification (persona routing v2 PR 7): an email
+      // relay leg addressed to a landlord_user participant is a NOTIFICATION
+      // of mail the visible-Cc surface already carries, so its recipient comes
+      // from the account's AUTHORITATIVE owner/manager email — not the thread
+      // binding, which is minted from channel_identities at thread creation
+      // and once froze the TENANT's address as the landlord leg (a bad claim
+      // relayed the tenant's own message back to them). The binding/address
+      // book resolved below remains the fallback when no authoritative email
+      // exists. Email relay legs only; sms relays and all non-relay sends are
+      // byte-identical.
+      const isLandlordEmailRelay =
+        body.channel === 'email' &&
+        body.relay_of_interaction_id !== undefined &&
+        participant !== null &&
+        participant.party_type === 'landlord_user' &&
+        participant.party_id !== null;
+
       if (body.to_address !== undefined) {
         toAddress = normalizeAddress(body.channel, body.to_address);
       } else {
@@ -559,7 +587,10 @@ export function registerOutboxRoutes(app: CommsApp): void {
           resolved =
             pickPreferredIdentity((idents ?? []) as IdentityClaimPick[])?.address ?? null;
         }
-        if (resolved === null) {
+        // A landlord email relay may still resolve via the authoritative
+        // owner/manager email below, so its missing-binding 422 is deferred to
+        // the RPC verdict.
+        if (resolved === null && !isLandlordEmailRelay) {
           throw new ApiError(
             422,
             'invalid_request',
@@ -569,9 +600,51 @@ export function registerOutboxRoutes(app: CommsApp): void {
         // Validate the resolved address against the requested channel too — a
         // binding stored for one channel must not be silently reused as the
         // destination for another (e.g. an sms binding for an email send).
-        toAddress = normalizeAddress(body.channel, resolved);
+        toAddress = resolved === null ? null : normalizeAddress(body.channel, resolved);
       }
       participantId = body.participant_ref ?? null;
+
+      if (isLandlordEmailRelay) {
+        // One server-side judge for both questions (the DB owns the email
+        // canonicalization, so TS never re-implements it): the authoritative
+        // recipient, and whether the source interaction's cast shows the
+        // landlord already physically received the mail.
+        const { data: relayTarget, error: rtErr } = await sb.rpc(
+          'resolve_relay_landlord_recipient',
+          {
+            p_account_id: accountId,
+            p_user_id: participant!.party_id!,
+            p_source_interaction_id: body.relay_of_interaction_id!,
+            p_fallback_address: toAddress,
+          },
+        );
+        if (rtErr) throw commDbError(rtErr);
+        const target = (
+          (relayTarget ?? []) as { to_address: string | null; already_delivered: boolean }[]
+        )[0];
+        if (!target || target.to_address === null) {
+          // No authoritative email AND no binding/address-book fallback: the
+          // same contract as any unresolvable 1:1 destination.
+          throw new ApiError(
+            422,
+            'invalid_request',
+            'no destination address is bound or on file for this participant',
+          );
+        }
+        // SUPPRESSION: the landlord already received this mail directly (their
+        // address — canonically compared, so gmail dot/+tag aliases count — is
+        // in the relayed interaction's cast, e.g. as a visible Cc). A relay
+        // row would double-deliver; refuse BEFORE creating anything with a
+        // stable code the transport treats as "already satisfied".
+        if (target.already_delivered) {
+          throw new ApiError(
+            409,
+            'relay_already_delivered',
+            'the landlord already received this mail directly (e.g. as a visible Cc); no relay leg was created',
+          );
+        }
+        toAddress = normalizeAddress(body.channel, target.to_address);
+      }
 
       // Landlord CC arm (thread arm): copy any is_cc participant of this thread
       // as a VISIBLE Cc on the outbound mail, resolved to their REAL email —

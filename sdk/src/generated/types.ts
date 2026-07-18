@@ -7681,7 +7681,10 @@ export interface paths {
             };
         };
         put?: never;
-        /** Create a send intent (status queued). Transport or landlord. The intent is durable BEFORE any provider call (ADR-0007); the journal entry is appended only by the completion path, never here. */
+        /**
+         * Create a send intent (status queued). Transport or landlord. The intent is durable BEFORE any provider call (ADR-0007); the journal entry is appended only by the completion path, never here.
+         * @description An email RELAY leg (relay_of_interaction_id set) whose target participant is a landlord_user is a notification, not the conversation surface: it dials the account's authoritative owner/manager email for that participant, falling back to the thread binding when no authoritative email exists. When the relayed interaction's cast already contains the resolved address (canonical email compare — the landlord physically received the original, e.g. as a visible Cc), the intent is refused with 409 error.code=relay_already_delivered and no row is created. Other 409 codes: conflict (closed thread / departed participant / an address claimed by two hinted parties).
+         */
         post: {
             parameters: {
                 query?: never;
@@ -7729,7 +7732,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
                 409: {
                     headers: {
                         [name: string]: unknown;

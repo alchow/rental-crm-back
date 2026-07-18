@@ -1794,9 +1794,12 @@ async function main(): Promise<void> {
         },
       });
       const row = assertStatus(intent, 201, 'relay intent') as OutboxShape;
+      // Relay demoted to notification (PR 7): a landlord email relay leg dials
+      // the account's AUTHORITATIVE owner email (auth.users), not the thread
+      // binding (LL_EMAIL) — the binding is only the no-authoritative fallback.
       assert(
-        row.to_address === LL_EMAIL.toLowerCase(),
-        `relay to_address (landlord email): ${row.to_address}`,
+        row.to_address === fx.landlordEmail.toLowerCase(),
+        `relay to_address (authoritative owner email): ${row.to_address}`,
       );
 
       const claim = await api('POST', `${base}/outbox/${row.id}/delivery`, {
@@ -2612,6 +2615,269 @@ async function main(): Promise<void> {
     );
     assertStatus(agent, 403, 'agent rebind');
   });
+
+  // =========================================================================
+  // (15) Relay demoted to notification (PR 7) — authoritative recipient +
+  // CC-overlap suppression
+  // =========================================================================
+  // An email relay leg to a landlord_user participant is a NOTIFICATION: it
+  // dials the account's AUTHORITATIVE owner/manager email (auth.users via
+  // account_members), not the thread binding — a bad channel_identities claim
+  // once froze the TENANT's address as the landlord binding and relayed the
+  // tenant's own message back to them. And when the source mail's cast shows
+  // the landlord already physically received it (a visible Cc on a reply-all),
+  // the leg is refused: 409 relay_already_delivered, nothing created.
+  const RT_EMAIL = `rt-${SUFFIX}@e2.test`; // incident-thread tenant
+  const RT2_EMAIL = `rt2-${SUFFIX}@e2.test`; // aux-thread tenant
+  const AUX_BIND = `auxbind-${SUFFIX}@e2.test`; // aux landlord's thread binding
+  // A gmail mailbox: dots/+tags are aliases of ONE mailbox, so the
+  // suppression compare must be canonical, never byte equality.
+  const AUX_OWNER_EMAIL = `relay.owner${SUFFIX}@gmail.com`;
+  let incidentThreadId = '';
+  let incidentLandlordPartId = '';
+  let incidentSourceIid = '';
+  let auxThreadId = '';
+  let auxLandlordPartId = '';
+  let auxTenantPartId = '';
+  let auxSourceIid = '';
+  let auxUserId = '';
+
+  const relayLegCount = async (iid: string): Promise<number> => {
+    const { data, error } = await admin
+      .from('comm_outbox')
+      .select('id')
+      .eq('account_id', fx.accountId)
+      .eq('relay_of_interaction_id', iid);
+    if (error) throw new Error(`relay leg count: ${error.message}`);
+    return (data ?? []).length;
+  };
+  const relayIntent = (threadId: string, participantRef: string, sourceIid: string) =>
+    api('POST', `${base}/outbox`, {
+      token: fx.agentToken,
+      body: {
+        channel: 'email',
+        thread_id: threadId,
+        participant_ref: participantRef,
+        relay_of_interaction_id: sourceIid,
+        body: 'relayed notification',
+        approval_ref: `thread:${threadId}`,
+      },
+    });
+
+  await check(
+    'relay to a landlord whose binding froze the TENANT address (the incident) → dials the authoritative owner email',
+    async () => {
+      const t = await api('POST', `/v1/accounts/${fx.accountId}/tenants`, {
+        token: fx.landlordToken,
+        body: { full_name: 'Relay Tenant' },
+      });
+      const rtId = (assertStatus(t, 201, 'create relay tenant') as { id: string }).id;
+      const r = await createThread({
+        kind: 'bridged_tenant',
+        channel: 'email',
+        subject: 'Relay notification thread',
+        participants: [
+          {
+            party_type: 'landlord_user',
+            party_id: fx.landlordId,
+            address: `llwrong-${SUFFIX}@e2.test`,
+          },
+          { party_type: 'tenant', party_id: rtId, address: RT_EMAIL },
+        ],
+      });
+      const thread = assertStatus(r, 201, 'incident thread create') as ThreadDetailShape;
+      incidentThreadId = thread.id;
+      const llPartRow = thread.participants.find((p) => p.party_type === 'landlord_user');
+      const rtPartRow = thread.participants.find((p) => p.party_type === 'tenant');
+      assert(llPartRow && rtPartRow, 'both participants present');
+      incidentLandlordPartId = llPartRow!.id;
+      const llBinding = thread.bindings.find((b) => b.participant_id === llPartRow!.id);
+      const rtBinding = thread.bindings.find((b) => b.participant_id === rtPartRow!.id);
+      assert(llBinding && rtBinding?.reply_address, 'both bindings present');
+
+      // THE INCIDENT SHAPE: the landlord leg's binding freezes the TENANT's
+      // own address (in prod a bad channel_identities claim did this at
+      // thread creation; the service role restates that end state directly).
+      const { error: bindErr } = await admin
+        .from('thread_channel_bindings')
+        .update({ participant_address: RT_EMAIL })
+        .eq('account_id', fx.accountId)
+        .eq('id', llBinding!.id);
+      assert(!bindErr, `seed wrong binding: ${bindErr?.message}`);
+
+      // The tenant writes in on their token → matched (the relay source).
+      const cap = await capture({
+        provider: 'resend',
+        provider_msg_id: `IN-incident-${rnd()}`,
+        to_number: rtBinding!.reply_address,
+        from_address: RT_EMAIL,
+        channel: 'email',
+        body: 'is the heating fixed?',
+        received_at: iso(),
+      });
+      const res = assertStatus(cap, 200, 'incident inbound') as CaptureShape;
+      assert(res.disposition === 'matched', `disposition: ${res.disposition}`);
+      incidentSourceIid = res.interaction_id!;
+
+      // Pre-fix this dialed the binding — RT_EMAIL — and the tenant received
+      // their own message back.
+      const relay = await relayIntent(incidentThreadId, incidentLandlordPartId, incidentSourceIid);
+      const row = assertStatus(relay, 201, 'incident relay intent') as OutboxShape;
+      assert(
+        row.to_address === fx.landlordEmail.toLowerCase(),
+        `authoritative owner email dialed (not the poisoned binding): ${row.to_address}`,
+      );
+    },
+  );
+
+  await check(
+    'source cast already carries the landlord address (cc role) → 409 relay_already_delivered, no row created',
+    async () => {
+      // The reply-all shape: the landlord's real address rode the inbound
+      // mail, so its cast holds a cc entry for them.
+      const { error: castErr } = await admin.from('interaction_participants').insert({
+        account_id: fx.accountId,
+        interaction_id: incidentSourceIid,
+        role: 'cc',
+        party_type: 'landlord_user',
+        party_id: fx.landlordId,
+        address: fx.landlordEmail.toLowerCase(),
+        source: 'comms',
+      });
+      assert(!castErr, `seed cc cast row: ${castErr?.message}`);
+
+      const before = await relayLegCount(incidentSourceIid);
+      const relay = await relayIntent(incidentThreadId, incidentLandlordPartId, incidentSourceIid);
+      assertStatus(relay, 409, 'suppressed relay');
+      assert(errCode(relay) === 'relay_already_delivered', `error code: ${errCode(relay)}`);
+      const after = await relayLegCount(incidentSourceIid);
+      assert(after === before, `no relay row minted: ${before} -> ${after}`);
+    },
+  );
+
+  await check(
+    'aux manager member: the authoritative email outranks a live, correct binding',
+    async () => {
+      const { data: created, error: userErr } = await admin.auth.admin.createUser({
+        email: AUX_OWNER_EMAIL,
+        password: `pw-${crypto.randomUUID()}`,
+        email_confirm: true,
+      });
+      if (userErr || !created?.user) throw new Error(`aux auth user: ${userErr?.message}`);
+      auxUserId = created.user.id;
+      const { error: memErr } = await admin.from('account_members').insert({
+        account_id: fx.accountId,
+        user_id: auxUserId,
+        role: 'manager',
+      });
+      assert(!memErr, `aux membership: ${memErr?.message}`);
+
+      const t = await api('POST', `/v1/accounts/${fx.accountId}/tenants`, {
+        token: fx.landlordToken,
+        body: { full_name: 'Relay Tenant Two' },
+      });
+      const rt2Id = (assertStatus(t, 201, 'create relay tenant 2') as { id: string }).id;
+      const r = await createThread({
+        kind: 'bridged_tenant',
+        channel: 'email',
+        subject: 'Aux relay thread',
+        participants: [
+          { party_type: 'landlord_user', party_id: auxUserId, address: AUX_BIND },
+          { party_type: 'tenant', party_id: rt2Id, address: RT2_EMAIL },
+        ],
+      });
+      const thread = assertStatus(r, 201, 'aux thread create') as ThreadDetailShape;
+      auxThreadId = thread.id;
+      const llPartRow = thread.participants.find((p) => p.party_type === 'landlord_user');
+      const rt2PartRow = thread.participants.find((p) => p.party_type === 'tenant');
+      assert(llPartRow && rt2PartRow, 'aux participants present');
+      auxLandlordPartId = llPartRow!.id;
+      auxTenantPartId = rt2PartRow!.id;
+      const rt2Binding = thread.bindings.find((b) => b.participant_id === rt2PartRow!.id);
+      assert(rt2Binding?.reply_address, 'aux tenant binding present');
+
+      const cap = await capture({
+        provider: 'resend',
+        provider_msg_id: `IN-aux-${rnd()}`,
+        to_number: rt2Binding!.reply_address,
+        from_address: RT2_EMAIL,
+        channel: 'email',
+        body: 'rent question',
+        received_at: iso(),
+      });
+      const res = assertStatus(cap, 200, 'aux inbound') as CaptureShape;
+      assert(res.disposition === 'matched', `disposition: ${res.disposition}`);
+      auxSourceIid = res.interaction_id!;
+
+      const relay = await relayIntent(auxThreadId, auxLandlordPartId, auxSourceIid);
+      const row = assertStatus(relay, 201, 'aux relay intent') as OutboxShape;
+      assert(
+        row.to_address === AUX_OWNER_EMAIL.toLowerCase(),
+        `authoritative manager email beats the binding: ${row.to_address}`,
+      );
+    },
+  );
+
+  await check(
+    'gmail dot/+tag alias of the landlord in the source cast → still suppressed (canonical compare)',
+    async () => {
+      // Same mailbox as AUX_OWNER_EMAIL, different bytes: dots dropped, +tag
+      // added — _comm_canonical_email_address folds both to one key.
+      const alias = `relayowner${SUFFIX}+fwd@gmail.com`;
+      const { error: castErr } = await admin.from('interaction_participants').insert({
+        account_id: fx.accountId,
+        interaction_id: auxSourceIid,
+        role: 'cc',
+        party_type: 'landlord_user',
+        party_id: auxUserId,
+        address: alias,
+        source: 'comms',
+      });
+      assert(!castErr, `seed alias cast row: ${castErr?.message}`);
+
+      const before = await relayLegCount(auxSourceIid);
+      const relay = await relayIntent(auxThreadId, auxLandlordPartId, auxSourceIid);
+      assertStatus(relay, 409, 'canonically suppressed relay');
+      assert(errCode(relay) === 'relay_already_delivered', `error code: ${errCode(relay)}`);
+      assert((await relayLegCount(auxSourceIid)) === before, 'no relay row minted');
+    },
+  );
+
+  await check(
+    'no authoritative email (membership gone) → the relay falls back to the thread binding',
+    async () => {
+      const nowIso = iso();
+      const { error: delErr } = await admin
+        .from('account_members')
+        .update({ deleted_at: nowIso, updated_at: nowIso })
+        .eq('account_id', fx.accountId)
+        .eq('user_id', auxUserId)
+        .is('deleted_at', null);
+      assert(!delErr, `soft-delete aux membership: ${delErr?.message}`);
+
+      // The gmail alias seeded into the cast no longer matters: the resolved
+      // recipient is now the BINDING address, and suppression judges the
+      // resolved address only.
+      const relay = await relayIntent(auxThreadId, auxLandlordPartId, auxSourceIid);
+      const row = assertStatus(relay, 201, 'fallback relay intent') as OutboxShape;
+      assert(row.to_address === AUX_BIND, `binding fallback: ${row.to_address}`);
+    },
+  );
+
+  await check(
+    'non-landlord relay leg unchanged: the tenant leg dials its binding even though the cast holds that address',
+    async () => {
+      // The tenant IS the source sender (their address is in the cast). A
+      // tenant leg never resolves authoritatively and never suppresses —
+      // byte-identical to the pre-PR behavior.
+      const relay = await relayIntent(auxThreadId, auxTenantPartId, auxSourceIid);
+      const row = assertStatus(relay, 201, 'tenant relay intent') as OutboxShape;
+      assert(
+        row.to_address === RT2_EMAIL.toLowerCase(),
+        `tenant binding dialed: ${row.to_address}`,
+      );
+    },
+  );
 
   // --- summary ---------------------------------------------------------------
   console.info('');

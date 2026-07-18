@@ -66,6 +66,10 @@ DECLARE
     -- owner/manager/agent membership of the target account; every downstream
     -- query is account-pinned, so it is not a cross-account oracle.
     'check_outbox_party_intent',
+    -- Relay-to-landlord recipient resolution (20260723000002): self-defends on
+    -- live owner/manager/agent membership of the target account; every
+    -- downstream query is account-pinned, so it is not a cross-account oracle.
+    'resolve_relay_landlord_recipient',
     'dismiss_unmatched_inbound',
     'record_opt_out',
     'list_account_opt_outs',
