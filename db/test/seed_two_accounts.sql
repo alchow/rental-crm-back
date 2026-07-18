@@ -285,11 +285,13 @@ begin
     (v_acc_a, '+15550000001', 'twilio'),
     (v_acc_b, '+15550000002', 'twilio');
 
+  -- source is NOT NULL with no default since 20260722000002 (writers must
+  -- state provenance); the seed rows are pre-claims ground truth -> 'legacy'.
   insert into public.channel_identities (
-    account_id, party_type, party_id, channel, address
+    account_id, party_type, party_id, channel, address, source
   ) values
-    (v_acc_a, 'tenant', v_tenant_a, 'sms', '+15550001001'),
-    (v_acc_b, 'tenant', v_tenant_b, 'sms', '+15550002001');
+    (v_acc_a, 'tenant', v_tenant_a, 'sms', '+15550001001', 'legacy'),
+    (v_acc_b, 'tenant', v_tenant_b, 'sms', '+15550002001', 'legacy');
 
   v_thread_a := gen_random_uuid(); v_thread_b := gen_random_uuid();
   insert into public.comm_threads (id, account_id, kind, tenancy_id) values
