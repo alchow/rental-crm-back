@@ -443,6 +443,17 @@ jobs:
         # persona-first two-door duplicate detection; opt-out parity.
         run: pnpm --filter ./api test:comms-persona
 
+      - name: Run persona routing v2 use-case matrix (plan §7)
+        # The plan-conformance matrix for persona-email-routing-v2-plan.md §7:
+        # UC-A..UC-N as labeled checks (incident parent-first fix, Cc reply,
+        # mobile reply, cold known tenant, landlord CC, two-door dedupe,
+        # auth-fail, dual role, shared inbox, forged parent, legacy
+        # no-Message-ID parent, cross-account/queued invisibility, closed
+        # thread, frozen replay) plus Message-ID normalization / References
+        # probe / self-echo / triage-replay EDGE cases. UC-O (provider
+        # capabilities) is agent-side and lives in the transport repo.
+        run: pnpm --filter ./api test:comms-persona-usecases
+
       - name: Run comms evidence-hardening checks (EV-A/EV-B)
         # Participants cast + attestation (sender/platform/cc shapes per
         # channel, group headline = joined display names, cast insert-only

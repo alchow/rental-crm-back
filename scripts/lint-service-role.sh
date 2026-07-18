@@ -141,6 +141,14 @@ EXCLUDES=(
   #     (learned identities, the fire-and-forget system:persona_ack outbox
   #     intent + its rate cap). TEST code, never shipped.
   ':!api/test/comms-persona.test.ts'
+  #   - api/test/comms-persona-usecases.test.ts: persona routing v2 use-case
+  #     conformance matrix (same shape as comms-persona.test.ts). Assigns
+  #     process.env from supabase status and uses the admin client for
+  #     ops-tier fixtures (agent membership, claim seeds, cross-account /
+  #     thread-bound parent rows, closing a thread) and read-backs (frozen
+  #     routing decisions, triage reasons, thread tenancies). TEST code,
+  #     never shipped.
+  ':!api/test/comms-persona-usecases.test.ts'
   #   - api/test/comms-evidence.test.ts: EV-A/EV-B evidence-hardening
   #     integration test (same shape as comms.test.ts). Assigns process.env
   #     from supabase status and uses the admin client for ops-tier fixtures
