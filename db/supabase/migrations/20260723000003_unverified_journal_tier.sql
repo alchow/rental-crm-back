@@ -334,101 +334,111 @@ begin
     -- attestation='unverified' — claimed, never asserted. No learning, no
     -- ack, no relay. Everything else keeps today's triage.
     -- -------------------------------------------------------------------
-    if v_parent_match = 'unique' then
-      select * into v_parent
-        from public.comm_outbox o
-       where o.id = v_parent_id
-         and o.account_id = p_account_id;
-      -- Does the unauthenticated From at least name a PHYSICAL recipient of
-      -- the parent? (Gmail-canonical compare, same as the pass path.) Gates
-      -- whether parent context may scope the conversation below.
-      select count(*) into v_pr_matched
-        from public._comm_resolve_parent_sender(p_account_id, v_parent_id, p_from_address);
-    end if;
+    if v_parent_match = 'multiple' then
+      -- A Message-ID collision is contradictory evidence regardless of
+      -- authentication: conflict, EXACTLY like the pass path, before any
+      -- candidate resolution — the fail path must never be more permissive
+      -- than the pass path.
+      v_reason := 'identity_conflict';
+    else
+      if v_parent_match = 'unique' then
+        select * into v_parent
+          from public.comm_outbox o
+         where o.id = v_parent_id
+           and o.account_id = p_account_id;
+        -- Does the unauthenticated From at least name a PHYSICAL recipient
+        -- of the parent? (Gmail-canonical compare, same as the pass path.)
+        -- Gates whether parent context may scope the conversation below.
+        select count(*) into v_pr_matched
+          from public._comm_resolve_parent_sender(p_account_id, v_parent_id, p_from_address);
+      end if;
 
-    -- The SAME no-parent candidate resolution the pass path uses (account
-    -- scope), plus a unique parent's tier-1 thread-participant match: a
-    -- parent-named recipient is a candidate even when the address carries no
-    -- live claim (e.g. a rebound address whose learned claim was superseded).
-    select count(distinct (x.party_type, x.party_id)) into v_cand_count
-      from (
-        select c.party_type, c.party_id
-          from public._comm_resolve_persona_candidates(p_account_id, p_from_address) c
-        union
-        select s.party_type, s.party_id
-          from public._comm_resolve_parent_sender(p_account_id, v_parent_id, p_from_address) s
-         where v_parent_match = 'unique'
-           and s.tier = 'thread_participant'
-           and s.party_id is not null
-      ) x;
-
-    if v_cand_count = 1 then
-      -- The single candidate; when both arms name it, report the parent's
-      -- thread_participant tier (the stronger evidence, matching the ladder).
-      select x.party_type, x.party_id, x.source
-        into v_party_type, v_party_id, v_party_source
+      -- The SAME no-parent candidate resolution the pass path uses (account
+      -- scope), plus a unique parent's tier-1 thread-participant match: a
+      -- parent-named recipient is a candidate even when the address carries
+      -- no live claim (e.g. a rebound address whose learned claim was
+      -- superseded).
+      select count(distinct (x.party_type, x.party_id)) into v_cand_count
         from (
-          select s.party_type, s.party_id, s.tier as source, 1 as pref
+          select c.party_type, c.party_id
+            from public._comm_resolve_persona_candidates(p_account_id, p_from_address) c
+          union
+          select s.party_type, s.party_id
             from public._comm_resolve_parent_sender(p_account_id, v_parent_id, p_from_address) s
            where v_parent_match = 'unique'
              and s.tier = 'thread_participant'
              and s.party_id is not null
-          union all
-          select c.party_type, c.party_id, c.source, 2
-            from public._comm_resolve_persona_candidates(p_account_id, p_from_address) c
-        ) x
-       order by x.pref
-       limit 1;
-    end if;
+        ) x;
 
-    if v_cand_count = 1 and v_party_type in ('tenant', 'vendor') then
-      v_unverified := true;
-      v_cp_type    := v_party_type;
-      v_cp_id      := v_party_id;
-      v_cp_address := p_from_address;
-      if v_parent_match = 'unique' and v_pr_matched > 0 then
-        -- Parent context honored exactly as the matched path — its tenancy,
-        -- else its thread's — but only when the sender IS a parent recipient:
-        -- an unrelated claimed sender citing someone else's parent must not
-        -- be pulled into that conversation's scope.
-        v_ctx_tenancy := v_parent.tenancy_id;
-        if v_ctx_tenancy is null and v_parent.thread_id is not null then
-          select t.tenancy_id into v_ctx_tenancy
-            from public.comm_threads t
-           where t.account_id = p_account_id and t.id = v_parent.thread_id;
+      if v_cand_count = 1 then
+        -- The single candidate; when both arms name it, report the parent's
+        -- thread_participant tier (the stronger evidence, matching the
+        -- ladder).
+        select x.party_type, x.party_id, x.source
+          into v_party_type, v_party_id, v_party_source
+          from (
+            select s.party_type, s.party_id, s.tier as source, 1 as pref
+              from public._comm_resolve_parent_sender(p_account_id, v_parent_id, p_from_address) s
+             where v_parent_match = 'unique'
+               and s.tier = 'thread_participant'
+               and s.party_id is not null
+            union all
+            select c.party_type, c.party_id, c.source, 2
+              from public._comm_resolve_persona_candidates(p_account_id, p_from_address) c
+          ) x
+         order by x.pref
+         limit 1;
+      end if;
+
+      if v_cand_count = 1 and v_party_type in ('tenant', 'vendor') then
+        v_unverified := true;
+        v_cp_type    := v_party_type;
+        v_cp_id      := v_party_id;
+        v_cp_address := p_from_address;
+        if v_parent_match = 'unique' and v_pr_matched > 0 then
+          -- Parent context honored exactly as the matched path — its
+          -- tenancy, else its thread's — but only when the sender IS a
+          -- parent recipient: an unrelated claimed sender citing someone
+          -- else's parent must not be pulled into that conversation's scope.
+          v_ctx_tenancy := v_parent.tenancy_id;
+          if v_ctx_tenancy is null and v_parent.thread_id is not null then
+            select t.tenancy_id into v_ctx_tenancy
+              from public.comm_threads t
+             where t.account_id = p_account_id and t.id = v_parent.thread_id;
+          end if;
+          select f.thread_id, f.cp_participant_id, f.tenancy_id
+            into v_thread_id, v_part_id, v_tenancy_id
+            from public._persona_find_or_create_thread(
+              p_account_id, v_cp_type, v_cp_id, v_cp_address,
+              p_subject, p_reply_domain, null, null,
+              v_parent.thread_id, v_ctx_tenancy) f;
+        else
+          select f.thread_id, f.cp_participant_id, f.tenancy_id
+            into v_thread_id, v_part_id, v_tenancy_id
+            from public._persona_find_or_create_thread(
+              p_account_id, v_cp_type, v_cp_id, v_cp_address,
+              p_subject, p_reply_domain, null, null) f;
         end if;
-        select f.thread_id, f.cp_participant_id, f.tenancy_id
-          into v_thread_id, v_part_id, v_tenancy_id
-          from public._persona_find_or_create_thread(
-            p_account_id, v_cp_type, v_cp_id, v_cp_address,
-            p_subject, p_reply_domain, null, null,
-            v_parent.thread_id, v_ctx_tenancy) f;
+        if v_thread_id is null then
+          -- Known party but no safely selectable conversation — the same
+          -- honest triage the matched path uses.
+          v_unverified := false;
+          v_reason := 'unknown_sender';
+        end if;
+      elsif v_cand_count > 1 then
+        -- Contradictory identity evidence stays a human problem,
+        -- authenticated or not.
+        v_reason := 'identity_conflict';
+      elsif v_cand_count = 1 then
+        -- A single landlord_user claimant keeps today's behavior: triage —
+        -- never an unverified OUTBOUND-authored journal row.
+        v_reason := 'auth_failed';
       else
-        select f.thread_id, f.cp_participant_id, f.tenancy_id
-          into v_thread_id, v_part_id, v_tenancy_id
-          from public._persona_find_or_create_thread(
-            p_account_id, v_cp_type, v_cp_id, v_cp_address,
-            p_subject, p_reply_domain, null, null) f;
+        -- Nobody recognizes the address; a valid parent reference still
+        -- makes the triage reason honest.
+        v_reason := case when v_parent_match <> 'none'
+          then 'auth_failed' else 'unknown_sender' end;
       end if;
-      if v_thread_id is null then
-        -- Known party but no safely selectable conversation — the same
-        -- honest triage the matched path uses.
-        v_unverified := false;
-        v_reason := 'unknown_sender';
-      end if;
-    elsif v_cand_count > 1 then
-      -- Contradictory identity evidence stays a human problem,
-      -- authenticated or not.
-      v_reason := 'identity_conflict';
-    elsif v_cand_count = 1 then
-      -- A single landlord_user claimant keeps today's behavior: triage —
-      -- never an unverified OUTBOUND-authored journal row.
-      v_reason := 'auth_failed';
-    else
-      -- Nobody recognizes the address; a valid parent reference still makes
-      -- the triage reason honest.
-      v_reason := case when v_parent_match <> 'none'
-        then 'auth_failed' else 'unknown_sender' end;
     end if;
 
   elsif v_parent_match = 'multiple' then

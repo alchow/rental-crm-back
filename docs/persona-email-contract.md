@@ -332,6 +332,9 @@ else is 409):
   `deleted_by` / `deleted_reason` stamped, `updated_at` advances with it), so
   it disappears from every default timeline read. The `inbound_raw` receipt is
   untouched — the evidence that the mail ARRIVED survives the retraction.
+  Evidence exports keep the row but render ONLY its retraction marker
+  (attestation, who, when, reason — never the repudiated body): silent
+  omission from a legal bundle would look like spoliation.
   Retracting an already-retracted row is 409; a foreign/missing id is 404.
 - `POST /v1/accounts/{id}/interactions/{iid}/confirm-sender` (no body) — "yes,
   that really was them": flips attestation to `'attested'` (stamping

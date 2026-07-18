@@ -1546,6 +1546,45 @@ async function main(): Promise<void> {
       `no live claim minted by the unverified capture: ${JSON.stringify(rbClaims)}`);
   });
 
+  await check('v2(14) DMARC fail + parent the sender is NOT a recipient of → journaled_unverified WITHOUT the parent scope', async () => {
+    // A single-claim tenant citing someone else's parent: the receipt still
+    // journals (one candidate), but into the SENDER's own conversation — the
+    // parent's thread/tenancy must not be applied to a non-recipient.
+    const provId = `PS-pv2-np-${rnd()}`;
+    const r = assertStatus(await personaCapture({
+      provider_msg_id: provId,
+      from_address: PV2_OTHER_EMAIL,
+      body: 'unauthenticated mail citing a parent i never received',
+      rfc822_message_id: `<pv2-np-reply-${SUFFIX}@sender>`,
+      in_reply_to: pv2Parent1.msgid,
+      auth_results: AUTH_FAIL,
+    }), 200, 'non-recipient parent capture') as CaptureShape;
+    assert(r.disposition === 'journaled_unverified', `disposition: ${r.disposition}`);
+    assert(r.thread_id === pv2OtherThreadId,
+      `own thread, never the parent's (${pv2ThreadId}): ${r.thread_id}`);
+    assert(r.participant?.party_id === pv2OtherId,
+      `own claim attributed: ${JSON.stringify(r.participant)}`);
+    const { data: j } = await admin
+      .from('interactions').select('attestation, tenancy_id')
+      .eq('id', r.interaction_id!).single();
+    assert(j!.attestation === 'unverified' && j!.tenancy_id === null,
+      `parent tenancy NOT applied: ${JSON.stringify(j)}`);
+    const { data: raw } = await admin
+      .from('inbound_raw').select('payload').eq('provider_msg_id', provId).single();
+    const decision = (raw!.payload as {
+      routing_decision?: {
+        parent_match: string; parent_outbox_id: string | null;
+        selected_thread_id: string | null; selected_tenancy_id: string | null; reason: string;
+      };
+    }).routing_decision;
+    assert(decision?.parent_match === 'unique' && decision.parent_outbox_id === pv2Parent1.id,
+      `the cited parent is recorded: ${JSON.stringify(decision)}`);
+    assert(decision!.selected_thread_id === pv2OtherThreadId
+      && decision!.selected_tenancy_id === null
+      && decision!.reason === 'unverified_single_claim',
+      `…but its scope was not applied: ${JSON.stringify(decision)}`);
+  });
+
   // =========================================================================
   // (7c) Conflict-aware identity claims (persona routing v2, PR 2 — plan §9.2)
   // =========================================================================
