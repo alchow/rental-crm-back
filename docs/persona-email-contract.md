@@ -90,12 +90,14 @@ phases.
   response enum the agent AJV-validates (e.g. `cc_relayed`) ships agent-first
   — see the amendment above.
 
-## Relay legs to a landlord are notifications
+## Relay legs to a landlord rebuild the group thread
 
-The visible Cc is the DIY landlord's primary conversation surface; the relay
-leg of a tenant-initiated mail is a mere notification. Two consequences on
-`POST …/comms/outbox` for an EMAIL relay leg (`relay_of_interaction_id` set)
-whose target participant is a `landlord_user`:
+The relay leg of a tenant/vendor-initiated mail delivers the message to the
+landlord AND rebuilds the group so the landlord can reply-all — the mirror of
+the `cc_relayed` delivery shape (next section), and consistent with the
+original inspection welcome, which already sends `To: tenant, Cc: landlord`.
+Three consequences on `POST …/comms/outbox` for an EMAIL relay leg
+(`relay_of_interaction_id` set) whose target participant is a `landlord_user`:
 
 - **Authoritative recipient.** The leg dials the account's owner/manager
   email for that participant's user (auth.users via account_members —
@@ -105,6 +107,15 @@ whose target participant is a `landlord_user`:
   their own message back). The binding / explicit `to_address` is only the
   fallback when no authoritative email exists. The chosen address freezes at
   intent time exactly as before.
+- **Author Cc (group rebuild).** When the relayed interaction is a
+  tenant/vendor-authored inbound, the author's real address (the source
+  interaction's `role='sender'` cast address, which capture froze from the
+  verified From) is added as a visible Cc, server-derived exactly like the
+  `cc_relayed` arm. The landlord's next reply-all then reaches the author
+  directly, so the conversation is a self-sustaining group thread rather than a
+  per-hop relay treadmill. Best-effort: an unresolvable/malformed author
+  address is dropped, never blocks the leg; the opt-out trigger scrubs a
+  registered Cc at INSERT.
 - **CC-overlap suppression.** When the relayed interaction's cast already
   contains the resolved address (exact lowercase compare — a different
   spelling of the same mailbox does NOT suppress the leg), the
@@ -112,8 +123,12 @@ whose target participant is a `landlord_user`:
   reply-all. The intent is refused with 409
   `error.code='relay_already_delivered'` and NO row is created. The transport
   must treat this as "already satisfied", never as a retryable failure. An
-  aliased Cc reads as absent, so the notification leg goes out anyway: a
-  repeat beats a black hole.
+  aliased Cc reads as absent, so the leg goes out anyway: a
+  repeat beats a black hole. This is what makes the group topology loop-safe:
+  once both parties are on the thread, each reply-all reaches the other
+  directly and the persona relay becomes a no-op (a tenant reply-all carrying
+  the landlord hits this 409; a landlord reply-all carrying the tenant lands
+  `cc_journaled`).
 
 Sms relays and all non-relay sends are byte-identical. A tenant/vendor-target
 relay leg is byte-identical too UNLESS it delivers a landlord's persona reply

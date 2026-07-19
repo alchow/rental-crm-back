@@ -1363,12 +1363,14 @@ async function main(): Promise<void> {
     assert(cleanupError === null, `opt-out cleanup: ${cleanupError}`);
   });
 
-  await check('v2(2h) ordinary matched relay: read/claim carry the msgid but NO via-From label', async () => {
+  await check('v2(2h) ordinary matched relay: msgid + author Cc (group rebuild), NO via-From label', async () => {
     // The "«label» via «persona»" From is exclusively the cc_relayed
     // delivery shape. An ordinary matched relay (tenant inbound -> landlord
     // notification leg) already leads with the "«label» wrote:" body
     // attribution — its rows must carry the threading Message-ID but a NULL
     // sender label, or the transport would double-attribute the author.
+    // It DOES, however, Cc the tenant author's real address (group rebuild,
+    // mirror of the cc_relayed arm) so the landlord can reply-all to the tenant.
     const d = assertStatus(
       await api('GET', `${base}/threads/${t1ThreadId}`, { token: landlordToken }),
       200, 't1 thread read',
@@ -1398,6 +1400,14 @@ async function main(): Promise<void> {
       `msgid still derives for ordinary relays: ${read.relay_source_rfc822_message_id}`);
     assert('relay_source_sender_label' in read && read.relay_source_sender_label === null,
       `no via-From label on an ordinary relay: ${read.relay_source_sender_label}`);
+    // Group rebuild: the tenant author (source inbound's sender-cast address,
+    // frozen from the verified From = T1_EMAIL lowercased) rides the visible Cc.
+    assert(
+      Array.isArray(read.cc_addresses)
+        && read.cc_addresses.length === 1
+        && read.cc_addresses[0] === T1_EMAIL.toLowerCase(),
+      `matched relay Cc's the tenant author for reply-all: ${JSON.stringify(read.cc_addresses)}`,
+    );
 
     const claim = assertStatus(
       await api('POST', `${base}/outbox/${leg.id}/delivery`, {

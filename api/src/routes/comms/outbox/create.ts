@@ -670,6 +670,59 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
         }
       }
 
+      // Matched relay group rebuild (the mirror of the cc_relayed delivery
+      // shape above): a relay leg that DELIVERS a tenant/vendor-authored inbound
+      // to the LANDLORD notification leg carries the AUTHOR's real address as a
+      // visible Cc, derived here server-side. This makes the tenant->landlord
+      // direction reply-all capable, matching the landlord->tenant direction and
+      // the original inspection welcome (which already sends To: tenant,
+      // Cc: landlord). Without it the relay is a single-recipient notification,
+      // so the landlord can only reply to the persona and the system must relay
+      // every hop one-by-one; with the author on Cc the landlord's next
+      // reply-all reaches the tenant directly and the conversation is a
+      // self-sustaining group thread. The author address is the source inbound's
+      // sender-cast address (capture froze it from the verified From). No loop:
+      // the landlord's reply-all carries the tenant on To/Cc, so its persona
+      // capture splits to cc_journaled (relay nothing); and a tenant reply-all
+      // that already carries the landlord is refused upstream by the
+      // isLandlordEmailRelay already_delivered 409. Best-effort by design: an
+      // unresolvable/malformed author address is DROPPED, never blocks the
+      // relay; the opt-out trigger scrubs a registered Cc at INSERT and the
+      // snapshot trigger freezes whatever survives.
+      if (isLandlordEmailRelay) {
+        const { data: relaySource, error: relSrcErr } = await sb
+          .from('interactions')
+          .select('author_type, direction')
+          .eq('account_id', accountId)
+          .eq('id', body.relay_of_interaction_id!)
+          .maybeSingle();
+        if (relSrcErr) throw commDbError(relSrcErr);
+        if (
+          relaySource !== null &&
+          relaySource.direction === 'inbound' &&
+          (relaySource.author_type === 'tenant' || relaySource.author_type === 'vendor')
+        ) {
+          const { data: authorCast, error: authorErr } = await sb
+            .from('interaction_participants')
+            .select('address')
+            .eq('account_id', accountId)
+            .eq('interaction_id', body.relay_of_interaction_id!)
+            .eq('role', 'sender')
+            .limit(1)
+            .maybeSingle();
+          if (authorErr) throw commDbError(authorErr);
+          const authorAddr = (authorCast?.address as string | null)?.toLowerCase() ?? null;
+          if (
+            authorAddr !== null &&
+            authorAddr !== toAddress &&
+            authorAddr.length <= 320 &&
+            /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(authorAddr)
+          ) {
+            ccAddresses = [...new Set([...(ccAddresses ?? []), authorAddr])].slice(0, 10);
+          }
+        }
+      }
+
       // Landlord CC arm (BARE arm): an explicit caller-supplied Cc on a
       // thread-less email send (the inspection-link welcome/reminder mail).
       // Unlike the thread arm's stored bindings above, this list is
