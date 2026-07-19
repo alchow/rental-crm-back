@@ -30,6 +30,14 @@ export function registerThreadCreateRoute(app: CommsApp): void {
       'counterparty participant is bound to one of the account’s platform ' +
       'numbers; a counterparty may hold only one active thread per platform ' +
       'number.',
+    description:
+      'An EMAIL thread is a conversational surface: it requires the account to ' +
+      'have configured email branding. When the platform parent domain is set ' +
+      'but the account carries no branded subdomain, creation is refused 422 ' +
+      "error.code=invalid_request, message 'email branding is not configured' " +
+      '(same stable message as the outbox send gate). A 503 is returned only in ' +
+      'the platform-env-missing case (no receiving domain configured anywhere). ' +
+      'Non-email (sms/group) threads are unaffected.',
     request: {
       params: AccountParam,
       body: { content: { 'application/json': { schema: CreateThreadBody } }, required: true },
@@ -86,11 +94,21 @@ export function registerThreadCreateRoute(app: CommsApp): void {
     const senderDisplayName = (account?.sender_display_name ?? null) as string | null;
 
     // Email threads mint a UNIQUE tokenized reply address per participant under a
-    // receiving domain. Prefer the account's branded subdomain
-    // (`<subdomain>.<EMAIL_PLATFORM_PARENT_DOMAIN>`) when both are configured;
-    // otherwise fall back to the shared EMAIL_REPLY_DOMAIN. With NO resolvable
-    // domain at all there is nowhere for replies to land, so refuse up front
-    // (retryable once ops configures one).
+    // receiving domain, resolved by a strict W1 ladder (no CONVERSATIONAL email
+    // without branding):
+    //   1. Branded account (subdomain + platform parent both set) → mint under
+    //      `<subdomain>.<EMAIL_PLATFORM_PARENT_DOMAIN>`.
+    //   2. Platform parent configured but this account is unbranded → 422 hard
+    //      gate with the SAME stable message the bare/thread-leg outbox gate
+    //      keys on. An email thread here would mint on a shared domain and
+    //      dispatch From the platform noreply@ — a conversation nobody can
+    //      answer. Refuse, so the frontend routes the owner into branding setup.
+    //   3. Platform parent NOT configured at all (platform-env-missing) →
+    //      branding does not exist as a feature; fall back to the shared
+    //      EMAIL_REPLY_DOMAIN rather than brick email.
+    //   4. Nothing configured anywhere → 503, nowhere for replies to land
+    //      (retryable once ops configures a domain).
+    // Non-email threads never enter this block.
     let domain: string | null = null;
     if (isEmail) {
       const env = loadEnv();
@@ -98,15 +116,19 @@ export function registerThreadCreateRoute(app: CommsApp): void {
         (account?.email_subdomain ?? null) as string | null,
         env.EMAIL_PLATFORM_PARENT_DOMAIN,
       );
-      const resolved = branded ?? env.EMAIL_REPLY_DOMAIN;
-      if (resolved === null) {
+      if (branded !== null) {
+        domain = branded.toLowerCase();
+      } else if (env.EMAIL_PLATFORM_PARENT_DOMAIN !== null) {
+        throw new ApiError(422, 'invalid_request', 'email branding is not configured');
+      } else if (env.EMAIL_REPLY_DOMAIN !== null) {
+        domain = env.EMAIL_REPLY_DOMAIN.toLowerCase();
+      } else {
         throw new ApiError(
           503,
           'service_unavailable',
           'email threads are not configured (no branded subdomain and EMAIL_REPLY_DOMAIN unset)',
         );
       }
-      domain = resolved.toLowerCase();
     }
 
     const mode = body.mode;
