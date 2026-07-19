@@ -32,9 +32,13 @@ export function hashCaptureSecret(secret: string): Buffer {
 }
 
 /**
- * Origin of the frontend that serves the /capture/<secret> page. Declared as
- * APP_BASE_URL (api/src/env.ts) rather than read raw, so it is covered by the
- * env schema and the render-env drift gate.
+ * Origin of the frontend that serves the tenant condition-form page. Declared
+ * as APP_BASE_URL (api/src/env.ts) rather than read raw, so it is covered by
+ * the env schema and the render-env drift gate.
+ *
+ * "capture" here is the DOMAIN concept (capture tokens, capture form, this
+ * module) -- the frontend serves it at /inventory/<secret>, not /capture. See
+ * CAPTURE_LINK_PATH below.
  *
  * The 'https://app.example' fallback keeps dev/CI/test booting without the
  * var, but it is a dead host: any renewal email built off it ships a link the
@@ -50,6 +54,16 @@ function captureBaseUrl(): string {
   );
   return 'https://app.example';
 }
+
+// Frontend route that renders the tenant condition form, as a path prefix.
+// CROSS-REPO COUPLING: this must track the frontend's unauthenticated route
+// (src/routes/inventory.$secret.tsx) and the app's own share-link builder
+// (InspectionShare.tsx, which mints `${origin}/inventory/${secret}`). It is
+// NOT the frontend's /capture route -- that one lives inside the authenticated
+// _app shell, takes no secret path param, and is the landlord's quick-capture
+// note flow. A mismatch here 404s the tenant while every ledger row still
+// reads healthy, so it is spelled out once, here, rather than inlined.
+const CAPTURE_LINK_PATH = '/inventory';
 
 export interface CaptureTokenRow {
   id: string;
@@ -286,7 +300,7 @@ export async function requestCaptureRenewal(args: { secret: string }): Promise<v
       tenantId: tok.tenant_id as string,
       ttlMinutes: DEFAULT_CAPTURE_TTL_MIN,
     });
-    const link = `${captureBaseUrl()}/capture/${minted.secret}`;
+    const link = `${captureBaseUrl()}${CAPTURE_LINK_PATH}/${minted.secret}`;
     const subjectLine = 'Your condition form link';
     const text =
       `Here is a fresh link to complete your move-in/move-out condition form:\n\n${link}\n\n` +

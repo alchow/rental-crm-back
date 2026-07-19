@@ -497,7 +497,21 @@ async function main(): Promise<void> {
     assert(row!.to_address === RENEWAL_EMAIL.toLowerCase(), `to_address: ${String(row!.to_address)}`);
     assert(row!.author_type === 'system', `author_type: ${String(row!.author_type)}`);
     assert(row!.subject === 'Your condition form link', `subject: ${String(row!.subject)}`);
-    assert(String(row!.body).includes('/capture/'), `body missing /capture/: ${String(row!.body).slice(0, 120)}`);
+    // Pin the EXACT link shape, not merely "the body contains a link". The
+    // tenant condition form is served by the frontend at /inventory/<secret>
+    // (src/routes/inventory.$secret.tsx; the app's own share builder mints the
+    // same path). This shipped as /capture/<secret>, which matches no route and
+    // 404s the tenant -- while the 202, the ledger row, and every other
+    // assertion here stayed green. Only an assertion on the PATH catches that.
+    // Origin-agnostic on purpose: the base is APP_BASE_URL's business, the path
+    // is this flow's.
+    const bodyLink = /https?:\/\/\S+/.exec(String(row!.body))?.[0] ?? '';
+    assert(bodyLink !== '', `no link in renewal body: ${String(row!.body).slice(0, 120)}`);
+    const linkPath = new URL(bodyLink).pathname;
+    assert(
+      /^\/inventory\/[A-Za-z0-9_-]{20,}$/.test(linkPath),
+      `renewal link path: ${linkPath} (expected /inventory/<secret>)`,
+    );
     assert(row!.status === 'queued', `status: ${String(row!.status)}`);
     // The renewal path copies the inspection's tenancy onto the journal-context
     // field unconditionally, and the fixture's inspection carries one.

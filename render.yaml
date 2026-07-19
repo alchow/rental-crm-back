@@ -46,7 +46,7 @@ services:
         sync: false
       # Public origin of the FRONTEND app -- the host that serves the tenant
       # condition-form page core links to in renewal email
-      # (/capture/<secret>). This is the frontend origin, NOT this API's URL;
+      # (/inventory/<secret>). This is the frontend origin, NOT this API's URL;
       # in production it is the same origin configured in
       # CORS_ALLOWED_ORIGINS. Unset -> links fall back to a dead
       # https://app.example host (logged as a warning) and no tenant can open

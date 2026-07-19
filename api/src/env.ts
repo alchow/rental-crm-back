@@ -77,8 +77,8 @@ const RawEnvSchema = z.object({
   // Public origin of the FRONTEND app, used to build links core emails to
   // people who are not logged in -- today the tenant condition-form capture
   // link (admin/inspection-capture.ts). Not an API-side URL: it must be the
-  // host that actually serves the /capture/<secret> page, which in production
-  // is the same origin listed in CORS_ALLOWED_ORIGINS.
+  // host that actually serves the /inventory/<secret> page, which in
+  // production is the same origin listed in CORS_ALLOWED_ORIGINS.
   //
   // Optional so dev/CI/test still boot without it, but a link built off the
   // fallback goes nowhere -- the consumer logs a warning when it falls back,
