@@ -4,7 +4,6 @@ import { loadEnv } from '../env';
 import { getLogger } from '../log';
 import { asJson, nullableRpcArg } from '../supabase/db-types';
 import { getAdminClient } from './supabase-admin';
-import { getMailer } from './mailer';
 import type { StoragePutResult } from './storage';
 
 // ============================================================================
@@ -32,10 +31,39 @@ export function hashCaptureSecret(secret: string): Buffer {
   return createHash('sha256').update(secret, 'utf8').digest();
 }
 
+/**
+ * Origin of the frontend that serves the tenant condition-form page. Declared
+ * as APP_BASE_URL (api/src/env.ts) rather than read raw, so it is covered by
+ * the env schema and the render-env drift gate.
+ *
+ * "capture" here is the DOMAIN concept (capture tokens, capture form, this
+ * module) -- the frontend serves it at /inventory/<secret>, not /capture. See
+ * CAPTURE_LINK_PATH below.
+ *
+ * The 'https://app.example' fallback keeps dev/CI/test booting without the
+ * var, but it is a dead host: any renewal email built off it ships a link the
+ * tenant cannot open. That failure is invisible from the outside -- the route
+ * still 202s, the ledger row still looks healthy -- so warn loudly rather than
+ * fall back in silence.
+ */
 function captureBaseUrl(): string {
-  // Frontend capture page base. Stub-friendly default; set APP_BASE_URL in prod.
-  return process.env.APP_BASE_URL ?? 'https://app.example';
+  const configured = loadEnv().APP_BASE_URL;
+  if (configured) return configured.replace(/\/+$/, '');
+  getLogger().warn(
+    '[capture-renewal] APP_BASE_URL is unset; renewal links fall back to https://app.example and will NOT resolve',
+  );
+  return 'https://app.example';
 }
+
+// Frontend route that renders the tenant condition form, as a path prefix.
+// CROSS-REPO COUPLING: this must track the frontend's unauthenticated route
+// (src/routes/inventory.$secret.tsx) and the app's own share-link builder
+// (InspectionShare.tsx, which mints `${origin}/inventory/${secret}`). It is
+// NOT the frontend's /capture route -- that one lives inside the authenticated
+// _app shell, takes no secret path param, and is the landlord's quick-capture
+// note flow. A mismatch here 404s the tenant while every ledger row still
+// reads healthy, so it is spelled out once, here, rather than inlined.
+const CAPTURE_LINK_PATH = '/inventory';
 
 export interface CaptureTokenRow {
   id: string;
@@ -226,8 +254,8 @@ export async function loadCaptureForm(token: CaptureTokenRow): Promise<{
  * (anti-enumeration): always resolves. Finds the token even if EXPIRED (so a
  * tenant holding only the dead link can renew), mints a fresh one, and sends
  * it ONLY to the tenant's on-file email -- never to a requester-supplied
- * address. The Mailer send is best-effort and is NOT awaited, so neither a
- * provider failure nor its latency can change the uniform 202 response.
+ * address. The comm_outbox write is best-effort and is NOT awaited, so neither
+ * a ledger/DB failure nor its latency can change the uniform 202 response.
  */
 export async function requestCaptureRenewal(args: { secret: string }): Promise<void> {
   const admin = getAdminClient();
@@ -259,10 +287,11 @@ export async function requestCaptureRenewal(args: { secret: string }): Promise<v
   //   1. mintCaptureTokenAdmin throws ApiError(500) on a DB failure; left
   //      uncaught it would surface as a 500 that signals "valid token +
   //      deliverable contact". Wrap it so the response stays a uniform 202.
-  //   2. Awaiting the Mailer (a real provider makes a remote HTTP round-trip)
-  //      would turn the 202's latency into a timing oracle for that same fact.
-  //      Fire the send without awaiting so response time is independent of
-  //      outcome. Render runs a persistent process, so the send still completes.
+  //   2. Writing the comm_outbox ledger row is a DB round-trip; awaiting it
+  //      would fold its latency into the 202 and make response time a timing
+  //      oracle for that same fact. Fire the write without awaiting so response
+  //      time is independent of outcome. Render runs a persistent process, so
+  //      the write still completes.
   // Both failures are logged for diagnosis; the tenant can retry the renewal.
   try {
     const minted = await mintCaptureTokenAdmin({
@@ -271,60 +300,52 @@ export async function requestCaptureRenewal(args: { secret: string }): Promise<v
       tenantId: tok.tenant_id as string,
       ttlMinutes: DEFAULT_CAPTURE_TTL_MIN,
     });
-    const link = `${captureBaseUrl()}/capture/${minted.secret}`;
+    const link = `${captureBaseUrl()}${CAPTURE_LINK_PATH}/${minted.secret}`;
     const subjectLine = 'Your condition form link';
     const text =
       `Here is a fresh link to complete your move-in/move-out condition form:\n\n${link}\n\n` +
       `It expires in ${Math.round(DEFAULT_CAPTURE_TTL_MIN / 60 / 24)} days.`;
 
-    if (loadEnv().COMMS_EMAIL_PIPELINE) {
-      // Cutover path: core writes its OWN comm_outbox ledger row instead of
-      // calling a provider. Core writing its own ledger is NOT "core sends" —
-      // the transport still makes the provider call off this outbox row.
-      // approval_ref='system:capture_renewal' is the honest provenance for a
-      // fixed server flow (no human approved this specific message, no standing
-      // grant covers it), and this row is this flow's FIRST journal record ever.
-      // Fire-and-forget (not awaited), exactly like the legacy mailer call, so
-      // the anti-enumeration contract holds: uniform 202, no provider/DB latency
-      // folded into the response. Never throws out of the void block.
-      void (async () => {
-        const { data: insp } = await admin
-          .from('inspections')
-          .select('tenancy_id')
-          .eq('account_id', tok.account_id)
-          .eq('id', tok.inspection_id)
-          .maybeSingle();
-        const { error } = await admin.from('comm_outbox').insert({
-          account_id: tok.account_id,
-          channel: 'email',
-          to_address: email.trim().toLowerCase(),
-          subject: subjectLine,
-          body: text,
-          approval_ref: 'system:capture_renewal',
-          author_type: 'system',
-          tenancy_id: (insp?.tenancy_id as string | null) ?? null,
-        });
-        if (error) {
-          // P0004 = destination on the opt-out register: the send was refused
-          // before any intent recorded. Expected, compliant behavior — not an
-          // error; log at info so it's visible but doesn't page.
-          if (error.code === 'P0004') {
-            getLogger().info('[capture-renewal] outbox intent suppressed by opt-out (compliant)');
-          } else {
-            getLogger().error(`[capture-renewal] outbox insert failed: ${error.message}`);
-          }
-        }
-      })().catch((err) => {
-        getLogger().error(`[capture-renewal] outbox write failed: ${String(err)}`);
+    // Core-originated transactional send: core mints the outbox INTENT, the
+    // transport makes the provider call off this row. Core never dials.
+    // approval_ref='system:capture_renewal' / author_type='system' is the
+    // honest provenance for a fixed server flow — no human approved this
+    // specific message and no standing grant covers it. (Same shape as the
+    // persona-ack flow; see admin/persona-ack.ts.)
+    //
+    // Fire-and-forget (not awaited) so the anti-enumeration contract holds:
+    // uniform 202, no DB latency folded into the response. Never throws out of
+    // the void block.
+    void (async () => {
+      const { data: insp } = await admin
+        .from('inspections')
+        .select('tenancy_id')
+        .eq('account_id', tok.account_id)
+        .eq('id', tok.inspection_id)
+        .maybeSingle();
+      const { error } = await admin.from('comm_outbox').insert({
+        account_id: tok.account_id,
+        channel: 'email',
+        to_address: email.trim().toLowerCase(),
+        subject: subjectLine,
+        body: text,
+        approval_ref: 'system:capture_renewal',
+        author_type: 'system',
+        tenancy_id: (insp?.tenancy_id as string | null) ?? null,
       });
-    } else {
-      // Legacy path (mailer sends directly), unchanged: same non-awaited send.
-      void getMailer()
-        .send({ to: email, subject: subjectLine, text })
-        .catch((err) => {
-          getLogger().error(`[capture-renewal] email send failed: ${String(err)}`);
-        });
-    }
+      if (error) {
+        // P0004 = destination on the opt-out register: the send was refused
+        // before any intent recorded. Expected, compliant behavior — not an
+        // error; log at info so it's visible but doesn't page.
+        if (error.code === 'P0004') {
+          getLogger().info('[capture-renewal] outbox intent suppressed by opt-out (compliant)');
+        } else {
+          getLogger().error(`[capture-renewal] outbox insert failed: ${error.message}`);
+        }
+      }
+    })().catch((err) => {
+      getLogger().error(`[capture-renewal] outbox write failed: ${String(err)}`);
+    });
   } catch (err) {
     getLogger().error(`[capture-renewal] renewal failed: ${String(err)}`);
   }

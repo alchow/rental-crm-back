@@ -17,10 +17,10 @@
 //     GET registers + returns the confirmation page, POST replay is idempotent,
 //     tampered / garbage tokens 404.
 //   * dispatch-scan channel filter: ?channel=email|sms partitions the queue.
-//   * the inspection-capture renewal-email cutover (COMMS_EMAIL_PIPELINE=on):
-//     the renewal writes a system:capture_renewal email intent to the tenant's
-//     on-file address, and an opt-out on that address suppresses the write
-//     (logged, not thrown) while the route stays a uniform 202.
+//   * the inspection-capture renewal email (rides the comms ledger
+//     unconditionally): the renewal writes a system:capture_renewal email intent
+//     to the tenant's on-file address, and an opt-out on that address suppresses
+//     the write (logged, not thrown) while the route stays a uniform 202.
 // ----------------------------------------------------------------------------
 
 import { execSync } from 'node:child_process';
@@ -61,14 +61,12 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = status.SERVICE_ROLE_KEY;
 process.env.SUPABASE_JWKS_URL = `${status.API_URL}/auth/v1/.well-known/jwks.json`;
 process.env.SUPABASE_JWT_ISSUER = `${status.API_URL}/auth/v1`;
 process.env.SUPABASE_JWT_AUDIENCE = 'authenticated';
-// E1-A: the HMAC unsubscribe secret (mint + verify must share it) and the
-// renewal-email cutover flag must be set at BOOT, before the env/app modules
-// snapshot them.
+// E1-A: the HMAC unsubscribe secret (mint + verify must share it) must be set
+// at BOOT, before the env/app modules snapshot it.
 // Deliberately repetitive (low-entropy) so the gitleaks pre-commit scan
 // never mistakes this test-only value for a real credential.
 const UNSUB_SECRET = 'test-secret-test-secret-test-secret-test';
 process.env.UNSUBSCRIBE_HMAC_SECRET = UNSUB_SECRET;
-process.env.COMMS_EMAIL_PIPELINE = 'on';
 
 const { _resetAdminClientForTests, getAdminClient } = await import('../src/admin/supabase-admin');
 _resetAdminClientForTests();
@@ -89,7 +87,7 @@ _resetEnvCacheForTests();
 const { _resetJwksCacheForTests } = await import('../src/middleware/auth');
 _resetJwksCacheForTests();
 const { buildApp } = await import('../src/app');
-// Exported by the renewal cutover so tests can mint a fresh capture token
+// Exported by the renewal flow so tests can mint a fresh capture token
 // directly (service-tier), the same call the renewal path uses internally.
 const { mintCaptureTokenAdmin } = await import('../src/admin/inspection-capture');
 
@@ -209,7 +207,7 @@ const EMAIL_A = `send-a-${SUFFIX}@e1.test`;      // subject/complete-cycle recip
 const EMAIL_B = `unsub-b-${SUFFIX}@e1.test`;     // one-click POST unsubscribe target
 const EMAIL_C = `unsub-c-${SUFFIX}@e1.test`;     // GET-page unsubscribe target
 const EMAIL_D = `scan-d-${SUFFIX}@e1.test`;      // dispatch-scan email row
-const RENEWAL_EMAIL = `renew-${SUFFIX}@e1.test`; // renewal cutover recipient
+const RENEWAL_EMAIL = `renew-${SUFFIX}@e1.test`; // renewal-email recipient
 const RENEWAL_EMAIL2 = `renew2-${SUFFIX}@e1.test`; // opt-out-suppressed recipient
 const SMS_PHONE = `+1914${SUFFIX}`;              // dispatch-scan sms row
 const PLATFORM = `+1912${SUFFIX}`;
@@ -462,7 +460,7 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
-  // (F) renewal-email cutover (COMMS_EMAIL_PIPELINE=on)
+  // (F) renewal email rides the comms ledger (unconditional)
   // =========================================================================
   // A capture token needs a live inspection tied to the tenancy. move_in
   // requires a tenancy_id and the inspection area to match the tenancy unit.
@@ -499,13 +497,27 @@ async function main(): Promise<void> {
     assert(row!.to_address === RENEWAL_EMAIL.toLowerCase(), `to_address: ${String(row!.to_address)}`);
     assert(row!.author_type === 'system', `author_type: ${String(row!.author_type)}`);
     assert(row!.subject === 'Your condition form link', `subject: ${String(row!.subject)}`);
-    assert(String(row!.body).includes('/capture/'), `body missing /capture/: ${String(row!.body).slice(0, 120)}`);
-    assert(row!.status === 'queued', `status: ${String(row!.status)}`);
-    // The cutover MAY copy the inspection's tenancy onto the journal-context
-    // field; if it doesn't, the field is null. Accept either (see notes).
+    // Pin the EXACT link shape, not merely "the body contains a link". The
+    // tenant condition form is served by the frontend at /inventory/<secret>
+    // (src/routes/inventory.$secret.tsx; the app's own share builder mints the
+    // same path). This shipped as /capture/<secret>, which matches no route and
+    // 404s the tenant -- while the 202, the ledger row, and every other
+    // assertion here stayed green. Only an assertion on the PATH catches that.
+    // Origin-agnostic on purpose: the base is APP_BASE_URL's business, the path
+    // is this flow's.
+    const bodyLink = /https?:\/\/\S+/.exec(String(row!.body))?.[0] ?? '';
+    assert(bodyLink !== '', `no link in renewal body: ${String(row!.body).slice(0, 120)}`);
+    const linkPath = new URL(bodyLink).pathname;
     assert(
-      row!.tenancy_id === fx.tenancyId || row!.tenancy_id === null,
-      `tenancy_id: ${String(row!.tenancy_id)} (expected ${fx.tenancyId} or null)`,
+      /^\/inventory\/[A-Za-z0-9_-]{20,}$/.test(linkPath),
+      `renewal link path: ${linkPath} (expected /inventory/<secret>)`,
+    );
+    assert(row!.status === 'queued', `status: ${String(row!.status)}`);
+    // The renewal path copies the inspection's tenancy onto the journal-context
+    // field unconditionally, and the fixture's inspection carries one.
+    assert(
+      row!.tenancy_id === fx.tenancyId,
+      `tenancy_id: ${String(row!.tenancy_id)} (expected ${fx.tenancyId})`,
     );
   });
 
@@ -515,6 +527,19 @@ async function main(): Promise<void> {
     assertStatus(oo, 200, 'opt-out RENEWAL_EMAIL2');
     const { error } = await admin.from('tenants').update({ emails: [RENEWAL_EMAIL2] }).eq('id', fx.tenant2Id);
     if (error) throw new Error(`set tenant2 email: ${error.message}`);
+
+    // Pin the MECHANISM, not just the absence of a row: a zero-row assertion
+    // alone passes for any unrelated early return (no tenant, no email, dead
+    // token). Prove the two preconditions hold first, so the only remaining
+    // explanation for zero rows is the P0004 opt-out refusal.
+    const { data: optOut } = await admin.from('comm_opt_outs')
+      .select('address').eq('channel', 'email').eq('address', RENEWAL_EMAIL2.toLowerCase()).maybeSingle();
+    assert(optOut != null, `no comm_opt_outs row for ${RENEWAL_EMAIL2.toLowerCase()}`);
+    const { data: tenant2 } = await admin.from('tenants').select('emails').eq('id', fx.tenant2Id).maybeSingle();
+    assert(
+      JSON.stringify(tenant2?.emails) === JSON.stringify([RENEWAL_EMAIL2]),
+      `tenant2 emails: ${JSON.stringify(tenant2?.emails)} (expected ["${RENEWAL_EMAIL2}"])`,
+    );
 
     const minted = await mintCaptureTokenAdmin({
       accountId: fx.accountId, inspectionId, tenantId: fx.tenant2Id, ttlMinutes: 60,

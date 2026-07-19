@@ -21,12 +21,13 @@ const REQUIRED_WEB_KEYS = [
   'SUPABASE_SERVICE_ROLE_KEY',
   'SUPABASE_DB_URL',
   'ANTHROPIC_API_KEY',
-  'RESEND_API_KEY',
-  'MAIL_FROM',
   'UNSUBSCRIBE_HMAC_SECRET',
   'EMAIL_REPLY_DOMAIN',
   'EMAIL_PLATFORM_PARENT_DOMAIN',
-  'COMMS_EMAIL_PIPELINE',
+  // Schema-optional, but production-required: the frontend origin used to build
+  // tenant condition-form capture links. Unset in prod = every renewal email
+  // ships a dead https://app.example link, silently.
+  'APP_BASE_URL',
 ];
 
 const text = readFileSync(RENDER, 'utf8');
