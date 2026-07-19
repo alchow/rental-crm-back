@@ -17674,6 +17674,7 @@ export interface components {
             provider_sid: string | null;
             rfc822_message_id?: string | null;
             relay_source_rfc822_message_id?: string | null;
+            relay_source_sender_label?: string | null;
             client_ref: string;
             approval_ref: string;
             /** Format: uuid */

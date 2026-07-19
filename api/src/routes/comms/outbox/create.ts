@@ -589,6 +589,87 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
         }
       }
 
+      // cc_relayed delivery shape (PRODUCT DECISION 2026-07-18; contract doc
+      // "The cc_relayed delivery shape"): a relay leg that DELIVERS a
+      // landlord's persona reply — the source journal row is the capture cc
+      // arm's landlord-authored outbound (actor 'system:comm-persona-cc') —
+      // to a tenant/vendor carries the landlord's AUTHORITATIVE email as a
+      // visible Cc, derived here server-side (the transport stays thin and a
+      // thread leg still accepts no caller Cc). Every delivery then REBUILDS
+      // the group thread: the counterparty's next reply-all includes the
+      // landlord directly (self-healing topology, converging on the
+      // visible-CC model), and the landlord's copy doubles as a delivery
+      // receipt. Resolution reuses resolve_relay_landlord_recipient
+      // (authoritative owner/manager email; sender-cast address fallback).
+      // Its already_delivered verdict is deliberately IGNORED: the landlord
+      // is the AUTHOR of this mail — their address in the source cast is the
+      // sender leg, not evidence of a delivered copy, and the Cc is a
+      // deliberate receipt. No loop: the counterparty's reply-all carries
+      // the landlord on To/Cc, so its persona capture splits to cc_journaled
+      // (relay nothing). Best-effort by design: an unresolvable Cc never
+      // blocks the delivery (the black hole is the failure mode this arm
+      // exists to prevent); the opt-out trigger scrubs a registered Cc at
+      // INSERT and the snapshot trigger freezes whatever survives.
+      if (
+        body.channel === 'email' &&
+        body.thread_id !== undefined &&
+        body.relay_of_interaction_id !== undefined &&
+        participant !== null &&
+        (participant.party_type === 'tenant' || participant.party_type === 'vendor')
+      ) {
+        const { data: sourceRow, error: srcErr } = await sb
+          .from('interactions')
+          .select('actor, author_type, direction')
+          .eq('account_id', accountId)
+          .eq('id', body.relay_of_interaction_id)
+          .maybeSingle();
+        if (srcErr) throw commDbError(srcErr);
+        if (
+          sourceRow !== null &&
+          sourceRow.actor === 'system:comm-persona-cc' &&
+          sourceRow.direction === 'outbound' &&
+          sourceRow.author_type === 'landlord'
+        ) {
+          const { data: senderCast, error: castErr } = await sb
+            .from('interaction_participants')
+            .select('party_id, address')
+            .eq('account_id', accountId)
+            .eq('interaction_id', body.relay_of_interaction_id)
+            .eq('role', 'sender')
+            .eq('party_type', 'landlord_user')
+            .limit(1)
+            .maybeSingle();
+          if (castErr) throw commDbError(castErr);
+          let landlordCc: string | null = null;
+          if (senderCast?.party_id != null) {
+            const { data: rec, error: recErr } = await sb.rpc(
+              'resolve_relay_landlord_recipient',
+              {
+                p_account_id: accountId,
+                p_user_id: senderCast.party_id as string,
+                p_source_interaction_id: body.relay_of_interaction_id,
+                p_fallback_address: nullableRpcArg((senderCast.address as string | null) ?? null),
+              },
+            );
+            if (recErr) throw commDbError(recErr);
+            landlordCc =
+              ((rec ?? []) as { to_address: string | null }[])[0]?.to_address ?? null;
+          } else {
+            landlordCc = (senderCast?.address as string | null) ?? null;
+          }
+          if (landlordCc !== null) {
+            const addr = landlordCc.toLowerCase();
+            if (
+              addr !== toAddress &&
+              addr.length <= 320 &&
+              /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addr)
+            ) {
+              ccAddresses = [...new Set([...(ccAddresses ?? []), addr])].slice(0, 10);
+            }
+          }
+        }
+      }
+
       // Landlord CC arm (BARE arm): an explicit caller-supplied Cc on a
       // thread-less email send (the inspection-link welcome/reminder mail).
       // Unlike the thread arm's stored bindings above, this list is

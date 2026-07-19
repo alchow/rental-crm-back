@@ -157,10 +157,15 @@ export function registerOutboxLifecycleRoutes(app: CommsApp): void {
   // GET /comms/outbox — dispatch scan (transport)
   // ---------------------------------------------------------------------------
 
-  // Attach relay_source_rfc822_message_id to email relay legs: the Message-ID
-  // of the inbound original each leg relays, so the transport can set
-  // In-Reply-To/References and the relayed mail threads natively in the
-  // recipient's client. One batched read per page; non-relay rows are untouched.
+  // Attach the derived relay-source fields to email relay legs, two batched
+  // reads per page; non-relay rows are untouched:
+  //   * relay_source_rfc822_message_id — the Message-ID of the original each
+  //     leg relays, so the transport can set In-Reply-To/References and the
+  //     relayed mail threads natively in the recipient's client;
+  //   * relay_source_sender_label — the original's frozen sender-cast label
+  //     (the author's display name as capture recorded it), so a cc_relayed
+  //     delivery leg can render From "«label» via «persona»" without the
+  //     transport ever reading the journal.
   async function withRelaySourceMessageIds(
     c: Context,
     accountId: string,
@@ -186,9 +191,28 @@ export function registerOutboxLifecycleRoutes(app: CommsApp): void {
         i.rfc822_message_id,
       ]),
     );
+    const { data: senders, error: sErr } = await getSb(c)
+      .from('interaction_participants')
+      .select('interaction_id, label')
+      .eq('account_id', accountId)
+      .eq('role', 'sender')
+      .in('interaction_id', sourceIds);
+    if (sErr) throw commDbError(sErr);
+    const labelById = new Map<string, string | null>();
+    for (const s of (senders ?? []) as { interaction_id: string; label: string | null }[]) {
+      // Capture writes exactly one sender leg; keep the first non-null label
+      // defensively should historical data ever carry more.
+      if (!labelById.has(s.interaction_id) || labelById.get(s.interaction_id) === null) {
+        labelById.set(s.interaction_id, s.label);
+      }
+    }
     return rows.map((r) =>
       r.channel === 'email' && r.relay_of_interaction_id !== null
-        ? { ...r, relay_source_rfc822_message_id: byId.get(r.relay_of_interaction_id) ?? null }
+        ? {
+            ...r,
+            relay_source_rfc822_message_id: byId.get(r.relay_of_interaction_id) ?? null,
+            relay_source_sender_label: labelById.get(r.relay_of_interaction_id) ?? null,
+          }
         : r,
     );
   }

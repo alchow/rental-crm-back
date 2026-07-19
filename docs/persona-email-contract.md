@@ -49,7 +49,10 @@ phases.
   received it. `cc_relayed` is the same landlord cc capture where the resolved
   counterparty was NOT physically on the email's To/Cc (canonical compare, so
   gmail dot/+tag aliases count as present) — the transport must DELIVER the
-  journaled reply to the counterparty. Duplication is accepted: a repeat beats
+  journaled reply to the counterparty, in the delivery shape of "The
+  `cc_relayed` delivery shape" below (To counterparty, Cc the landlord's
+  authoritative email, From "«landlord» via «persona»"). Duplication is
+  accepted: a repeat beats
   a black hole, so the To/Cc check is a discriminator, not a safety-critical
   suppressor. Trust basis: a DMARC-verified landlord sender replying within
   their own thread — strictly stronger than the retired token door, which
@@ -105,8 +108,61 @@ whose target participant is a `landlord_user`:
   `error.code='relay_already_delivered'` and NO row is created. The transport
   must treat this as "already satisfied", never as a retryable failure.
 
-Non-landlord relay legs (tenant/vendor), sms relays, and all non-relay sends
-are byte-identical.
+Sms relays and all non-relay sends are byte-identical. A tenant/vendor-target
+relay leg is byte-identical too UNLESS it delivers a landlord's persona reply
+— that one case gains a server-derived Cc, next section.
+
+## The `cc_relayed` delivery shape (the system completes the reply-all)
+
+PRODUCT DECISION (user, 2026-07-18, final). The relay leg that delivers a
+landlord's `cc_relayed` reply is not a bare forward — it re-assembles the
+group email the landlord failed to send:
+
+```text
+To:   the counterparty (the thread binding, as any 1:1 leg)
+Cc:   the landlord's AUTHORITATIVE email
+From: "«landlord name» via «persona name»" <persona address>
+```
+
+Why: every delivery REBUILDS the group thread. The counterparty's next
+reply-all then includes the landlord directly — a self-healing topology that
+converges on the visible-CC model — and the landlord's Cc copy doubles as a
+delivery receipt ("your reply went out"). Loop-safe by the capture split
+itself: that next reply-all carries the landlord on To/Cc, so its persona
+capture lands `cc_journaled` (relay nothing).
+
+Mechanism (all server-side; the transport stays thin):
+
+- **The Cc is derived by core at leg creation**, inside
+  `POST …/comms/outbox`: an EMAIL relay leg targeting a tenant/vendor whose
+  relayed interaction is the capture cc arm's landlord-authored outbound
+  (actor `system:comm-persona-cc`) resolves the author's authoritative
+  owner/manager email through `resolve_relay_landlord_recipient` (the PR 7
+  judge; the frozen sender-cast address is the fallback when no authoritative
+  email exists). The RPC's `already_delivered` verdict is deliberately
+  ignored here: the landlord AUTHORED this mail — their address in the source
+  cast is the sender leg, not evidence of a delivered copy, and the Cc is a
+  deliberate receipt. `cc_addresses` on thread legs remains caller-rejected
+  (one authority per arm); this derivation and the `is_cc` participant arm
+  merge and dedupe.
+- **Opt-out scrub still applies**: the derived Cc rides the same
+  `cc_addresses` machinery, so a register hit is SCRUBBED at INSERT (the
+  counterparty's delivery still goes; the landlord just is not copied), and
+  the frozen `recipient_snapshot` records the Cc through the existing
+  `role='cc'` identity freeze — the record never claims a copy that was
+  suppressed.
+- **Best-effort by design**: an unresolvable Cc never blocks the delivery —
+  the black hole is the failure mode this arm exists to prevent.
+- **From display**: the outbox reads derive `relay_source_sender_label` on
+  email relay legs — the relayed original's frozen sender-cast label (the
+  landlord's display name exactly as capture recorded it, server-side). The
+  transport renders `"«relay_source_sender_label» via «persona name»"` over
+  the persona address, reusing its existing branded-From identity for the
+  persona half; a null label falls back to the plain persona From. Threading
+  headers are unchanged (`relay_source_rfc822_message_id` as before).
+- **The capture response carries nothing extra** — interaction_id/thread_id/
+  participant already identify the leg to create; Cc and From-label are
+  core-frozen/derived afterwards.
 
 ## The ordered routing algorithm
 

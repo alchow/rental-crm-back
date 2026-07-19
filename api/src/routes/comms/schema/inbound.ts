@@ -144,7 +144,11 @@ export const CapturePersonaInboundResponse = z
      *  counterparty: create an email relay leg (relay_of_interaction_id =
      *  interaction_id) addressed to the returned thread's counterparty
      *  participant. The system completes the landlord's reply-all; a repeat
-     *  beats a black hole.
+     *  beats a black hole. Core freezes the delivery shape server-side at
+     *  leg creation — the row carries the landlord's authoritative email as
+     *  a visible Cc (opt-out scrubbed, snapshot-frozen) and the outbox read
+     *  derives relay_source_sender_label for the "«landlord» via «persona»"
+     *  From display — so nothing extra rides this response.
      *  journaled_unverified: the mail failed DMARC but its From named exactly
      *  one KNOWN tenant/vendor — the receipt is journaled into that party's
      *  conversation with attestation='unverified' (claimed, never asserted).

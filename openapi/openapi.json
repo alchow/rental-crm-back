@@ -5200,6 +5200,12 @@
               "null"
             ]
           },
+          "relay_source_sender_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "client_ref": {
             "type": "string"
           },

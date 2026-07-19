@@ -1079,6 +1079,7 @@ async function main(): Promise<void> {
   });
 
   let pv2CcRelayIid = '';
+  let pv2CcRelayPartId = '';
   const PV2_CCRELAY_PROVIDER_ID = `PS-pv2-ccrelay-${rnd()}`;
   const PV2_CCRELAY_RFC = `<pv2-reply2-${SUFFIX}@sender>`;
   await check('v2(2) landlord plain reply (persona-only To) → cc_relayed: journaled identically, and the transport delivers it', async () => {
@@ -1099,6 +1100,7 @@ async function main(): Promise<void> {
     assert(res.thread_id === pv2ThreadId, `into the tenant's conversation: ${res.thread_id}`);
     assert(res.participant?.party_id === ptAId, `counterparty = tenant: ${JSON.stringify(res.participant)}`);
     pv2CcRelayIid = res.interaction_id!;
+    pv2CcRelayPartId = res.participant!.id;
     const { data: row, error } = await admin
       .from('interactions').select('direction, author_type, party_type, party_id')
       .eq('id', res.interaction_id!).single();
@@ -1199,6 +1201,105 @@ async function main(): Promise<void> {
     assert(res.disposition === 'duplicate', `disposition: ${res.disposition}`);
     assert(res.interaction_id === pv2CcRelayIid, 'points at the cc_relayed original');
     assert(res.thread_id === pv2ThreadId, `same thread: ${res.thread_id}`);
+  });
+
+  interface DeliveryLegShape {
+    id: string;
+    to_address: string | null;
+    cc_addresses: string[] | null;
+    recipient_snapshot:
+      | { address: string; party_type: string; party_id: string | null; role?: string }[]
+      | null;
+    relay_source_rfc822_message_id?: string | null;
+    relay_source_sender_label?: string | null;
+  }
+
+  await check('v2(2f) cc_relayed delivery leg: core derives the landlord Cc (authoritative email) + snapshot + From label', async () => {
+    // The transport creates the delivery leg exactly as before — no Cc, no
+    // extra fields. Core derives the delivery shape server-side: To = the
+    // counterparty binding, Cc = the landlord's AUTHORITATIVE email (the
+    // reply-all rebuild + delivery receipt), frozen through the existing
+    // cc_addresses/recipient_snapshot machinery.
+    const r = await api('POST', `${base}/outbox`, {
+      token: agentToken,
+      body: {
+        channel: 'email',
+        thread_id: pv2ThreadId,
+        participant_ref: pv2CcRelayPartId,
+        relay_of_interaction_id: pv2CcRelayIid,
+        subject: 'Re: Inspection welcome',
+        body: 'relayed copy of the landlord reply',
+        approval_ref: `thread:${pv2ThreadId}`,
+      },
+    });
+    const leg = assertStatus(r, 201, 'delivery leg create') as DeliveryLegShape;
+    assert(leg.to_address === PV2_TENANT_EMAIL, `To = the counterparty binding: ${leg.to_address}`);
+    assert(
+      Array.isArray(leg.cc_addresses) && leg.cc_addresses.length === 1
+        && leg.cc_addresses[0] === ownerEmail,
+      `Cc = the landlord's authoritative email: ${JSON.stringify(leg.cc_addresses)}`,
+    );
+    // The frozen snapshot records the Cc through the existing role='cc'
+    // identity freeze (ownerEmail carries the account-wide landlord claim the
+    // capture learned).
+    const ccEntry = (leg.recipient_snapshot ?? []).find(
+      (e) => e.role === 'cc' && e.address === ownerEmail,
+    );
+    assert(ccEntry !== undefined, `snapshot records the Cc: ${JSON.stringify(leg.recipient_snapshot)}`);
+    assert(ccEntry!.party_type === 'landlord_user' && ccEntry!.party_id === sub.user.id,
+      `Cc frozen as the landlord: ${JSON.stringify(ccEntry)}`);
+
+    // The transport's dispatch read derives the From-display inputs: the
+    // relayed original's Message-ID (threading, unchanged) and its frozen
+    // sender-cast label ("«landlord» via «persona»" rendering).
+    const read = assertStatus(
+      await api('GET', `${base}/outbox/${leg.id}`, { token: agentToken }),
+      200, 'delivery leg read',
+    ) as DeliveryLegShape;
+    assert(read.relay_source_rfc822_message_id === `pv2-reply2-${SUFFIX}@sender`,
+      `threading header source unchanged: ${read.relay_source_rfc822_message_id}`);
+    const { data: senderCast } = await admin
+      .from('interaction_participants').select('label')
+      .eq('interaction_id', pv2CcRelayIid).eq('role', 'sender').single();
+    assert('relay_source_sender_label' in read
+      && read.relay_source_sender_label === (senderCast!.label ?? null),
+      `sender label derived from the frozen cast: ${read.relay_source_sender_label} vs ${senderCast!.label}`);
+  });
+
+  await check('v2(2g) opted-out landlord Cc is scrubbed; the counterparty delivery still goes', async () => {
+    const reg = await api('POST', `${base}/opt-outs`, {
+      token: agentToken,
+      body: { channel: 'email', address: ownerEmail, keyword: 'UNSUBSCRIBE', source_ref: `src-${rnd()}` },
+    });
+    assertStatus(reg, 200, 'landlord opt-out record');
+    let cleanupError: string | null = null;
+    try {
+      const r = await api('POST', `${base}/outbox`, {
+        token: agentToken,
+        body: {
+          channel: 'email',
+          thread_id: pv2ThreadId,
+          participant_ref: pv2CcRelayPartId,
+          relay_of_interaction_id: pv2CcRelayIid,
+          subject: 'Re: Inspection welcome',
+          body: 'relayed copy, landlord opted out of copies',
+          approval_ref: `thread:${pv2ThreadId}`,
+        },
+      });
+      const leg = assertStatus(r, 201, 'delivery leg with opted-out cc') as DeliveryLegShape;
+      assert(leg.to_address === PV2_TENANT_EMAIL, `primary delivery unaffected: ${leg.to_address}`);
+      assert(leg.cc_addresses === null, `registered Cc scrubbed at INSERT: ${JSON.stringify(leg.cc_addresses)}`);
+      assert(!(leg.recipient_snapshot ?? []).some((e) => e.role === 'cc'),
+        `snapshot never claims the suppressed copy: ${JSON.stringify(leg.recipient_snapshot)}`);
+    } finally {
+      // The register is GLOBAL (channel, address): restore state so later
+      // fixtures sending to/cc'ing the owner are unaffected. (Failures are
+      // asserted AFTER the finally — a throw here would mask the check's own.)
+      const { error } = await admin.from('comm_opt_outs')
+        .delete().eq('channel', 'email').eq('address', ownerEmail);
+      cleanupError = error?.message ?? null;
+    }
+    assert(cleanupError === null, `opt-out cleanup: ${cleanupError}`);
   });
 
   await check('v2(3) mobile reply strips To/Cc: persona-only headers still resolve via the parent', async () => {

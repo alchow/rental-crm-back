@@ -144,6 +144,14 @@ export const CommOutbox = z
      *  conversation threads natively in the recipient's client. Null when the
      *  original carried no Message-ID; absent on non-relay rows. */
     relay_source_rfc822_message_id: z.string().nullable().optional(),
+    /** Derived, read-only (email relay legs): the frozen sender-cast label of
+     *  the relayed original — the author's display name exactly as capture
+     *  recorded it. For a cc_relayed delivery leg (a landlord's persona
+     *  reply) the transport renders the From display as
+     *  "«this label» via «persona name»" over the persona address; when
+     *  null, it falls back to the plain persona From. Absent on non-relay
+     *  rows. */
+    relay_source_sender_label: z.string().nullable().optional(),
     /** Server-generated opaque ref the transport passes to the provider so
      *  callbacks can always re-associate with this row (unique). */
     client_ref: z.string(),
