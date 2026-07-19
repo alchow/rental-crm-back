@@ -147,13 +147,16 @@ export const CommOutbox = z
      *  response. */
     relay_source_rfc822_message_id: z.string().nullable().optional(),
     /** Derived, read-only (email relay legs): the frozen sender-cast label of
-     *  the relayed original — the author's display name exactly as capture
-     *  recorded it. For a cc_relayed delivery leg (a landlord's persona
-     *  reply) the transport renders the From display as
+     *  the relayed original — SET ONLY when that original is the capture cc
+     *  arm's landlord-authored journal row (a cc_relayed delivery). The
+     *  transport renders the From display as
      *  "«this label» via «persona name»" over the persona address; when
-     *  null, it falls back to the plain persona From. Absent on non-relay
-     *  rows. Attached on the dispatch scan, the single-row read, and the
-     *  delivery (claim) response. */
+     *  null, it renders the plain persona From. Deliberately null on every
+     *  other relay leg: an ordinary matched relay already leads with the
+     *  "«label» wrote:" body attribution, so a via-From there would
+     *  double-attribute the author. Absent on non-relay rows. Attached on
+     *  the dispatch scan, the single-row read, and the delivery (claim)
+     *  response. */
     relay_source_sender_label: z.string().nullable().optional(),
     /** Server-generated opaque ref the transport passes to the provider so
      *  callbacks can always re-associate with this row (unique). */

@@ -153,13 +153,19 @@ Mechanism (all server-side; the transport stays thin):
   suppressed.
 - **Best-effort by design**: an unresolvable Cc never blocks the delivery —
   the black hole is the failure mode this arm exists to prevent.
-- **From display**: the outbox reads derive `relay_source_sender_label` on
-  email relay legs — the relayed original's frozen sender-cast label (the
-  landlord's display name exactly as capture recorded it, server-side). The
-  transport renders `"«relay_source_sender_label» via «persona name»"` over
-  the persona address, reusing its existing branded-From identity for the
-  persona half; a null label falls back to the plain persona From. Threading
-  headers are unchanged (`relay_source_rfc822_message_id` as before).
+- **From display**: the outbox reads (dispatch scan, single-row read, and
+  the delivery claim) derive `relay_source_sender_label` ONLY for email
+  relay legs whose source is the capture cc arm's landlord-authored journal
+  row (actor `system:comm-persona-cc` — the cc_relayed delivery source): the
+  relayed original's frozen sender-cast label, server-side. The transport
+  renders `"«relay_source_sender_label» via «persona name»"` over the
+  persona address, reusing its existing branded-From identity for the
+  persona half; a null label falls back to the plain persona From. The label
+  is deliberately null on every other relay leg — an ordinary `matched`
+  relay already leads with the "«label» wrote:" body attribution, so a
+  via-From there would double-attribute the author. Threading headers are
+  unchanged (`relay_source_rfc822_message_id` still derives for ALL email
+  relay legs).
 - **The capture response carries nothing extra** — interaction_id/thread_id/
   participant already identify the leg to create; Cc and From-label are
   core-frozen/derived afterwards.

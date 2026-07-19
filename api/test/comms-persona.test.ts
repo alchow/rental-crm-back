@@ -1319,6 +1319,60 @@ async function main(): Promise<void> {
     assert(cleanupError === null, `opt-out cleanup: ${cleanupError}`);
   });
 
+  await check('v2(2h) ordinary matched relay: read/claim carry the msgid but NO via-From label', async () => {
+    // The "«label» via «persona»" From is exclusively the cc_relayed
+    // delivery shape. An ordinary matched relay (tenant inbound -> landlord
+    // notification leg) already leads with the "«label» wrote:" body
+    // attribution — its rows must carry the threading Message-ID but a NULL
+    // sender label, or the transport would double-attribute the author.
+    const d = assertStatus(
+      await api('GET', `${base}/threads/${t1ThreadId}`, { token: landlordToken }),
+      200, 't1 thread read',
+    ) as { participants: { id: string; party_type: string }[] };
+    const llPart = d.participants.find((p) => p.party_type === 'landlord_user');
+    assert(llPart, 'landlord participant present');
+
+    const r = await api('POST', `${base}/outbox`, {
+      token: agentToken,
+      body: {
+        channel: 'email',
+        thread_id: t1ThreadId,
+        participant_ref: llPart!.id,
+        relay_of_interaction_id: t1FirstIid,
+        subject: 'Fwd: Deposit for unit 4B',
+        body: 'ordinary relay of the tenant inbound',
+        approval_ref: `thread:${t1ThreadId}`,
+      },
+    });
+    const leg = assertStatus(r, 201, 'ordinary relay create') as DeliveryLegShape;
+
+    const read = assertStatus(
+      await api('GET', `${base}/outbox/${leg.id}`, { token: agentToken }),
+      200, 'ordinary relay read',
+    ) as DeliveryLegShape;
+    assert(read.relay_source_rfc822_message_id === `cold-${SUFFIX}@sender`,
+      `msgid still derives for ordinary relays: ${read.relay_source_rfc822_message_id}`);
+    assert('relay_source_sender_label' in read && read.relay_source_sender_label === null,
+      `no via-From label on an ordinary relay: ${read.relay_source_sender_label}`);
+
+    const claim = assertStatus(
+      await api('POST', `${base}/outbox/${leg.id}/delivery`, {
+        token: agentToken,
+        body: { status: 'sending', provider_ts: iso() },
+      }),
+      200, 'ordinary relay claim',
+    ) as DeliveryLegShape;
+    assert(
+      claim.relay_source_rfc822_message_id === `cold-${SUFFIX}@sender`
+        && 'relay_source_sender_label' in claim
+        && claim.relay_source_sender_label === null,
+      `claim: msgid without label: ${JSON.stringify({
+        msgid: claim.relay_source_rfc822_message_id,
+        label: claim.relay_source_sender_label,
+      })}`,
+    );
+  });
+
   await check('v2(3) mobile reply strips To/Cc: persona-only headers still resolve via the parent', async () => {
     const r = await personaCapture({
       from_address: PV2_TENANT_EMAIL,

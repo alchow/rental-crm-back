@@ -157,15 +157,20 @@ export function registerOutboxLifecycleRoutes(app: CommsApp): void {
   // GET /comms/outbox — dispatch scan (transport)
   // ---------------------------------------------------------------------------
 
-  // Attach the derived relay-source fields to email relay legs, two batched
-  // reads per page; non-relay rows are untouched:
+  // Attach the derived relay-source fields to email relay legs, at most two
+  // batched reads per page; non-relay rows are untouched:
   //   * relay_source_rfc822_message_id — the Message-ID of the original each
-  //     leg relays, so the transport can set In-Reply-To/References and the
-  //     relayed mail threads natively in the recipient's client;
-  //   * relay_source_sender_label — the original's frozen sender-cast label
-  //     (the author's display name as capture recorded it), so a cc_relayed
-  //     delivery leg can render From "«label» via «persona»" without the
-  //     transport ever reading the journal.
+  //     leg relays (ALL email relay legs — threading needs it), so the
+  //     transport can set In-Reply-To/References and the relayed mail
+  //     threads natively in the recipient's client;
+  //   * relay_source_sender_label — the original's frozen sender-cast label,
+  //     derived ONLY when the original is the capture cc arm's
+  //     landlord-authored journal row (actor 'system:comm-persona-cc' — the
+  //     cc_relayed delivery source). The "«label» via «persona»" From is
+  //     exclusively the cc_relayed delivery shape: an ordinary matched relay
+  //     already leads with composeRelayBody's "«label» wrote:", so a via-From
+  //     there would double-attribute the author. Null on every other relay
+  //     leg.
   async function withRelaySourceMessageIds(
     c: Context,
     accountId: string,
@@ -181,29 +186,34 @@ export function registerOutboxLifecycleRoutes(app: CommsApp): void {
     if (sourceIds.length === 0) return rows;
     const { data, error } = await getSb(c)
       .from('interactions')
-      .select('id, rfc822_message_id')
+      .select('id, rfc822_message_id, actor')
       .eq('account_id', accountId)
       .in('id', sourceIds);
     if (error) throw commDbError(error);
-    const byId = new Map(
-      ((data ?? []) as { id: string; rfc822_message_id: string | null }[]).map((i) => [
-        i.id,
-        i.rfc822_message_id,
-      ]),
-    );
-    const { data: senders, error: sErr } = await getSb(c)
-      .from('interaction_participants')
-      .select('interaction_id, label')
-      .eq('account_id', accountId)
-      .eq('role', 'sender')
-      .in('interaction_id', sourceIds);
-    if (sErr) throw commDbError(sErr);
+    const sources = (data ?? []) as {
+      id: string;
+      rfc822_message_id: string | null;
+      actor: string | null;
+    }[];
+    const byId = new Map(sources.map((i) => [i.id, i.rfc822_message_id]));
+    const ccArmIds = sources
+      .filter((i) => i.actor === 'system:comm-persona-cc')
+      .map((i) => i.id);
     const labelById = new Map<string, string | null>();
-    for (const s of (senders ?? []) as { interaction_id: string; label: string | null }[]) {
-      // Capture writes exactly one sender leg; keep the first non-null label
-      // defensively should historical data ever carry more.
-      if (!labelById.has(s.interaction_id) || labelById.get(s.interaction_id) === null) {
-        labelById.set(s.interaction_id, s.label);
+    if (ccArmIds.length > 0) {
+      const { data: senders, error: sErr } = await getSb(c)
+        .from('interaction_participants')
+        .select('interaction_id, label')
+        .eq('account_id', accountId)
+        .eq('role', 'sender')
+        .in('interaction_id', ccArmIds);
+      if (sErr) throw commDbError(sErr);
+      for (const s of (senders ?? []) as { interaction_id: string; label: string | null }[]) {
+        // Capture writes exactly one sender leg; keep the first non-null label
+        // defensively should historical data ever carry more.
+        if (!labelById.has(s.interaction_id) || labelById.get(s.interaction_id) === null) {
+          labelById.set(s.interaction_id, s.label);
+        }
       }
     }
     return rows.map((r) =>
