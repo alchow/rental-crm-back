@@ -681,7 +681,12 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
       // every hop one-by-one; with the author on Cc the landlord's next
       // reply-all reaches the tenant directly and the conversation is a
       // self-sustaining group thread. The author address is the source inbound's
-      // sender-cast address (capture froze it from the verified From). No loop:
+      // sender-cast address, which capture froze from the From. The
+      // 'unverified' (forged-From) attestation tier is EXCLUDED — a spoofed
+      // address must never land on the landlord's visible Cc / reply-all target
+      // — so this only Cc's an authenticated ('provider_verified') or
+      // human-vouched ('attested') author. Core enforces this here rather than
+      // trusting the transport's "relay only on matched" convention. No loop:
       // the landlord's reply-all carries the tenant on To/Cc, so its persona
       // capture splits to cc_journaled (relay nothing); and a tenant reply-all
       // that already carries the landlord is refused upstream by the
@@ -692,7 +697,7 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
       if (isLandlordEmailRelay) {
         const { data: relaySource, error: relSrcErr } = await sb
           .from('interactions')
-          .select('author_type, direction')
+          .select('author_type, direction, attestation')
           .eq('account_id', accountId)
           .eq('id', body.relay_of_interaction_id!)
           .maybeSingle();
@@ -700,7 +705,8 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
         if (
           relaySource !== null &&
           relaySource.direction === 'inbound' &&
-          (relaySource.author_type === 'tenant' || relaySource.author_type === 'vendor')
+          (relaySource.author_type === 'tenant' || relaySource.author_type === 'vendor') &&
+          relaySource.attestation !== 'unverified'
         ) {
           const { data: authorCast, error: authorErr } = await sb
             .from('interaction_participants')

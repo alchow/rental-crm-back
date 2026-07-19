@@ -1427,6 +1427,53 @@ async function main(): Promise<void> {
     );
   });
 
+  await check('v2(2h.1) matched relay of an UNVERIFIED source does NOT Cc the forged author', async () => {
+    // Defense-in-depth for the group rebuild: the author-Cc arm excludes the
+    // journaled_unverified (forged-From) attestation tier, so a spoofed From can
+    // never ride the landlord's visible Cc / reply-all target — even though the
+    // transport already relays only 'matched'. A FRESH DMARC-fail capture is used
+    // (unvIid from section 3 was later confirm-sender'd to 'attested', which is
+    // legitimately Cc-able); this one stays 'unverified' at relay time.
+    const cap = assertStatus(
+      await personaCapture({
+        from_address: T1_EMAIL,
+        body: 'spoofed reply',
+        rfc822_message_id: `<Unv2-${SUFFIX}@sender>`,
+        auth_results: AUTH_FAIL,
+      }),
+      200, 'fresh unverified capture',
+    ) as CaptureShape;
+    assert(cap.disposition === 'journaled_unverified' && cap.interaction_id !== null && cap.thread_id !== null,
+      `journaled_unverified into a thread: ${cap.disposition}`);
+
+    const d = assertStatus(
+      await api('GET', `${base}/threads/${cap.thread_id}`, { token: landlordToken }),
+      200, 'thread read',
+    ) as { participants: { id: string; party_type: string }[] };
+    const llPart = d.participants.find((p) => p.party_type === 'landlord_user');
+    assert(llPart, 'landlord participant present');
+
+    const r = await api('POST', `${base}/outbox`, {
+      token: agentToken,
+      body: {
+        channel: 'email',
+        thread_id: cap.thread_id,
+        participant_ref: llPart!.id,
+        relay_of_interaction_id: cap.interaction_id,
+        subject: 'Fwd: unverified',
+        body: 'relay of an unverified inbound',
+        approval_ref: `thread:${cap.thread_id}`,
+      },
+    });
+    const leg = assertStatus(r, 201, 'unverified-source relay create') as DeliveryLegShape;
+    const read = assertStatus(
+      await api('GET', `${base}/outbox/${leg.id}`, { token: agentToken }),
+      200, 'unverified-source relay read',
+    ) as DeliveryLegShape;
+    assert(read.cc_addresses === null,
+      `an unverified-source relay must NOT Cc the forged author: ${JSON.stringify(read.cc_addresses)}`);
+  });
+
   await check('v2(3) mobile reply strips To/Cc: persona-only headers still resolve via the parent', async () => {
     const r = await personaCapture({
       from_address: PV2_TENANT_EMAIL,
