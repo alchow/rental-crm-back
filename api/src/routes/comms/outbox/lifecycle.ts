@@ -325,7 +325,13 @@ export function registerOutboxLifecycleRoutes(app: CommsApp): void {
       p_error_code: body.error_code,
     });
     if (error) throw commDbError(error);
-    return c.json(data as OutboxRow, 200);
+    // The transport renders the dispatch From off THIS response (the pre-dial
+    // 'sending' claim), so it must carry the same derived relay_source_*
+    // fields as the reads — without them a cc_relayed delivery would silently
+    // fall back to the plain persona From ("«landlord» via «persona»" lost;
+    // delivery and Cc unaffected).
+    const [row] = await withRelaySourceMessageIds(c, accountId, [data as OutboxRow]);
+    return c.json(row, 200);
   });
 
   app.openapi(reconcileScan, async (c) => {

@@ -1264,6 +1264,23 @@ async function main(): Promise<void> {
     assert('relay_source_sender_label' in read
       && read.relay_source_sender_label === (senderCast!.label ?? null),
       `sender label derived from the frozen cast: ${read.relay_source_sender_label} vs ${senderCast!.label}`);
+
+    // The transport renders the dispatch From off the CLAIM response (the
+    // pre-dial 'sending' advancement) — it must carry the same derived
+    // fields as the reads, or the "«landlord» via «persona»" From silently
+    // degrades to the plain persona.
+    const claim = assertStatus(
+      await api('POST', `${base}/outbox/${leg.id}/delivery`, {
+        token: agentToken,
+        body: { status: 'sending', provider_ts: iso() },
+      }),
+      200, 'delivery claim',
+    ) as DeliveryLegShape;
+    assert(claim.relay_source_rfc822_message_id === `pv2-reply2-${SUFFIX}@sender`,
+      `claim carries the threading source: ${claim.relay_source_rfc822_message_id}`);
+    assert('relay_source_sender_label' in claim
+      && claim.relay_source_sender_label === (senderCast!.label ?? null),
+      `claim carries the From label: ${claim.relay_source_sender_label}`);
   });
 
   await check('v2(2g) opted-out landlord Cc is scrubbed; the counterparty delivery still goes', async () => {
