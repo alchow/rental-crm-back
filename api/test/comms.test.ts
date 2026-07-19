@@ -298,9 +298,15 @@ async function main(): Promise<void> {
 
   await check('unbuilt/unconfigured channel thread creation is refused (F7, updated for E2-A)', async () => {
     // voice bridging is still unbuilt -> 501. Email threads are REAL since
-    // E2-A (covered by test/comms-email-threads.test.ts); this suite runs
-    // without EMAIL_REPLY_DOMAIN, so the email path must refuse with a typed
-    // 503 (not mis-send, not 500) — the F7 no-silent-mis-send guarantee.
+    // E2-A (covered by test/comms-email-threads.test.ts); this suite boots with
+    // NEITHER EMAIL_PLATFORM_PARENT_DOMAIN nor EMAIL_REPLY_DOMAIN set, so it
+    // exercises RUNG 4 of the createThread domain ladder (no receiving domain
+    // configured anywhere): a typed 503 (not mis-send, not 500, and NOT the
+    // W1 422 branding gate — that engages only when the parent domain is set)
+    // — the F7 no-silent-mis-send guarantee. (Rung 3, parent-unset +
+    // EMAIL_REPLY_DOMAIN-set shared-domain fallback, is covered in
+    // comms-evidence.test.ts; rungs 1-2, branded mint + unbranded 422, in
+    // comms-email-threads.test.ts.)
     const v = await L({
       kind: 'bridged_tenant', channel: 'voice',
       participants: [{ party_type: 'tenant', party_id: fx.tenantId, address: '+15550000001' }],
@@ -312,7 +318,7 @@ async function main(): Promise<void> {
       kind: 'bridged_tenant', channel: 'email',
       participants: [{ party_type: 'tenant', party_id: fx.tenantId, address: 'tessa@example.test' }],
     }, '/threads');
-    assertStatus(r, 503, 'email thread without EMAIL_REPLY_DOMAIN');
+    assertStatus(r, 503, 'email thread with no receiving domain configured (ladder rung 4)');
     if (errCode(r) !== 'service_unavailable') throw new Error(`code: ${errCode(r)}`);
   });
 

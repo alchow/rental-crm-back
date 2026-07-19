@@ -719,6 +719,16 @@ async function main(): Promise<void> {
       const t = assertStatus(cr, 201, 'email thread create') as ThreadShape;
       const token = t.bindings.find((b) => b.participant_address === tEmail)?.reply_address;
       assert(token, 'tenant reply token minted');
+      // RUNG 3 of the createThread domain ladder: this suite boots with
+      // EMAIL_REPLY_DOMAIN set but NO EMAIL_PLATFORM_PARENT_DOMAIN, so branding
+      // does not exist as a feature and an unbranded email thread is NOT gated
+      // (no W1 422) — it mints its reply token under the shared fallback
+      // domain. (Rung 4, neither configured -> 503, lives in comms.test.ts;
+      // rungs 1-2, branded mint + unbranded 422, in comms-email-threads.)
+      assert(
+        token!.endsWith(`@${process.env.EMAIL_REPLY_DOMAIN}`),
+        `rung 3: reply token minted under the shared EMAIL_REPLY_DOMAIN fallback: ${token}`,
+      );
       const r = await A('POST', '/inbound', {
         provider: 'test-email',
         provider_msg_id: `ev-${SUFFIX}-in-email`,
