@@ -2809,6 +2809,43 @@ async function main(): Promise<void> {
   );
 
   await check(
+    'CASE-only variant of the landlord address in the cast → still suppressed (compare is lower(), not byte equality)',
+    async () => {
+      // PIN (20260723000005 review): "exact compare" means lower(btrim()),
+      // NOT raw byte equality. Same spelling as AUX_OWNER_EMAIL — dots and
+      // all — differing only in case. Cast addresses are NOT trigger-
+      // normalized at rest, so these bytes reach the SQL compare verbatim;
+      // only the lower() in resolve_relay_landlord_recipient connects them.
+      // A "simplification" dropping lower() would flip this to a 201.
+      const caseVariant = `Relay.Owner${SUFFIX}@GMAIL.com`;
+      assert(
+        caseVariant.toLowerCase() === AUX_OWNER_EMAIL.toLowerCase() &&
+          caseVariant !== AUX_OWNER_EMAIL,
+        'fixture: same mailbox spelling, different bytes only by case',
+      );
+      const { error: castErr } = await admin.from('interaction_participants').insert({
+        account_id: fx.accountId,
+        interaction_id: auxSourceIid,
+        role: 'cc',
+        party_type: 'landlord_user',
+        party_id: auxUserId,
+        address: caseVariant,
+        source: 'comms',
+      });
+      assert(!castErr, `seed case-variant cast row: ${castErr?.message}`);
+
+      const before = await relayLegCount(auxSourceIid);
+      const relay = await relayIntent(auxThreadId, auxLandlordPartId, auxSourceIid);
+      assertStatus(relay, 409, 'case-insensitively suppressed relay');
+      assert(errCode(relay) === 'relay_already_delivered', `error code: ${errCode(relay)}`);
+      assert(
+        (await relayLegCount(auxSourceIid)) === before,
+        'no relay leg minted for a case-only variant',
+      );
+    },
+  );
+
+  await check(
     'no authoritative email (membership gone) → the relay falls back to the thread binding',
     async () => {
       const nowIso = iso();
