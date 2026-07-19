@@ -644,7 +644,16 @@ async function main(): Promise<void> {
       `persona cc cast: ${JSON.stringify(roles)}`);
   });
 
-  await check('phone Gmail alias replies only to persona → parent outbox restores the tenant', async () => {
+  // PIN (20260723000005): an alias is a DIFFERENT correspondent. The parent's
+  // Cc carries the landlord's dotted gmail address; every reply below arrives
+  // from an undotted '+tag' spelling of what Gmail treats as the same mailbox.
+  // Nothing but provider-specific alias folding ever connected them, and the
+  // DB no longer does that: _comm_resolve_parent_sender compares the From to
+  // the parent's physical recipients with plain lower(btrim(...)). So these
+  // replies resolve to nobody and land in triage — the same door as any
+  // unrecognized sender. Silence toward the user beats a wrong name on a
+  // message. Do NOT "fix" this by reintroducing canonicalization.
+  await check('phone Gmail alias replies only to persona → a different spelling is a different sender (triaged)', async () => {
     const sent = await api('POST', `${base}/outbox`, {
       token: landlordToken,
       body: {
@@ -732,25 +741,51 @@ async function main(): Promise<void> {
       references: [parentMessageId],
     });
     const res = assertStatus(reply, 200, 'phone alias persona reply') as CaptureShape;
-    // Persona-only headers: the tenant is NOT on this reply, so the capture
-    // is cc_relayed (journaled identically; the transport delivers it).
-    assert(res.disposition === 'cc_relayed', `disposition: ${res.disposition}`);
-    assert(res.participant?.party_id === t2Id, `parent tenant restored: ${res.participant?.party_id}`);
-    assert(res.interaction_id !== null, 'phone reply journaled');
-
-    const { data: learned, error } = await admin
-      .from('channel_identities')
-      .select('party_type, party_id')
-      .eq('account_id', accountId)
-      .eq('channel', 'email')
-      .eq('address', LL_GMAIL_PHONE)
-      .single();
-    if (error) throw new Error(`phone alias identity read: ${error.message}`);
+    // DMARC passes, and the parent reference is a real one — but the '+phone'
+    // spelling names no physical recipient of that parent, so
+    // _comm_resolve_parent_sender yields zero rows and
+    // _comm_choose_persona_route answers 'parent_sender_mismatch' before any
+    // candidate or claim is consulted. The parent restores nothing; a stranger
+    // citing a real Message-ID is exactly what that reason is for.
+    assert(res.disposition === 'triaged', `disposition: ${res.disposition}`);
     assert(
-      learned.party_type === 'landlord_user' && learned.party_id === sub.user.id,
-      `authenticated phone alias learned: ${JSON.stringify(learned)}`,
+      res.interaction_id === null && res.thread_id === null,
+      `an unrecognized alias journals nothing: ${JSON.stringify(res)}`,
+    );
+    assert(res.participant === null, `no participant: ${JSON.stringify(res.participant)}`);
+    const phoneUnmatchedId = res.unmatched_id;
+    if (phoneUnmatchedId === null) throw new Error('phone alias has no triage record');
+    const { data: phoneTriage, error: phoneTriageError } = await admin
+      .from('comm_unmatched_inbound')
+      .select('reason, dmarc')
+      .eq('account_id', accountId)
+      .eq('id', phoneUnmatchedId)
+      .single();
+    if (phoneTriageError) throw new Error(`phone alias triage read: ${phoneTriageError.message}`);
+    assert(
+      phoneTriage.reason === 'parent_sender_mismatch' && phoneTriage.dmarc === 'pass',
+      `alias is a stranger to the parent: ${JSON.stringify(phoneTriage)}`,
     );
 
+    // The triage exit returns BEFORE the additive-learning insert, so the alias
+    // teaches the address book nothing. Counted, not read with .single(): the
+    // expected row set is now EMPTY, and .single() on zero rows throws instead
+    // of failing the assertion it was meant to check.
+    const { count: phoneIdentityCount } = await admin
+      .from('channel_identities')
+      .select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId)
+      .eq('channel', 'email')
+      .eq('address', LL_GMAIL_PHONE);
+    assert((phoneIdentityCount ?? 0) === 0, 'a triaged alias never teaches an identity');
+
+    // LL_GMAIL_CONFLICT carries an exact-address tenant claim (seeded above) as
+    // well as being an alias spelling of the landlord's Cc leg. That collision
+    // is now unreachable: _comm_choose_persona_route returns
+    // 'parent_sender_mismatch' at its FIRST check (zero parent-sender rows) and
+    // never reaches the conflicting-claim probe that used to answer
+    // 'identity_conflict'. Same triage door, more honest reason — the sender is
+    // not on the parent at all.
     const conflicted = await personaCapture({
       from_address: LL_GMAIL_CONFLICT,
       to_addresses: [PERSONA],
@@ -762,9 +797,9 @@ async function main(): Promise<void> {
       references: [parentMessageId],
     });
     const conflictedRes = assertStatus(conflicted, 200, 'conflicting phone alias') as CaptureShape;
-    assert(conflictedRes.disposition === 'triaged', 'conflicting alias is triaged');
+    assert(conflictedRes.disposition === 'triaged', 'claimed alias is triaged');
     const conflictUnmatchedId = conflictedRes.unmatched_id;
-    if (conflictUnmatchedId === null) throw new Error('conflicting alias has no triage record');
+    if (conflictUnmatchedId === null) throw new Error('claimed alias has no triage record');
     const { data: conflictTriage, error: conflictTriageError } = await admin
       .from('comm_unmatched_inbound')
       .select('reason, dmarc')
@@ -773,8 +808,8 @@ async function main(): Promise<void> {
       .single();
     if (conflictTriageError) throw new Error(`conflict triage read: ${conflictTriageError.message}`);
     assert(
-      conflictTriage.reason === 'identity_conflict' && conflictTriage.dmarc === 'pass',
-      `conflict evidence preserved: ${JSON.stringify(conflictTriage)}`,
+      conflictTriage.reason === 'parent_sender_mismatch' && conflictTriage.dmarc === 'pass',
+      `parent-mismatch beats the unreachable claim conflict: ${JSON.stringify(conflictTriage)}`,
     );
     const { data: conflictIdentity, error: conflictError } = await admin
       .from('channel_identities')
@@ -1144,10 +1179,15 @@ async function main(): Promise<void> {
       `journal-only decision: ${JSON.stringify(decision)}`);
   });
 
-  await check('v2(2c) canonical-variant counterparty in Cc (gmail dots/+tag) → cc_journaled (suppressed)', async () => {
-    // The parent went To the tenant's dotted gmail address; the landlord's
-    // reply-all carries an undotted +tag alias of the SAME mailbox. The
-    // canonical compare recognizes the alias as present → no relay.
+  await check('v2(2c) gmail dot/+tag alias of the counterparty in Cc → cc_relayed (an alias is not the recipient)', async () => {
+    // PIN (20260723000005): the parent went To the tenant's dotted gmail
+    // address; the landlord's reply-all Ccs an undotted '+tag' spelling of what
+    // Gmail treats as the SAME mailbox. The reply-all completion split now asks
+    // exact-address equality only, so that spelling does NOT prove the tenant
+    // is on this mail: the counterparty reads as ABSENT and the transport
+    // delivers a relay copy. Possibly a duplicate, never a black hole — the
+    // stated safe direction. Do NOT "fix" this back to cc_journaled by
+    // reintroducing provider-specific alias folding.
     const gmTenantEmail = `pv2.cc.tenant.${SUFFIX}@gmail.com`;
     const gmVariant = `pv2cctenant${SUFFIX}+re@gmail.com`;
     const gmTenantId = await createTenant('Gmail Cc Tenant', gmTenantEmail);
@@ -1162,7 +1202,10 @@ async function main(): Promise<void> {
       rfc822_message_id: `<pv2-ccgm-${SUFFIX}@sender>`,
       in_reply_to: gmParent.msgid,
     }), 200, 'gmail-variant reply-all') as CaptureShape;
-    assert(r.disposition === 'cc_journaled', `disposition: ${r.disposition}`);
+    assert(r.disposition === 'cc_relayed', `disposition: ${r.disposition}`);
+    // Routing is untouched: the landlord IS an exact recipient of the parent's
+    // Cc, so the cc arm still journals into the gmail tenant's conversation.
+    // Only the DELIVERY question changed.
     assert(r.participant?.party_id === gmTenantId,
       `counterparty = the gmail tenant: ${JSON.stringify(r.participant)}`);
     const { data: raw } = await admin
@@ -1170,8 +1213,9 @@ async function main(): Promise<void> {
     const decision = (raw!.payload as {
       routing_decision?: { disposition: string; reason: string };
     }).routing_decision;
-    assert(decision?.disposition === 'cc_journaled' && decision.reason === 'parent_unique_match',
-      `alias counted as present: ${JSON.stringify(decision)}`);
+    assert(decision?.disposition === 'cc_relayed'
+      && decision.reason === 'cc_counterparty_not_addressed',
+      `alias does not count as present: ${JSON.stringify(decision)}`);
   });
 
   await check('v2(2d) cc_relayed replay: same provider_msg_id returns the frozen original', async () => {

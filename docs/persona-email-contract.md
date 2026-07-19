@@ -30,8 +30,11 @@ routing v2 migration stack:
   — the reply-all completion split: a DMARC-pass landlord cc capture whose
   resolved counterparty is NOT on the inbound To/Cc becomes `cc_relayed`
   (deliver, not just journal); counterparty present stays `cc_journaled`.
-  This file also holds the CURRENT `capture_persona_inbound` body (the
-  digest-check target below).
+- `db/supabase/migrations/20260723000005_drop_gmail_alias_canonicalization.sql`
+  — drops `_comm_canonical_email_address`: every address comparison in the
+  persona door is plain `lower(btrim(…))`, so a different spelling of the same
+  mailbox is a different correspondent. This file also holds the CURRENT
+  `capture_persona_inbound` body (the digest-check target below).
 
 Pre-v2 phase-by-phase history lives in git; this file no longer accumulates
 phases.
@@ -47,14 +50,16 @@ phases.
   "relay only on `matched`", which made a landlord's plain persona reply a
   black hole: the reply journaled (`cc_journaled`) but the tenant/vendor never
   received it. `cc_relayed` is the same landlord cc capture where the resolved
-  counterparty was NOT physically on the email's To/Cc (canonical compare, so
-  gmail dot/+tag aliases count as present) — the transport must DELIVER the
+  counterparty was NOT physically on the email's To/Cc (exact lowercase
+  compare, no alias folding) — the transport must DELIVER the
   journaled reply to the counterparty, in the delivery shape of "The
   `cc_relayed` delivery shape" below (To counterparty, Cc the landlord's
   authoritative email, From "«landlord» via «persona»"). Duplication is
   accepted: a repeat beats
   a black hole, so the To/Cc check is a discriminator, not a safety-critical
-  suppressor. Trust basis: a DMARC-verified landlord sender replying within
+  suppressor — a counterparty addressed under a different spelling of the same
+  mailbox reads as ABSENT and is delivered to again. Trust basis: a
+  DMARC-verified landlord sender replying within
   their own thread — strictly stronger than the retired token door, which
   relayed on token possession alone.
 
@@ -101,12 +106,14 @@ whose target participant is a `landlord_user`:
   fallback when no authoritative email exists. The chosen address freezes at
   intent time exactly as before.
 - **CC-overlap suppression.** When the relayed interaction's cast already
-  contains the resolved address (canonical compare via
-  `_comm_canonical_email_address`, so gmail dot/+tag aliases count), the
+  contains the resolved address (exact lowercase compare — a different
+  spelling of the same mailbox does NOT suppress the leg), the
   landlord already physically received the mail — e.g. as a visible Cc on a
   reply-all. The intent is refused with 409
   `error.code='relay_already_delivered'` and NO row is created. The transport
-  must treat this as "already satisfied", never as a retryable failure.
+  must treat this as "already satisfied", never as a retryable failure. An
+  aliased Cc reads as absent, so the notification leg goes out anyway: a
+  repeat beats a black hole.
 
 Sms relays and all non-relay sends are byte-identical. A tenant/vendor-target
 relay leg is byte-identical too UNLESS it delivers a landlord's persona reply
@@ -246,9 +253,12 @@ the no-parent fallback.
 ### 3. Parent-first resolution (a unique parent exists)
 
 The authenticated sender is compared against the parent's PHYSICAL recipients
-(`to_address` + `cc_addresses`) — exact lowercase equality, with
-Gmail/Googlemail dot/plus canonicalization for those domains only. `To` vs
-`Cc` is a message role, never a party type.
+(`to_address` + `cc_addresses`) — exact lowercase equality, and nothing else:
+no provider-specific alias folding, so a different spelling of the same
+mailbox is a different sender. A landlord who replies from an address other
+than the one recorded on their account is therefore triaged
+(`parent_sender_mismatch`) rather than attributed to the human whose address
+it resembles. `To` vs `Cc` is a message role, never a party type.
 
 Each matched recipient address resolves to its intended party through named
 tiers, top wins:
@@ -275,7 +285,8 @@ Outcomes:
 - sender = exactly one landlord parent recipient → the landlord cc arm
   (outbound, landlord-authored, journaled into the parent's PRIMARY
   recipient's conversation), split on whether that counterparty is physically
-  on THIS email's To/Cc (canonical compare): present → **`cc_journaled`**
+  on THIS email's To/Cc (exact lowercase compare; an alias of the same mailbox
+  does NOT count as present): present → **`cc_journaled`**
   (relay nothing — they received it directly); absent → **`cc_relayed`** (the
   transport delivers the journaled reply to the counterparty — the system
   completes the landlord's reply-all). A null counterparty address (parent
@@ -543,6 +554,12 @@ re-verified by the trigger before freezing.
   account-wide until scoped links ship.
 - **Attachment filenames are printable-ASCII only** (rendered into download
   headers); the transport should transliterate or rename before upload.
+- **Addresses compare exactly** (`lower(btrim(…))`, no alias folding —
+  20260723000005). A correspondent who writes from a different spelling of the
+  same mailbox (any `+tag`, or a Gmail dot variant) is a different
+  correspondent: their mail triages instead of being attributed to the wrong
+  human, and their presence on a To/Cc does not suppress a duplicate delivery.
+  Both consequences are deliberate, not regressions.
 
 Retired v1 limitations (no longer true): first-writer-wins address book and
 silent no-op human links (claims model + supersession), oldest-tenant

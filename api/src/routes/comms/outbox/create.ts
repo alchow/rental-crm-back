@@ -28,7 +28,7 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
       'landlord_user is a notification, not the conversation surface: it dials the ' +
       "account's authoritative owner/manager email for that participant, falling back to " +
       'the thread binding when no authoritative email exists. When the relayed ' +
-      "interaction's cast already contains the resolved address (canonical email compare " +
+      "interaction's cast already contains the resolved address (exact lowercase compare " +
       '— the landlord physically received the original, e.g. as a visible Cc), the intent ' +
       'is refused with 409 error.code=relay_already_delivered and no row is created. ' +
       'Other 409 codes: conflict (closed thread / departed participant / an address ' +
@@ -474,8 +474,8 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
       participantId = body.participant_ref ?? null;
 
       if (isLandlordEmailRelay) {
-        // One server-side judge for both questions (the DB owns the email
-        // canonicalization, so TS never re-implements it): the authoritative
+        // One server-side judge for both questions (the DB owns the address
+        // comparison, so TS never re-implements it): the authoritative
         // recipient, and whether the source interaction's cast shows the
         // landlord already physically received the mail.
         const { data: relayTarget, error: rtErr } = await sb.rpc(
@@ -501,9 +501,9 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
           );
         }
         // SUPPRESSION: the landlord already received this mail directly (their
-        // address — canonically compared, so gmail dot/+tag aliases count — is
-        // in the relayed interaction's cast, e.g. as a visible Cc). A relay
-        // row would double-deliver; refuse BEFORE creating anything with a
+        // exact address — no alias folding (20260723000005) — is in the
+        // relayed interaction's cast, e.g. as a visible Cc). A relay row
+        // would double-deliver; refuse BEFORE creating anything with a
         // stable code the transport treats as "already satisfied".
         if (target.already_delivered) {
           throw new ApiError(

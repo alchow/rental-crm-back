@@ -2583,8 +2583,9 @@ async function main(): Promise<void> {
   const RT_EMAIL = `rt-${SUFFIX}@e2.test`; // incident-thread tenant
   const RT2_EMAIL = `rt2-${SUFFIX}@e2.test`; // aux-thread tenant
   const AUX_BIND = `auxbind-${SUFFIX}@e2.test`; // aux landlord's thread binding
-  // A gmail mailbox: dots/+tags are aliases of ONE mailbox, so the
-  // suppression compare must be canonical, never byte equality.
+  // A gmail mailbox written with a dot. Gmail would treat dot/+tag spellings as
+  // one mailbox; the suppression compare deliberately does NOT (20260723000005)
+  // — it is exact lower(btrim(...)) equality on both sides.
   const AUX_OWNER_EMAIL = `relay.owner${SUFFIX}@gmail.com`;
   let incidentThreadId = '';
   let incidentLandlordPartId = '';
@@ -2772,10 +2773,15 @@ async function main(): Promise<void> {
   );
 
   await check(
-    'gmail dot/+tag alias of the landlord in the source cast → still suppressed (canonical compare)',
+    'gmail dot/+tag alias of the landlord in the source cast → NOT suppressed, the relay is minted',
     async () => {
-      // Same mailbox as AUX_OWNER_EMAIL, different bytes: dots dropped, +tag
-      // added — _comm_canonical_email_address folds both to one key.
+      // PIN (20260723000005): same Gmail mailbox as AUX_OWNER_EMAIL, different
+      // bytes — dots dropped, '+fwd' added. Suppression compares exact
+      // addresses, so this cast entry is NOT evidence that the landlord
+      // physically received the mail: already_delivered stays false and the
+      // notification leg is created, dialed at the authoritative owner email.
+      // The accepted cost is a possible duplicate, never a black hole. Do NOT
+      // "fix" this back to a 409 by reintroducing provider-specific folding.
       const alias = `relayowner${SUFFIX}+fwd@gmail.com`;
       const { error: castErr } = await admin.from('interaction_participants').insert({
         account_id: fx.accountId,
@@ -2790,9 +2796,15 @@ async function main(): Promise<void> {
 
       const before = await relayLegCount(auxSourceIid);
       const relay = await relayIntent(auxThreadId, auxLandlordPartId, auxSourceIid);
-      assertStatus(relay, 409, 'canonically suppressed relay');
-      assert(errCode(relay) === 'relay_already_delivered', `error code: ${errCode(relay)}`);
-      assert((await relayLegCount(auxSourceIid)) === before, 'no relay row minted');
+      const row = assertStatus(relay, 201, 'alias does not suppress the relay') as OutboxShape;
+      assert(
+        row.to_address === AUX_OWNER_EMAIL.toLowerCase(),
+        `authoritative owner email still dialed: ${row.to_address}`,
+      );
+      assert(
+        (await relayLegCount(auxSourceIid)) === before + 1,
+        'a relay leg was minted (nothing dedupes legs per source interaction)',
+      );
     },
   );
 

@@ -326,29 +326,6 @@ $$;
 ALTER FUNCTION "public"."_channel_identities_normalize"() OWNER TO "postgres";
 
 --
--- Name: _comm_canonical_email_address("text"); Type: FUNCTION; Schema: public; Owner: postgres
---
-
-CREATE OR REPLACE FUNCTION "public"."_comm_canonical_email_address"("p_address" "text") RETURNS "text"
-    LANGUAGE "sql" IMMUTABLE STRICT
-    SET "search_path" TO 'public'
-    AS $$
-  select case
-    when length(p_address) - length(replace(p_address, '@', '')) = 1
-      and split_part(lower(btrim(p_address)), '@', 2) in ('gmail.com', 'googlemail.com')
-      then replace(
-             split_part(split_part(lower(btrim(p_address)), '@', 1), '+', 1),
-             '.',
-             ''
-           ) || '@gmail.com'
-    else lower(btrim(p_address))
-  end
-$$;
-
-
-ALTER FUNCTION "public"."_comm_canonical_email_address"("p_address" "text") OWNER TO "postgres";
-
---
 -- Name: _comm_choose_persona_route("uuid", "uuid", "text"); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -1190,7 +1167,7 @@ CREATE OR REPLACE FUNCTION "public"."_comm_resolve_parent_sender"("p_account_id"
     AS $$
 declare
   v_parent public.comm_outbox%rowtype;
-  v_canon  text := public._comm_canonical_email_address(p_from_address);
+  v_canon  text := lower(btrim(p_from_address));
   r        record;
 begin
   select * into v_parent
@@ -1208,7 +1185,7 @@ begin
     select 'cc', cc.addr
       from unnest(coalesce(v_parent.cc_addresses, '{}'::text[])) cc(addr)
   loop
-    if public._comm_canonical_email_address(r.addr) = v_canon then
+    if lower(btrim(r.addr)) = v_canon then
       recipient_role := r.rcpt_role;
       address        := r.addr;
       select h.o_party_type, h.o_party_id, h.o_tier
@@ -3482,7 +3459,7 @@ begin
          where o.id = v_parent_id
            and o.account_id = p_account_id;
         -- Does the unauthenticated From at least name a PHYSICAL recipient
-        -- of the parent? (Gmail-canonical compare, same as the pass path.)
+        -- of the parent? (Lowercase compare, same as the pass path.)
         -- Gates whether parent context may scope the conversation below.
         select count(*) into v_pr_matched
           from public._comm_resolve_parent_sender(p_account_id, v_parent_id, p_from_address);
@@ -3851,9 +3828,10 @@ begin
 
   -- The reply-all completion split (20260723000004, header): with the journal
   -- decision already made, is the resolved counterparty PHYSICALLY on this
-  -- email? Canonical compare on both sides, so gmail dot/+tag aliases count
-  -- as present. Only the cc arms consult the flag; in the no-parent arm the
-  -- counterparty comes FROM the inbound To/Cc, so it is always present there.
+  -- email? Lowercase compare on both sides; a different spelling of the same
+  -- mailbox does NOT count as present. Only the cc arms consult the flag; in
+  -- the no-parent arm the counterparty comes FROM the inbound To/Cc, so it is
+  -- always present there.
   -- A null counterparty address (parent to_address null; party resolved from
   -- the frozen snapshot alone) names no deliverable recipient: skip the
   -- split — the default TRUE keeps 'cc_journaled', never a relay toward a
@@ -3863,8 +3841,8 @@ begin
       select 1
         from unnest(coalesce(p_to_addresses, '{}'::text[])
                     || coalesce(p_cc_addresses, '{}'::text[])) a(addr)
-       where public._comm_canonical_email_address(a.addr)
-             = public._comm_canonical_email_address(v_cp_address)
+       where lower(btrim(a.addr))
+             = lower(btrim(v_cp_address))
     ) into v_cp_on_mail;
   end if;
 
@@ -7839,16 +7817,16 @@ begin
 
   -- CC-overlap suppression: did the landlord already physically receive the
   -- relayed mail (any cast entry — a visible Cc, or the sender itself when a
-  -- bad binding would bounce the tenant's own words back)? Canonical compare
-  -- so gmail dot/+tag aliases of one mailbox still count as delivered.
+  -- bad binding would bounce the tenant's own words back)? Lowercase compare
+  -- only: a different spelling of the same mailbox does NOT suppress the leg.
   select exists (
     select 1
       from public.interaction_participants ip
      where ip.account_id     = p_account_id
        and ip.interaction_id = p_source_interaction_id
        and ip.address is not null
-       and public._comm_canonical_email_address(ip.address)
-             = public._comm_canonical_email_address(to_address)
+       and lower(btrim(ip.address))
+             = lower(btrim(to_address))
   ) into already_delivered;
 
   return next;
@@ -16132,14 +16110,6 @@ REVOKE ALL ON FUNCTION "public"."_capture_maintenance_request_report"() FROM PUB
 GRANT ALL ON FUNCTION "public"."_channel_identities_normalize"() TO "anon";
 GRANT ALL ON FUNCTION "public"."_channel_identities_normalize"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."_channel_identities_normalize"() TO "service_role";
-
-
---
--- Name: FUNCTION "_comm_canonical_email_address"("p_address" "text"); Type: ACL; Schema: public; Owner: postgres
---
-
-REVOKE ALL ON FUNCTION "public"."_comm_canonical_email_address"("p_address" "text") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."_comm_canonical_email_address"("p_address" "text") TO "service_role";
 
 
 --
