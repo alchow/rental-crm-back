@@ -41,14 +41,6 @@ const RawEnvSchema = z.object({
   // its presence at call time and 502s cleanly if it's unset.
   ANTHROPIC_API_KEY: z.string().min(20).optional(),
 
-  // Resend transactional-email credentials (api/src/admin/mailer.ts). Both are
-  // optional so the app still boots without them: getMailer() falls back to a
-  // stub that logs sends instead of delivering. Set BOTH to enable real
-  // delivery. MAIL_FROM accepts a bare address or the named-sender form
-  // ("Acme <noreply@acme.com>"), so it is a plain string, not .email().
-  RESEND_API_KEY: z.string().min(1).optional(),
-  MAIL_FROM: z.string().min(1).optional(),
-
   // HMAC secret for the public email-unsubscribe endpoint. SHARED with the
   // transport repo, which mints per-address unsubscribe URLs statelessly (it
   // holds the same secret). Unset -> the public unsubscribe endpoint 503s (and
@@ -67,13 +59,6 @@ const RawEnvSchema = z.object({
   // of the shared EMAIL_REPLY_DOMAIN. Unset -> branded minting is off
   // platform-wide and accounts fall back to EMAIL_REPLY_DOMAIN.
   EMAIL_PLATFORM_PARENT_DOMAIN: z.string().min(3).optional(),
-
-  // Cutover flag for core-originated transactional email. ON ('on' | 'true')
-  // -> the inspection-capture renewal email is written to the comms outbox (the
-  // transport dials the provider); OFF/unset -> the legacy in-core mailer
-  // (admin/mailer.ts) sends directly. The mailer is deleted only after the
-  // coordinator signals cutover-verified.
-  COMMS_EMAIL_PIPELINE: z.string().optional(),
 
   // Retention horizon (days) for archived inbound-webhook evidence BLOBS
   // (bucket 'comm-evidence'; see admin/evidence.ts). The audit-anchored
@@ -103,12 +88,9 @@ export interface Env {
   SUPABASE_JWT_AUDIENCE: string;
   CORS_ALLOWED_ORIGINS: string[];
   ANTHROPIC_API_KEY: string | null;
-  RESEND_API_KEY: string | null;
-  MAIL_FROM: string | null;
   UNSUBSCRIBE_HMAC_SECRET: string | null;
   EMAIL_REPLY_DOMAIN: string | null;
   EMAIL_PLATFORM_PARENT_DOMAIN: string | null;
-  COMMS_EMAIL_PIPELINE: boolean;
   COMM_EVIDENCE_RETENTION_DAYS: number;
 }
 
@@ -140,12 +122,9 @@ export function loadEnv(): Env {
       ? raw.CORS_ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
       : [],
     ANTHROPIC_API_KEY: raw.ANTHROPIC_API_KEY ?? null,
-    RESEND_API_KEY: raw.RESEND_API_KEY ?? null,
-    MAIL_FROM: raw.MAIL_FROM ?? null,
     UNSUBSCRIBE_HMAC_SECRET: raw.UNSUBSCRIBE_HMAC_SECRET ?? null,
     EMAIL_REPLY_DOMAIN: raw.EMAIL_REPLY_DOMAIN ?? null,
     EMAIL_PLATFORM_PARENT_DOMAIN: raw.EMAIL_PLATFORM_PARENT_DOMAIN ?? null,
-    COMMS_EMAIL_PIPELINE: raw.COMMS_EMAIL_PIPELINE === 'on' || raw.COMMS_EMAIL_PIPELINE === 'true',
     COMM_EVIDENCE_RETENTION_DAYS: raw.COMM_EVIDENCE_RETENTION_DAYS,
   };
   return cached;

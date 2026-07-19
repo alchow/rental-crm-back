@@ -17,10 +17,10 @@
 //     GET registers + returns the confirmation page, POST replay is idempotent,
 //     tampered / garbage tokens 404.
 //   * dispatch-scan channel filter: ?channel=email|sms partitions the queue.
-//   * the inspection-capture renewal-email cutover (COMMS_EMAIL_PIPELINE=on):
-//     the renewal writes a system:capture_renewal email intent to the tenant's
-//     on-file address, and an opt-out on that address suppresses the write
-//     (logged, not thrown) while the route stays a uniform 202.
+//   * the inspection-capture renewal email (rides the comms ledger
+//     unconditionally): the renewal writes a system:capture_renewal email intent
+//     to the tenant's on-file address, and an opt-out on that address suppresses
+//     the write (logged, not thrown) while the route stays a uniform 202.
 // ----------------------------------------------------------------------------
 
 import { execSync } from 'node:child_process';
@@ -61,14 +61,12 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = status.SERVICE_ROLE_KEY;
 process.env.SUPABASE_JWKS_URL = `${status.API_URL}/auth/v1/.well-known/jwks.json`;
 process.env.SUPABASE_JWT_ISSUER = `${status.API_URL}/auth/v1`;
 process.env.SUPABASE_JWT_AUDIENCE = 'authenticated';
-// E1-A: the HMAC unsubscribe secret (mint + verify must share it) and the
-// renewal-email cutover flag must be set at BOOT, before the env/app modules
-// snapshot them.
+// E1-A: the HMAC unsubscribe secret (mint + verify must share it) must be set
+// at BOOT, before the env/app modules snapshot it.
 // Deliberately repetitive (low-entropy) so the gitleaks pre-commit scan
 // never mistakes this test-only value for a real credential.
 const UNSUB_SECRET = 'test-secret-test-secret-test-secret-test';
 process.env.UNSUBSCRIBE_HMAC_SECRET = UNSUB_SECRET;
-process.env.COMMS_EMAIL_PIPELINE = 'on';
 
 const { _resetAdminClientForTests, getAdminClient } = await import('../src/admin/supabase-admin');
 _resetAdminClientForTests();
@@ -462,7 +460,7 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
-  // (F) renewal-email cutover (COMMS_EMAIL_PIPELINE=on)
+  // (F) renewal email rides the comms ledger (unconditional)
   // =========================================================================
   // A capture token needs a live inspection tied to the tenancy. move_in
   // requires a tenancy_id and the inspection area to match the tenancy unit.
