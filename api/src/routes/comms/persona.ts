@@ -277,6 +277,7 @@ export function registerPersonaRoutes(app: CommsApp): void {
           | 'duplicate'
           | 'opted_out'
           | 'cc_journaled'
+          | 'cc_relayed'
           | 'journaled_unverified';
         interaction_id: string | null;
         thread_id: string | null;

@@ -732,7 +732,9 @@ async function main(): Promise<void> {
       references: [parentMessageId],
     });
     const res = assertStatus(reply, 200, 'phone alias persona reply') as CaptureShape;
-    assert(res.disposition === 'cc_journaled', `disposition: ${res.disposition}`);
+    // Persona-only headers: the tenant is NOT on this reply, so the capture
+    // is cc_relayed (journaled identically; the transport delivers it).
+    assert(res.disposition === 'cc_relayed', `disposition: ${res.disposition}`);
     assert(res.participant?.party_id === t2Id, `parent tenant restored: ${res.participant?.party_id}`);
     assert(res.interaction_id !== null, 'phone reply journaled');
 
@@ -1076,18 +1078,27 @@ async function main(): Promise<void> {
       `contradictory claim traced: ${JSON.stringify(decision)}`);
   });
 
-  await check('v2(2) landlord replies from the visible Cc address → cc_journaled into the tenant conversation', async () => {
+  let pv2CcRelayIid = '';
+  const PV2_CCRELAY_PROVIDER_ID = `PS-pv2-ccrelay-${rnd()}`;
+  const PV2_CCRELAY_RFC = `<pv2-reply2-${SUFFIX}@sender>`;
+  await check('v2(2) landlord plain reply (persona-only To) → cc_relayed: journaled identically, and the transport delivers it', async () => {
+    // The tenant is NOT on this email (mobile Reply collapsed to the
+    // Reply-To persona). Journaling alone would be a black hole, so the
+    // disposition is cc_relayed — same journal row as cc_journaled, but the
+    // transport must deliver the reply to the counterparty.
     const r = await personaCapture({
+      provider_msg_id: PV2_CCRELAY_PROVIDER_ID,
       from_address: ownerEmail,
       to_addresses: [PERSONA],
       body: 'landlord reply from the cc leg',
-      rfc822_message_id: `<pv2-reply2-${SUFFIX}@sender>`,
+      rfc822_message_id: PV2_CCRELAY_RFC,
       in_reply_to: pv2Parent1.msgid,
     });
     const res = assertStatus(r, 200, 'cc reply capture') as CaptureShape;
-    assert(res.disposition === 'cc_journaled', `disposition: ${res.disposition}`);
+    assert(res.disposition === 'cc_relayed', `disposition: ${res.disposition}`);
     assert(res.thread_id === pv2ThreadId, `into the tenant's conversation: ${res.thread_id}`);
     assert(res.participant?.party_id === ptAId, `counterparty = tenant: ${JSON.stringify(res.participant)}`);
+    pv2CcRelayIid = res.interaction_id!;
     const { data: row, error } = await admin
       .from('interactions').select('direction, author_type, party_type, party_id')
       .eq('id', res.interaction_id!).single();
@@ -1096,6 +1107,98 @@ async function main(): Promise<void> {
       `landlord-authored outbound: ${row!.direction}/${row!.author_type}`);
     assert(row!.party_type === 'tenant' && row!.party_id === ptAId,
       `party = counterparty: ${row!.party_type}/${row!.party_id}`);
+    const { data: raw } = await admin
+      .from('inbound_raw').select('disposition, payload')
+      .eq('provider_msg_id', PV2_CCRELAY_PROVIDER_ID).single();
+    assert(raw!.disposition === 'cc_relayed', `raw disposition: ${raw!.disposition}`);
+    const decision = (raw!.payload as {
+      routing_decision?: { version: number; disposition: string; reason: string };
+    }).routing_decision;
+    assert(decision?.version === 2 && decision.disposition === 'cc_relayed'
+      && decision.reason === 'cc_counterparty_not_addressed',
+      `decision records the split: ${JSON.stringify(decision)}`);
+  });
+
+  await check('v2(2b) landlord reply-all (counterparty in Cc) → cc_journaled (the tenant already received it)', async () => {
+    const provId = `PS-pv2-ccall-${rnd()}`;
+    const r = assertStatus(await personaCapture({
+      provider_msg_id: provId,
+      from_address: ownerEmail,
+      to_addresses: [PERSONA],
+      cc_addresses: [PV2_TENANT_EMAIL],
+      body: 'landlord reply-all keeping the tenant on the mail',
+      rfc822_message_id: `<pv2-reply2b-${SUFFIX}@sender>`,
+      in_reply_to: pv2Parent1.msgid,
+    }), 200, 'reply-all capture') as CaptureShape;
+    assert(r.disposition === 'cc_journaled', `disposition: ${r.disposition}`);
+    assert(r.thread_id === pv2ThreadId, `same conversation: ${r.thread_id}`);
+    assert(r.participant?.party_id === ptAId, `counterparty = tenant: ${JSON.stringify(r.participant)}`);
+    const { data: raw } = await admin
+      .from('inbound_raw').select('payload').eq('provider_msg_id', provId).single();
+    const decision = (raw!.payload as {
+      routing_decision?: { disposition: string; reason: string };
+    }).routing_decision;
+    assert(decision?.disposition === 'cc_journaled' && decision.reason === 'parent_unique_match',
+      `journal-only decision: ${JSON.stringify(decision)}`);
+  });
+
+  await check('v2(2c) canonical-variant counterparty in Cc (gmail dots/+tag) → cc_journaled (suppressed)', async () => {
+    // The parent went To the tenant's dotted gmail address; the landlord's
+    // reply-all carries an undotted +tag alias of the SAME mailbox. The
+    // canonical compare recognizes the alias as present → no relay.
+    const gmTenantEmail = `pv2.cc.tenant.${SUFFIX}@gmail.com`;
+    const gmVariant = `pv2cctenant${SUFFIX}+re@gmail.com`;
+    const gmTenantId = await createTenant('Gmail Cc Tenant', gmTenantEmail);
+    const gmParent = await pv2Parent({ to: gmTenantEmail, cc: [ownerEmail] });
+    const provId = `PS-pv2-ccgm-${rnd()}`;
+    const r = assertStatus(await personaCapture({
+      provider_msg_id: provId,
+      from_address: ownerEmail,
+      to_addresses: [PERSONA],
+      cc_addresses: [gmVariant],
+      body: 'reply-all with a gmail alias of the tenant',
+      rfc822_message_id: `<pv2-ccgm-${SUFFIX}@sender>`,
+      in_reply_to: gmParent.msgid,
+    }), 200, 'gmail-variant reply-all') as CaptureShape;
+    assert(r.disposition === 'cc_journaled', `disposition: ${r.disposition}`);
+    assert(r.participant?.party_id === gmTenantId,
+      `counterparty = the gmail tenant: ${JSON.stringify(r.participant)}`);
+    const { data: raw } = await admin
+      .from('inbound_raw').select('payload').eq('provider_msg_id', provId).single();
+    const decision = (raw!.payload as {
+      routing_decision?: { disposition: string; reason: string };
+    }).routing_decision;
+    assert(decision?.disposition === 'cc_journaled' && decision.reason === 'parent_unique_match',
+      `alias counted as present: ${JSON.stringify(decision)}`);
+  });
+
+  await check('v2(2d) cc_relayed replay: same provider_msg_id returns the frozen original', async () => {
+    const r = await personaCapture({
+      provider_msg_id: PV2_CCRELAY_PROVIDER_ID,
+      from_address: PV2_TENANT_EMAIL,
+      cc_addresses: [PV2_TENANT_EMAIL],
+      body: 'completely different content',
+      rfc822_message_id: `<pv2-reply2d-${SUFFIX}@sender>`,
+      auth_results: AUTH_FAIL,
+    });
+    const res = assertStatus(r, 200, 'cc_relayed replay') as CaptureShape;
+    assert(res.disposition === 'cc_relayed', `frozen disposition: ${res.disposition}`);
+    assert(res.interaction_id === pv2CcRelayIid, `frozen interaction: ${res.interaction_id}`);
+    assert(res.thread_id === pv2ThreadId, `frozen thread: ${res.thread_id}`);
+  });
+
+  await check('v2(2e) same-thread rfc822 dedupe unchanged: the cc reply Message-ID again → duplicate', async () => {
+    const r = await personaCapture({
+      from_address: ownerEmail,
+      to_addresses: [PERSONA],
+      body: 'second delivery door of the same reply',
+      rfc822_message_id: PV2_CCRELAY_RFC,
+      in_reply_to: pv2Parent1.msgid,
+    });
+    const res = assertStatus(r, 200, 'cc dedupe capture') as CaptureShape;
+    assert(res.disposition === 'duplicate', `disposition: ${res.disposition}`);
+    assert(res.interaction_id === pv2CcRelayIid, 'points at the cc_relayed original');
+    assert(res.thread_id === pv2ThreadId, `same thread: ${res.thread_id}`);
   });
 
   await check('v2(3) mobile reply strips To/Cc: persona-only headers still resolve via the parent', async () => {

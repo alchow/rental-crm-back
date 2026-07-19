@@ -135,8 +135,16 @@ export const CapturePersonaInboundResponse = z
      *  success-no-op, relay nothing.
      *  opted_out: matched AND journaled, but the sender is on the opt-out
      *  register — relay nothing.
-     *  cc_journaled: reserved for the phase-4 landlord CC arm — journal-only;
-     *  relay nothing.
+     *  cc_journaled: the landlord CC arm, counterparty already on the mail's
+     *  To/Cc (canonical compare) — journal-only; relay nothing (they received
+     *  the mail directly).
+     *  cc_relayed: the landlord CC arm, counterparty NOT on the mail's To/Cc
+     *  — the reply is journaled identically (landlord-authored outbound into
+     *  the counterparty's thread) AND the transport must DELIVER it to the
+     *  counterparty: create an email relay leg (relay_of_interaction_id =
+     *  interaction_id) addressed to the returned thread's counterparty
+     *  participant. The system completes the landlord's reply-all; a repeat
+     *  beats a black hole.
      *  journaled_unverified: the mail failed DMARC but its From named exactly
      *  one KNOWN tenant/vendor — the receipt is journaled into that party's
      *  conversation with attestation='unverified' (claimed, never asserted).
@@ -150,6 +158,7 @@ export const CapturePersonaInboundResponse = z
       'duplicate',
       'opted_out',
       'cc_journaled',
+      'cc_relayed',
       'journaled_unverified',
     ]),
     interaction_id: z.string().uuid().nullable(),

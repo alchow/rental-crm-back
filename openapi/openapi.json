@@ -6059,6 +6059,7 @@
               "duplicate",
               "opted_out",
               "cc_journaled",
+              "cc_relayed",
               "journaled_unverified"
             ]
           },

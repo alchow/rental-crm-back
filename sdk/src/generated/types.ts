@@ -17871,7 +17871,7 @@ export interface components {
         };
         CapturePersonaInboundResponse: {
             /** @enum {string} */
-            disposition: "matched" | "triaged" | "duplicate" | "opted_out" | "cc_journaled" | "journaled_unverified";
+            disposition: "matched" | "triaged" | "duplicate" | "opted_out" | "cc_journaled" | "cc_relayed" | "journaled_unverified";
             /** Format: uuid */
             interaction_id: string | null;
             /** Format: uuid */

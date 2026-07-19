@@ -404,17 +404,21 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
-  // UC-B — landlord replies from the visible Cc address
+  // UC-B — landlord replies from the visible Cc address (the reply-all
+  // completion split, 20260723000004): tenant NOT on the reply -> cc_relayed
+  // (the transport delivers it); tenant kept on the reply -> cc_journaled.
   // =========================================================================
-  await check('UC-B: landlord Cc reply -> cc_journaled into the tenant conversation, relayed nothing', async () => {
+  await check('UC-B: landlord plain reply (persona-only To) -> cc_relayed, journaled identically', async () => {
+    const provId = `UC-B-${rnd()}`;
     const r = await personaCapture({
+      provider_msg_id: provId,
       from_address: ownerEmail,
       body: 'landlord reply from the cc leg',
       rfc822_message_id: `<uc-b-reply-${SUFFIX}@sender>`,
       in_reply_to: parent1.msgid,
     });
     const res = assertStatus(r, 200, 'UC-B capture') as CaptureShape;
-    assert(res.disposition === 'cc_journaled', `disposition: ${res.disposition}`);
+    assert(res.disposition === 'cc_relayed', `disposition: ${res.disposition}`);
     assert(res.thread_id === ucaThreadId, `into the tenant conversation: ${res.thread_id}`);
     assert(res.participant?.party_id === albaId, `counterparty = tenant: ${JSON.stringify(res.participant)}`);
     const { data: row } = await admin
@@ -422,6 +426,26 @@ async function main(): Promise<void> {
       .eq('id', res.interaction_id!).single();
     assert(row!.direction === 'outbound' && row!.author_type === 'landlord',
       `landlord-authored outbound: ${row!.direction}/${row!.author_type}`);
+    const d = await readDecision(provId);
+    assert(d.disposition === 'cc_relayed' && d.reason === 'cc_counterparty_not_addressed',
+      `split recorded: ${JSON.stringify(d)}`);
+  });
+
+  await check('UC-B2: landlord reply-all (tenant in Cc) -> cc_journaled, relay nothing', async () => {
+    const provId = `UC-B2-${rnd()}`;
+    const r = assertStatus(await personaCapture({
+      provider_msg_id: provId,
+      from_address: ownerEmail,
+      cc_addresses: [A_TENANT],
+      body: 'landlord reply-all keeping the tenant on the mail',
+      rfc822_message_id: `<uc-b2-reply-${SUFFIX}@sender>`,
+      in_reply_to: parent1.msgid,
+    }), 200, 'UC-B2 capture') as CaptureShape;
+    assert(r.disposition === 'cc_journaled', `disposition: ${r.disposition}`);
+    assert(r.thread_id === ucaThreadId, `same conversation: ${r.thread_id}`);
+    const d = await readDecision(provId);
+    assert(d.disposition === 'cc_journaled' && d.reason === 'parent_unique_match',
+      `journal-only decision: ${JSON.stringify(d)}`);
   });
 
   // =========================================================================
@@ -466,10 +490,16 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
-  // UC-E — landlord Ccs the persona on a NEW message to a tenant
+  // UC-E — landlord Ccs the persona on a NEW message to a tenant. The
+  // reply-all completion split runs here too, but the no-parent arm resolves
+  // the counterparty FROM the inbound To/Cc, so the counterparty is present
+  // by construction -> always cc_journaled (never cc_relayed) in this arm.
   // =========================================================================
+  let uceThreadId = '';
   await check('UC-E: landlord Ccs persona on a new message to a tenant -> cc_journaled (outbound-cold thread)', async () => {
+    const provId = `UC-E-${rnd()}`;
     const r = await personaCapture({
+      provider_msg_id: provId,
       from_address: ownerEmail,
       to_addresses: [E_TENANT],
       subject: 'Welcome aboard',
@@ -479,12 +509,33 @@ async function main(): Promise<void> {
     const res = assertStatus(r, 200, 'UC-E capture') as CaptureShape;
     assert(res.disposition === 'cc_journaled', `disposition: ${res.disposition}`);
     assert(res.thread_id !== null && res.thread_id !== danThreadId, 'a new thread');
+    uceThreadId = res.thread_id!;
     assert(res.participant?.party_id === evaId, `counterparty: ${JSON.stringify(res.participant)}`);
     const { data: row } = await admin
       .from('interactions').select('direction, author_type')
       .eq('id', res.interaction_id!).single();
     assert(row!.direction === 'outbound' && row!.author_type === 'landlord',
       `landlord-authored outbound: ${row!.direction}/${row!.author_type}`);
+    const d = await readDecision(provId);
+    assert(d.disposition === 'cc_journaled' && d.reason === 'sender_unique_claim',
+      `counterparty present (the To named her): ${JSON.stringify(d)}`);
+  });
+
+  await check('UC-E2: no-parent landlord mail with the tenant in Cc -> still cc_journaled (same split, Cc position)', async () => {
+    const provId = `UC-E2-${rnd()}`;
+    const r = assertStatus(await personaCapture({
+      provider_msg_id: provId,
+      from_address: ownerEmail,
+      cc_addresses: [E_TENANT],
+      subject: 'Re: Welcome aboard',
+      body: 'follow-up with the tenant on the cc line',
+      rfc822_message_id: `<uc-e2-cold-${SUFFIX}@sender>`,
+    }), 200, 'UC-E2 capture') as CaptureShape;
+    assert(r.disposition === 'cc_journaled', `disposition: ${r.disposition}`);
+    assert(r.thread_id === uceThreadId, `resumes the bound thread: ${r.thread_id}`);
+    const d = await readDecision(provId);
+    assert(d.disposition === 'cc_journaled' && d.reason === 'sender_unique_claim',
+      `journal-only decision: ${JSON.stringify(d)}`);
   });
 
   // =========================================================================

@@ -25,17 +25,47 @@ routing v2 migration stack:
   unverified-journal tier: non-DMARC mail from exactly one KNOWN tenant/vendor
   claimant journals as `journaled_unverified` (attestation `'unverified'`)
   instead of triaging; adds the owner/manager retract / confirm-sender
-  follow-ups. This file also holds the CURRENT `capture_persona_inbound`
-  body (the digest-check target below).
+  follow-ups.
+- `db/supabase/migrations/20260723000004_cc_relayed_reply_all_completion.sql`
+  — the reply-all completion split: a DMARC-pass landlord cc capture whose
+  resolved counterparty is NOT on the inbound To/Cc becomes `cc_relayed`
+  (deliver, not just journal); counterparty present stays `cc_journaled`.
+  This file also holds the CURRENT `capture_persona_inbound` body (the
+  digest-check target below).
 
 Pre-v2 phase-by-phase history lives in git; this file no longer accumulates
 phases.
 
-## Standing rules (unchanged)
+## Standing rules
 
-- **Relay only on `matched`.** Never relay on `cc_journaled`, `triaged`,
-  `duplicate`, `opted_out`, `journaled_unverified`, or any disposition the
-  transport does not recognize (fail-safe forward compatibility).
+- **Relay only on `matched` and `cc_relayed`.** Never relay on
+  `cc_journaled`, `triaged`, `duplicate`, `opted_out`, `journaled_unverified`,
+  or any disposition the transport does not recognize (fail-safe forward
+  compatibility).
+
+  *Amended 2026-07-18 (PRODUCT DECISION, on record).* Previously the rule was
+  "relay only on `matched`", which made a landlord's plain persona reply a
+  black hole: the reply journaled (`cc_journaled`) but the tenant/vendor never
+  received it. `cc_relayed` is the same landlord cc capture where the resolved
+  counterparty was NOT physically on the email's To/Cc (canonical compare, so
+  gmail dot/+tag aliases count as present) — the transport must DELIVER the
+  journaled reply to the counterparty. Duplication is accepted: a repeat beats
+  a black hole, so the To/Cc check is a discriminator, not a safety-critical
+  suppressor. Trust basis: a DMARC-verified landlord sender replying within
+  their own thread — strictly stronger than the retired token door, which
+  relayed on token possession alone.
+
+  **Deploy order for this change — INVERTED from the usual core-first rule:
+  the AGENT deploys FIRST** (with a bundled spec enum that accepts
+  `cc_relayed`); core's migration + merge follow. The agent AJV-validates
+  every capture response against its bundled spec enum, and an unknown
+  disposition value THROWS: the webhook 500s, SNS redelivers, and the frozen
+  replay returns `cc_relayed` again — a poison loop, NOT a graceful
+  journal-only fallback. (The "relay nothing on an unrecognized disposition"
+  rule above governs the transport's RELAY decision; it does not make its
+  response validation tolerant.) The reverse direction is safe: an agent
+  that already accepts the value but predates the relay logic simply
+  journals during the transition window.
 - Tokens (`t-<32hex>@…`) remain the thread-leg routing mechanism, resolved via
   `GET /v1/comms/resolve-reply-address`. The persona address is an ADDITIONAL
   receiving surface, never a replacement. Persona local parts can never start
@@ -48,7 +78,9 @@ phases.
   not maintain its own account/subdomain map.
 - No LLM runs anywhere on this path. Routing is deterministic SQL.
 - Deploy ordering: core ships first; the transport starts depending on new
-  behavior only after it exists in prod.
+  behavior only after it exists in prod. EXCEPTION: a change that widens a
+  response enum the agent AJV-validates (e.g. `cc_relayed`) ships agent-first
+  — see the amendment above.
 
 ## Relay legs to a landlord are notifications
 
@@ -178,9 +210,15 @@ Outcomes:
 
 - sender = exactly one tenant/vendor parent recipient → **`matched`**
   (inbound, tenant/vendor-authored, relayed);
-- sender = exactly one landlord parent recipient → **`cc_journaled`**
+- sender = exactly one landlord parent recipient → the landlord cc arm
   (outbound, landlord-authored, journaled into the parent's PRIMARY
-  recipient's conversation; relay nothing);
+  recipient's conversation), split on whether that counterparty is physically
+  on THIS email's To/Cc (canonical compare): present → **`cc_journaled`**
+  (relay nothing — they received it directly); absent → **`cc_relayed`** (the
+  transport delivers the journaled reply to the counterparty — the system
+  completes the landlord's reply-all). A null counterparty address (parent
+  `to_address` null; party resolved from the frozen snapshot alone) skips the
+  split and stays `cc_journaled` — never a relay toward a null recipient;
 - sender matches no parent recipient → triage **`parent_sender_mismatch`**
   (never rerouted into the sender's own unrelated thread);
 - matches resolve to more than one distinct party, or a leg's claims tie at
@@ -215,7 +253,10 @@ Only when no valid parent reference exists:
 2. A landlord sender enters the CC arm: the conversation comes from a To/Cc
    address bound in an active email thread, else a To/Cc address resolving
    (uniquely, tenant/vendor only) to a known counterparty — outbound-cold
-   thread creation — else triage.
+   thread creation — else triage. The reply-all completion split runs here
+   too, but because the counterparty is resolved FROM the inbound To/Cc the
+   outcome is always `cc_journaled` in this arm (`cc_relayed` is reachable
+   only via the parent path).
 3. A tenant/vendor sender journals into their active thread, creating one
    (single active/holdover tenancy for tenants) when none exists.
 
@@ -295,9 +336,9 @@ riley@acme.mail.example.com
 
 ## Dispositions and triage reasons
 
-Capture dispositions (relay ONLY on `matched`):
-`matched` | `cc_journaled` | `triaged` | `duplicate` | `opted_out` |
-`journaled_unverified`.
+Capture dispositions (relay ONLY on `matched` and `cc_relayed`):
+`matched` | `cc_journaled` | `cc_relayed` | `triaged` | `duplicate` |
+`opted_out` | `journaled_unverified`.
 
 `comm_unmatched_inbound.reason` (all but `unknown_sender` require human
 review):
@@ -365,8 +406,8 @@ never mutated on replay:
   "selected_party_id": "uuid | null",
   "selected_thread_id": "uuid | null",
   "selected_tenancy_id": "uuid | null",
-  "disposition": "matched | cc_journaled | triaged | duplicate | opted_out | journaled_unverified",
-  "reason": "parent_unique_match | sender_unique_claim | unverified_single_claim | duplicate_rfc822_message_id | <triage reason>",
+  "disposition": "matched | cc_journaled | cc_relayed | triaged | duplicate | opted_out | journaled_unverified",
+  "reason": "parent_unique_match | sender_unique_claim | cc_counterparty_not_addressed | unverified_single_claim | duplicate_rfc822_message_id | <triage reason>",
   "conflict_party_type": "…| null",
   "conflict_party_id": "uuid | null"
 }
