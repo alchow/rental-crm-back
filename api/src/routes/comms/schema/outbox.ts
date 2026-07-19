@@ -241,8 +241,8 @@ export const CreateOutboxBody = z
      *  is a landlord_user is a NOTIFICATION: it dials the account's
      *  authoritative owner/manager email (thread-binding fallback) and is
      *  refused with 409 relay_already_delivered when the relayed mail's cast
-     *  already carries that address (canonical compare — the landlord received
-     *  the original physically, e.g. as a visible Cc). */
+     *  already carries that exact address (lowercase compare, no alias
+     *  folding — the landlord received the original physically). */
     relay_of_interaction_id: z.string().uuid().optional(),
     template_id: z.string().min(1).max(200).optional(),
     /** Optional context: links the send (and, on completion, its journal row)

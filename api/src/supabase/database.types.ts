@@ -3999,10 +3999,6 @@ export type Database = {
       };
     };
     Functions: {
-      _comm_canonical_email_address: {
-        Args: { p_address: string };
-        Returns: string;
-      };
       _comm_choose_persona_route: {
         Args: {
           p_account_id: string;
