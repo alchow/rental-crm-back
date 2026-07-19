@@ -87,7 +87,7 @@ _resetEnvCacheForTests();
 const { _resetJwksCacheForTests } = await import('../src/middleware/auth');
 _resetJwksCacheForTests();
 const { buildApp } = await import('../src/app');
-// Exported by the renewal cutover so tests can mint a fresh capture token
+// Exported by the renewal flow so tests can mint a fresh capture token
 // directly (service-tier), the same call the renewal path uses internally.
 const { mintCaptureTokenAdmin } = await import('../src/admin/inspection-capture');
 
@@ -207,7 +207,7 @@ const EMAIL_A = `send-a-${SUFFIX}@e1.test`;      // subject/complete-cycle recip
 const EMAIL_B = `unsub-b-${SUFFIX}@e1.test`;     // one-click POST unsubscribe target
 const EMAIL_C = `unsub-c-${SUFFIX}@e1.test`;     // GET-page unsubscribe target
 const EMAIL_D = `scan-d-${SUFFIX}@e1.test`;      // dispatch-scan email row
-const RENEWAL_EMAIL = `renew-${SUFFIX}@e1.test`; // renewal cutover recipient
+const RENEWAL_EMAIL = `renew-${SUFFIX}@e1.test`; // renewal-email recipient
 const RENEWAL_EMAIL2 = `renew2-${SUFFIX}@e1.test`; // opt-out-suppressed recipient
 const SMS_PHONE = `+1914${SUFFIX}`;              // dispatch-scan sms row
 const PLATFORM = `+1912${SUFFIX}`;
@@ -499,11 +499,11 @@ async function main(): Promise<void> {
     assert(row!.subject === 'Your condition form link', `subject: ${String(row!.subject)}`);
     assert(String(row!.body).includes('/capture/'), `body missing /capture/: ${String(row!.body).slice(0, 120)}`);
     assert(row!.status === 'queued', `status: ${String(row!.status)}`);
-    // The cutover MAY copy the inspection's tenancy onto the journal-context
-    // field; if it doesn't, the field is null. Accept either (see notes).
+    // The renewal path copies the inspection's tenancy onto the journal-context
+    // field unconditionally, and the fixture's inspection carries one.
     assert(
-      row!.tenancy_id === fx.tenancyId || row!.tenancy_id === null,
-      `tenancy_id: ${String(row!.tenancy_id)} (expected ${fx.tenancyId} or null)`,
+      row!.tenancy_id === fx.tenancyId,
+      `tenancy_id: ${String(row!.tenancy_id)} (expected ${fx.tenancyId})`,
     );
   });
 
@@ -513,6 +513,19 @@ async function main(): Promise<void> {
     assertStatus(oo, 200, 'opt-out RENEWAL_EMAIL2');
     const { error } = await admin.from('tenants').update({ emails: [RENEWAL_EMAIL2] }).eq('id', fx.tenant2Id);
     if (error) throw new Error(`set tenant2 email: ${error.message}`);
+
+    // Pin the MECHANISM, not just the absence of a row: a zero-row assertion
+    // alone passes for any unrelated early return (no tenant, no email, dead
+    // token). Prove the two preconditions hold first, so the only remaining
+    // explanation for zero rows is the P0004 opt-out refusal.
+    const { data: optOut } = await admin.from('comm_opt_outs')
+      .select('address').eq('channel', 'email').eq('address', RENEWAL_EMAIL2.toLowerCase()).maybeSingle();
+    assert(optOut != null, `no comm_opt_outs row for ${RENEWAL_EMAIL2.toLowerCase()}`);
+    const { data: tenant2 } = await admin.from('tenants').select('emails').eq('id', fx.tenant2Id).maybeSingle();
+    assert(
+      JSON.stringify(tenant2?.emails) === JSON.stringify([RENEWAL_EMAIL2]),
+      `tenant2 emails: ${JSON.stringify(tenant2?.emails)} (expected ["${RENEWAL_EMAIL2}"])`,
+    );
 
     const minted = await mintCaptureTokenAdmin({
       accountId: fx.accountId, inspectionId, tenantId: fx.tenant2Id, ttlMinutes: 60,

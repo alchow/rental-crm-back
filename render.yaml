@@ -44,6 +44,15 @@ services:
       # (<local>@<label>.<parent>). Unset -> accounts use EMAIL_REPLY_DOMAIN.
       - key: EMAIL_PLATFORM_PARENT_DOMAIN
         sync: false
+      # Public origin of the FRONTEND app -- the host that serves the tenant
+      # condition-form page core links to in renewal email
+      # (/capture/<secret>). This is the frontend origin, NOT this API's URL;
+      # in production it is the same origin configured in
+      # CORS_ALLOWED_ORIGINS. Unset -> links fall back to a dead
+      # https://app.example host (logged as a warning) and no tenant can open
+      # their form, so this must be set here even though it is schema-optional.
+      - key: APP_BASE_URL
+        sync: false
 
   # ==========================================================================
   # Comms evidence retention (cron)

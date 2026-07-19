@@ -158,7 +158,7 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
     //   - persona-ack: SAFE — it only ever mints for an account that already
     //     resolves a persona (i.e. a branded account), so it cannot emit an
     //     unbranded conversational send in the first place.
-    //   - inspection capture_renewal (api/src/admin/inspection-capture.ts:297)
+    //   - inspection capture_renewal (api/src/admin/inspection-capture.ts:312)
     //     is DELIBERATELY allowed through unbranded: it is a no-reply
     //     transactional LINK email, not a conversation, so the noreply
     //     fallback is the intended reply path, not a black hole.

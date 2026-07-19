@@ -1,5 +1,6 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { ApiError } from '../routes/_lib/error';
+import { loadEnv } from '../env';
 import { getLogger } from '../log';
 import { asJson, nullableRpcArg } from '../supabase/db-types';
 import { getAdminClient } from './supabase-admin';
@@ -30,9 +31,24 @@ export function hashCaptureSecret(secret: string): Buffer {
   return createHash('sha256').update(secret, 'utf8').digest();
 }
 
+/**
+ * Origin of the frontend that serves the /capture/<secret> page. Declared as
+ * APP_BASE_URL (api/src/env.ts) rather than read raw, so it is covered by the
+ * env schema and the render-env drift gate.
+ *
+ * The 'https://app.example' fallback keeps dev/CI/test booting without the
+ * var, but it is a dead host: any renewal email built off it ships a link the
+ * tenant cannot open. That failure is invisible from the outside -- the route
+ * still 202s, the ledger row still looks healthy -- so warn loudly rather than
+ * fall back in silence.
+ */
 function captureBaseUrl(): string {
-  // Frontend capture page base. Stub-friendly default; set APP_BASE_URL in prod.
-  return process.env.APP_BASE_URL ?? 'https://app.example';
+  const configured = loadEnv().APP_BASE_URL;
+  if (configured) return configured.replace(/\/+$/, '');
+  getLogger().warn(
+    '[capture-renewal] APP_BASE_URL is unset; renewal links fall back to https://app.example and will NOT resolve',
+  );
+  return 'https://app.example';
 }
 
 export interface CaptureTokenRow {
@@ -276,15 +292,16 @@ export async function requestCaptureRenewal(args: { secret: string }): Promise<v
       `Here is a fresh link to complete your move-in/move-out condition form:\n\n${link}\n\n` +
       `It expires in ${Math.round(DEFAULT_CAPTURE_TTL_MIN / 60 / 24)} days.`;
 
-    // Core writes its OWN comm_outbox ledger row instead of calling a provider.
-    // Core writing its own ledger is NOT "core sends" — the transport still
-    // makes the provider call off this outbox row. approval_ref=
-    // 'system:capture_renewal' is the honest provenance for a fixed server flow
-    // (no human approved this specific message, no standing grant covers it),
-    // and this row is this flow's FIRST journal record ever. Fire-and-forget
-    // (not awaited) so the anti-enumeration contract holds: uniform 202, no
-    // provider/DB latency folded into the response. Never throws out of the
-    // void block.
+    // Core-originated transactional send: core mints the outbox INTENT, the
+    // transport makes the provider call off this row. Core never dials.
+    // approval_ref='system:capture_renewal' / author_type='system' is the
+    // honest provenance for a fixed server flow — no human approved this
+    // specific message and no standing grant covers it. (Same shape as the
+    // persona-ack flow; see admin/persona-ack.ts.)
+    //
+    // Fire-and-forget (not awaited) so the anti-enumeration contract holds:
+    // uniform 202, no DB latency folded into the response. Never throws out of
+    // the void block.
     void (async () => {
       const { data: insp } = await admin
         .from('inspections')

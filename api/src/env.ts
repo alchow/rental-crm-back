@@ -73,6 +73,18 @@ const RawEnvSchema = z.object({
   // each entry is either an exact origin (https://app.example.com) or a
   // wildcard subdomain pattern (*.example.com).
   CORS_ALLOWED_ORIGINS: z.string().optional(),
+
+  // Public origin of the FRONTEND app, used to build links core emails to
+  // people who are not logged in -- today the tenant condition-form capture
+  // link (admin/inspection-capture.ts). Not an API-side URL: it must be the
+  // host that actually serves the /capture/<secret> page, which in production
+  // is the same origin listed in CORS_ALLOWED_ORIGINS.
+  //
+  // Optional so dev/CI/test still boot without it, but a link built off the
+  // fallback goes nowhere -- the consumer logs a warning when it falls back,
+  // because a silently-dead link is exactly the failure this declaration
+  // exists to surface. SET THIS IN PRODUCTION.
+  APP_BASE_URL: z.string().url().optional(),
 });
 
 export interface Env {
@@ -92,6 +104,7 @@ export interface Env {
   EMAIL_REPLY_DOMAIN: string | null;
   EMAIL_PLATFORM_PARENT_DOMAIN: string | null;
   COMM_EVIDENCE_RETENTION_DAYS: number;
+  APP_BASE_URL: string | null;
 }
 
 let cached: Env | null = null;
@@ -126,6 +139,7 @@ export function loadEnv(): Env {
     EMAIL_REPLY_DOMAIN: raw.EMAIL_REPLY_DOMAIN ?? null,
     EMAIL_PLATFORM_PARENT_DOMAIN: raw.EMAIL_PLATFORM_PARENT_DOMAIN ?? null,
     COMM_EVIDENCE_RETENTION_DAYS: raw.COMM_EVIDENCE_RETENTION_DAYS,
+    APP_BASE_URL: raw.APP_BASE_URL ?? null,
   };
   return cached;
 }

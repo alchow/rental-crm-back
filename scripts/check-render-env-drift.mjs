@@ -24,6 +24,10 @@ const REQUIRED_WEB_KEYS = [
   'UNSUBSCRIBE_HMAC_SECRET',
   'EMAIL_REPLY_DOMAIN',
   'EMAIL_PLATFORM_PARENT_DOMAIN',
+  // Schema-optional, but production-required: the frontend origin used to build
+  // tenant condition-form capture links. Unset in prod = every renewal email
+  // ships a dead https://app.example link, silently.
+  'APP_BASE_URL',
 ];
 
 const text = readFileSync(RENDER, 'utf8');
