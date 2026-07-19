@@ -5200,6 +5200,12 @@
               "null"
             ]
           },
+          "relay_source_sender_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "client_ref": {
             "type": "string"
           },
@@ -6059,6 +6065,7 @@
               "duplicate",
               "opted_out",
               "cc_journaled",
+              "cc_relayed",
               "journaled_unverified"
             ]
           },

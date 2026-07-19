@@ -157,10 +157,20 @@ export function registerOutboxLifecycleRoutes(app: CommsApp): void {
   // GET /comms/outbox — dispatch scan (transport)
   // ---------------------------------------------------------------------------
 
-  // Attach relay_source_rfc822_message_id to email relay legs: the Message-ID
-  // of the inbound original each leg relays, so the transport can set
-  // In-Reply-To/References and the relayed mail threads natively in the
-  // recipient's client. One batched read per page; non-relay rows are untouched.
+  // Attach the derived relay-source fields to email relay legs, at most two
+  // batched reads per page; non-relay rows are untouched:
+  //   * relay_source_rfc822_message_id — the Message-ID of the original each
+  //     leg relays (ALL email relay legs — threading needs it), so the
+  //     transport can set In-Reply-To/References and the relayed mail
+  //     threads natively in the recipient's client;
+  //   * relay_source_sender_label — the original's frozen sender-cast label,
+  //     derived ONLY when the original is the capture cc arm's
+  //     landlord-authored journal row (actor 'system:comm-persona-cc' — the
+  //     cc_relayed delivery source). The "«label» via «persona»" From is
+  //     exclusively the cc_relayed delivery shape: an ordinary matched relay
+  //     already leads with composeRelayBody's "«label» wrote:", so a via-From
+  //     there would double-attribute the author. Null on every other relay
+  //     leg.
   async function withRelaySourceMessageIds(
     c: Context,
     accountId: string,
@@ -176,19 +186,43 @@ export function registerOutboxLifecycleRoutes(app: CommsApp): void {
     if (sourceIds.length === 0) return rows;
     const { data, error } = await getSb(c)
       .from('interactions')
-      .select('id, rfc822_message_id')
+      .select('id, rfc822_message_id, actor')
       .eq('account_id', accountId)
       .in('id', sourceIds);
     if (error) throw commDbError(error);
-    const byId = new Map(
-      ((data ?? []) as { id: string; rfc822_message_id: string | null }[]).map((i) => [
-        i.id,
-        i.rfc822_message_id,
-      ]),
-    );
+    const sources = (data ?? []) as {
+      id: string;
+      rfc822_message_id: string | null;
+      actor: string | null;
+    }[];
+    const byId = new Map(sources.map((i) => [i.id, i.rfc822_message_id]));
+    const ccArmIds = sources
+      .filter((i) => i.actor === 'system:comm-persona-cc')
+      .map((i) => i.id);
+    const labelById = new Map<string, string | null>();
+    if (ccArmIds.length > 0) {
+      const { data: senders, error: sErr } = await getSb(c)
+        .from('interaction_participants')
+        .select('interaction_id, label')
+        .eq('account_id', accountId)
+        .eq('role', 'sender')
+        .in('interaction_id', ccArmIds);
+      if (sErr) throw commDbError(sErr);
+      for (const s of (senders ?? []) as { interaction_id: string; label: string | null }[]) {
+        // Capture writes exactly one sender leg; keep the first non-null label
+        // defensively should historical data ever carry more.
+        if (!labelById.has(s.interaction_id) || labelById.get(s.interaction_id) === null) {
+          labelById.set(s.interaction_id, s.label);
+        }
+      }
+    }
     return rows.map((r) =>
       r.channel === 'email' && r.relay_of_interaction_id !== null
-        ? { ...r, relay_source_rfc822_message_id: byId.get(r.relay_of_interaction_id) ?? null }
+        ? {
+            ...r,
+            relay_source_rfc822_message_id: byId.get(r.relay_of_interaction_id) ?? null,
+            relay_source_sender_label: labelById.get(r.relay_of_interaction_id) ?? null,
+          }
         : r,
     );
   }
@@ -301,7 +335,13 @@ export function registerOutboxLifecycleRoutes(app: CommsApp): void {
       p_error_code: body.error_code,
     });
     if (error) throw commDbError(error);
-    return c.json(data as OutboxRow, 200);
+    // The transport renders the dispatch From off THIS response (the pre-dial
+    // 'sending' claim), so it must carry the same derived relay_source_*
+    // fields as the reads — without them a cc_relayed delivery would silently
+    // fall back to the plain persona From ("«landlord» via «persona»" lost;
+    // delivery and Cc unaffected).
+    const [row] = await withRelaySourceMessageIds(c, accountId, [data as OutboxRow]);
+    return c.json(row, 200);
   });
 
   app.openapi(reconcileScan, async (c) => {

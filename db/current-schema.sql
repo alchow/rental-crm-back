@@ -3335,6 +3335,7 @@ declare
   v_reason       text;            -- non-null => triage
   v_cc_arm       boolean := false;
   v_unverified   boolean := false; -- 20260723000003: unverified-journal arm
+  v_cp_on_mail   boolean := true;  -- 20260723000004: counterparty on the inbound To/Cc
   v_pr_matched   int := 0;
   v_ll_id        uuid;
   v_cp_type      text;
@@ -3608,8 +3609,11 @@ begin
       end if;
 
       if v_outcome = 'cc_journaled' then
-        -- The landlord replied from a parent Cc leg: journal-only, into the
-        -- parent's PRIMARY recipient's conversation.
+        -- The landlord replied from a parent Cc leg: journal into the
+        -- parent's PRIMARY recipient's conversation. Whether the transport
+        -- also DELIVERS the reply is decided by the shared-tail split
+        -- (20260723000004): counterparty on the inbound To/Cc ->
+        -- 'cc_journaled'; absent -> 'cc_relayed'.
         v_cc_arm := true;
         v_ll_id  := v_party_id;
         select h.o_party_type, h.o_party_id, h.o_tier into v_cp_type, v_cp_id, v_cp_tier
@@ -3845,9 +3849,29 @@ begin
     end if;
   end if;
 
+  -- The reply-all completion split (20260723000004, header): with the journal
+  -- decision already made, is the resolved counterparty PHYSICALLY on this
+  -- email? Canonical compare on both sides, so gmail dot/+tag aliases count
+  -- as present. Only the cc arms consult the flag; in the no-parent arm the
+  -- counterparty comes FROM the inbound To/Cc, so it is always present there.
+  -- A null counterparty address (parent to_address null; party resolved from
+  -- the frozen snapshot alone) names no deliverable recipient: skip the
+  -- split — the default TRUE keeps 'cc_journaled', never a relay toward a
+  -- null address.
+  if v_cc_arm and v_cp_address is not null then
+    select exists (
+      select 1
+        from unnest(coalesce(p_to_addresses, '{}'::text[])
+                    || coalesce(p_cc_addresses, '{}'::text[])) a(addr)
+       where public._comm_canonical_email_address(a.addr)
+             = public._comm_canonical_email_address(v_cp_address)
+    ) into v_cp_on_mail;
+  end if;
+
   v_disposition := case
     when v_unverified then 'journaled_unverified'
-    when v_cc_arm then 'cc_journaled'
+    when v_cc_arm and v_cp_on_mail then 'cc_journaled'
+    when v_cc_arm then 'cc_relayed'
     when exists (
       select 1 from public.comm_opt_outs oo
        where oo.channel = 'email' and oo.address = p_from_address
@@ -4006,6 +4030,7 @@ begin
     'disposition', v_disposition,
     'reason', case
       when v_unverified then 'unverified_single_claim'
+      when v_disposition = 'cc_relayed' then 'cc_counterparty_not_addressed'
       when v_parent_match = 'unique' then 'parent_unique_match'
       else 'sender_unique_claim' end,
     'conflict_party_type', v_conflict_pt,
@@ -10255,7 +10280,7 @@ CREATE TABLE IF NOT EXISTS "public"."inbound_raw" (
     "matched_participant_id" "uuid",
     "matched_interaction_id" "uuid",
     "rfc822_message_id" "text",
-    CONSTRAINT "inbound_raw_disposition_check" CHECK (("disposition" = ANY (ARRAY['matched'::"text", 'orphan'::"text", 'opted_out'::"text", 'sender_mismatch'::"text", 'duplicate'::"text", 'cc_journaled'::"text", 'triaged'::"text", 'journaled_unverified'::"text"]))),
+    CONSTRAINT "inbound_raw_disposition_check" CHECK (("disposition" = ANY (ARRAY['matched'::"text", 'orphan'::"text", 'opted_out'::"text", 'sender_mismatch'::"text", 'duplicate'::"text", 'cc_journaled'::"text", 'cc_relayed'::"text", 'triaged'::"text", 'journaled_unverified'::"text"]))),
     CONSTRAINT "inbound_raw_provider_check" CHECK ((("length"("provider") >= 1) AND ("length"("provider") <= 100))),
     CONSTRAINT "inbound_raw_rfc822_message_id_check" CHECK ((("rfc822_message_id" IS NULL) OR (("length"("rfc822_message_id") >= 3) AND ("length"("rfc822_message_id") <= 998))))
 );
