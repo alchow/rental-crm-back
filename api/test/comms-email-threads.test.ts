@@ -124,8 +124,16 @@ const SMS_SUBJ_PHONE = `+1930${SUFFIX}`; // subject-on-sms reject probe
 const PLATFORM_A = `+1912${SUFFIX}`;
 const PLATFORM_B = `+1913${SUFFIX}`;
 const PLATFORM_C = `+1914${SUFFIX}`; // branded-subdomain account
+const SMS_GATE_PHONE = `+1931${SUFFIX}`; // sms-thread-unaffected probe (unbranded fx)
 
-const REPLY_RE = new RegExp(`^t-[0-9a-f]{32}@reply-${SUFFIX}\\.test$`);
+// W1 (no conversational email without branding): the fixture account (fx,
+// PLATFORM_A) is branded UP FRONT — a subdomain alone (the persona defaults to
+// 'manager' via the 20260721000003 trigger) — so every thread it mints routes
+// reply tokens under `<FX_SUBDOMAIN>.<parent>`, NOT the shared reply domain.
+// The negative gate (unbranded) is proven before branding, and again at the
+// end after the subdomain is cleared.
+const FX_SUBDOMAIN = `bare${SUFFIX}`;
+const REPLY_RE = new RegExp(`^t-[0-9a-f]{32}@${FX_SUBDOMAIN}\\.brand-${SUFFIX}\\.test$`);
 
 interface Fixture {
   accountId: string;
@@ -297,6 +305,115 @@ async function main(): Promise<void> {
   let tenant1Token = ''; // the tenant's minted reply address (thread-1)
   let landlordToken = ''; // the landlord's minted reply address (thread-1)
   let tenantInboundIid = ''; // the matched tenant inbound interaction (relay source)
+
+  // =========================================================================
+  // (W1 negative gate) The fixture starts UNBRANDED. Prove that every
+  // CONVERSATIONAL email surface is refused with the stable message — email
+  // thread CREATION and a bare email send — while a non-email (sms) thread is
+  // unaffected. (A thread-LEG send can't be exercised here: you can't create
+  // an email thread to hang a leg off of while unbranded; the re-arm check at
+  // the very end proves the thread-leg gate after clearing the subdomain.)
+  // =========================================================================
+  await check('email createThread on an unbranded account → 422 (stable message)', async () => {
+    const r = await createThread({
+      kind: 'bridged_tenant',
+      channel: 'email',
+      subject: 'Unbranded thread probe',
+      participants: [llPart, t1Part],
+    });
+    assertStatus(r, 422, 'unbranded email createThread');
+    assert(errCode(r) === 'invalid_request', `code: ${errCode(r)}`);
+    const msg = (r.body as { error?: { message?: string } })?.error?.message;
+    assert(msg === 'email branding is not configured', `stable gate message: ${msg}`);
+  });
+
+  await check(
+    'bare email intent on an unbranded account → 422 hard gate (stable message)',
+    async () => {
+      const r = await api('POST', `${base}/outbox`, {
+        token: fx.landlordToken,
+        body: {
+          channel: 'email',
+          to_address: `bare-gate-${SUFFIX}@e2.test`,
+          subject: 'Gate probe',
+          body: 'no branding yet',
+          approval_ref: self,
+        },
+      });
+      assertStatus(r, 422, 'unbranded bare email');
+      const msg = (r.body as { error?: { message?: string } })?.error?.message;
+      assert(msg === 'email branding is not configured', `stable gate message: ${msg}`);
+
+      // The AGENT principal hits the same gate — and, more importantly, its
+      // RLS read of the accounts row must survive (is_account_member is
+      // role-agnostic today; this pins it so a future policy tightening that
+      // filtered the agent's row would fail loudly here, not silently 404
+      // every agent bare send in prod).
+      const agent = await api('POST', `${base}/outbox`, {
+        token: fx.agentToken,
+        body: {
+          channel: 'email',
+          to_address: `bare-gate-agent-${SUFFIX}@e2.test`,
+          body: 'agent probe, no branding yet',
+          approval_ref: 'proposal:gate-probe',
+          approved_by: fx.landlordId,
+        },
+      });
+      assertStatus(agent, 422, 'unbranded agent bare email (not 404: RLS row visible)');
+      const agentMsg = (agent.body as { error?: { message?: string } })?.error?.message;
+      assert(agentMsg === 'email branding is not configured', `agent gate message: ${agentMsg}`);
+    },
+  );
+
+  await check(
+    'sms thread on an unbranded account → 201 (non-email surfaces are unaffected by the gate)',
+    async () => {
+      const gt = await api('POST', `/v1/accounts/${fx.accountId}/tenants`, {
+        token: fx.landlordToken,
+        body: { full_name: 'SMS Gate Tenant' },
+      });
+      const gtId = (assertStatus(gt, 201, 'sms-gate tenant') as { id: string }).id;
+      const r = await createThread({
+        kind: 'bridged_tenant',
+        channel: 'sms',
+        participants: [{ party_type: 'tenant', party_id: gtId, address: SMS_GATE_PHONE }],
+      });
+      assertStatus(r, 201, 'unbranded sms thread (gate is email-only)');
+    },
+  );
+
+  // =========================================================================
+  // (W1 brand up front) Brand the fixture account with a subdomain ONLY — the
+  // 20260721000003 trigger defaults the persona to 'manager', so the gate
+  // opens for every conversational surface below. Display name stays the
+  // signup default (subdomain-only PATCH), which section (14) asserts. Every
+  // thread + bare send in the rest of the suite runs on this branded account.
+  // =========================================================================
+  await check(
+    'branding the fixture account (subdomain only) → persona defaults to manager, gate opens',
+    async () => {
+      const r = await api('PATCH', `/v1/accounts/${fx.accountId}/email-branding`, {
+        token: fx.landlordToken,
+        body: { email_subdomain: FX_SUBDOMAIN },
+      });
+      const b = assertStatus(r, 200, 'brand fx account') as { persona_local_part: string | null };
+      assert(b.persona_local_part === 'manager', `defaulted persona: ${b.persona_local_part}`);
+
+      // Branded: the agent principal's bare send now clears the gate (201) —
+      // the positive half of the RLS pin above.
+      const agent = await api('POST', `${base}/outbox`, {
+        token: fx.agentToken,
+        body: {
+          channel: 'email',
+          to_address: `bare-gate-agent-ok-${SUFFIX}@e2.test`,
+          body: 'agent probe, branded',
+          approval_ref: 'proposal:gate-probe-ok',
+          approved_by: fx.landlordId,
+        },
+      });
+      assertStatus(agent, 201, 'branded agent bare email');
+    },
+  );
 
   // =========================================================================
   // (0) Landlord JWT-email fallback — must run BEFORE any thread stores the
@@ -839,79 +956,11 @@ async function main(): Promise<void> {
     },
   );
 
-  // --- bare/system email sends (thread-less) --------------------------------
-  // Hard gate (product decision 2026-07-17): a bare EMAIL intent requires
-  // complete branding (persona_address computable) — otherwise the transport
-  // would fall back to the platform noreply@, whose replies are dropped.
-  // Thread legs (the whole corpus above) stay exempt.
-
-  await check(
-    'bare email intent on an unbranded account → 422 hard gate (stable message)',
-    async () => {
-      const r = await api('POST', `${base}/outbox`, {
-        token: fx.landlordToken,
-        body: {
-          channel: 'email',
-          to_address: `bare-gate-${SUFFIX}@e2.test`,
-          subject: 'Gate probe',
-          body: 'no branding yet',
-          approval_ref: self,
-        },
-      });
-      assertStatus(r, 422, 'unbranded bare email');
-      const msg = (r.body as { error?: { message?: string } })?.error?.message;
-      assert(msg === 'email branding is not configured', `stable gate message: ${msg}`);
-
-      // The AGENT principal hits the same gate — and, more importantly, its
-      // RLS read of the accounts row must survive (is_account_member is
-      // role-agnostic today; this pins it so a future policy tightening that
-      // filtered the agent's row would fail loudly here, not silently 404
-      // every agent bare send in prod).
-      const agent = await api('POST', `${base}/outbox`, {
-        token: fx.agentToken,
-        body: {
-          channel: 'email',
-          to_address: `bare-gate-agent-${SUFFIX}@e2.test`,
-          body: 'agent probe, no branding yet',
-          approval_ref: 'proposal:gate-probe',
-          approved_by: fx.landlordId,
-        },
-      });
-      assertStatus(agent, 422, 'unbranded agent bare email (not 404: RLS row visible)');
-      const agentMsg = (agent.body as { error?: { message?: string } })?.error?.message;
-      assert(agentMsg === 'email branding is not configured', `agent gate message: ${agentMsg}`);
-    },
-  );
-
-  // Brand the fixture account so the bare-send corpus below clears the gate
-  // (the 20260721000003 trigger auto-fills persona 'manager'). The subdomain
-  // is cleared again after the last bare check, so later thread-minting
-  // checks keep exercising the shared reply domain.
-  await check(
-    'branding the account (subdomain only) → persona defaults to manager, gate opens',
-    async () => {
-      const r = await api('PATCH', `/v1/accounts/${fx.accountId}/email-branding`, {
-        token: fx.landlordToken,
-        body: { email_subdomain: `bare${SUFFIX}` },
-      });
-      const b = assertStatus(r, 200, 'brand fx account') as { persona_local_part: string | null };
-      assert(b.persona_local_part === 'manager', `defaulted persona: ${b.persona_local_part}`);
-
-      // Branded: the agent principal's bare send now clears the gate (201) —
-      // the positive half of the RLS pin above.
-      const agent = await api('POST', `${base}/outbox`, {
-        token: fx.agentToken,
-        body: {
-          channel: 'email',
-          to_address: `bare-gate-agent-ok-${SUFFIX}@e2.test`,
-          body: 'agent probe, branded',
-          approval_ref: 'proposal:gate-probe-ok',
-          approved_by: fx.landlordId,
-        },
-      });
-      assertStatus(agent, 201, 'branded agent bare email');
-    },
-  );
+  // --- bare email sends (thread-less) ---------------------------------------
+  // The fixture is branded up front (see the W1 brand-up-front check above), so
+  // the bare-send gate is open here; every bare intent below rides the branded
+  // persona. The negative gate (unbranded → 422) is proven before branding and
+  // re-armed at the very end.
 
   await check(
     'landlord CC arm (bare): explicit cc_addresses on a thread-less email intent freezes verbatim',
@@ -1227,7 +1276,7 @@ async function main(): Promise<void> {
   );
 
   // --- explicit caller party intent (persona routing v2 PR 3) ---------------
-  // The account is still branded here (`bare<SUFFIX>`), so the bare-send gate
+  // The account is branded (FX_SUBDOMAIN) through here, so the bare-send gate
   // is open and the persona reply below can resolve a receiving domain. to_party
   // / cc_parties let the caller STATE the party it already knows; core
   // re-verifies each hint independently before freezing it as
@@ -1253,8 +1302,8 @@ async function main(): Promise<void> {
     foreignTenantId = (assertStatus(ft, 201, 'foreign tenant') as { id: string }).id;
   }
 
-  // The account persona (subdomain `bare<SUFFIX>`, persona defaulted 'manager').
-  const CI_PERSONA = `manager@bare${SUFFIX}.brand-${SUFFIX}.test`;
+  // The account persona (subdomain FX_SUBDOMAIN, persona defaulted 'manager').
+  const CI_PERSONA = `manager@${FX_SUBDOMAIN}.brand-${SUFFIX}.test`;
   const CI_AUTH_PASS = { spf: 'pass', dkim: 'pass', dmarc: 'pass' } as const;
 
   await check(
@@ -1510,10 +1559,12 @@ async function main(): Promise<void> {
     },
   );
 
-  // NOTE: the fixture account STAYS branded (`bare<SUFFIX>`) through the
-  // inbound/Message-ID sections below — thread legs are gate-exempt and the
-  // headed-intent check (rfc822_message_id stamping) rides a bare send, which
-  // needs the gate open. The re-arm check after it clears the subdomain.
+  // NOTE: the fixture account STAYS branded (FX_SUBDOMAIN) through EVERY
+  // section below — W1 gates all conversational email (thread legs included),
+  // so an unbranded fx could neither mint the threads these sections reply on
+  // nor dispatch their legs. Only the final check (after the relay section)
+  // clears the subdomain, to prove the gate re-arms on bare AND thread-leg
+  // sends alike.
 
   // =========================================================================
   // (4) Inbound token capture — matched, routed, journaled
@@ -2000,25 +2051,6 @@ async function main(): Promise<void> {
     },
   );
 
-  await check('clearing the subdomain re-arms the bare-send gate', async () => {
-    const clear = await api('PATCH', `/v1/accounts/${fx.accountId}/email-branding`, {
-      token: fx.landlordToken,
-      body: { email_subdomain: null },
-    });
-    assertStatus(clear, 200, 'unbrand fx account');
-
-    const r = await api('POST', `${base}/outbox`, {
-      token: fx.landlordToken,
-      body: {
-        channel: 'email',
-        to_address: `bare-gate2-${SUFFIX}@e2.test`,
-        body: 'gate again',
-        approval_ref: self,
-      },
-    });
-    assertStatus(r, 422, 're-armed gate');
-  });
-
   await check(
     'email relay leg exposes relay_source_rfc822_message_id (the inbound original)',
     async () => {
@@ -2346,28 +2378,30 @@ async function main(): Promise<void> {
 
   // =========================================================================
   // (14) Per-account branding — subdomain-scoped reply tokens + display name.
-  // A fresh account sets a branded subdomain via the owner endpoint; its email
-  // threads then mint reply tokens under `<sub>.<parent>` and carry the account
-  // sender_display_name. thread1 (account fx, no subdomain) is the control: it
-  // stays on EMAIL_REPLY_DOMAIN with the SIGNUP-DEFAULT display name (the
-  // account name — 20260707000001 stamps it at creation; never null anymore).
+  // A fresh account (fxC) sets both a subdomain AND a sender_display_name via
+  // the owner endpoint; its email threads mint reply tokens under `<sub>.<parent>`
+  // and carry that display name. thread1 (account fx) is the control for the
+  // SUBDOMAIN-ONLY brand: it mints under FX_SUBDOMAIN.<parent> (W1 — no
+  // unbranded email thread exists anymore) but, because fx was branded with a
+  // subdomain only, keeps the SIGNUP-DEFAULT display name (the account name —
+  // 20260707000001 stamps it at creation; never null anymore).
   // =========================================================================
   await check(
-    'account WITHOUT a subdomain mints under EMAIL_REPLY_DOMAIN, display name = signup default',
+    'fixture account (subdomain-only brand) mints under FX_SUBDOMAIN.<parent>, display name = signup default',
     async () => {
       const d = await threadDetail(thread1Id);
       for (const b of d.bindings) {
         if (b.channel === 'email' && b.reply_address) {
-          assert(REPLY_RE.test(b.reply_address), `fallback reply_address: ${b.reply_address}`);
+          assert(REPLY_RE.test(b.reply_address), `branded reply_address: ${b.reply_address}`);
           assert(
-            b.reply_address.endsWith(`@${process.env.EMAIL_REPLY_DOMAIN}`),
-            `ends with the shared reply domain: ${b.reply_address}`,
+            b.reply_address.endsWith(`@${FX_SUBDOMAIN}.brand-${SUFFIX}.test`),
+            `ends with the branded reply domain: ${b.reply_address}`,
           );
         }
       }
       assert(
         d.sender_display_name === 'Comms Email Threads Acct',
-        `unbranded account carries the signup-default display name: ${d.sender_display_name}`,
+        `subdomain-only brand keeps the signup-default display name: ${d.sender_display_name}`,
       );
     },
   );
@@ -2794,6 +2828,60 @@ async function main(): Promise<void> {
       assert(
         row.to_address === RT2_EMAIL.toLowerCase(),
         `tenant binding dialed: ${row.to_address}`,
+      );
+    },
+  );
+
+  // =========================================================================
+  // (W1 re-arm) Clearing the subdomain unbrands fx (the persona value stays
+  // 'manager' but computes null without a subdomain). Every conversational
+  // email surface re-arms: a BARE send AND a thread-LEG send on an existing
+  // thread both 422 with the stable message. Runs DEAD LAST — no send after it.
+  // =========================================================================
+  await check(
+    'clearing the subdomain re-arms the gate on bare AND thread-leg sends',
+    async () => {
+      const clear = await api('PATCH', `/v1/accounts/${fx.accountId}/email-branding`, {
+        token: fx.landlordToken,
+        body: { email_subdomain: null },
+      });
+      assertStatus(clear, 200, 'unbrand fx account');
+
+      // Bare send re-armed.
+      const bare = await api('POST', `${base}/outbox`, {
+        token: fx.landlordToken,
+        body: {
+          channel: 'email',
+          to_address: `bare-gate2-${SUFFIX}@e2.test`,
+          body: 'gate again',
+          approval_ref: self,
+        },
+      });
+      assertStatus(bare, 422, 're-armed bare gate');
+      assert(
+        (bare.body as { error?: { message?: string } })?.error?.message ===
+          'email branding is not configured',
+        're-armed bare gate stable message',
+      );
+
+      // Thread-LEG send re-armed: a leg on thread1 (created while branded) is
+      // now refused — W1 no longer exempts thread legs. The gate fires before
+      // participant/thread resolution, so the leg never reaches dispatch.
+      const leg = await api('POST', `${base}/outbox`, {
+        token: fx.landlordToken,
+        body: {
+          channel: 'email',
+          thread_id: thread1Id,
+          participant_ref: tenant1ParticipantId,
+          body: 'thread leg after unbranding',
+          approval_ref: self,
+        },
+      });
+      assertStatus(leg, 422, 're-armed thread-leg gate');
+      assert(
+        (leg.body as { error?: { message?: string } })?.error?.message ===
+          'email branding is not configured',
+        're-armed thread-leg gate stable message',
       );
     },
   );

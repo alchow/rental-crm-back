@@ -7683,7 +7683,7 @@ export interface paths {
         put?: never;
         /**
          * Create a send intent (status queued). Transport or landlord. The intent is durable BEFORE any provider call (ADR-0007); the journal entry is appended only by the completion path, never here.
-         * @description An email RELAY leg (relay_of_interaction_id set) whose target participant is a landlord_user is a notification, not the conversation surface: it dials the account's authoritative owner/manager email for that participant, falling back to the thread binding when no authoritative email exists. When the relayed interaction's cast already contains the resolved address (canonical email compare — the landlord physically received the original, e.g. as a visible Cc), the intent is refused with 409 error.code=relay_already_delivered and no row is created. Other 409 codes: conflict (closed thread / departed participant / an address claimed by two hinted parties).
+         * @description An email RELAY leg (relay_of_interaction_id set) whose target participant is a landlord_user is a notification, not the conversation surface: it dials the account's authoritative owner/manager email for that participant, falling back to the thread binding when no authoritative email exists. When the relayed interaction's cast already contains the resolved address (canonical email compare — the landlord physically received the original, e.g. as a visible Cc), the intent is refused with 409 error.code=relay_already_delivered and no row is created. Other 409 codes: conflict (closed thread / departed participant / an address claimed by two hinted parties). Any CONVERSATIONAL email send — bare OR a thread leg — on an account whose branding is not configured is refused 422 error.code=invalid_request, message 'email branding is not configured' (the gate engages only when the platform parent domain is set).
          */
         post: {
             parameters: {
@@ -9560,7 +9560,10 @@ export interface paths {
             };
         };
         put?: never;
-        /** Create a thread with participants and channel bindings (landlord). Each counterparty participant is bound to one of the account’s platform numbers; a counterparty may hold only one active thread per platform number. */
+        /**
+         * Create a thread with participants and channel bindings (landlord). Each counterparty participant is bound to one of the account’s platform numbers; a counterparty may hold only one active thread per platform number.
+         * @description An EMAIL thread is a conversational surface: it requires the account to have configured email branding. When the platform parent domain is set but the account carries no branded subdomain, creation is refused 422 error.code=invalid_request, message 'email branding is not configured' (same stable message as the outbox send gate). A 503 is returned only in the platform-env-missing case (no receiving domain configured anywhere). Non-email (sms/group) threads are unaffected.
+         */
         post: {
             parameters: {
                 query?: never;

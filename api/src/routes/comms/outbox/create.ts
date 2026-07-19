@@ -32,7 +32,10 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
       '— the landlord physically received the original, e.g. as a visible Cc), the intent ' +
       'is refused with 409 error.code=relay_already_delivered and no row is created. ' +
       'Other 409 codes: conflict (closed thread / departed participant / an address ' +
-      'claimed by two hinted parties).',
+      'claimed by two hinted parties). Any CONVERSATIONAL email send — bare OR a ' +
+      'thread leg — on an account whose branding is not configured is refused 422 ' +
+      "error.code=invalid_request, message 'email branding is not configured' (the " +
+      'gate engages only when the platform parent domain is set).',
     request: {
       params: AccountParam,
       body: { content: { 'application/json': { schema: CreateOutboxBody } }, required: true },
@@ -137,19 +140,31 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
       });
     }
 
-    // HARD GATE (product decision 2026-07-17, reversing the earlier
-    // nudge-only stance recorded in the branding-selection doc): a BARE email
-    // send (no thread) is rendered From the account persona — when branding is
-    // incomplete the transport would fall back to the platform noreply@, whose
-    // replies are dropped. Refuse to mint the intent instead, with a stable
+    // HARD GATE (product decision 2026-07-17; extended to thread legs by W1,
+    // 2026-07-18): NO CONVERSATIONAL email without branding. A conversational
+    // email send — bare (thread-less) OR a thread leg — is rendered From the
+    // account persona / minted under the account's branded subdomain; when
+    // branding is incomplete the transport falls back to the platform noreply@,
+    // whose replies are dropped, black-holing the reply on the one surface
+    // built to carry it. Refuse to mint the intent instead, with a stable
     // message the frontend keys on (same exact-string pattern as the premium
-    // subdomain reason). Thread legs are exempt: token addresses carry a
-    // working reply path on the shared domain either way. Engages only when
-    // the platform parent domain is configured — without it the branding
-    // feature does not exist and blocking would brick email, not nudge setup.
-    // Core-originated system sends bypass this route (admin client) on
-    // purpose; the transport's noreply fallback stays their safety net.
-    if (body.channel === 'email' && body.thread_id === undefined) {
+    // subdomain reason). Engages only when the platform parent domain is
+    // configured — without it the branding feature does not exist and blocking
+    // would brick email, not nudge setup.
+    //
+    // Deliberate admin-client bypass (this route is JWT-bearing only; core's
+    // system tier writes comm_outbox through the admin client, never through
+    // here, so those sends never see this gate — by design):
+    //   - persona-ack: SAFE — it only ever mints for an account that already
+    //     resolves a persona (i.e. a branded account), so it cannot emit an
+    //     unbranded conversational send in the first place.
+    //   - inspection capture_renewal (api/src/admin/inspection-capture.ts:297)
+    //     is DELIBERATELY allowed through unbranded: it is a no-reply
+    //     transactional LINK email, not a conversation, so the noreply
+    //     fallback is the intended reply path, not a black hole.
+    // The honest invariant this route enforces is therefore "no CONVERSATIONAL
+    // email without branding" — transactional system link mail is out of scope.
+    if (body.channel === 'email') {
       const parent = loadEnv().EMAIL_PLATFORM_PARENT_DOMAIN;
       if (parent !== null) {
         const { data: acct, error: acctErr } = await sb
