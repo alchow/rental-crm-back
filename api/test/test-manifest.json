@@ -64,6 +64,10 @@
     },
     { "script": "test:comms", "description": "Communications ledger and outbox ordering." },
     { "script": "test:comms-group", "description": "Group MMS thread behavior." },
+    {
+      "script": "test:comms-platform-numbers",
+      "description": "Per-account platform-number registration: transport-only writes, idempotent replay, no cross-account reassignment."
+    },
     { "script": "test:comms-email", "description": "Email outbox and unsubscribe behavior." },
     { "script": "test:comms-email-threads", "description": "Token-routed email threads." },
     { "script": "test:accounts-branding", "description": "Per-account email branding." },

@@ -35,6 +35,7 @@
     "test:interactions-participants": "tsx test/interactions-participants.test.ts",
     "test:comms": "tsx test/comms.test.ts",
     "test:comms-group": "tsx test/comms-group.test.ts",
+    "test:comms-platform-numbers": "tsx test/comms-platform-numbers.test.ts",
     "test:comms-email": "tsx test/comms-email.test.ts",
     "test:comms-email-threads": "tsx test/comms-email-threads.test.ts",
     "test:accounts-branding": "tsx test/accounts-branding.test.ts",
