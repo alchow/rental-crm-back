@@ -300,6 +300,12 @@ begin
   -- number), and evidence that disagrees with the wire is worse than none.
   -- The binding read stays as the fallback for rows created before
   -- comm_outbox.platform_number existed.
+  --
+  -- The frozen arm excludes email in the FUNCTION, not just at the call site:
+  -- today no writer sets platform_number on an email row, but a bare email row
+  -- (participant_id null) that somehow carried one would otherwise journal a
+  -- phone number as the mail's From. The invariant belongs to the evidence
+  -- writer, not to the callers' good behavior.
   if v_outbox.channel = 'email' and v_outbox.participant_id is not null then
     select b.reply_address into v_sender_address
       from public.thread_channel_bindings b
@@ -307,7 +313,7 @@ begin
        and b.thread_id = v_outbox.thread_id
        and b.participant_id = v_outbox.participant_id
        and b.active;
-  elsif v_outbox.platform_number is not null then
+  elsif v_outbox.channel <> 'email' and v_outbox.platform_number is not null then
     v_sender_address := v_outbox.platform_number;
   elsif v_outbox.thread_id is not null then
     select b.platform_number into v_sender_address
