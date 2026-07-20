@@ -5026,6 +5026,12 @@
               "type": "string"
             }
           },
+          "platform_number": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "cc_addresses": {
             "type": [
               "array",
@@ -5253,6 +5259,7 @@
           "channel",
           "to_address",
           "group_addresses",
+          "platform_number",
           "cc_addresses",
           "thread_id",
           "participant_id",

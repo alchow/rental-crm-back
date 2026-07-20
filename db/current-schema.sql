@@ -4705,6 +4705,15 @@ begin
 
   -- The platform leg that dialed: the thread's platform number (sms), or the
   -- recipient's minted reply token (email — the From that recipient sees).
+  --
+  -- For sms the FROZEN value on the row wins. It is the number the transport
+  -- was told to dial from, so recording it makes the journal name what the
+  -- carrier actually saw. Re-deriving from the binding at completion time
+  -- could name a different number than the one dialed (a rebind between intent
+  -- and completion, or an account that has come to hold more than one active
+  -- number), and evidence that disagrees with the wire is worse than none.
+  -- The binding read stays as the fallback for rows created before
+  -- comm_outbox.platform_number existed.
   if v_outbox.channel = 'email' and v_outbox.participant_id is not null then
     select b.reply_address into v_sender_address
       from public.thread_channel_bindings b
@@ -4712,6 +4721,8 @@ begin
        and b.thread_id = v_outbox.thread_id
        and b.participant_id = v_outbox.participant_id
        and b.active;
+  elsif v_outbox.platform_number is not null then
+    v_sender_address := v_outbox.platform_number;
   elsif v_outbox.thread_id is not null then
     select b.platform_number into v_sender_address
       from public.thread_channel_bindings b
@@ -6380,6 +6391,7 @@ CREATE TABLE IF NOT EXISTS "public"."comm_outbox" (
     "to_party_type" "text",
     "to_party_id" "uuid",
     "cc_parties" "jsonb",
+    "platform_number" "text",
     CONSTRAINT "comm_outbox_approval_ref_check" CHECK ((("length"("approval_ref") >= 1) AND ("length"("approval_ref") <= 200))),
     CONSTRAINT "comm_outbox_author_type_check" CHECK (("author_type" = ANY (ARRAY['landlord'::"text", 'agent'::"text", 'system'::"text"]))),
     CONSTRAINT "comm_outbox_body_check" CHECK ((("length"("body") >= 1) AND ("length"("body") <= 20000))),
@@ -14263,6 +14275,14 @@ ALTER TABLE ONLY "public"."comm_outbox"
 
 ALTER TABLE ONLY "public"."comm_outbox"
     ADD CONSTRAINT "comm_outbox_mreq_fk" FOREIGN KEY ("account_id", "maintenance_request_id") REFERENCES "public"."maintenance_requests"("account_id", "id") ON DELETE SET NULL;
+
+
+--
+-- Name: comm_outbox comm_outbox_platform_number_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."comm_outbox"
+    ADD CONSTRAINT "comm_outbox_platform_number_fkey" FOREIGN KEY ("account_id", "platform_number") REFERENCES "public"."platform_numbers"("account_id", "number") ON DELETE RESTRICT;
 
 
 --

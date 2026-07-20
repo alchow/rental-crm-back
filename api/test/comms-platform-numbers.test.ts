@@ -417,6 +417,78 @@ async function main(): Promise<void> {
     assertStatus(after, 201, 'thread create after registering a number');
   });
 
+  // =========================================================================
+  // The dialing number is frozen on the send intent, and the journal records
+  // the SAME field the transport dialed — not one re-derived at completion.
+  // =========================================================================
+  await check('a bare sms intent freezes the account\'s active number', async () => {
+    const r = await api('POST', `/v1/accounts/${B.accountId}/comms/outbox`, {
+      token: B.landlordToken,
+      body: {
+        channel: 'sms',
+        to_address: `+1917${SUFFIX}`,
+        body: 'bare send',
+        approval_ref: `self:${B.landlordId}`,
+      },
+    });
+    const row = assertStatus(r, 201, 'bare sms intent') as { platform_number: string | null };
+    assert(row.platform_number === NUM_B, `platform_number: ${row.platform_number}`);
+  });
+
+  await check('an email intent freezes no number (its From is a reply token)', async () => {
+    const r = await api('POST', `/v1/accounts/${B.accountId}/comms/outbox`, {
+      token: B.landlordToken,
+      body: {
+        channel: 'email',
+        to_address: `pnum-${rnd()}@example.test`,
+        body: 'email send',
+        approval_ref: `self:${B.landlordId}`,
+      },
+    });
+    // Email may be refused for unrelated branding reasons on this fixture; the
+    // assertion only applies when the intent was actually created.
+    if (r.status === 201) {
+      const row = r.body as { platform_number: string | null };
+      assert(row.platform_number === null, `email platform_number: ${row.platform_number}`);
+    }
+  });
+
+  await check('complete_send journals the frozen number as the sender', async () => {
+    const created = await api('POST', `/v1/accounts/${B.accountId}/comms/outbox`, {
+      token: B.landlordToken,
+      body: {
+        channel: 'sms',
+        to_address: `+1918${SUFFIX}`,
+        body: 'journal sender check',
+        approval_ref: `self:${B.landlordId}`,
+      },
+    });
+    const row = assertStatus(created, 201, 'intent') as { id: string; platform_number: string };
+    assert(row.platform_number === NUM_B, `frozen: ${row.platform_number}`);
+
+    const done = await api(
+      'POST',
+      `/v1/accounts/${B.accountId}/comms/outbox/${row.id}/complete`,
+      {
+        token: B.agentToken,
+        body: { provider: 'test', provider_sid: `sid-${crypto.randomUUID()}` },
+      },
+    );
+    const body = assertStatus(done, 200, 'complete') as { interaction_id: string };
+
+    // The sender leg of the journal cast must name the number we froze.
+    const { data, error } = await admin
+      .from('interaction_participants')
+      .select('address, party_type')
+      .eq('interaction_id', body.interaction_id)
+      .eq('role', 'sender')
+      .single();
+    assert(!error, `sender cast read: ${error?.message}`);
+    const sender = data as { address: string | null; party_type: string };
+    assert(sender.party_type === 'platform', `sender party_type: ${sender.party_type}`);
+    assert(sender.address === NUM_B, `journalled sender: ${sender.address} (want ${NUM_B})`);
+  });
+
   console.info('');
   if (failures.length > 0) {
     console.error(`${failures.length} platform-number check(s) FAILED`);

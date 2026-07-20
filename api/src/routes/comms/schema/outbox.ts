@@ -58,6 +58,14 @@ export const CommOutbox = z
      *  this is set); dialed as ONE provider group message whose provider_sid is
      *  the group_message_id; null on 1:1 rows. */
     group_addresses: z.array(z.string()).nullable(),
+    /** The account's own number this send must dial FROM (sms only), frozen at
+     *  intent time from the thread's binding — or, for a bare send, the
+     *  account's active sms-capable number. The transport dials exactly this
+     *  and complete_send journals exactly this, so the record cannot name a
+     *  sender the carrier never saw. Null on email/voice (an email From is the
+     *  recipient's minted reply token) and on sms rows queued for an account
+     *  with no active number, which the transport fails as no_platform_number. */
+    platform_number: z.string().nullable(),
     /** Frozen visible-Cc set (email only), resolved at intent time from the
      *  thread's is_cc participants' bound email addresses — the transport adds
      *  these as Cc on the outbound mail so a flagged participant (the landlord)

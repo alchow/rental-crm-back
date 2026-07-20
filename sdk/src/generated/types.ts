@@ -17796,6 +17796,7 @@ export interface components {
             channel: "sms" | "email" | "voice";
             to_address: string | null;
             group_addresses: string[] | null;
+            platform_number: string | null;
             cc_addresses: string[] | null;
             recipient_snapshot?: {
                 address: string | null;

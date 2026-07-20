@@ -690,6 +690,7 @@ export type Database = {
           maintenance_request_id: string | null;
           not_before: string | null;
           participant_id: string | null;
+          platform_number: string | null;
           provider: string | null;
           provider_sid: string | null;
           recipient_snapshot: Json | null;
@@ -725,6 +726,7 @@ export type Database = {
           maintenance_request_id?: string | null;
           not_before?: string | null;
           participant_id?: string | null;
+          platform_number?: string | null;
           provider?: string | null;
           provider_sid?: string | null;
           recipient_snapshot?: Json | null;
@@ -760,6 +762,7 @@ export type Database = {
           maintenance_request_id?: string | null;
           not_before?: string | null;
           participant_id?: string | null;
+          platform_number?: string | null;
           provider?: string | null;
           provider_sid?: string | null;
           recipient_snapshot?: Json | null;
@@ -852,6 +855,13 @@ export type Database = {
             isOneToOne: false;
             referencedRelation: 'maintenance_requests_with_reporter';
             referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'comm_outbox_platform_number_fkey';
+            columns: ['account_id', 'platform_number'];
+            isOneToOne: false;
+            referencedRelation: 'platform_numbers';
+            referencedColumns: ['account_id', 'number'];
           },
           {
             foreignKeyName: 'comm_outbox_tenancy_fk';
@@ -4526,6 +4536,7 @@ export type Database = {
           maintenance_request_id: string | null;
           not_before: string | null;
           participant_id: string | null;
+          platform_number: string | null;
           provider: string | null;
           provider_sid: string | null;
           recipient_snapshot: Json | null;
@@ -4831,6 +4842,7 @@ export type Database = {
           maintenance_request_id: string | null;
           not_before: string | null;
           participant_id: string | null;
+          platform_number: string | null;
           provider: string | null;
           provider_sid: string | null;
           recipient_snapshot: Json | null;
@@ -5299,6 +5311,7 @@ export type Database = {
           maintenance_request_id: string | null;
           not_before: string | null;
           participant_id: string | null;
+          platform_number: string | null;
           provider: string | null;
           provider_sid: string | null;
           recipient_snapshot: Json | null;
