@@ -265,6 +265,18 @@ async function setup(platformNumber: string, tag: string): Promise<Fixture> {
     if (error) throw new Error(`platform number: ${error.message}`);
   }
 
+  // This suite creates a group thread in its fixture, and group create requires
+  // the caller's phone to be OTP-verified (a group text exposes the landlord's
+  // personal number to a tenant). Prod writes this through
+  // set_owner_phone_verified behind the SMS OTP; stamp it directly here.
+  {
+    const { error } = await admin
+      .from('users')
+      .update({ phone: LL_A, phone_verified_at: new Date().toISOString() })
+      .eq('id', b.user.id);
+    if (error) throw new Error(`verify landlord phone: ${error.message}`);
+  }
+
   return {
     accountId,
     landlordToken: token,

@@ -4,6 +4,7 @@ import { createRoute } from '@hono/zod-openapi';
 import { getSb } from '../../../supabase/request-client';
 import { loadEnv } from '../../../env';
 import { ApiError, errorResponses } from '../../_lib/error';
+import { normalizePhone } from '../../_lib/phone';
 import { brandedReplyDomain } from '../../_lib/subdomain';
 import { AccountParam, CommThreadDetail, CreateThreadBody } from '../schemas';
 import type { CommThread , CommThreadBinding} from '../schemas';
@@ -37,7 +38,14 @@ export function registerThreadCreateRoute(app: CommsApp): void {
       "error.code=invalid_request, message 'email branding is not configured' " +
       '(same stable message as the outbox send gate). A 503 is returned only in ' +
       'the platform-env-missing case (no receiving domain configured anywhere). ' +
-      'Non-email (sms/group) threads are unaffected.',
+      'Non-email (sms/group) threads are unaffected. ' +
+      'A GROUP thread additionally requires the landlord leg to be the ' +
+      "CALLER's own OTP-verified phone (users.phone_verified_at): 409 if the " +
+      'caller has not verified a number, if the supplied landlord address is ' +
+      'not that number, or if the landlord participant is a different user. A ' +
+      "group text exposes the landlord's personal number to a counterparty and " +
+      'fans every reply out to it, so an unproven number is refused here — the ' +
+      'one chokepoint a JWT-holding landlord cannot bypass.',
     request: {
       params: AccountParam,
       body: { content: { 'application/json': { schema: CreateThreadBody } }, required: true },
@@ -326,6 +334,61 @@ export function registerThreadCreateRoute(app: CommsApp): void {
           'invalid_request',
           'a group thread carries at most 7 member addresses (8 participants including the platform number)',
         );
+      }
+
+      // The landlord's leg must be the caller's OWN verified phone.
+      //
+      // This gate lives here, and not in the agent or the frontend, because
+      // this is the only chokepoint a landlord cannot route around: they hold a
+      // JWT and can POST here directly. users.phone_verified_at is written only
+      // by set_owner_phone_verified (agent-only, behind the SMS OTP), so it is
+      // the one signal that someone proved control of the number.
+      //
+      // Why it matters concretely: a group text puts the landlord's personal
+      // number in front of a tenant, and every tenant reply fans out to it. An
+      // unverified — meaning possibly mistyped — number would leak the
+      // conversation to whoever actually owns that phone, and the landlord
+      // would never see the thread they think they started.
+      //
+      // Restricted to the caller (rather than any account member) for two
+      // reasons: public.users is self-select under RLS, so a manager cannot
+      // read the owner's verification state at all; and enrolling a colleague's
+      // personal phone into a tenant-facing thread they did not initiate is not
+      // a thing one member should be able to do to another.
+      const callerId = c.get('auth').userId;
+      const { data: caller, error: callerErr } = await sb
+        .from('users')
+        .select('phone, phone_verified_at')
+        .eq('id', callerId)
+        .maybeSingle();
+      if (callerErr) throw commDbError(callerErr);
+      const verifiedPhone =
+        caller?.phone_verified_at != null && caller.phone != null
+          ? normalizePhone(caller.phone)
+          : null;
+      if (!verifiedPhone) {
+        throw new ApiError(
+          409,
+          'conflict',
+          'the landlord phone is not verified; verify it before starting a group thread',
+        );
+      }
+      for (const [i, p] of body.participants.entries()) {
+        if (p.party_type !== 'landlord_user' || !resolvedAddresses.has(i)) continue;
+        if (p.party_id !== undefined && p.party_id !== callerId) {
+          throw new ApiError(
+            409,
+            'conflict',
+            "a group thread's landlord participant must be the caller — their own verified phone carries the leg",
+          );
+        }
+        if (resolvedAddresses.get(i) !== verifiedPhone) {
+          throw new ApiError(
+            409,
+            'conflict',
+            "the group must use the landlord's verified phone",
+          );
+        }
       }
     }
 

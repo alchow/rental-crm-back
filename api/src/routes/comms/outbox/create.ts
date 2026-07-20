@@ -836,6 +836,47 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
       }
     }
 
+    // Freeze the dialing number NOW, so the transport and complete_send read
+    // the same field instead of each re-deriving one. Re-deriving answers
+    // "which number would we pick now", not "which number went out" — and once
+    // accounts hold their own numbers those diverge silently, leaving a journal
+    // row that names a sender the carrier never saw.
+    //
+    // sms only: an email From is the recipient's minted reply token, not a
+    // platform number. A bare sms row for an account with no active number is
+    // left null rather than refused here — the transport fails it terminally
+    // with no_platform_number, which keeps this change additive for flows
+    // (rent reminders) that queue before an account is provisioned.
+    let platformNumber: string | null = null;
+    if (body.channel === 'sms') {
+      if (body.thread_id !== undefined) {
+        // Every binding on a thread carries the same platform number.
+        const { data: bound, error: pnErr } = await sb
+          .from('thread_channel_bindings')
+          .select('platform_number')
+          .eq('account_id', accountId)
+          .eq('thread_id', body.thread_id)
+          .not('platform_number', 'is', null)
+          .limit(1)
+          .maybeSingle();
+        if (pnErr) throw commDbError(pnErr);
+        platformNumber = bound?.platform_number ?? null;
+      }
+      if (platformNumber === null) {
+        // Bare send: the same pick thread create makes.
+        const { data: num, error: nErr } = await sb
+          .from('platform_numbers')
+          .select('number')
+          .eq('account_id', accountId)
+          .eq('status', 'active')
+          .contains('capabilities', ['sms'])
+          .limit(1)
+          .maybeSingle();
+        if (nErr) throw commDbError(nErr);
+        platformNumber = (num as { number: string } | null)?.number ?? null;
+      }
+    }
+
     const { data, error } = await sb
       .from('comm_outbox')
       .insert({
@@ -843,6 +884,7 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
         channel: body.channel,
         to_address: toAddress,
         group_addresses: groupAddresses,
+        platform_number: platformNumber,
         cc_addresses: ccAddresses,
         to_party_type: body.to_party?.party_type ?? null,
         to_party_id: body.to_party?.party_id ?? null,

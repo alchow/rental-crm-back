@@ -7,3 +7,4 @@ export * from './schema/policies';
 export * from './schema/common';
 export * from './schema/attachments';
 export * from './schema/unmatched';
+export * from './schema/platform-numbers';

@@ -9562,7 +9562,7 @@ export interface paths {
         put?: never;
         /**
          * Create a thread with participants and channel bindings (landlord). Each counterparty participant is bound to one of the account’s platform numbers; a counterparty may hold only one active thread per platform number.
-         * @description An EMAIL thread is a conversational surface: it requires the account to have configured email branding. When the platform parent domain is set but the account carries no branded subdomain, creation is refused 422 error.code=invalid_request, message 'email branding is not configured' (same stable message as the outbox send gate). A 503 is returned only in the platform-env-missing case (no receiving domain configured anywhere). Non-email (sms/group) threads are unaffected.
+         * @description An EMAIL thread is a conversational surface: it requires the account to have configured email branding. When the platform parent domain is set but the account carries no branded subdomain, creation is refused 422 error.code=invalid_request, message 'email branding is not configured' (same stable message as the outbox send gate). A 503 is returned only in the platform-env-missing case (no receiving domain configured anywhere). Non-email (sms/group) threads are unaffected. A GROUP thread additionally requires the landlord leg to be the CALLER's own OTP-verified phone (users.phone_verified_at): 409 if the caller has not verified a number, if the supplied landlord address is not that number, or if the landlord participant is a different user. A group text exposes the landlord's personal number to a counterparty and fans every reply out to it, so an unproven number is refused here — the one chokepoint a JWT-holding landlord cannot bypass.
          */
         post: {
             parameters: {
@@ -10268,6 +10268,162 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["CommPolicy"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/comms/platform-numbers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the account's provider numbers (transport + landlord). The transport reads these to route inbound messages to an account and to pick the From number for outbound sends; the landlord reads them to know whether texting is switched on. Filter status=active for routing — a released number must not resolve to the account that used to hold it. */
+        get: {
+            parameters: {
+                query?: {
+                    status?: "active" | "released";
+                };
+                header?: never;
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description numbers */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PlatformNumberListResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Register a number the transport ordered from the carrier (transport only). Idempotent on (account, number) so a replayed provisioning step is a no-op, and re-activates a released number. A number already held by another account is a 409, never a reassignment. */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RecordPlatformNumberBody"];
+                };
+            };
+            responses: {
+                /** @description registered */
+                201: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PlatformNumber"];
                     };
                 };
                 /** @description invalid request */
@@ -17640,6 +17796,7 @@ export interface components {
             channel: "sms" | "email" | "voice";
             to_address: string | null;
             group_addresses: string[] | null;
+            platform_number: string | null;
             cc_addresses: string[] | null;
             recipient_snapshot?: {
                 address: string | null;
@@ -18163,6 +18320,29 @@ export interface components {
                 [key: string]: unknown;
             };
             quiet_hours?: components["schemas"]["CommQuietHours"];
+        };
+        PlatformNumber: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            account_id: string;
+            number: string;
+            provider: string;
+            capabilities: string[];
+            /** @enum {string} */
+            status: "active" | "released";
+            created_at: string;
+            updated_at: string;
+        };
+        PlatformNumberListResponse: {
+            data: components["schemas"]["PlatformNumber"][];
+        };
+        RecordPlatformNumberBody: {
+            /** @example +14155550100 */
+            number: string;
+            /** @example telnyx */
+            provider: string;
+            capabilities?: ("sms" | "mms" | "voice")[];
         };
         OwnerPhoneResponse: {
             /** Format: uuid */

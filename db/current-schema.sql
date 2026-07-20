@@ -4705,6 +4705,21 @@ begin
 
   -- The platform leg that dialed: the thread's platform number (sms), or the
   -- recipient's minted reply token (email — the From that recipient sees).
+  --
+  -- For sms the FROZEN value on the row wins. It is the number the transport
+  -- was told to dial from, so recording it makes the journal name what the
+  -- carrier actually saw. Re-deriving from the binding at completion time
+  -- could name a different number than the one dialed (a rebind between intent
+  -- and completion, or an account that has come to hold more than one active
+  -- number), and evidence that disagrees with the wire is worse than none.
+  -- The binding read stays as the fallback for rows created before
+  -- comm_outbox.platform_number existed.
+  --
+  -- The frozen arm excludes email in the FUNCTION, not just at the call site:
+  -- today no writer sets platform_number on an email row, but a bare email row
+  -- (participant_id null) that somehow carried one would otherwise journal a
+  -- phone number as the mail's From. The invariant belongs to the evidence
+  -- writer, not to the callers' good behavior.
   if v_outbox.channel = 'email' and v_outbox.participant_id is not null then
     select b.reply_address into v_sender_address
       from public.thread_channel_bindings b
@@ -4712,6 +4727,8 @@ begin
        and b.thread_id = v_outbox.thread_id
        and b.participant_id = v_outbox.participant_id
        and b.active;
+  elsif v_outbox.channel <> 'email' and v_outbox.platform_number is not null then
+    v_sender_address := v_outbox.platform_number;
   elsif v_outbox.thread_id is not null then
     select b.platform_number into v_sender_address
       from public.thread_channel_bindings b
@@ -6380,6 +6397,7 @@ CREATE TABLE IF NOT EXISTS "public"."comm_outbox" (
     "to_party_type" "text",
     "to_party_id" "uuid",
     "cc_parties" "jsonb",
+    "platform_number" "text",
     CONSTRAINT "comm_outbox_approval_ref_check" CHECK ((("length"("approval_ref") >= 1) AND ("length"("approval_ref") <= 200))),
     CONSTRAINT "comm_outbox_author_type_check" CHECK (("author_type" = ANY (ARRAY['landlord'::"text", 'agent'::"text", 'system'::"text"]))),
     CONSTRAINT "comm_outbox_body_check" CHECK ((("length"("body") >= 1) AND ("length"("body") <= 20000))),
@@ -7657,6 +7675,79 @@ $$;
 
 
 ALTER FUNCTION "public"."record_opt_out"("p_account_id" "uuid", "p_channel" "text", "p_address" "text", "p_keyword" "text", "p_source_ref" "text") OWNER TO "postgres";
+
+--
+-- Name: platform_numbers; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."platform_numbers" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "account_id" "uuid" NOT NULL,
+    "number" "text" NOT NULL,
+    "provider" "text" NOT NULL,
+    "capabilities" "text"[] DEFAULT '{sms}'::"text"[] NOT NULL,
+    "status" "text" DEFAULT 'active'::"text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "platform_numbers_number_check" CHECK (("number" ~ '^\+[1-9][0-9]{6,14}$'::"text")),
+    CONSTRAINT "platform_numbers_provider_check" CHECK ((("length"("provider") >= 1) AND ("length"("provider") <= 100))),
+    CONSTRAINT "platform_numbers_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'released'::"text"])))
+);
+
+ALTER TABLE ONLY "public"."platform_numbers" FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."platform_numbers" OWNER TO "postgres";
+
+--
+-- Name: record_platform_number("uuid", "text", "text", "text"[]); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."record_platform_number"("p_account_id" "uuid", "p_number" "text", "p_provider" "text", "p_capabilities" "text"[]) RETURNS "public"."platform_numbers"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_row public.platform_numbers%rowtype;
+  v_caps text[];
+begin
+  -- Agent-principal self-defense (mirrors set_owner_phone_verified and the
+  -- comms-ledger RPCs). This is what makes an `authenticated` EXECUTE grant
+  -- safe on a DEFINER function -- see db/test/check_definer_grants.sql.
+  if auth.uid() is null or not exists (
+    select 1
+      from public.account_members m
+     where m.account_id = p_account_id
+       and m.user_id    = (select auth.uid())
+       and m.role       = 'agent'
+       and m.deleted_at is null
+  ) then
+    raise exception 'caller is not the agent principal for this account'
+      using errcode = '42501';
+  end if;
+
+  v_caps := coalesce(nullif(p_capabilities, '{}'::text[]), array['sms']::text[]);
+
+  -- An empty capabilities array would make the number invisible to
+  -- POST /comms/threads (which filters with `capabilities @> [channel]`), so
+  -- the account would hold a number it could never send from -- a silent
+  -- black hole. Coalesced to {sms} above rather than rejected: the caller's
+  -- intent when registering a number is unambiguous.
+  insert into public.platform_numbers (account_id, number, provider, capabilities, status)
+  values (p_account_id, p_number, p_provider, v_caps, 'active')
+  on conflict (account_id, number) do update
+     set provider     = excluded.provider,
+         capabilities = excluded.capabilities,
+         status       = 'active',
+         updated_at   = now()
+  returning * into v_row;
+
+  return v_row;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."record_platform_number"("p_account_id" "uuid", "p_number" "text", "p_provider" "text", "p_capabilities" "text"[]) OWNER TO "postgres";
 
 --
 -- Name: rent_rollup("uuid", "text"[], "date"); Type: FUNCTION; Schema: public; Owner: postgres
@@ -10621,29 +10712,6 @@ ALTER TABLE ONLY "public"."payments" FORCE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."payments" OWNER TO "postgres";
-
---
--- Name: platform_numbers; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE IF NOT EXISTS "public"."platform_numbers" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "account_id" "uuid" NOT NULL,
-    "number" "text" NOT NULL,
-    "provider" "text" NOT NULL,
-    "capabilities" "text"[] DEFAULT '{sms}'::"text"[] NOT NULL,
-    "status" "text" DEFAULT 'active'::"text" NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "platform_numbers_number_check" CHECK (("number" ~ '^\+[1-9][0-9]{6,14}$'::"text")),
-    CONSTRAINT "platform_numbers_provider_check" CHECK ((("length"("provider") >= 1) AND ("length"("provider") <= 100))),
-    CONSTRAINT "platform_numbers_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'released'::"text"])))
-);
-
-ALTER TABLE ONLY "public"."platform_numbers" FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE "public"."platform_numbers" OWNER TO "postgres";
 
 --
 -- Name: properties; Type: TABLE; Schema: public; Owner: postgres
@@ -14216,6 +14284,14 @@ ALTER TABLE ONLY "public"."comm_outbox"
 
 
 --
+-- Name: comm_outbox comm_outbox_platform_number_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."comm_outbox"
+    ADD CONSTRAINT "comm_outbox_platform_number_fkey" FOREIGN KEY ("account_id", "platform_number") REFERENCES "public"."platform_numbers"("account_id", "number") ON DELETE RESTRICT;
+
+
+--
 -- Name: comm_outbox comm_outbox_tenancy_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -17022,6 +17098,24 @@ GRANT ALL ON FUNCTION "public"."record_opt_out"("p_account_id" "uuid", "p_channe
 
 
 --
+-- Name: TABLE "platform_numbers"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."platform_numbers" TO "anon";
+GRANT ALL ON TABLE "public"."platform_numbers" TO "authenticated";
+GRANT ALL ON TABLE "public"."platform_numbers" TO "service_role";
+
+
+--
+-- Name: FUNCTION "record_platform_number"("p_account_id" "uuid", "p_number" "text", "p_provider" "text", "p_capabilities" "text"[]); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."record_platform_number"("p_account_id" "uuid", "p_number" "text", "p_provider" "text", "p_capabilities" "text"[]) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."record_platform_number"("p_account_id" "uuid", "p_number" "text", "p_provider" "text", "p_capabilities" "text"[]) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."record_platform_number"("p_account_id" "uuid", "p_number" "text", "p_provider" "text", "p_capabilities" "text"[]) TO "service_role";
+
+
+--
 -- Name: FUNCTION "rent_rollup"("p_account_id" "uuid", "p_statuses" "text"[], "p_as_of" "date"); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -17647,15 +17741,6 @@ GRANT ALL ON TABLE "public"."payment_allocations" TO "service_role";
 GRANT ALL ON TABLE "public"."payments" TO "anon";
 GRANT ALL ON TABLE "public"."payments" TO "authenticated";
 GRANT ALL ON TABLE "public"."payments" TO "service_role";
-
-
---
--- Name: TABLE "platform_numbers"; Type: ACL; Schema: public; Owner: postgres
---
-
-GRANT ALL ON TABLE "public"."platform_numbers" TO "anon";
-GRANT ALL ON TABLE "public"."platform_numbers" TO "authenticated";
-GRANT ALL ON TABLE "public"."platform_numbers" TO "service_role";
 
 
 --

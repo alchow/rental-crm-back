@@ -76,6 +76,11 @@ DECLARE
     -- downstream query is account-pinned, so it is not a cross-account oracle.
     'resolve_relay_landlord_recipient',
     'dismiss_unmatched_inbound',
+    -- Platform-number registration (20260723000006): agent-role member of
+    -- p_account_id, same self-defense shape as capture_inbound. Members keep
+    -- SELECT-only on platform_numbers, so this is the ONLY write door and it
+    -- is shut to owners/managers by design.
+    'record_platform_number',
     'record_opt_out',
     'list_account_opt_outs',
     -- comms evidence (20260703000004): agent-role member of p_account_id,
