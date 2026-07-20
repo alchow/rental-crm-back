@@ -4906,6 +4906,30 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      record_platform_number: {
+        Args: {
+          p_account_id: string;
+          p_capabilities: string[];
+          p_number: string;
+          p_provider: string;
+        };
+        Returns: {
+          account_id: string;
+          capabilities: string[];
+          created_at: string;
+          id: string;
+          number: string;
+          provider: string;
+          status: string;
+          updated_at: string;
+        };
+        SetofOptions: {
+          from: '*';
+          to: 'platform_numbers';
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
       rent_rollup: {
         Args: { p_account_id: string; p_as_of?: string; p_statuses?: string[] };
         Returns: {

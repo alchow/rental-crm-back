@@ -7659,6 +7659,79 @@ $$;
 ALTER FUNCTION "public"."record_opt_out"("p_account_id" "uuid", "p_channel" "text", "p_address" "text", "p_keyword" "text", "p_source_ref" "text") OWNER TO "postgres";
 
 --
+-- Name: platform_numbers; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."platform_numbers" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "account_id" "uuid" NOT NULL,
+    "number" "text" NOT NULL,
+    "provider" "text" NOT NULL,
+    "capabilities" "text"[] DEFAULT '{sms}'::"text"[] NOT NULL,
+    "status" "text" DEFAULT 'active'::"text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "platform_numbers_number_check" CHECK (("number" ~ '^\+[1-9][0-9]{6,14}$'::"text")),
+    CONSTRAINT "platform_numbers_provider_check" CHECK ((("length"("provider") >= 1) AND ("length"("provider") <= 100))),
+    CONSTRAINT "platform_numbers_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'released'::"text"])))
+);
+
+ALTER TABLE ONLY "public"."platform_numbers" FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."platform_numbers" OWNER TO "postgres";
+
+--
+-- Name: record_platform_number("uuid", "text", "text", "text"[]); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."record_platform_number"("p_account_id" "uuid", "p_number" "text", "p_provider" "text", "p_capabilities" "text"[]) RETURNS "public"."platform_numbers"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_row public.platform_numbers%rowtype;
+  v_caps text[];
+begin
+  -- Agent-principal self-defense (mirrors set_owner_phone_verified and the
+  -- comms-ledger RPCs). This is what makes an `authenticated` EXECUTE grant
+  -- safe on a DEFINER function -- see db/test/check_definer_grants.sql.
+  if auth.uid() is null or not exists (
+    select 1
+      from public.account_members m
+     where m.account_id = p_account_id
+       and m.user_id    = (select auth.uid())
+       and m.role       = 'agent'
+       and m.deleted_at is null
+  ) then
+    raise exception 'caller is not the agent principal for this account'
+      using errcode = '42501';
+  end if;
+
+  v_caps := coalesce(nullif(p_capabilities, '{}'::text[]), array['sms']::text[]);
+
+  -- An empty capabilities array would make the number invisible to
+  -- POST /comms/threads (which filters with `capabilities @> [channel]`), so
+  -- the account would hold a number it could never send from -- a silent
+  -- black hole. Coalesced to {sms} above rather than rejected: the caller's
+  -- intent when registering a number is unambiguous.
+  insert into public.platform_numbers (account_id, number, provider, capabilities, status)
+  values (p_account_id, p_number, p_provider, v_caps, 'active')
+  on conflict (account_id, number) do update
+     set provider     = excluded.provider,
+         capabilities = excluded.capabilities,
+         status       = 'active',
+         updated_at   = now()
+  returning * into v_row;
+
+  return v_row;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."record_platform_number"("p_account_id" "uuid", "p_number" "text", "p_provider" "text", "p_capabilities" "text"[]) OWNER TO "postgres";
+
+--
 -- Name: rent_rollup("uuid", "text"[], "date"); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -10621,29 +10694,6 @@ ALTER TABLE ONLY "public"."payments" FORCE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."payments" OWNER TO "postgres";
-
---
--- Name: platform_numbers; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE IF NOT EXISTS "public"."platform_numbers" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "account_id" "uuid" NOT NULL,
-    "number" "text" NOT NULL,
-    "provider" "text" NOT NULL,
-    "capabilities" "text"[] DEFAULT '{sms}'::"text"[] NOT NULL,
-    "status" "text" DEFAULT 'active'::"text" NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "platform_numbers_number_check" CHECK (("number" ~ '^\+[1-9][0-9]{6,14}$'::"text")),
-    CONSTRAINT "platform_numbers_provider_check" CHECK ((("length"("provider") >= 1) AND ("length"("provider") <= 100))),
-    CONSTRAINT "platform_numbers_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'released'::"text"])))
-);
-
-ALTER TABLE ONLY "public"."platform_numbers" FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE "public"."platform_numbers" OWNER TO "postgres";
 
 --
 -- Name: properties; Type: TABLE; Schema: public; Owner: postgres
@@ -17022,6 +17072,24 @@ GRANT ALL ON FUNCTION "public"."record_opt_out"("p_account_id" "uuid", "p_channe
 
 
 --
+-- Name: TABLE "platform_numbers"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."platform_numbers" TO "anon";
+GRANT ALL ON TABLE "public"."platform_numbers" TO "authenticated";
+GRANT ALL ON TABLE "public"."platform_numbers" TO "service_role";
+
+
+--
+-- Name: FUNCTION "record_platform_number"("p_account_id" "uuid", "p_number" "text", "p_provider" "text", "p_capabilities" "text"[]); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."record_platform_number"("p_account_id" "uuid", "p_number" "text", "p_provider" "text", "p_capabilities" "text"[]) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."record_platform_number"("p_account_id" "uuid", "p_number" "text", "p_provider" "text", "p_capabilities" "text"[]) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."record_platform_number"("p_account_id" "uuid", "p_number" "text", "p_provider" "text", "p_capabilities" "text"[]) TO "service_role";
+
+
+--
 -- Name: FUNCTION "rent_rollup"("p_account_id" "uuid", "p_statuses" "text"[], "p_as_of" "date"); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -17647,15 +17715,6 @@ GRANT ALL ON TABLE "public"."payment_allocations" TO "service_role";
 GRANT ALL ON TABLE "public"."payments" TO "anon";
 GRANT ALL ON TABLE "public"."payments" TO "authenticated";
 GRANT ALL ON TABLE "public"."payments" TO "service_role";
-
-
---
--- Name: TABLE "platform_numbers"; Type: ACL; Schema: public; Owner: postgres
---
-
-GRANT ALL ON TABLE "public"."platform_numbers" TO "anon";
-GRANT ALL ON TABLE "public"."platform_numbers" TO "authenticated";
-GRANT ALL ON TABLE "public"."platform_numbers" TO "service_role";
 
 
 --
