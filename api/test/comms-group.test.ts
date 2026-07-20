@@ -6,6 +6,8 @@
 //   * group thread create: mode='group', a binding for EVERY addressed member
 //     (the landlord's own phone included), and the request-shape guards
 //     (no landlord_user / duplicate address / agent participant / >7 members).
+//   * the landlord verified-phone gate: the landlord leg must be the CALLER's
+//     own OTP-verified number (unverified / mismatched / another user → 409).
 //   * group-SET uniqueness on (platform number, member set): an identical set
 //     in any participant order collides (409); a different set is a new thread.
 //   * a group send is ONE outbox row (to_address null, the full sorted member
@@ -192,6 +194,7 @@ const M2_A = `+1707${SUFFIX}`;   // tenant2
 const M3_A = `+1210${SUFFIX}`;   // tenant3 — only in the "different set" thread
 
 const PLATFORM_B = `+1808${SUFFIX}`;
+const LL_B = `+1240${SUFFIX}`;   // account B's landlord — B never creates a group
 
 interface Fixture {
   accountId: string;
@@ -205,7 +208,7 @@ interface Fixture {
   tenancyId: string;
 }
 
-async function setup(platformNumber: string, tag: string): Promise<Fixture> {
+async function setup(platformNumber: string, tag: string, landlordPhone: string): Promise<Fixture> {
   const email = `commsgrp-landlord-${tag}-${rnd()}@example.test`;
   const password = `correct-horse-${rnd()}`;
   const su = await api('POST', '/v1/auth/signup', {
@@ -247,6 +250,19 @@ async function setup(platformNumber: string, tag: string): Promise<Fixture> {
       account_id: accountId, number: platformNumber, provider: 'test', capabilities: ['sms'],
     });
     if (error) throw new Error(`platform number: ${error.message}`);
+  }
+
+  // Group create requires the caller's phone to be OTP-verified: a group text
+  // exposes the landlord's personal number to a tenant, so core refuses to
+  // build one around an unproven number. Prod writes this through
+  // set_owner_phone_verified behind the SMS OTP; the fixture stamps it
+  // directly, which is the only part of that flow this suite is not about.
+  {
+    const { error } = await admin
+      .from('users')
+      .update({ phone: landlordPhone, phone_verified_at: new Date().toISOString() })
+      .eq('id', b.user.id);
+    if (error) throw new Error(`verify landlord phone: ${error.message}`);
   }
 
   return {
@@ -305,7 +321,7 @@ interface CaptureShape {
 
 async function main(): Promise<void> {
   console.info('Comms group-MMS integration tests');
-  const fx = await setup(PLATFORM_A, 'a');
+  const fx = await setup(PLATFORM_A, 'a', LL_A);
   const base = `/v1/accounts/${fx.accountId}/comms`;
   const L = (body: unknown, path: string, key?: string) =>
     api('POST', `${base}${path}`, { token: fx.landlordToken, body, idempotencyKey: key });
@@ -386,6 +402,47 @@ async function main(): Promise<void> {
     ];
     const r = await L(groupBody(tooMany), '/threads');
     assertStatus(r, 400, '>7 members');
+  });
+
+  // =========================================================================
+  // Landlord verified-phone gate. A group text exposes the landlord's personal
+  // number to a tenant and fans every reply out to it, so core refuses to build
+  // one around a number nobody proved control of. This is enforced HERE (not in
+  // the agent or the PWA) because the landlord holds a JWT and can POST this
+  // route directly — core is the only chokepoint they cannot route around.
+  // =========================================================================
+  await check('group create rejects: landlord phone not verified → 409', async () => {
+    const { error } = await admin
+      .from('users')
+      .update({ phone_verified_at: null })
+      .eq('id', fx.landlordId);
+    assert(!error, `unverify: ${error?.message}`);
+    try {
+      const r = await L(groupBody([llPart, t1Part, t3Part]), '/threads');
+      assertStatus(r, 409, 'unverified landlord');
+      assert(errCode(r) === 'conflict', `code: ${errCode(r)}`);
+    } finally {
+      await admin
+        .from('users')
+        .update({ phone_verified_at: new Date().toISOString() })
+        .eq('id', fx.landlordId);
+    }
+  });
+
+  await check("group create rejects: landlord address ≠ the verified phone → 409", async () => {
+    // A mistyped landlord number is the failure this catches: the thread would
+    // otherwise deliver the tenant's replies to whoever owns that phone.
+    const wrong = { party_type: 'landlord_user', party_id: fx.landlordId, address: `+1231${SUFFIX}` };
+    const r = await L(groupBody([wrong, t1Part, t3Part]), '/threads');
+    assertStatus(r, 409, 'mismatched landlord address');
+  });
+
+  await check('group create rejects: landlord participant is a different user → 409', async () => {
+    // Enrolling a colleague's personal phone into a tenant-facing thread they
+    // did not start is not something one member may do to another.
+    const other = { party_type: 'landlord_user', party_id: viewerAuth.id, address: LL_A };
+    const r = await L(groupBody([other, t1Part, t3Part]), '/threads');
+    assertStatus(r, 409, 'landlord participant is not the caller');
   });
 
   // =========================================================================
@@ -563,7 +620,7 @@ async function main(): Promise<void> {
   // =========================================================================
   // Cross-account: the set match is account-pinned
   // =========================================================================
-  const fxB = await setup(PLATFORM_B, 'b');
+  const fxB = await setup(PLATFORM_B, 'b', LL_B);
   await check("cross-account: A's set + A's number captured on account B → orphan (pinned)", async () => {
     // The same agent transports both accounts; A's exact group set on A's
     // number, but captured under B, must not leak A's thread.
