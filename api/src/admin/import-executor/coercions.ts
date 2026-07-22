@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import { normalizePhone } from '../../routes/_lib/phone';
 import { AreaKind } from '../../schemas/importable';
 
 /** Concise first-issue message from a Zod safeParse error (no z import). */
@@ -103,6 +104,22 @@ export function todayIso(): string {
  * original text is always kept as the body, so nothing is lost if the
  * inference is off). Returns null when there is no parseable prefix.
  */
+/**
+ * Canonicalize an imported tenant's phones to E.164 (same rule as the tenants
+ * route). Returns the normalized array, or the first unresolvable raw value —
+ * the caller blocks the row with it. Deliberately no country-code guessing:
+ * a spreadsheet cell has no typist looking at the result.
+ */
+export function coercePhonesE164(phones: string[]): { ok: string[] } | { bad: string } {
+  const ok: string[] = [];
+  for (const p of phones) {
+    const norm = normalizePhone(p);
+    if (!norm) return { bad: p };
+    ok.push(norm);
+  }
+  return { ok };
+}
+
 export function extractLeadingDate(text: string): string | null {
   const m = /^\s*(\d{1,2})[/\-.](\d{1,2})(?:[/\-.](\d{2,4}))?\s*[:\u2013\u2014-]/.exec(text);
   if (!m) return null;

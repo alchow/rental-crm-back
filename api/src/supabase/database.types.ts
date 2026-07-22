@@ -4146,6 +4146,7 @@ export type Database = {
         };
         Returns: string;
       };
+      _phone_to_e164: { Args: { raw: string }; Returns: string };
       _storage_path_account_id: { Args: { p_name: string }; Returns: string };
       _tenant_email_conflicts: {
         Args: {

@@ -2124,6 +2124,31 @@ $$;
 ALTER FUNCTION "public"."_persona_record_unmatched"("p_account_id" "uuid", "p_provider" "text", "p_provider_msg_id" "text", "p_persona_address" "text", "p_from_address" "text", "p_from_display_name" "text", "p_to_addresses" "text"[], "p_cc_addresses" "text"[], "p_subject" "text", "p_body" "text", "p_media" "jsonb", "p_rfc822_message_id" "text", "p_spf" "text", "p_dkim" "text", "p_dmarc" "text", "p_received_at" timestamp with time zone, "p_reason" "text") OWNER TO "postgres";
 
 --
+-- Name: _phone_to_e164("text"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_phone_to_e164"("raw" "text") RETURNS "text"
+    LANGUAGE "plpgsql" IMMUTABLE
+    SET "search_path" TO 'public'
+    AS $_$
+declare
+  s text;
+begin
+  s := regexp_replace(coalesce(raw, ''), '[\s\-().]', '', 'g');
+  if s ~ '^1[2-9][0-9]{9}$' then
+    s := '+' || s;
+  end if;
+  if s ~ '^\+[1-9][0-9]{6,14}$' then
+    return s;
+  end if;
+  return null;
+end;
+$_$;
+
+
+ALTER FUNCTION "public"."_phone_to_e164"("raw" "text") OWNER TO "postgres";
+
+--
 -- Name: _reject_anchored_lease_mutation(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -2795,6 +2820,32 @@ $$;
 
 
 ALTER FUNCTION "public"."_tenants_email_uniqueness_guard"() OWNER TO "postgres";
+
+--
+-- Name: _tenants_phone_e164_guard(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_tenants_phone_e164_guard"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $_$
+declare
+  bad text;
+begin
+  select p.elem into bad
+  from unnest(new.phones) as p(elem)
+  where p.elem !~ '^\+[1-9][0-9]{6,14}$'
+  limit 1;
+  if bad is not null then
+    raise exception 'tenants.phones element ''%'' is not E.164 (+[country][number]); normalize before writing', bad
+      using errcode = 'check_violation';
+  end if;
+  return new;
+end;
+$_$;
+
+
+ALTER FUNCTION "public"."_tenants_phone_e164_guard"() OWNER TO "postgres";
 
 --
 -- Name: _thread_binding_stamp_mode(); Type: FUNCTION; Schema: public; Owner: postgres
@@ -14020,6 +14071,13 @@ CREATE OR REPLACE TRIGGER "tenants_email_uniqueness_guard" BEFORE INSERT OR UPDA
 
 
 --
+-- Name: tenants tenants_phone_e164_guard; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "tenants_phone_e164_guard" BEFORE INSERT OR UPDATE OF "phones" ON "public"."tenants" FOR EACH ROW WHEN ((("new"."phones" IS NOT NULL) AND ("array_length"("new"."phones", 1) IS NOT NULL))) EXECUTE FUNCTION "public"."_tenants_phone_e164_guard"();
+
+
+--
 -- Name: thread_channel_bindings thread_channel_bindings_audit; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
@@ -16461,6 +16519,14 @@ GRANT ALL ON FUNCTION "public"."_persona_record_unmatched"("p_account_id" "uuid"
 
 
 --
+-- Name: FUNCTION "_phone_to_e164"("raw" "text"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_phone_to_e164"("raw" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."_phone_to_e164"("raw" "text") TO "service_role";
+
+
+--
 -- Name: FUNCTION "_reject_anchored_lease_mutation"(); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -16630,6 +16696,14 @@ GRANT ALL ON FUNCTION "public"."_tenant_stamp_form_started"("p_account_id" "uuid
 --
 
 REVOKE ALL ON FUNCTION "public"."_tenants_email_uniqueness_guard"() FROM PUBLIC;
+
+
+--
+-- Name: FUNCTION "_tenants_phone_e164_guard"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_tenants_phone_e164_guard"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."_tenants_phone_e164_guard"() TO "service_role";
 
 
 --

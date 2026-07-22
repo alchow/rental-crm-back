@@ -9,8 +9,7 @@ import {
   type FieldMapping,
   type RegionEntityMapping,
 } from '../import-catalog';
-import type {
-  AreaKind} from '../../schemas/importable';
+import type { AreaKind } from '../../schemas/importable';
 import {
   AddMemberBody,
   CreateAreaBody,
@@ -29,6 +28,7 @@ import {
   coerceDecimal,
   coerceInt,
   coerceMoney,
+  coercePhonesE164,
   extractLeadingDate,
   firstIssue,
   todayIso,
@@ -466,6 +466,15 @@ export class ExecCtx {
       this.blockRow(row, 'tenant', 'full_name', 'invalid_value', firstIssue(v.error));
       return null;
     }
+    // E.164 canonicalization (same rule as the tenants route): an unresolvable
+    // spreadsheet phone blocks the row rather than storing an undialable number.
+    const phonesE164 = coercePhonesE164(v.data.phones ?? []);
+    if ('bad' in phonesE164) {
+      const msg = `could not resolve '${phonesE164.bad}' to a valid E.164 phone; include the country code (e.g. +1)`;
+      this.blockRow(row, 'tenant', 'phones', 'invalid_value', msg);
+      return null;
+    }
+    v.data.phones = phonesE164.ok;
     // Per-account email uniqueness (migration 20260721000002). Pre-check via the
     // conflict oracle BEFORE the insert: the DB trigger would otherwise raise
     // 23505 on a tenant-holder collision and abort the whole import txn. This

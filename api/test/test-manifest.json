@@ -39,6 +39,10 @@
       "description": "Per-account tenant email uniqueness."
     },
     {
+      "script": "test:tenant-phone-e164",
+      "description": "Canonical E.164 tenant phones: write-time normalization + DB trigger backstop."
+    },
+    {
       "script": "test:multi-status-filters",
       "description": "Multi-status list filters and pagination."
     },
