@@ -1612,6 +1612,7 @@ begin
             join public.interactions i
               on i.account_id = new.account_id
              and i.id = new.relay_of_interaction_id
+             and i.thread_id = new.thread_id
              and i.party_type = cp.party_type
              and i.party_id = cp.party_id
            where cp.thread_id = new.thread_id
@@ -3169,13 +3170,15 @@ begin
     --     multi-tenant group;
     --   * the sender is a tenant/vendor (the landlord texting their own
     --     platform number is not this flow);
-    --   * the thread's tenancy is CURRENT (active/holdover): comm threads are
+    --   * the thread's tenancy is CURRENT (upcoming/active/holdover — a
+    --     signed pre-move-in tenant is exactly who receives the move-in
+    --     link): comm threads are
     --     never closed today, so without this a FORMER tenant's text would
     --     route into their stale thread;
     --   * exactly ONE qualifying thread, else refuse (ambiguity never
     --     guesses; the message stays an orphan).
     if not v_matched then
-      select count(*) into v_direct_count
+      select count(distinct t.id) into v_direct_count
         from public.thread_channel_bindings b
         join public.comm_threads t
           on t.id = b.thread_id
@@ -3193,7 +3196,7 @@ begin
          and sp.party_type in ('tenant', 'vendor')
          and sp.left_at is null
          and ten.deleted_at is null
-         and ten.status in ('active', 'holdover')
+         and ten.status in ('upcoming', 'active', 'holdover')
          and (select count(*) from public.comm_thread_participants pp
                where pp.thread_id = t.id and pp.left_at is null) = 2
          and exists (select 1 from public.comm_thread_participants pl
@@ -3220,15 +3223,17 @@ begin
            and sp.party_type in ('tenant', 'vendor')
            and sp.left_at is null
            and ten.deleted_at is null
-           and ten.status in ('active', 'holdover')
+           and ten.status in ('upcoming', 'active', 'holdover')
            and (select count(*) from public.comm_thread_participants pp
                  where pp.thread_id = t.id and pp.left_at is null) = 2
            and exists (select 1 from public.comm_thread_participants pl
                         where pl.thread_id = t.id
                           and pl.party_type = 'landlord_user'
                           and pl.left_at is null);
-        v_matched := true;
-        v_direct  := true;
+        if found then
+          v_matched := true;
+          v_direct  := true;
+        end if;
       end if;
     end if;
   end if;

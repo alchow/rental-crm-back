@@ -209,7 +209,7 @@ const PLATFORM_A = `+1909${SUFFIX}`;
 const LL_A = `+1505${SUFFIX}`; // the landlord's own phone — a group member
 const M1_A = `+1606${SUFFIX}`; // tenant1
 const M2_A = `+1707${SUFFIX}`; // tenant2
-const M3_A = `+1210${SUFFIX}`; // tenant3 — only in the "different set" thread
+const M3_A = `+1210${SUFFIX}`; // tenant3 — the "different set" thread AND the exact-2 direct-text thread
 
 const PLATFORM_B = `+1808${SUFFIX}`;
 const LL_B = `+1240${SUFFIX}`; // account B's landlord — B never creates a group
@@ -1213,6 +1213,90 @@ async function main(): Promise<void> {
       const res = assertStatus(r, 200, 'opted-out direct') as CaptureShape;
       assert(res.disposition === 'opted_out', `disposition: ${res.disposition}`);
       assert(res.interaction_id !== null, 'still journaled — evidence beats silence');
+    },
+  );
+
+  await check(
+    'upcoming tenancy → direct text still routes (pre-move-in is the target case)',
+    async () => {
+      // A signed-but-not-moved-in tenant is exactly who receives the move-in
+      // link; their direct text must route, not orphan. Only 'ended' is stale.
+      const { error: e1 } = await admin
+        .from('tenancies')
+        .update({ status: 'upcoming' })
+        .eq('id', fx.tenancyId);
+      assert(!e1, `tenancy upcoming: ${e1?.message}`);
+      try {
+        const r = await A(
+          {
+            provider: 'test',
+            provider_msg_id: `IN-direct-${rnd()}`,
+            to_number: PLATFORM_A,
+            from_address: M3_A,
+            channel: 'sms',
+            body: 'moving in next week — where do I park?',
+            received_at: new Date().toISOString(),
+          },
+          '/inbound',
+        );
+        const res = assertStatus(r, 200, 'upcoming direct') as CaptureShape;
+        // M3_A is opted out by the earlier check, so the routed message reports
+        // 'opted_out' (journaled, no echo) — the point is it did NOT orphan.
+        assert(res.disposition === 'opted_out', `disposition: ${res.disposition}`);
+        assert(res.thread_id === exact2ThreadId, 'routed to the exact-2 thread');
+      } finally {
+        const { error: e2 } = await admin
+          .from('tenancies')
+          .update({ status: 'active' })
+          .eq('id', fx.tenancyId);
+        assert(!e2, `tenancy restore: ${e2?.message}`);
+      }
+    },
+  );
+
+  await check(
+    'forge: raw PostgREST group relay into the 3-member thread → trigger rejects',
+    async () => {
+      // The DB backstop must hold even when the API tier is skipped entirely
+      // (an agent JWT can reach PostgREST). Agent-authored shape, 3-member
+      // thread: the exact-2 permit must refuse.
+      const r = await pgrest('POST', 'comm_outbox', fx.agentToken, {
+        account_id: fx.accountId,
+        channel: 'sms',
+        to_address: null,
+        group_addresses: sortedAddrs(LL_A, M1_A, M2_A),
+        thread_id: groupThreadId,
+        relay_of_interaction_id: directInteractionId,
+        body: 'forged echo into the wrong group',
+        approval_ref: `thread:${groupThreadId}`,
+        author_type: 'agent',
+      });
+      assert(r.status >= 400, `forged group relay accepted: ${r.status} ${JSON.stringify(r.body)}`);
+    },
+  );
+
+  await check(
+    'forge: raw PostgREST group relay citing a FOREIGN-thread interaction → trigger rejects',
+    async () => {
+      // API parity in the DB: the relayed interaction must live in the
+      // destination thread, not merely be attributed to its counterparty.
+      // groupInteractionId lives in the 3-member thread — citing it for an
+      // echo into the exact-2 thread must be refused.
+      const r = await pgrest('POST', 'comm_outbox', fx.agentToken, {
+        account_id: fx.accountId,
+        channel: 'sms',
+        to_address: null,
+        group_addresses: sortedAddrs(LL_A, M3_A),
+        thread_id: exact2ThreadId,
+        relay_of_interaction_id: groupInteractionId,
+        body: 'forged echo citing a foreign interaction',
+        approval_ref: `thread:${exact2ThreadId}`,
+        author_type: 'agent',
+      });
+      assert(
+        r.status >= 400,
+        `foreign-thread relay accepted: ${r.status} ${JSON.stringify(r.body)}`,
+      );
     },
   );
 
