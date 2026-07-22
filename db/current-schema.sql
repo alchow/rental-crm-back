@@ -4534,6 +4534,8 @@ declare
   v_journal_body   text;
   v_msgid          text := public._comm_normalize_msgid(p_rfc822_message_id);
   v_dup_outbox_id  uuid;
+  v_cp_count       integer;
+  v_cp             record;
   r                record;
 begin
   select * into v_outbox
@@ -4654,6 +4656,30 @@ begin
       end loop;
     end if;
     v_party_label := left(array_to_string(v_names, ', '), 200);
+    -- Single-counterparty attribution (20260723000009): a group whose cast
+    -- holds EXACTLY ONE tenant/vendor is "with" that party — the landlord on
+    -- the thread is delivery mechanics, not a counterparty (the move-in
+    -- group text is always landlord + one tenant, and journaling it as
+    -- 'unspecified' made every such send ask "who was this with?" for an
+    -- answer the cast already names). Groups with several counterparties
+    -- keep 'unspecified' + the joined-names label honestly; the cast records
+    -- every member either way.
+    select count(*) into v_cp_count
+      from jsonb_array_elements(v_cast) e
+     where e->>'party_type' in ('tenant', 'vendor')
+       and nullif(e->>'party_id', '') is not null;
+    if v_cp_count = 1 then
+      select e->>'party_type'                 as p_type,
+             nullif(e->>'party_id', '')::uuid as p_id,
+             coalesce(e->>'label', e->>'address') as p_label
+        into v_cp
+        from jsonb_array_elements(v_cast) e
+       where e->>'party_type' in ('tenant', 'vendor')
+         and nullif(e->>'party_id', '') is not null;
+      v_party_type  := v_cp.p_type;
+      v_party_id    := v_cp.p_id;
+      v_party_label := left(v_cp.p_label, 200);
+    end if;
   else
     if v_outbox.recipient_snapshot is not null then
       -- Attribution: the PRIMARY entry — the first without role='cc'. A copied
