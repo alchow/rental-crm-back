@@ -7,6 +7,7 @@ import { keysetPage } from './_lib/cursor';
 import { softDeleteStamp } from './_lib/soft-delete';
 import { CreateTenantBody } from '../schemas/importable';
 import { tenantEmailConflicts } from '../admin/tenant-email-conflicts';
+import { normalizePhone } from './_lib/phone';
 
 const Tenant = z
   .object({
@@ -150,6 +151,36 @@ const remove = createRoute({
 // ----------------------------------------------------------------------------
 
 /**
+ * Canonicalize submitted phones to E.164 (the format the landlord profile,
+ * platform numbers, and every comms consumer already use — Telnyx's own
+ * shape). A value normalizePhone cannot resolve is a 422 naming the value:
+ * storing it raw would make the record look fine until the first strict
+ * consumer (group-thread create) rejects it at send time. Two spellings of
+ * one number ("617-555-1234" + "+16175551234") dedupe silently — formatting
+ * artifacts, not user error like a duplicate email.
+ */
+function normalizePhonesForWrite(phones: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const p of phones) {
+    const norm = normalizePhone(p);
+    if (!norm) {
+      throw new ApiError(
+        422,
+        'invalid_phone',
+        `could not resolve '${p}' to a valid E.164 number; include the country code (e.g. +1 for US/Canada) and retry`,
+        { fieldErrors: { phones: [`could not resolve '${p}' to E.164`] } },
+      );
+    }
+    if (!seen.has(norm)) {
+      seen.add(norm);
+      out.push(norm);
+    }
+  }
+  return out;
+}
+
+/**
  * Reject case-insensitive intra-array duplicates with a 422 fieldErrors.emails
  * (matches accounts.ts branding). Blanks/padded input never reach here — the
  * body schema's z.string().email() already 400s them in the defaultHook — so
@@ -214,9 +245,14 @@ async function assertEmailsWritable(
  */
 function mapTenantWriteError(error: { code?: string; message: string }): ApiError {
   if (error.code === '23505') {
-    return new ApiError(409, 'conflict', 'an email on this tenant already belongs to someone else', {
-      fieldErrors: { emails: ['already in use'] },
-    });
+    return new ApiError(
+      409,
+      'conflict',
+      'an email on this tenant already belongs to someone else',
+      {
+        fieldErrors: { emails: ['already in use'] },
+      },
+    );
   }
   return new ApiError(500, 'database_error', error.message);
 }
@@ -259,7 +295,7 @@ tenantsApp.openapi(create, async (c) => {
       account_id: accountId,
       full_name: body.full_name,
       emails: emailsToStore,
-      phones: body.phones ?? [],
+      phones: normalizePhonesForWrite(body.phones ?? []),
       notes: body.notes ?? null,
     })
     .select('*')
@@ -278,7 +314,7 @@ tenantsApp.openapi(patch, async (c) => {
     update.emails =
       body.emails.length > 0 ? await assertEmailsWritable(accountId, body.emails, id) : body.emails;
   }
-  if (body.phones !== undefined) update.phones = body.phones;
+  if (body.phones !== undefined) update.phones = normalizePhonesForWrite(body.phones);
   if (body.notes !== undefined) update.notes = body.notes;
   const { data, error } = await sb
     .from('tenants')

@@ -29,6 +29,7 @@
     "test:tenancy-start-date": "tsx test/tenancy-start-date.test.ts",
     "test:tenancy-endings": "tsx test/tenancy-endings.test.ts",
     "test:tenant-email-uniqueness": "tsx test/tenant-email-uniqueness.test.ts",
+    "test:tenant-phone-e164": "tsx test/tenant-phone-e164.test.ts",
     "test:multi-status-filters": "tsx test/multi-status-filters.test.ts",
     "test:maintenance-reporter": "tsx test/maintenance-reporter.test.ts",
     "test:interactions-journal": "tsx test/interactions-journal.test.ts",

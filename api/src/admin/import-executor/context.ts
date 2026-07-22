@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import type { z } from 'zod';
 import { getLogger } from '../../log';
+import { normalizePhone } from '../../routes/_lib/phone';
 import {
   ENTITY_ORDER,
   requiredFields,
@@ -9,8 +10,7 @@ import {
   type FieldMapping,
   type RegionEntityMapping,
 } from '../import-catalog';
-import type {
-  AreaKind} from '../../schemas/importable';
+import type { AreaKind } from '../../schemas/importable';
 import {
   AddMemberBody,
   CreateAreaBody,
@@ -465,6 +465,27 @@ export class ExecCtx {
       // Closes the route-only gaps the DB doesn't enforce: email format + phone length.
       this.blockRow(row, 'tenant', 'full_name', 'invalid_value', firstIssue(v.error));
       return null;
+    }
+    // Phones are stored canonically as E.164 (same rule as the tenants route);
+    // a spreadsheet value that cannot be resolved blocks the row rather than
+    // storing a number no comms consumer can dial.
+    if (v.data.phones && v.data.phones.length > 0) {
+      const normalized: string[] = [];
+      for (const p of v.data.phones) {
+        const norm = normalizePhone(p);
+        if (!norm) {
+          this.blockRow(
+            row,
+            'tenant',
+            'phones',
+            'invalid_value',
+            `could not resolve '${p}' to a valid E.164 phone; include the country code (e.g. +1)`,
+          );
+          return null;
+        }
+        normalized.push(norm);
+      }
+      v.data.phones = normalized;
     }
     // Per-account email uniqueness (migration 20260721000002). Pre-check via the
     // conflict oracle BEFORE the insert: the DB trigger would otherwise raise
