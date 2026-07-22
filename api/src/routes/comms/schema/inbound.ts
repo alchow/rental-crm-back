@@ -47,7 +47,7 @@ export const CaptureInboundBody = z
     channel: CommChannel,
     body: z.string().max(20000).optional(),
     media: z.array(CommInboundMedia).max(20).optional(),
-    received_at: z.string().datetime(),
+    received_at: z.string().datetime({ offset: true }),
     /** Email-only. The mail's Subject header, stored with the raw capture
      *  (NOT folded into the journal body — the journal shape is unchanged). */
     subject: z.string().min(1).max(998).optional(),
@@ -117,7 +117,7 @@ export const CapturePersonaInboundBody = z
      *  key, so attribution is gated on DMARC — a capture without verdicts is
      *  treated as unauthenticated and lands in triage. */
     auth_results: CommAuthResults,
-    received_at: z.string().datetime(),
+    received_at: z.string().datetime({ offset: true }),
   })
   .openapi('CapturePersonaInboundBody');
 
@@ -225,7 +225,7 @@ export const CommEvidenceBody = z
     signature: z.string().min(1).max(2000).optional(),
     /** Provider signature timestamp header value (e.g. telnyx-timestamp). */
     signature_timestamp: z.string().min(1).max(100).optional(),
-    received_at: z.string().datetime(),
+    received_at: z.string().datetime({ offset: true }),
   })
   .openapi('CommEvidenceBody');
 

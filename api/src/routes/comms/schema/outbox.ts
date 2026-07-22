@@ -302,7 +302,7 @@ export const DeliveryBody = z
      *  ignored and return the unchanged row. 'sending' is the transport's
      *  pre-dial claim on a queued row (the ADR-0007 crash-window marker). */
     status: z.enum(['sending', 'sent', 'delivered', 'failed', 'undeliverable']),
-    provider_ts: z.string().datetime(),
+    provider_ts: z.string().datetime({ offset: true }),
     error_code: z.string().max(100).optional(),
   })
   .openapi('CommDeliveryBody');
