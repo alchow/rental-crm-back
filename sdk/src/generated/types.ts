@@ -17925,7 +17925,7 @@ export interface components {
         } | null;
         CaptureCommInboundResponse: {
             /** @enum {string} */
-            disposition: "matched" | "orphan" | "opted_out" | "sender_mismatch" | "duplicate";
+            disposition: "matched" | "matched_direct" | "orphan" | "opted_out" | "sender_mismatch" | "duplicate";
             /** Format: uuid */
             interaction_id: string | null;
             /** Format: uuid */

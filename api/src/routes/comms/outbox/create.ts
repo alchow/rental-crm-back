@@ -359,7 +359,54 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
         );
       }
       if (body.relay_of_interaction_id !== undefined) {
-        throw new ApiError(400, 'invalid_request', 'relays do not exist in group mode');
+        // Echo relay (matched_direct capture): the ONE group relay shape that
+        // exists. A recognized member texted the platform number 1:1; the
+        // carrier did not fan that out, so the transport echoes it into the
+        // member's group thread. Permitted ONLY when the thread's live member
+        // set is exactly {one landlord_user, one tenant/vendor} AND the
+        // relayed interaction is attributed to that sole counterparty — a
+        // private text must never be broadcast past its own sender, so a
+        // relay into any larger group is refused here, structurally, not by
+        // caller discipline. (The thread: approval_ref arm above has already
+        // verified the thread is live and the interaction belongs to it.)
+        const { data: members, error: mErr } = await sb
+          .from('comm_thread_participants')
+          .select('id, party_type, party_id')
+          .eq('account_id', accountId)
+          .eq('thread_id', body.thread_id!)
+          .is('left_at', null);
+        if (mErr) throw commDbError(mErr);
+        const live = (members ?? []) as {
+          id: string;
+          party_type: string;
+          party_id: string | null;
+        }[];
+        const counterparties = live.filter(
+          (m) => m.party_type === 'tenant' || m.party_type === 'vendor',
+        );
+        const landlords = live.filter((m) => m.party_type === 'landlord_user');
+        const sole = counterparties[0];
+        if (live.length !== 2 || counterparties.length !== 1 || landlords.length !== 1 || !sole) {
+          throw new ApiError(
+            409,
+            'conflict',
+            'a group relay is only permitted into a two-member thread (the sender and the landlord)',
+          );
+        }
+        const { data: orig, error: oErr } = await sb
+          .from('interactions')
+          .select('id, party_type, party_id')
+          .eq('account_id', accountId)
+          .eq('id', body.relay_of_interaction_id)
+          .maybeSingle();
+        if (oErr) throw commDbError(oErr);
+        if (!orig || orig.party_type !== sole.party_type || orig.party_id !== sole.party_id) {
+          throw new ApiError(
+            409,
+            'conflict',
+            "a group relay must reference an interaction attributed to the thread's sole counterparty",
+          );
+        }
       }
       const { data: bindings, error: bErr } = await sb
         .from('thread_channel_bindings')
@@ -642,18 +689,14 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
           if (castErr) throw commDbError(castErr);
           let landlordCc: string | null = null;
           if (senderCast?.party_id != null) {
-            const { data: rec, error: recErr } = await sb.rpc(
-              'resolve_relay_landlord_recipient',
-              {
-                p_account_id: accountId,
-                p_user_id: senderCast.party_id as string,
-                p_source_interaction_id: body.relay_of_interaction_id,
-                p_fallback_address: nullableRpcArg((senderCast.address as string | null) ?? null),
-              },
-            );
+            const { data: rec, error: recErr } = await sb.rpc('resolve_relay_landlord_recipient', {
+              p_account_id: accountId,
+              p_user_id: senderCast.party_id as string,
+              p_source_interaction_id: body.relay_of_interaction_id,
+              p_fallback_address: nullableRpcArg((senderCast.address as string | null) ?? null),
+            });
             if (recErr) throw commDbError(recErr);
-            landlordCc =
-              ((rec ?? []) as { to_address: string | null }[])[0]?.to_address ?? null;
+            landlordCc = ((rec ?? []) as { to_address: string | null }[])[0]?.to_address ?? null;
           } else {
             landlordCc = (senderCast?.address as string | null) ?? null;
           }

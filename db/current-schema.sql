@@ -1595,9 +1595,38 @@ begin
         raise exception 'a send into a group thread must be a group send (group_addresses, no to_address)'
           using errcode = 'check_violation';
       end if;
-      if new.participant_id is not null or new.relay_of_interaction_id is not null then
-        raise exception 'group sends address the whole thread: no participant leg, no relay'
+      if new.participant_id is not null then
+        raise exception 'group sends address the whole thread: no participant leg'
           using errcode = 'check_violation';
+      end if;
+      if new.relay_of_interaction_id is not null then
+        -- Echo relay (20260723000010, matched_direct): the ONE permitted
+        -- group relay shape. Mirrors the API-tier guard structurally so a
+        -- direct-PostgREST writer cannot widen it: the thread's LIVE member
+        -- set is exactly {one landlord_user, one tenant/vendor} and the
+        -- relayed interaction is attributed to that sole counterparty — a
+        -- private text must never be broadcast past its own sender.
+        if not exists (
+          select 1
+            from public.comm_thread_participants cp
+            join public.interactions i
+              on i.account_id = new.account_id
+             and i.id = new.relay_of_interaction_id
+             and i.party_type = cp.party_type
+             and i.party_id = cp.party_id
+           where cp.thread_id = new.thread_id
+             and cp.left_at is null
+             and cp.party_type in ('tenant', 'vendor')
+             and (select count(*) from public.comm_thread_participants pp
+                   where pp.thread_id = new.thread_id and pp.left_at is null) = 2
+             and exists (select 1 from public.comm_thread_participants pl
+                          where pl.thread_id = new.thread_id
+                            and pl.party_type = 'landlord_user'
+                            and pl.left_at is null)
+        ) then
+          raise exception 'a group relay is only permitted into a two-member thread (sender + landlord), referencing the counterparty''s interaction'
+            using errcode = 'check_violation';
+        end if;
       end if;
     elsif new.group_addresses is not null then
       raise exception 'group_addresses requires a group-mode thread'
@@ -2969,6 +2998,8 @@ declare
                               then public._comm_normalize_msgid(p_rfc822_message_id)
                               else null end;
   v_dup_id       uuid;
+  v_direct       boolean := false;
+  v_direct_count integer;
   r              record;
 begin
   -- Self-defense: transport (agent-role member of this account) only.
@@ -3126,6 +3157,80 @@ begin
        and b.thread_mode = 'bridged'
        and b.account_id = p_account_id;
     v_matched := found;
+
+    -- Direct text from a known group member (20260723000010): no bridged
+    -- thread, but the sender's address is actively bound on a GROUP thread on
+    -- this very number -> route the message INTO that thread and answer
+    -- 'matched_direct' so the transport sends the echo (the carrier did NOT
+    -- fan a 1:1 text out; without the echo the landlord never sees it).
+    -- Guards, all structural:
+    --   * the thread's LIVE member set is exactly {sender, one landlord_user}
+    --     - a private text from one roommate must never surface in a
+    --     multi-tenant group;
+    --   * the sender is a tenant/vendor (the landlord texting their own
+    --     platform number is not this flow);
+    --   * the thread's tenancy is CURRENT (active/holdover): comm threads are
+    --     never closed today, so without this a FORMER tenant's text would
+    --     route into their stale thread;
+    --   * exactly ONE qualifying thread, else refuse (ambiguity never
+    --     guesses; the message stays an orphan).
+    if not v_matched then
+      select count(*) into v_direct_count
+        from public.thread_channel_bindings b
+        join public.comm_threads t
+          on t.id = b.thread_id
+        join public.comm_thread_participants sp
+          on sp.id = b.participant_id
+        join public.tenancies ten
+          on ten.id = t.tenancy_id
+         and ten.account_id = t.account_id
+       where b.account_id = p_account_id
+         and b.platform_number = p_to_number
+         and b.participant_address = p_from_address
+         and b.active
+         and b.thread_mode = 'group'
+         and t.status = 'active'
+         and sp.party_type in ('tenant', 'vendor')
+         and sp.left_at is null
+         and ten.deleted_at is null
+         and ten.status in ('active', 'holdover')
+         and (select count(*) from public.comm_thread_participants pp
+               where pp.thread_id = t.id and pp.left_at is null) = 2
+         and exists (select 1 from public.comm_thread_participants pl
+                      where pl.thread_id = t.id
+                        and pl.party_type = 'landlord_user'
+                        and pl.left_at is null);
+      if v_direct_count = 1 then
+        select b.thread_id as b_thread_id, b.participant_id as b_participant_id
+          into v_binding
+          from public.thread_channel_bindings b
+          join public.comm_threads t
+            on t.id = b.thread_id
+          join public.comm_thread_participants sp
+            on sp.id = b.participant_id
+          join public.tenancies ten
+            on ten.id = t.tenancy_id
+           and ten.account_id = t.account_id
+         where b.account_id = p_account_id
+           and b.platform_number = p_to_number
+           and b.participant_address = p_from_address
+           and b.active
+           and b.thread_mode = 'group'
+           and t.status = 'active'
+           and sp.party_type in ('tenant', 'vendor')
+           and sp.left_at is null
+           and ten.deleted_at is null
+           and ten.status in ('active', 'holdover')
+           and (select count(*) from public.comm_thread_participants pp
+                 where pp.thread_id = t.id and pp.left_at is null) = 2
+           and exists (select 1 from public.comm_thread_participants pl
+                        where pl.thread_id = t.id
+                          and pl.party_type = 'landlord_user'
+                          and pl.left_at is null);
+        v_matched := true;
+        v_direct  := true;
+      end if;
+    end if;
   end if;
 
   if not v_matched then
@@ -3218,6 +3323,7 @@ begin
       select 1 from public.comm_opt_outs oo
        where oo.channel = p_channel and oo.address = p_from_address
     ) then 'opted_out'
+    when v_direct then 'matched_direct'
     else 'matched'
   end;
 
@@ -10426,7 +10532,7 @@ CREATE TABLE IF NOT EXISTS "public"."inbound_raw" (
     "matched_participant_id" "uuid",
     "matched_interaction_id" "uuid",
     "rfc822_message_id" "text",
-    CONSTRAINT "inbound_raw_disposition_check" CHECK (("disposition" = ANY (ARRAY['matched'::"text", 'orphan'::"text", 'opted_out'::"text", 'sender_mismatch'::"text", 'duplicate'::"text", 'cc_journaled'::"text", 'cc_relayed'::"text", 'triaged'::"text", 'journaled_unverified'::"text"]))),
+    CONSTRAINT "inbound_raw_disposition_check" CHECK (("disposition" = ANY (ARRAY['matched'::"text", 'matched_direct'::"text", 'orphan'::"text", 'opted_out'::"text", 'sender_mismatch'::"text", 'duplicate'::"text", 'cc_journaled'::"text", 'cc_relayed'::"text", 'triaged'::"text", 'journaled_unverified'::"text"]))),
     CONSTRAINT "inbound_raw_provider_check" CHECK ((("length"("provider") >= 1) AND ("length"("provider") <= 100))),
     CONSTRAINT "inbound_raw_rfc822_message_id_check" CHECK ((("rfc822_message_id" IS NULL) OR (("length"("rfc822_message_id") >= 3) AND ("length"("rfc822_message_id") <= 998))))
 );

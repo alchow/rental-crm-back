@@ -643,6 +643,8 @@ async function main(): Promise<void> {
     },
   );
 
+  let exact2ThreadId = '';
+
   // =========================================================================
   // Single-counterparty attribution (20260723000009): landlord + ONE tenant
   // — the move-in group-text shape — journals "with" the tenant, not the
@@ -653,6 +655,7 @@ async function main(): Promise<void> {
     async () => {
       const created = await L(groupBody([llPart, t3Part]), '/threads');
       const thread = assertStatus(created, 201, 'exact-2 group create') as ThreadDetailShape;
+      exact2ThreadId = thread.id;
       const sent = await L({ body: 'Move-in link, just us two' }, `/threads/${thread.id}/messages`);
       const row = (assertStatus(sent, 201, 'exact-2 message') as { data: OutboxShape[] }).data[0]!;
       const done = await A(
@@ -730,6 +733,10 @@ async function main(): Promise<void> {
         '/outbox',
       );
       assertStatus(withPart, 400, 'group + participant_ref');
+      // Since 20260723000010 a group relay EXISTS (the matched_direct echo)
+      // but only for the exact-2 {sender, landlord} shape — into this
+      // 3-member thread it is refused by the structural guard (409), no
+      // longer rejected as an unknown shape (400).
       const withRelay = await L(
         {
           channel: 'sms',
@@ -740,7 +747,7 @@ async function main(): Promise<void> {
         },
         '/outbox',
       );
-      assertStatus(withRelay, 400, 'group + relay');
+      assertStatus(withRelay, 409, 'group + relay into a 3-member thread');
     },
   );
 
@@ -1039,6 +1046,208 @@ async function main(): Promise<void> {
       await admin.from('thread_channel_bindings').delete().eq('id', row.id);
     },
   );
+
+  // =========================================================================
+  // Direct tenant texts (20260723000010): a 1:1 sms from a recognized member
+  // routes into the exact-2 group thread as 'matched_direct'; the transport's
+  // echo is a group relay leg — permitted ONLY for that exact-2 shape.
+  // Fixture geometry this section leans on: tenant3/M3_A is bound on TWO
+  // group threads (the 4-member "different set" thread and the exact-2
+  // attribution thread) — only the exact-2 one qualifies; tenant1/M1_A holds
+  // a BRIDGED thread (bridged wins before direct matching); tenant2/M2_A is
+  // opted out from the earlier STOP check and sits only in the 3-member
+  // group.
+  // =========================================================================
+  let directInteractionId = '';
+  await check(
+    "direct 1:1 text from the exact-2 member → 'matched_direct' into that thread",
+    async () => {
+      const r = await A(
+        {
+          provider: 'test',
+          provider_msg_id: `IN-direct-${rnd()}`,
+          to_number: PLATFORM_A,
+          from_address: M3_A,
+          channel: 'sms',
+          body: 'hey, the sink is leaking',
+          received_at: new Date().toISOString(),
+        },
+        '/inbound',
+      );
+      const res = assertStatus(r, 200, 'direct capture') as CaptureShape;
+      assert(res.disposition === 'matched_direct', `disposition: ${res.disposition}`);
+      assert(
+        res.thread_id === exact2ThreadId,
+        `thread: ${res.thread_id} (wanted the exact-2, not the 4-member)`,
+      );
+      assert(res.interaction_id !== null, 'journaled');
+      directInteractionId = res.interaction_id!;
+      const g = await api(
+        'GET',
+        `/v1/accounts/${fx.accountId}/interactions/${directInteractionId}`,
+        {
+          token: fx.landlordToken,
+        },
+      );
+      const j = assertStatus(g, 200, 'journal row') as {
+        party_type: string;
+        party_id: string | null;
+        thread_id: string | null;
+        direction: string;
+      };
+      assert(
+        j.party_type === 'tenant' && j.party_id === fx.tenant3Id,
+        `attributed: ${j.party_type}/${j.party_id}`,
+      );
+      assert(j.thread_id === exact2ThreadId, 'threaded into the group');
+      assert(j.direction === 'inbound', `direction: ${j.direction}`);
+    },
+  );
+
+  await check(
+    'echo relay into the exact-2 thread → 201 group row; completion links the original',
+    async () => {
+      const r = await A(
+        {
+          channel: 'sms',
+          thread_id: exact2ThreadId,
+          body: `Tenant3 texted ${PLATFORM_A} directly: hey, the sink is leaking`,
+          approval_ref: `thread:${exact2ThreadId}`,
+          relay_of_interaction_id: directInteractionId,
+        },
+        '/outbox',
+      );
+      const row = assertStatus(r, 201, 'echo intent') as OutboxShape;
+      assert(row.to_address === null, 'group row');
+      assert(
+        sameArray(row.group_addresses, sortedAddrs(LL_A, M3_A)),
+        `pair: ${JSON.stringify(row.group_addresses)}`,
+      );
+      const done = await A(
+        { provider: 'test', provider_sid: `echo-${rnd()}` },
+        `/outbox/${row.id}/complete`,
+      );
+      const body = assertStatus(done, 200, 'echo complete') as { interaction_id: string };
+      assert(
+        body.interaction_id === directInteractionId,
+        'relay links the ORIGINAL — no duplicate journal row',
+      );
+    },
+  );
+
+  await check(
+    'echo relay into the 3-member group → 409 (privacy guard is structural)',
+    async () => {
+      const r = await A(
+        {
+          channel: 'sms',
+          thread_id: groupThreadId,
+          body: 'must not broadcast',
+          approval_ref: `thread:${groupThreadId}`,
+          relay_of_interaction_id: groupInteractionId,
+        },
+        '/outbox',
+      );
+      assertStatus(r, 409, 'group relay refused');
+    },
+  );
+
+  await check(
+    "direct text from a 3-member group's tenant → 'orphan' (roommate privacy pin)",
+    async () => {
+      const r = await A(
+        {
+          provider: 'test',
+          provider_msg_id: `IN-direct-${rnd()}`,
+          to_number: PLATFORM_A,
+          from_address: M2_A,
+          channel: 'sms',
+          body: 'my roommate is not paying his share',
+          received_at: new Date().toISOString(),
+        },
+        '/inbound',
+      );
+      const res = assertStatus(r, 200, 'roommate direct') as CaptureShape;
+      assert(res.disposition === 'orphan', `disposition: ${res.disposition}`);
+      assert(res.interaction_id === null, 'nothing journaled');
+    },
+  );
+
+  await check("direct text from a stranger → 'orphan' (unchanged)", async () => {
+    const r = await A(
+      {
+        provider: 'test',
+        provider_msg_id: `IN-direct-${rnd()}`,
+        to_number: PLATFORM_A,
+        from_address: `+1999${SUFFIX}`,
+        channel: 'sms',
+        body: 'who dis',
+        received_at: new Date().toISOString(),
+      },
+      '/inbound',
+    );
+    const res = assertStatus(r, 200, 'stranger direct') as CaptureShape;
+    assert(res.disposition === 'orphan', `disposition: ${res.disposition}`);
+  });
+
+  await check(
+    "opted-out exact-2 member's direct text → 'opted_out' (journaled, transport must not echo)",
+    async () => {
+      const oo = await A(
+        { channel: 'sms', address: M3_A, keyword: 'STOP', source_ref: `IN-oo-${rnd()}` },
+        '/opt-outs',
+      );
+      assertStatus(oo, 200, 'register opt-out');
+      const r = await A(
+        {
+          provider: 'test',
+          provider_msg_id: `IN-direct-${rnd()}`,
+          to_number: PLATFORM_A,
+          from_address: M3_A,
+          channel: 'sms',
+          body: 'still here',
+          received_at: new Date().toISOString(),
+        },
+        '/inbound',
+      );
+      const res = assertStatus(r, 200, 'opted-out direct') as CaptureShape;
+      assert(res.disposition === 'opted_out', `disposition: ${res.disposition}`);
+      assert(res.interaction_id !== null, 'still journaled — evidence beats silence');
+    },
+  );
+
+  await check("ended tenancy → direct text falls to 'orphan' (stale-thread pin)", async () => {
+    // Threads never close today (no writer for status='closed'), so the
+    // tenancy-currency guard is what stops a FORMER tenant's text from
+    // routing into their old thread.
+    const { error: e1 } = await admin
+      .from('tenancies')
+      .update({ status: 'ended' })
+      .eq('id', fx.tenancyId);
+    assert(!e1, `tenancy end: ${e1?.message}`);
+    try {
+      const r = await A(
+        {
+          provider: 'test',
+          provider_msg_id: `IN-direct-${rnd()}`,
+          to_number: PLATFORM_A,
+          from_address: M3_A,
+          channel: 'sms',
+          body: 'former tenant texting',
+          received_at: new Date().toISOString(),
+        },
+        '/inbound',
+      );
+      const res = assertStatus(r, 200, 'ended-tenancy direct') as CaptureShape;
+      assert(res.disposition === 'orphan', `disposition: ${res.disposition}`);
+    } finally {
+      const { error: e2 } = await admin
+        .from('tenancies')
+        .update({ status: 'active' })
+        .eq('id', fx.tenancyId);
+      assert(!e2, `tenancy restore: ${e2?.message}`);
+    }
+  });
 
   // --- summary ---------------------------------------------------------------
   console.info('');
