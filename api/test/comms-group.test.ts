@@ -760,7 +760,10 @@ async function main(): Promise<void> {
           cc: [M2_A, LL_A],
           channel: 'sms',
           body: 'reply-all from tenant1',
-          received_at: new Date().toISOString(),
+          // Offset form, as Telnyx actually stamps occurred_at: the capture
+          // schema must accept it (a Z-only .datetime() 400'd the first live
+          // group reply AFTER the transport had acked — a permanent loss).
+          received_at: new Date().toISOString().replace('Z', '+00:00'),
         },
         '/inbound',
       );
