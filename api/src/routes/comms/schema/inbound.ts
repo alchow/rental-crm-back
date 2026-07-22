@@ -189,8 +189,21 @@ export const CaptureInboundResponse = z
      *  journaled into the same thread (a second delivery door of one send) —
      *  nothing new was written; interaction_id/thread_id/participant point at
      *  the ORIGINAL row. Treat as success-no-op; relay nothing.
+     *  matched_direct: a 1:1 sms from a recognized member of an exact-2 group
+     *  thread on this number — journaled INTO that group thread, but the
+     *  carrier did NOT fan it out: the transport must send the echo (a group
+     *  relay leg referencing interaction_id; see the outbox group-relay
+     *  rules). Opt-out wins over this disposition, so an opted-out sender's
+     *  direct text journals without ever echoing.
      *  Forward-compat rule: relay nothing on any unrecognized disposition. */
-    disposition: z.enum(['matched', 'orphan', 'opted_out', 'sender_mismatch', 'duplicate']),
+    disposition: z.enum([
+      'matched',
+      'matched_direct',
+      'orphan',
+      'opted_out',
+      'sender_mismatch',
+      'duplicate',
+    ]),
     interaction_id: z.string().uuid().nullable(),
     thread_id: z.string().uuid().nullable(),
     participant: CommThreadParticipant.nullable(),

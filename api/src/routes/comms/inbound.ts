@@ -237,7 +237,13 @@ export function registerInboundRoutes(app: CommsApp): void {
     if (error) throw commDbError(error);
     const result = (
       data as {
-        disposition: 'matched' | 'orphan' | 'opted_out' | 'sender_mismatch' | 'duplicate';
+        disposition:
+          | 'matched'
+          | 'matched_direct'
+          | 'orphan'
+          | 'opted_out'
+          | 'sender_mismatch'
+          | 'duplicate';
         interaction_id: string | null;
         thread_id: string | null;
         participant_id: string | null;
