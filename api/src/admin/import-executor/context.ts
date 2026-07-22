@@ -1,7 +1,6 @@
 import type { PoolClient } from 'pg';
 import type { z } from 'zod';
 import { getLogger } from '../../log';
-import { normalizePhone } from '../../routes/_lib/phone';
 import {
   ENTITY_ORDER,
   requiredFields,
@@ -29,6 +28,7 @@ import {
   coerceDecimal,
   coerceInt,
   coerceMoney,
+  coercePhonesE164,
   extractLeadingDate,
   firstIssue,
   todayIso,
@@ -466,27 +466,15 @@ export class ExecCtx {
       this.blockRow(row, 'tenant', 'full_name', 'invalid_value', firstIssue(v.error));
       return null;
     }
-    // Phones are stored canonically as E.164 (same rule as the tenants route);
-    // a spreadsheet value that cannot be resolved blocks the row rather than
-    // storing a number no comms consumer can dial.
-    if (v.data.phones && v.data.phones.length > 0) {
-      const normalized: string[] = [];
-      for (const p of v.data.phones) {
-        const norm = normalizePhone(p);
-        if (!norm) {
-          this.blockRow(
-            row,
-            'tenant',
-            'phones',
-            'invalid_value',
-            `could not resolve '${p}' to a valid E.164 phone; include the country code (e.g. +1)`,
-          );
-          return null;
-        }
-        normalized.push(norm);
-      }
-      v.data.phones = normalized;
+    // E.164 canonicalization (same rule as the tenants route): an unresolvable
+    // spreadsheet phone blocks the row rather than storing an undialable number.
+    const phonesE164 = coercePhonesE164(v.data.phones ?? []);
+    if ('bad' in phonesE164) {
+      const msg = `could not resolve '${phonesE164.bad}' to a valid E.164 phone; include the country code (e.g. +1)`;
+      this.blockRow(row, 'tenant', 'phones', 'invalid_value', msg);
+      return null;
     }
+    v.data.phones = phonesE164.ok;
     // Per-account email uniqueness (migration 20260721000002). Pre-check via the
     // conflict oracle BEFORE the insert: the DB trigger would otherwise raise
     // 23505 on a tenant-holder collision and abort the whole import txn. This
