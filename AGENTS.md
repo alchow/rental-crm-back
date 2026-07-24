@@ -2,6 +2,11 @@
 
 Explain changes simply. Prefer concrete data-flow examples.
 
+**Answer from the code, not from memory.** Before answering any question about how
+this system behaves — what runs, what gets sent, what gets stored — read the
+relevant source, migration, or schema in this session and cite it (`path:line`).
+Never characterize behavior you have not just read.
+
 ## Start Here
 
 - Read `README.md` for setup and the repository map.
