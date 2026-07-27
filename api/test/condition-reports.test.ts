@@ -1275,6 +1275,42 @@ async function main(): Promise<void> {
     if (pi.status !== 409) throw new Error(`expected 409, got ${pi.status}`);
   });
 
+  await check('cross-account: B cannot return A submitted inspection', async () => {
+    const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/return-to-tenant`, {
+      token: B.accessToken,
+    });
+    if (r.status !== 404 && r.status !== 403) throw new Error(`expected 404/403, got ${r.status}`);
+  });
+
+  await check('landlord returns the submitted form to the tenant -> draft, submitted_at cleared', async () => {
+    const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/return-to-tenant`, {
+      token: A.accessToken,
+    });
+    const b = assertStatus(r, 200, 'return-to-tenant') as { status: string; submitted_at: string | null };
+    if (b.status !== 'draft') throw new Error(`status=${b.status}`);
+    if (b.submitted_at !== null) throw new Error(`submitted_at should clear, got ${b.submitted_at}`);
+    // Guard is tenant_submitted|landlord_reviewed, so a repeat on the now-draft row is 404.
+    const again = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/return-to-tenant`, {
+      token: A.accessToken,
+    });
+    if (again.status !== 404) throw new Error(`repeat return expected 404, got ${again.status}`);
+  });
+
+  await check('tenant edits again after return, then resubmits (submitted_at re-stamped)', async () => {
+    const form = await api('GET', `/v1/inspection-capture/${captureSecret}`);
+    const fb = assertStatus(form, 200, 'capture form after return') as { items: { id: string }[] };
+    const pi = await api('PATCH', `/v1/inspection-capture/${captureSecret}/items/${fb.items[0]!.id}`, {
+      body: { condition: 'tenant fixed the mistake after return' },
+    });
+    assertStatus(pi, 200, 'tenant item patch after return');
+    const sub = await api('POST', `/v1/inspection-capture/${captureSecret}/submit`);
+    const resub = assertStatus(sub, 200, 'tenant re-submit') as {
+      inspection: { status: string; submitted_at: string | null };
+    };
+    if (resub.inspection.status !== 'tenant_submitted') throw new Error(`status=${resub.inspection.status}`);
+    if (!resub.inspection.submitted_at) throw new Error('submitted_at should re-stamp on re-submit');
+  });
+
   // --------------------------------------------------------------------------
   // Engagement funnel: link -> opened -> started -> submitted + room progress.
   // Self-contained on its own capture_mode='tenant' inspection so no landlord
@@ -1492,6 +1528,13 @@ async function main(): Promise<void> {
       token: A.accessToken,
     });
     if (del.status !== 409) throw new Error(`expected 409, got ${del.status} ${JSON.stringify(del.body)}`);
+  });
+
+  await check('return-to-tenant on a completed inspection is 404 (completed is immutable)', async () => {
+    const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/return-to-tenant`, {
+      token: A.accessToken,
+    });
+    if (r.status !== 404) throw new Error(`expected 404, got ${r.status}`);
   });
 
   await check('start checkout pre-keyed from check-in (values reset)', async () => {

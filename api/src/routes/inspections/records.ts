@@ -588,6 +588,39 @@ inspectionsApp.openapi(reviewRoute, async (c) => {
   return c.json(data as z.infer<typeof Inspection>, 200);
 });
 
+const returnToTenantRoute = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/inspections/{id}/return-to-tenant',
+  tags: ['inspections'],
+  summary:
+    'Return a tenant-submitted inspection to the tenant for edits (tenant_submitted|landlord_reviewed -> draft)',
+  request: { params: AccountAndIdParam },
+  responses: {
+    200: { description: 'returned', content: { 'application/json': { schema: Inspection } } },
+    ...errorResponses,
+  },
+});
+inspectionsApp.openapi(returnToTenantRoute, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const sb = getSb(c);
+  // submitted_at is cleared because the returned form no longer has a standing
+  // submission; the tenant's re-submit stamps it again in the same UPDATE that
+  // flips the status back (tenant_submit_inspection's draft branch).
+  const { data, error } = await sb
+    .from('inspections')
+    .update({ status: 'draft', submitted_at: null, updated_at: new Date().toISOString() })
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .is('completed_at', null)
+    .in('status', ['tenant_submitted', 'landlord_reviewed'])
+    .select('*')
+    .maybeSingle();
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  if (!data) throw new ApiError(404, 'not_found', 'inspection not found or not returnable');
+  return c.json(data as z.infer<typeof Inspection>, 200);
+});
+
 const voidRoute = createRoute({
   method: 'post',
   path: '/accounts/{accountId}/inspections/{id}/void',
