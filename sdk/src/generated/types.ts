@@ -13154,7 +13154,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Return a tenant-submitted inspection to the tenant for edits (tenant_submitted|landlord_reviewed -> draft) */
+        /**
+         * Return a tenant-submitted inspection to the tenant for edits (tenant_submitted|landlord_reviewed -> draft)
+         * @description Tenant/collaborative capture only. submitted_at is RETAINED as "last submitted at" — status=draft with submitted_at set is the returned state, and the tenant re-submit overwrites it. Idempotent once returned: a repeat call answers 200 with the (still returned) row. Capture links are neither minted nor extended here — the prior link may have expired, so callers that need the tenant back in should mint a fresh capture link alongside the return.
+         */
         post: {
             parameters: {
                 query?: never;

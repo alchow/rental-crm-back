@@ -848,6 +848,9 @@ An instance of an inspection against a specific area.
 | `GET`   | `/inspections/{id}`          |                                                                                               |
 | `PATCH` | `/inspections/{id}`          | `template_id`\|null, `performed_at`\|null, `notes`\|null. Returns `409` if already completed. |
 | `POST`  | `/inspections/{id}/complete` | No body. Locks the inspection and renders the PDF.                                            |
+| `POST`  | `/inspections/{id}/review`   | No body. Marks a tenant-submitted inspection `landlord_reviewed` (also accepts `draft`).      |
+| `POST`  | `/inspections/{id}/return-to-tenant` | No body. Tenant/collaborative only: `tenant_submitted`\|`landlord_reviewed` -> `draft`, re-arming the tenant link. `submitted_at` is retained ("last submitted at"); idempotent once returned. Mint a fresh capture link alongside — the old one may have expired. |
+| `POST`  | `/inspections/{id}/void`     | `reason` (required). Terminal correction path; never deletes evidence.                        |
 
 **Completion is irreversible.** Once `completed_at` is set, PATCH returns `409 conflict` and items can no longer be added or changed. The complete endpoint is idempotent — calling it twice returns the same result.
 
