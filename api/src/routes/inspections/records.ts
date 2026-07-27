@@ -588,6 +588,72 @@ inspectionsApp.openapi(reviewRoute, async (c) => {
   return c.json(data as z.infer<typeof Inspection>, 200);
 });
 
+const returnToTenantRoute = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/inspections/{id}/return-to-tenant',
+  tags: ['inspections'],
+  summary:
+    'Return a tenant-submitted inspection to the tenant for edits (tenant_submitted|landlord_reviewed -> draft)',
+  description:
+    'Tenant/collaborative capture only. submitted_at is RETAINED as "last submitted at" — ' +
+    'status=draft with submitted_at set is the returned state, and the tenant re-submit ' +
+    'overwrites it. Idempotent once returned: a repeat call answers 200 with the (still ' +
+    'returned) row. Capture links are neither minted nor extended here — the prior link may ' +
+    'have expired, so callers that need the tenant back in should mint a fresh capture link ' +
+    'alongside the return.',
+  request: { params: AccountAndIdParam },
+  responses: {
+    200: { description: 'returned', content: { 'application/json': { schema: Inspection } } },
+    ...errorResponses,
+  },
+});
+inspectionsApp.openapi(returnToTenantRoute, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const sb = getSb(c);
+  // submitted_at is deliberately NOT cleared: it stays as "last submitted at",
+  // so (status='draft', submitted_at set) encodes the returned state — which is
+  // otherwise unrepresentable — and the audit projection / evidence export keep
+  // "the tenant submitted this". The re-submit overwrites it because
+  // tenant_submit_inspection's draft branch stamps unconditionally (no
+  // IS NULL guard) — if that RPC is ever hardened to set-once, this route's
+  // re-submit path breaks with it.
+  const { data, error } = await sb
+    .from('inspections')
+    .update({ status: 'draft', updated_at: new Date().toISOString() })
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .is('completed_at', null)
+    .in('status', ['tenant_submitted', 'landlord_reviewed'])
+    .in('capture_mode', ['tenant', 'collaborative'])
+    .select('*')
+    .maybeSingle();
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  if (data) return c.json(data as z.infer<typeof Inspection>, 200);
+  // 0 rows: a double-tap / remount re-fire on an already-returned row must not
+  // read as "inspection not found" (mirrors /complete's retry-safe branch).
+  // Requiring submitted_at keeps the no-op 200 to rows that actually went
+  // through a submit — a never-shared draft is still a 404.
+  const { data: row, error: readErr } = await sb
+    .from('inspections')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (readErr) throw new ApiError(500, 'database_error', readErr.message);
+  if (
+    row &&
+    row.completed_at == null &&
+    row.status === 'draft' &&
+    row.submitted_at != null &&
+    ['tenant', 'collaborative'].includes(row.capture_mode as string)
+  ) {
+    return c.json(row as z.infer<typeof Inspection>, 200);
+  }
+  throw new ApiError(404, 'not_found', 'inspection not found or not returnable');
+});
+
 const voidRoute = createRoute({
   method: 'post',
   path: '/accounts/{accountId}/inspections/{id}/void',

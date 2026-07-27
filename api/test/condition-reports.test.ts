@@ -1275,6 +1275,51 @@ async function main(): Promise<void> {
     if (pi.status !== 409) throw new Error(`expected 409, got ${pi.status}`);
   });
 
+  await check('cross-account: B cannot return A submitted inspection', async () => {
+    const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/return-to-tenant`, {
+      token: B.accessToken,
+    });
+    if (r.status !== 404 && r.status !== 403) throw new Error(`expected 404/403, got ${r.status}`);
+  });
+
+  let returnedSubmittedAt = '';
+  await check('landlord returns the submitted form to the tenant -> draft, submitted_at retained', async () => {
+    const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/return-to-tenant`, {
+      token: A.accessToken,
+    });
+    const b = assertStatus(r, 200, 'return-to-tenant') as { status: string; submitted_at: string | null };
+    if (b.status !== 'draft') throw new Error(`status=${b.status}`);
+    // Retained as "last submitted at" — (draft, submitted_at set) IS the returned state.
+    if (!b.submitted_at) throw new Error('submitted_at should be retained on return');
+    returnedSubmittedAt = b.submitted_at;
+    // Idempotent once returned: a double-tap / remount re-fire answers 200, not 404.
+    const again = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/return-to-tenant`, {
+      token: A.accessToken,
+    });
+    const b2 = assertStatus(again, 200, 'repeat return (no-op)') as { status: string };
+    if (b2.status !== 'draft') throw new Error(`repeat status=${b2.status}`);
+  });
+
+  await check('tenant edits again after return, then resubmits (submitted_at overwritten)', async () => {
+    const form = await api('GET', `/v1/inspection-capture/${captureSecret}`);
+    const fb = assertStatus(form, 200, 'capture form after return') as { items: { id: string }[] };
+    const pi = await api('PATCH', `/v1/inspection-capture/${captureSecret}/items/${fb.items[0]!.id}`, {
+      body: { condition: 'tenant fixed the mistake after return' },
+    });
+    assertStatus(pi, 200, 'tenant item patch after return');
+    const sub = await api('POST', `/v1/inspection-capture/${captureSecret}/submit`);
+    const resub = assertStatus(sub, 200, 'tenant re-submit') as {
+      inspection: { status: string; submitted_at: string | null };
+    };
+    if (resub.inspection.status !== 'tenant_submitted') throw new Error(`status=${resub.inspection.status}`);
+    if (!resub.inspection.submitted_at) throw new Error('submitted_at should be set after re-submit');
+    // The draft branch stamps unconditionally, so the retained value moves forward.
+    if (resub.inspection.submitted_at <= returnedSubmittedAt)
+      throw new Error(
+        `re-submit should overwrite submitted_at: ${resub.inspection.submitted_at} <= ${returnedSubmittedAt}`,
+      );
+  });
+
   // --------------------------------------------------------------------------
   // Engagement funnel: link -> opened -> started -> submitted + room progress.
   // Self-contained on its own capture_mode='tenant' inspection so no landlord
@@ -1434,10 +1479,35 @@ async function main(): Promise<void> {
     if (r.status !== 404) throw new Error(`expected 404, got ${r.status}`);
   });
 
+  await check('return-to-tenant on a voided inspection is 404 (the .in() guard is its only backstop)', async () => {
+    // A voided-but-never-completed row has completed_at IS NULL, so the
+    // completed-lock trigger does NOT protect it — only the route's status
+    // list does. Void the engagement inspection (tenant_submitted, never
+    // completed) and prove the guard holds.
+    const v = await api('POST', `/v1/accounts/${A.accountId}/inspections/${engInspId}/void`, {
+      token: A.accessToken, body: { reason: 'voided mid-flow for the return guard test' },
+    });
+    const vb = assertStatus(v, 200, 'void submitted eng inspection') as { status: string; completed_at: string | null };
+    if (vb.status !== 'voided') throw new Error(`status=${vb.status}`);
+    if (vb.completed_at !== null) throw new Error('voided row unexpectedly completed');
+    const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/${engInspId}/return-to-tenant`, {
+      token: A.accessToken,
+    });
+    if (r.status !== 404) throw new Error(`return on voided expected 404, got ${r.status}`);
+  });
+
   await check('landlord reviews then completes; emits move-in document + snapshots', async () => {
     const rev = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/review`, { token: A.accessToken });
     const rb = assertStatus(rev, 200, 'review') as { status: string };
     if (rb.status !== 'landlord_reviewed') throw new Error(`status=${rb.status}`);
+    // Detour: return is also legal from landlord_reviewed (the other half of the
+    // guard), and review accepts the returned draft again — the loop is re-entrant.
+    const ret = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/return-to-tenant`, { token: A.accessToken });
+    const retB = assertStatus(ret, 200, 'return from landlord_reviewed') as { status: string };
+    if (retB.status !== 'draft') throw new Error(`return from reviewed: status=${retB.status}`);
+    const rev2 = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/review`, { token: A.accessToken });
+    const rb2 = assertStatus(rev2, 200, 're-review after return') as { status: string };
+    if (rb2.status !== 'landlord_reviewed') throw new Error(`re-review status=${rb2.status}`);
     const comp = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/complete`, { token: A.accessToken });
     const cb = assertStatus(comp, 200, 'complete') as {
       inspection: { status: string; template_snapshot: unknown };
@@ -1492,6 +1562,13 @@ async function main(): Promise<void> {
       token: A.accessToken,
     });
     if (del.status !== 409) throw new Error(`expected 409, got ${del.status} ${JSON.stringify(del.body)}`);
+  });
+
+  await check('return-to-tenant on a completed inspection is 404 (completed is immutable)', async () => {
+    const r = await api('POST', `/v1/accounts/${A.accountId}/inspections/${checkinId}/return-to-tenant`, {
+      token: A.accessToken,
+    });
+    if (r.status !== 404) throw new Error(`expected 404, got ${r.status}`);
   });
 
   await check('start checkout pre-keyed from check-in (values reset)', async () => {
