@@ -9,6 +9,7 @@ import {
   interactionPartyDisplay,
   retractedInteractionMarker,
 } from './interactions';
+import { renderIncidentsSection } from './incidents';
 
 // ---- PDF rendering ----------------------------------------------------------
 
@@ -458,6 +459,15 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
             (n.served_method ? `  via ${n.served_method as string}` : ''),
         );
     }
+  }
+
+  // ----- Incidents ----------------------------------------------------------
+  // Tenancy-scoped only (like Notices). Body in export-pdf/incidents.ts.
+  section(doc, 'Incidents');
+  if (data.incidents.length === 0) {
+    italicNote(doc, '(no incidents recorded for this tenancy)');
+  } else {
+    renderIncidentsSection(doc, data);
   }
 
   // ----- Photos (chain of custody + embedded preview) ----------------------

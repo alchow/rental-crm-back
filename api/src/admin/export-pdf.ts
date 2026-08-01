@@ -1,6 +1,8 @@
 import { getLogger } from '../log';
 import { getAdminClient } from './supabase-admin';
 import { renderExportPdf } from './export-pdf/render';
+import { loadIncidents } from './export-pdf/incidents';
+import type { IncidentEntry } from './export-pdf/incidents';
 import {
   MAX_BYTES as UPLOAD_MAX_BYTES,
   MAX_GENERATED_BYTES as GENERATED_ARTIFACT_MAX_BYTES,
@@ -321,6 +323,11 @@ export interface ExportData {
   inspectionItems: Array<Record<string, unknown>>;
   inspectionChecks: Array<Record<string, unknown>>;
   notices: Array<Record<string, unknown>>;
+  /** Tenancy-scoped only: incidents (dismissed ones included, marked) with
+   *  their evidence-citation manifest and derived recurrence. Built in
+   *  export-pdf/incidents.ts; cited records live there, NOT in the sections
+   *  above, so the manifest can never widen the bundle's stated scope. */
+  incidents: IncidentEntry[];
   attachments: AttachmentRow[];
   events: Array<Record<string, unknown>>;
   uploaderNames: Map<string, string>;
@@ -356,7 +363,7 @@ export interface CastRow {
   source: string;
 }
 
-function idChunks(ids: Iterable<string>, size = IN_FILTER_CHUNK_SIZE): string[][] {
+export function idChunks(ids: Iterable<string>, size = IN_FILTER_CHUNK_SIZE): string[][] {
   const unique = [...new Set(ids)].filter((id) => id.length > 0);
   const chunks: string[][] = [];
   for (let i = 0; i < unique.length; i += size) {
@@ -632,6 +639,7 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   let inspectionItems: Record<string, unknown>[] = [];
   let inspectionChecks: Record<string, unknown>[] = [];
   let notices: Record<string, unknown>[] = [];
+  let incidents: IncidentEntry[] = [];
 
   if (tenancyId || areaId) {
     let intQ = admin.from('interactions').select('*').eq('account_id', scope.accountId);
@@ -689,6 +697,9 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
       .eq('account_id', scope.accountId)
       .eq('tenancy_id', tenancyId);
     notices = (n.data as Record<string, unknown>[]) ?? [];
+    // Incidents are tenancy-anchored (tenancy_id NOT NULL), so an area-only
+    // bundle has no incident scope to render -- same shape as notices above.
+    incidents = await loadIncidents(admin, scope.accountId, tenancyId);
   }
 
   // All attachments tied to any in-scope entity.
@@ -852,6 +863,7 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     inspectionItems,
     inspectionChecks,
     notices,
+    incidents,
     attachments,
     events,
     uploaderNames,
