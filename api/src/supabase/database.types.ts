@@ -1949,6 +1949,152 @@ export type Database = {
           },
         ];
       };
+      incident_items: {
+        Row: {
+          account_id: string;
+          created_at: string;
+          deleted_at: string | null;
+          id: string;
+          incident_id: string;
+          inspection_id: string | null;
+          interaction_id: string | null;
+          maintenance_request_id: string | null;
+          notice_id: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          account_id: string;
+          created_at?: string;
+          deleted_at?: string | null;
+          id?: string;
+          incident_id: string;
+          inspection_id?: string | null;
+          interaction_id?: string | null;
+          maintenance_request_id?: string | null;
+          notice_id?: string | null;
+          updated_at?: string;
+        };
+        Update: {
+          account_id?: string;
+          created_at?: string;
+          deleted_at?: string | null;
+          id?: string;
+          incident_id?: string;
+          inspection_id?: string | null;
+          interaction_id?: string | null;
+          maintenance_request_id?: string | null;
+          notice_id?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'incident_items_account_id_incident_id_fkey';
+            columns: ['account_id', 'incident_id'];
+            isOneToOne: false;
+            referencedRelation: 'incidents';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'incident_items_account_id_inspection_id_fkey';
+            columns: ['account_id', 'inspection_id'];
+            isOneToOne: false;
+            referencedRelation: 'inspections';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'incident_items_account_id_interaction_id_fkey';
+            columns: ['account_id', 'interaction_id'];
+            isOneToOne: false;
+            referencedRelation: 'interactions';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'incident_items_account_id_interaction_id_fkey';
+            columns: ['account_id', 'interaction_id'];
+            isOneToOne: false;
+            referencedRelation: 'interactions_with_chain';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'incident_items_account_id_interaction_id_fkey';
+            columns: ['account_id', 'interaction_id'];
+            isOneToOne: false;
+            referencedRelation: 'interactions_with_chain';
+            referencedColumns: ['account_id', 'superseded_by_id'];
+          },
+          {
+            foreignKeyName: 'incident_items_account_id_maintenance_request_id_fkey';
+            columns: ['account_id', 'maintenance_request_id'];
+            isOneToOne: false;
+            referencedRelation: 'maintenance_requests';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'incident_items_account_id_maintenance_request_id_fkey';
+            columns: ['account_id', 'maintenance_request_id'];
+            isOneToOne: false;
+            referencedRelation: 'maintenance_requests_with_reporter';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'incident_items_account_id_notice_id_fkey';
+            columns: ['account_id', 'notice_id'];
+            isOneToOne: false;
+            referencedRelation: 'notices';
+            referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
+      incidents: {
+        Row: {
+          account_id: string;
+          category: string | null;
+          created_at: string;
+          deleted_at: string | null;
+          description: string;
+          id: string;
+          occurred_at: string;
+          resolution_note: string | null;
+          resolved_at: string | null;
+          tenancy_id: string;
+          updated_at: string;
+        };
+        Insert: {
+          account_id: string;
+          category?: string | null;
+          created_at?: string;
+          deleted_at?: string | null;
+          description: string;
+          id?: string;
+          occurred_at?: string;
+          resolution_note?: string | null;
+          resolved_at?: string | null;
+          tenancy_id: string;
+          updated_at?: string;
+        };
+        Update: {
+          account_id?: string;
+          category?: string | null;
+          created_at?: string;
+          deleted_at?: string | null;
+          description?: string;
+          id?: string;
+          occurred_at?: string;
+          resolution_note?: string | null;
+          resolved_at?: string | null;
+          tenancy_id?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'incidents_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
       inspection_capture_tokens: {
         Row: {
           account_id: string;
