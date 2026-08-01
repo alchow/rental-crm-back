@@ -463,8 +463,15 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
 
   // ----- Incidents ----------------------------------------------------------
   // Tenancy-scoped only (like Notices). Body in export-pdf/incidents.ts.
+  // An area-scoped bundle must not assert "no incidents" about a tenancy it
+  // never queried -- in an evidence document that reads as a factual claim.
   section(doc, 'Incidents');
-  if (data.incidents.length === 0) {
+  if (!scope.tenancyId) {
+    italicNote(
+      doc,
+      '(incidents attach to tenancies; this bundle is area-scoped — generate a tenancy-scoped export to include them)',
+    );
+  } else if (data.incidents.length === 0) {
     italicNote(doc, '(no incidents recorded for this tenancy)');
   } else {
     renderIncidentsSection(doc, data);
