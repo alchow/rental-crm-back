@@ -75,6 +75,7 @@ const ENTITY_TABLES = [
   'document_versions',
   'leases',
   'notices',
+  'incidents',
 ] as const;
 type EntityTable = (typeof ENTITY_TABLES)[number];
 const ENTITY_TABLE_SET = new Set<string>(ENTITY_TABLES);

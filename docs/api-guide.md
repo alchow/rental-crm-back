@@ -350,6 +350,22 @@ Served instruments attached to a tenancy — an entry notice, a rent-increase no
 | `PATCH`  | `/notices/{id}` | Any subset of `served_at`, `served_method`, `body`, `document`.                                                                                                                               |
 | `DELETE` | `/notices/{id}` | Soft-delete.                                                                                                                                                                                  |
 
+### Incidents
+
+Evidence-grade records of tenant conduct (noise, unauthorized pet, damage, harassment…) anchored to a tenancy. An incident is testimony written in pen: `description` and `occurred_at` are frozen at the database once saved — corrections are appended as journal notes, never edits. Only classification and outcome (`category`, `resolved_at`, `resolution_note`) stay editable; dismissal is an audited soft delete. **Writes are human-only** (owner/manager; the agent principal and viewers get 403 — the agent may read). An incident *cites* existing records through items — journal entries, maintenance requests, notices, inspections — exactly one per item; citations can be soft-unlinked but never edited or hard-deleted, and a journal entry cited by a live item has its testimony fields frozen too. Photos attach directly via `entity_type=incidents` on the attachments API. Tenancy-scoped evidence exports render an Incidents section automatically.
+
+| Method   | Path                                | Body / query                                                                                                                                                                    |
+| -------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`    | `/incidents`                        | `?tenancy_id=`, `?category=`, `?open=true\|false`, keyset `cursor`/`limit`.                                                                                                       |
+| `POST`   | `/incidents`                        | `tenancy_id` (required), `description` (required, 1–5000), `category` (optional enum), `occurred_at` (optional ISO, defaults now), `source` (optional: exactly one of `interaction_id`/`maintenance_request_id`/`notice_id`/`inspection_id` — cites the record the incident was promoted from; a bad source becomes a `warnings` entry, never a lost capture). |
+| `GET`    | `/incidents/{id}`                   |                                                                                                                                                                                   |
+| `PATCH`  | `/incidents/{id}`                   | Any subset of `category`, `resolved_at` (null reopens), `resolution_note`. Frozen fields are absent from the schema and DB-rejected.                                               |
+| `DELETE` | `/incidents/{id}`                   | Dismiss (audited soft-delete).                                                                                                                                                    |
+| `POST`   | `/incidents/{id}/items`             | Exactly one of `interaction_id`/`maintenance_request_id`/`notice_id`/`inspection_id`. 409 when already cited.                                                                     |
+| `GET`    | `/incidents/{id}/items`             | Hydrated citations, keyset; `?include_unlinked=true` shows soft-unlinked rows.                                                                                                     |
+| `DELETE` | `/incidents/{id}/items/{itemId}`    | Unlink (soft; the citation stays in history). 409 `already_unlinked` on repeat.                                                                                                   |
+| `GET`    | `/incidents/{id}/recurrence`        | `?window_months=` (1–36, default 12). Count + list of same-tenancy same-category incidents in the trailing window; 409 `unclassified` until the incident has a category.           |
+
 ---
 
 ## 7. Money — rent subledger

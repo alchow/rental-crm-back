@@ -4572,6 +4572,757 @@ export interface paths {
         };
         trace?: never;
     };
+    "/v1/accounts/{accountId}/incidents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List incidents (filterable by tenancy_id, category, open state)
+         * @description Member-wide read (viewers and the agent principal included). Dismissed incidents are excluded.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                    tenancy_id?: string;
+                    category?: components["schemas"]["IncidentCategory"] & string;
+                    open?: "true" | "false";
+                };
+                header?: never;
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentListResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Capture an incident (human-only; testimony freezes on write)
+         * @description Owner/manager only: incidents are human testimony, so the agent principal and viewers are denied (403). description and occurred_at are frozen at capture by a DB trigger — corrections are appended as journal notes, never edits. An optional source cites the originating evidence row (exactly one of interaction_id | maintenance_request_id | notice_id | inspection_id) in the same call; if that link fails the incident is STILL created (201) with origin_item null and a warnings entry — a capture is never lost to a bad link.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateIncidentBody"];
+                };
+            };
+            responses: {
+                /** @description created */
+                201: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CreateIncidentResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/incidents/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get one incident */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description incident */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Incident"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        /**
+         * Dismiss an incident (audited soft delete)
+         * @description Owner/manager only. Dismissal is a soft delete: the row and its audit events are preserved; the incident just leaves the working set.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description dismissed */
+                204: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        /**
+         * Classify or resolve an incident (testimony fields are frozen)
+         * @description Owner/manager only. Only classification and outcome are mutable: category (set-only), resolved_at (null reopens) and resolution_note. description, occurred_at and tenancy_id are testimony written in pen — they are absent from this schema and a DB trigger rejects them as well.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["PatchIncidentBody"];
+                };
+            };
+            responses: {
+                /** @description updated */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Incident"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/incidents/{id}/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List cited evidence, hydrated
+         * @description Member-wide read. Each row carries exactly one populated evidence object (interaction | maintenance_request | notice | inspection) — a compact projection of the cited record. Soft-unlinked citations are excluded unless include_unlinked=true (unlinked rows are citation history, with unlinked_at set).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                    include_unlinked?: "true" | "false";
+                };
+                header?: never;
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentItemListResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Cite an evidence row (exactly one slot; insert-only)
+         * @description Owner/manager only. Cites exactly one existing row (interaction_id | maintenance_request_id | notice_id | inspection_id) as evidence. While the citation is live, the cited journal entry’s probative fields are frozen by a DB trigger. Citations are never edited or re-pointed — unlink and cite again instead. 409 already_cited/conflict when the same row is already live-cited by this incident.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateIncidentItemBody"];
+                };
+            };
+            responses: {
+                /** @description cited */
+                201: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentItem"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/incidents/{id}/items/{itemId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Unlink a citation (soft; the pointer row is kept as history)
+         * @description Owner/manager only. Unlink is the ONLY permitted change to a citation: it releases the freeze on the cited journal entry and keeps the pointer row (visible via include_unlinked=true). 409 already_unlinked on a second unlink.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    id: string;
+                    itemId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description unlinked */
+                204: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/incidents/{id}/recurrence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Count same-category incidents on the tenancy in a trailing window
+         * @description Member-wide read. Counts live incidents with the SAME tenancy and SAME category whose occurred_at falls in the trailing window measured back from NOW (not from this incident’s occurred_at); the incident itself is included when in-window. Because occurred_at is frozen at capture, the count cannot be manufactured after the fact. 409 unclassified until the incident has a category.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    window_months?: number;
+                };
+                header?: never;
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description recurrence summary */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentRecurrence"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/accounts/{accountId}/assets": {
         parameters: {
             query?: never;
@@ -17175,6 +17926,170 @@ export interface components {
             document?: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * @description null = not yet classified. Deferred classification is a designed workflow: capture first, PATCH category later.
+         * @enum {string|null}
+         */
+        IncidentCategory: "noise" | "nonpayment" | "property_damage" | "unauthorized_occupant" | "unauthorized_pet" | "smoking" | "illegal_activity" | "harassment" | "sanitation" | "unauthorized_sublet" | "access_refusal" | "unauthorized_alteration" | "injury_claim" | "abandonment" | "holdover" | "police_activity" | "hoa_violation" | "other" | null;
+        Incident: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            account_id: string;
+            /** Format: uuid */
+            tenancy_id: string;
+            category: components["schemas"]["IncidentCategory"];
+            description: string;
+            occurred_at: string;
+            resolved_at: string | null;
+            resolution_note: string | null;
+            created_at: string;
+            updated_at: string;
+            deleted_at: string | null;
+        };
+        IncidentListResponse: {
+            data: components["schemas"]["Incident"][];
+            next_cursor: string | null;
+        };
+        IncidentItem: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            account_id: string;
+            /** Format: uuid */
+            incident_id: string;
+            /** Format: uuid */
+            interaction_id: string | null;
+            /** Format: uuid */
+            maintenance_request_id: string | null;
+            /** Format: uuid */
+            notice_id: string | null;
+            /** Format: uuid */
+            inspection_id: string | null;
+            created_at: string;
+            updated_at: string;
+            deleted_at: string | null;
+        } | null;
+        CreateIncidentResponse: {
+            incident: components["schemas"]["Incident"];
+            origin_item: components["schemas"]["IncidentItem"];
+            /** @description Present when a best-effort side write failed (e.g. 'source_link_failed: ...'). The incident itself was created; re-cite via POST /incidents/{id}/items. */
+            warnings?: string[];
+        };
+        /** @description Optional origin evidence to cite in the same call (exactly one slot). A failed link never loses the capture: the incident is still created and the failure is reported in warnings. */
+        IncidentSource: {
+            /** Format: uuid */
+            interaction_id?: string;
+            /** Format: uuid */
+            maintenance_request_id?: string;
+            /** Format: uuid */
+            notice_id?: string;
+            /** Format: uuid */
+            inspection_id?: string;
+        };
+        CreateIncidentBody: {
+            /** Format: uuid */
+            tenancy_id: string;
+            /** @description The testimony. Frozen after capture; corrections are appended as journal notes. */
+            description: string;
+            category?: components["schemas"]["IncidentCategory"] & string;
+            /**
+             * Format: date-time
+             * @description When the incident happened; defaults to now. Frozen after capture.
+             */
+            occurred_at?: string;
+            source?: components["schemas"]["IncidentSource"];
+        };
+        PatchIncidentBody: {
+            category?: components["schemas"]["IncidentCategory"] & string;
+            /**
+             * Format: date-time
+             * @description Set to mark the outcome; null reopens the incident.
+             */
+            resolved_at?: string | null;
+            resolution_note?: string | null;
+        };
+        CreateIncidentItemBody: {
+            /** Format: uuid */
+            interaction_id?: string;
+            /** Format: uuid */
+            maintenance_request_id?: string;
+            /** Format: uuid */
+            notice_id?: string;
+            /** Format: uuid */
+            inspection_id?: string;
+        };
+        IncidentCitedInteraction: {
+            /** Format: uuid */
+            id: string;
+            kind: string;
+            channel: string;
+            direction: string;
+            body: string | null;
+            occurred_at: string;
+            logged_at: string;
+            party_type: string;
+            party_label: string | null;
+            attestation: string | null;
+            /** Format: uuid */
+            thread_id: string | null;
+        };
+        IncidentCitedMaintenanceRequest: {
+            /** Format: uuid */
+            id: string;
+            title: string;
+            description: string | null;
+            severity: string;
+            status: string;
+            created_at: string;
+        };
+        IncidentCitedNotice: {
+            /** Format: uuid */
+            id: string;
+            notice_type: string;
+            served_at: string | null;
+            served_method: string | null;
+            created_at: string;
+        };
+        IncidentCitedInspection: {
+            /** Format: uuid */
+            id: string;
+            kind: string;
+            status: string;
+            performed_at: string | null;
+            completed_at: string | null;
+            created_at: string;
+        };
+        IncidentItemHydrated: {
+            /** Format: uuid */
+            id: string;
+            created_at: string;
+            /** @description Soft-unlink timestamp; null while the citation is live. */
+            unlinked_at: string | null;
+            interaction?: components["schemas"]["IncidentCitedInteraction"];
+            maintenance_request?: components["schemas"]["IncidentCitedMaintenanceRequest"];
+            notice?: components["schemas"]["IncidentCitedNotice"];
+            inspection?: components["schemas"]["IncidentCitedInspection"];
+        };
+        IncidentItemListResponse: {
+            data: components["schemas"]["IncidentItemHydrated"][];
+            next_cursor: string | null;
+        };
+        IncidentRecurrence: {
+            category: components["schemas"]["IncidentCategory"] & string;
+            window_months: number;
+            /** @description Total matching incidents in the window (may exceed the listed 50). */
+            count: number;
+            /** @description Newest first by occurred_at; capped at 50 rows. */
+            incidents: {
+                /** Format: uuid */
+                id: string;
+                occurred_at: string;
+                /** @description Truncated to 200 characters. */
+                description: string;
+                resolved_at: string | null;
+            }[];
         };
         Asset: {
             /** Format: uuid */

@@ -76,6 +76,10 @@ export const ALLOWED_ENTITY_TYPES = new Set<string>([
   // upload path scopes them correctly under RLS.
   'leases',
   'notices',
+  // Incident case records: damage photos / scans attached at write-up time.
+  // The table carries id + account_id + deleted_at, so the generic
+  // entity-existence check in the upload path scopes it correctly under RLS.
+  'incidents',
 ]);
 
 function mimeToExt(mime: string): string {
