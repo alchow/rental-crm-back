@@ -18,6 +18,13 @@
 # (default false). Order is the same as every migration here: schema first,
 # code second.
 #
+# HISTORICAL NOTE (2026-08-01): auto_charge_enabled no longer defaults to false.
+# Migration 20260801000001_auto_charge_default_on flipped the default to TRUE
+# and backfilled the existing fleet (ADR-0011 amendment) — automatic charging is
+# opt-OUT now. This script still describes the state as of 20260704000002 and is
+# kept as the record of that apply; use
+# scripts/apply-auto-charge-default-on-migration.sh for the newer one.
+#
 # `supabase db push` applies EVERY pending migration in order, not just this
 # one — the script prints the pending set and makes you confirm it first.
 # ============================================================================

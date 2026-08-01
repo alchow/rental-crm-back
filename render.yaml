@@ -114,7 +114,11 @@ services:
   # ops note to "schedule operationally after deploy" — which never happened,
   # twice. This service IS that schedule, now living in reviewable IaC instead
   # of a runbook: it runs `charges:generate` (api/src/admin/run-rent-charges.ts),
-  # which calls generate_rent_charges once per opted-in account (see ADR-0011).
+  # which calls generate_rent_charges once per billing-enabled account (see
+  # ADR-0011). Since 2026-08-01 auto_charge_enabled defaults to TRUE, so that
+  # enumeration is "every account that has not opted OUT" — the generator still
+  # only mints a charge where a live rent schedule covers the period, so an
+  # account with no schedules is billed nothing.
   #
   # Daily at 08:00 UTC — early US morning (00:00-05:00 across US timezones), so
   # a charge lands overnight and is waiting when the landlord/tenant wakes,

@@ -6,10 +6,12 @@ import { ApiError, dbError, errorResponses } from './_lib/error';
 // ---------------------------------------------------------------------------
 // Account settings — the per-account knobs a landlord controls directly.
 //
-// Today this exposes exactly ONE field, auto_charge_enabled: the opt-in for
-// the automatic rent-charge cron (migration 20260704000002). It is a separate
-// resource from the account record itself because the write path is
-// deliberately narrow:
+// Today this exposes exactly ONE field, auto_charge_enabled: the switch for
+// the automatic rent-charge cron (migration 20260704000002). Since 2026-08-01
+// it DEFAULTS TO TRUE (migration 20260801000001, ADR-0011 amendment), so this
+// PATCH is primarily the OPT-OUT door — a landlord who bills by hand turns it
+// off here. It is a separate resource from the account record itself because
+// the write path is deliberately narrow:
 //
 //   * READ  (GET) — any account member may see the setting. The shared
 //     accounts_member_select RLS policy authorises the SELECT.
