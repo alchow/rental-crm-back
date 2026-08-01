@@ -1,4 +1,4 @@
-import { idChunks } from '../export-pdf';
+import { idChunks } from './chunks';
 import type { ExportData } from '../export-pdf';
 import type { AppSupabaseClient, DbTableRow } from '../../supabase/db-types';
 
@@ -334,7 +334,10 @@ export function renderIncidentsSection(doc: PDFKit.PDFDocument, data: ExportData
     .text(
       'Each incident is the record-keeper’s account of one event; its description and date are ' +
         'frozen at write time. Cited evidence is listed by reference below — the full records ' +
-        'appear in the sections above when they fall inside this bundle’s scope.',
+        'appear in the sections above when they fall inside this bundle’s scope. Incidents are ' +
+        'listed regardless of the bundle’s date range. Dismissed incidents remain listed with ' +
+        'their text: dismissal withdraws the claim without repudiating the record, whereas a ' +
+        'retracted journal entry has its content suppressed.',
     )
     .fillColor('#000');
   doc.moveDown(0.4);

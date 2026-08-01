@@ -1,6 +1,7 @@
 import { getLogger } from '../log';
 import { getAdminClient } from './supabase-admin';
 import { renderExportPdf } from './export-pdf/render';
+import { idChunks } from './export-pdf/chunks';
 import { loadIncidents } from './export-pdf/incidents';
 import type { IncidentEntry } from './export-pdf/incidents';
 import {
@@ -301,7 +302,6 @@ export interface AttachmentRow {
 
 type AdminClient = ReturnType<typeof getAdminClient>;
 
-const IN_FILTER_CHUNK_SIZE = 100;
 const ATTACHMENT_COLS =
   'id, entity_type, entity_id, storage_path, content_hash, mime_type, size_bytes, uploaded_by, derived_from, received_at';
 
@@ -361,15 +361,6 @@ export interface CastRow {
   address: string | null;
   label: string | null;
   source: string;
-}
-
-export function idChunks(ids: Iterable<string>, size = IN_FILTER_CHUNK_SIZE): string[][] {
-  const unique = [...new Set(ids)].filter((id) => id.length > 0);
-  const chunks: string[][] = [];
-  for (let i = 0; i < unique.length; i += size) {
-    chunks.push(unique.slice(i, i + size));
-  }
-  return chunks;
 }
 
 async function loadAttachmentsForEntityIds(
@@ -707,6 +698,9 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   for (const r of maintenanceRequests) entityIds.push(r.id as string);
   for (const r of inspections) entityIds.push(r.id as string);
   for (const r of interactions) entityIds.push(r.id as string);
+  // Incident photos carry the same custody chain as every other attachment;
+  // omitting them would make the Incidents section a statement-by-silence.
+  for (const e of incidents) entityIds.push(e.incident.id);
   let attachments: AttachmentRow[] = [];
   if (entityIds.length > 0) {
     attachments = await loadAttachmentsForEntityIds(admin, scope.accountId, entityIds, {
