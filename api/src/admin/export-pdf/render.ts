@@ -9,6 +9,7 @@ import {
   interactionPartyDisplay,
   retractedInteractionMarker,
 } from './interactions';
+import { renderIncidentsSection } from './incidents';
 
 // ---- PDF rendering ----------------------------------------------------------
 
@@ -44,11 +45,13 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
 
   const doc = new PDFDocument({
     autoFirstPage: false,
-    // compress: false makes the content streams human-readable in the
-    // PDF. The bundle gets a bit larger but stays well under the
-    // generated-artifact cap. The real reason: forensic readability --
-    // a litigant who needs to grep the PDF for a specific hash should be
-    // able to do that without a special tool.
+    // compress: false keeps the content streams uncompressed. The bundle
+    // gets a bit larger but stays well under the generated-artifact cap.
+    // The real reason: forensic readability -- no decompression tooling is
+    // needed to inspect the bytes. (pdfkit still hex-serializes text runs,
+    // so recovering a literal string takes a hex decode of the <...> TJ
+    // pieces -- trivial, but not a plain grep; incidents.test.ts's export
+    // scenario shows the two-line recipe.)
     compress: false,
     info: {
       Title: `Evidence Export — ${data.account_name}`,
@@ -458,6 +461,22 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
             (n.served_method ? `  via ${n.served_method as string}` : ''),
         );
     }
+  }
+
+  // ----- Incidents ----------------------------------------------------------
+  // Tenancy-scoped only (like Notices). Body in export-pdf/incidents.ts.
+  // An area-scoped bundle must not assert "no incidents" about a tenancy it
+  // never queried -- in an evidence document that reads as a factual claim.
+  section(doc, 'Incidents');
+  if (!scope.tenancyId) {
+    italicNote(
+      doc,
+      '(incidents attach to tenancies; this bundle is area-scoped — generate a tenancy-scoped export to include them)',
+    );
+  } else if (data.incidents.length === 0) {
+    italicNote(doc, '(no incidents recorded for this tenancy)');
+  } else {
+    renderIncidentsSection(doc, data);
   }
 
   // ----- Photos (chain of custody + embedded preview) ----------------------

@@ -1,6 +1,9 @@
 import { getLogger } from '../log';
 import { getAdminClient } from './supabase-admin';
 import { renderExportPdf } from './export-pdf/render';
+import { idChunks } from './export-pdf/chunks';
+import { loadIncidents } from './export-pdf/incidents';
+import type { IncidentEntry } from './export-pdf/incidents';
 import {
   MAX_BYTES as UPLOAD_MAX_BYTES,
   MAX_GENERATED_BYTES as GENERATED_ARTIFACT_MAX_BYTES,
@@ -299,7 +302,6 @@ export interface AttachmentRow {
 
 type AdminClient = ReturnType<typeof getAdminClient>;
 
-const IN_FILTER_CHUNK_SIZE = 100;
 const ATTACHMENT_COLS =
   'id, entity_type, entity_id, storage_path, content_hash, mime_type, size_bytes, uploaded_by, derived_from, received_at';
 
@@ -321,6 +323,11 @@ export interface ExportData {
   inspectionItems: Array<Record<string, unknown>>;
   inspectionChecks: Array<Record<string, unknown>>;
   notices: Array<Record<string, unknown>>;
+  /** Tenancy-scoped only: incidents (dismissed ones included, marked) with
+   *  their evidence-citation manifest and derived recurrence. Built in
+   *  export-pdf/incidents.ts; cited records live there, NOT in the sections
+   *  above, so the manifest can never widen the bundle's stated scope. */
+  incidents: IncidentEntry[];
   attachments: AttachmentRow[];
   events: Array<Record<string, unknown>>;
   uploaderNames: Map<string, string>;
@@ -354,15 +361,6 @@ export interface CastRow {
   address: string | null;
   label: string | null;
   source: string;
-}
-
-function idChunks(ids: Iterable<string>, size = IN_FILTER_CHUNK_SIZE): string[][] {
-  const unique = [...new Set(ids)].filter((id) => id.length > 0);
-  const chunks: string[][] = [];
-  for (let i = 0; i < unique.length; i += size) {
-    chunks.push(unique.slice(i, i + size));
-  }
-  return chunks;
 }
 
 async function loadAttachmentsForEntityIds(
@@ -632,6 +630,7 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   let inspectionItems: Record<string, unknown>[] = [];
   let inspectionChecks: Record<string, unknown>[] = [];
   let notices: Record<string, unknown>[] = [];
+  let incidents: IncidentEntry[] = [];
 
   if (tenancyId || areaId) {
     let intQ = admin.from('interactions').select('*').eq('account_id', scope.accountId);
@@ -689,6 +688,9 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
       .eq('account_id', scope.accountId)
       .eq('tenancy_id', tenancyId);
     notices = (n.data as Record<string, unknown>[]) ?? [];
+    // Incidents are tenancy-anchored (tenancy_id NOT NULL), so an area-only
+    // bundle has no incident scope to render -- same shape as notices above.
+    incidents = await loadIncidents(admin, scope.accountId, tenancyId);
   }
 
   // All attachments tied to any in-scope entity.
@@ -696,6 +698,9 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   for (const r of maintenanceRequests) entityIds.push(r.id as string);
   for (const r of inspections) entityIds.push(r.id as string);
   for (const r of interactions) entityIds.push(r.id as string);
+  // Incident photos carry the same custody chain as every other attachment;
+  // omitting them would make the Incidents section a statement-by-silence.
+  for (const e of incidents) entityIds.push(e.incident.id);
   let attachments: AttachmentRow[] = [];
   if (entityIds.length > 0) {
     attachments = await loadAttachmentsForEntityIds(admin, scope.accountId, entityIds, {
@@ -852,6 +857,7 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     inspectionItems,
     inspectionChecks,
     notices,
+    incidents,
     attachments,
     events,
     uploaderNames,

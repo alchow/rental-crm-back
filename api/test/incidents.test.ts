@@ -24,6 +24,7 @@
 // through a privileged SQL connection that bypasses RLS entirely).
 // ----------------------------------------------------------------------------
 
+import { createHash } from 'node:crypto';
 import { Client as PgClient } from 'pg';
 import {
   assert,
@@ -1305,6 +1306,72 @@ async function main(): Promise<void> {
         `${who} incident-photo delete expected 403, got ${del.status}`,
       );
     }
+  });
+
+  // ==========================================================================
+  // UC3 export leg -- the court packet actually contains the incident.
+  // The bundle renders with compress:false precisely so litigants (and this
+  // test) can grep the bytes; fragments are short ASCII runs that cannot be
+  // split by pdfkit line-wrapping or hit PDF string escaping (parens) or
+  // WinAnsi re-encoding (typographic quotes / em-dashes).
+  // ==========================================================================
+  await check('UC3 export: tenancy bundle renders the incident, citations, and photo custody', async () => {
+    const queued = await api('POST', `/v1/accounts/${A.accountId}/evidence-exports`, {
+      token: A.token,
+      body: { tenancy_id: noise.tenancyId },
+    });
+    let row = assertStatus(queued, 202, 'queue export') as {
+      id: string;
+      status: string;
+      error: string | null;
+      attachment_id: string | null;
+    };
+    const t0 = Date.now();
+    while ((row.status === 'queued' || row.status === 'running') && Date.now() - t0 < 60_000) {
+      await new Promise((res) => setTimeout(res, 200));
+      const poll = await api('GET', `/v1/accounts/${A.accountId}/evidence-exports/${row.id}`, {
+        token: A.token,
+      });
+      row = assertStatus(poll, 200, 'poll export') as typeof row;
+    }
+    assert(
+      row.status === 'done' && row.attachment_id !== null,
+      `export did not complete: status=${row.status} error=${row.error ?? ''}`,
+    );
+
+    const dl = await api(
+      'GET',
+      `/v1/accounts/${A.accountId}/evidence-exports/${row.id}/download`,
+      { token: A.token },
+    );
+    assertStatus(dl, 200, 'download export');
+    // compress:false keeps content streams uncompressed, but pdfkit 0.15
+    // serializes text runs as hex strings inside TJ arrays --
+    // "[<496e636964656e7473> 0] TJ" is "Incidents". Reconstruct readable
+    // text: stitch kern breaks between hex pieces, then hex-decode.
+    const pdf = Buffer.from(dl.body as Uint8Array)
+      .toString('latin1')
+      .replace(/>\s*-?\d+(?:\.\d+)?\s*</g, '')
+      .replace(/<([0-9a-fA-F]+)>/g, (_, h: string) =>
+        Buffer.from(h.length % 2 ? h + '0' : h, 'hex').toString('latin1'),
+      );
+
+    for (const fragment of [
+      'Incidents', // the section exists
+      'very loud bass', // frozen testimony rendered verbatim
+      'third Saturday running',
+      'same-category incident in trailing 12', // the recurrence ordinal line
+      'noise', // category label
+    ]) {
+      assert(pdf.includes(fragment), `export PDF is missing fragment: ${fragment}`);
+    }
+    // The incident photo made it into the custody chain: its sha256 is
+    // printed in the Photos section.
+    const photoHash = createHash('sha256').update(PNG_1X1).digest('hex');
+    assert(
+      pdf.includes(photoHash),
+      'export PDF is missing the incident photo content hash (custody chain)',
+    );
   });
 
   // ==========================================================================
