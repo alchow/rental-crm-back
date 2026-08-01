@@ -8,36 +8,10 @@ import type { CommOutbox, CommThreadParticipant } from './schemas';
 
 export type CommsApp = ReturnType<typeof newApiApp>;
 
-// module in the agent repo); everything else on it is 403.
-export function requireTransport(c: Context): void {
-  if (c.get('principal').type !== 'agent') {
-    throw new ApiError(403, 'forbidden', 'this endpoint is reserved for the agent transport');
-  }
-}
-
-// Landlord endpoints require owner|manager (viewers read the journal, not the
-// comms controls; the agent principal holds role='agent' and is denied too).
-export function requireManager(c: Context): void {
-  const role = c.get('account').role;
-  if (role !== 'owner' && role !== 'manager') {
-    throw new ApiError(403, 'forbidden', 'only an owner or manager may use this endpoint');
-  }
-}
-
-// Reads the transport ALSO needs (thread context for relay legs, standing
-// policies for grant provenance): the agent principal or an owner/manager.
-// Viewers stay denied. Same carve-out shape as createOutbox/getOutbox.
-export function requireAgentOrManager(c: Context): void {
-  if (c.get('principal').type === 'agent') return;
-  const role = c.get('account').role;
-  if (role !== 'owner' && role !== 'manager') {
-    throw new ApiError(
-      403,
-      'forbidden',
-      'only the agent transport or an owner/manager may use this endpoint',
-    );
-  }
-}
+// The role guards moved to _lib/guards so other domains (incidents) reuse the
+// exact same agent/viewer lever. Re-exported here so comms call sites -- and
+// the comms tests that name them -- keep importing from './shared'.
+export { requireTransport, requireManager, requireAgentOrManager } from '../_lib/guards';
 
 // Pin an outbox mutation to the URL account BEFORE calling its RPC. The
 // complete/fail/delivery RPCs self-defend on the row's OWN account (and
