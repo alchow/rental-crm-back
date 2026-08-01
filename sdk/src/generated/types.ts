@@ -10648,7 +10648,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Update this account’s settings. Owner/manager only (RLS) — flips the automatic rent-charge opt-in. */
+        /** Update this account’s settings. Owner/manager only (RLS) — toggles account-wide automatic rent charging. */
         patch: {
             parameters: {
                 query?: never;

@@ -66,8 +66,8 @@ const patch = createRoute({
   path: '/accounts/{accountId}/settings',
   tags: ['settings'],
   summary:
-    'Update this account’s settings. Owner/manager only (RLS) — flips the ' +
-    'automatic rent-charge opt-in.',
+    'Update this account’s settings. Owner/manager only (RLS) — toggles ' +
+    'account-wide automatic rent charging.',
   request: {
     params: AccountParam,
     body: { content: { 'application/json': { schema: PatchAccountSettingsBody } }, required: true },

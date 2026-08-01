@@ -94,7 +94,7 @@ async function enumerateAccountIds(
       throw new ApiError(
         500,
         'database_error',
-        `${optedInOnly ? 'opt-in account' : 'account'} scan failed: ${error.message}`,
+        `${optedInOnly ? 'enabled-account' : 'account'} scan failed: ${error.message}`,
       );
     }
     const page = (data ?? []) as { id: string }[];
@@ -105,10 +105,10 @@ async function enumerateAccountIds(
 }
 
 /**
- * Generate rent charges for every opted-in account, one per-account RPC at a
+ * Generate rent charges for every enabled account, one per-account RPC at a
  * time. Idempotent and crash-safe by construction (the generator dedupes on
  * ON CONFLICT (source_schedule_id, period_start)), so a retried or overlapping
- * run cannot double-bill. Throws only on a SYSTEMIC failure (the opt-in account
+ * run cannot double-bill. Throws only on a SYSTEMIC failure (the enabled-account
  * scan itself failing) — a per-account failure is logged and the run continues,
  * mirroring the evidence-retention janitor.
  */
@@ -117,7 +117,7 @@ export async function runRentCharges(now: Date = new Date()): Promise<RentCharge
   const admin = getAdminClient();
   const asOf = now.toISOString();
 
-  // Enumerate ALL opted-in accounts (the billing set), paginated to dodge
+  // Enumerate ALL enabled accounts (the billing set), paginated to dodge
   // PostgREST's silent max-rows cap -- see enumerateAccountIds.
   const accounts = await enumerateAccountIds(admin, true);
 
