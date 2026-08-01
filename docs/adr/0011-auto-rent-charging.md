@@ -1,9 +1,13 @@
 # ADR-0011: Automatic rent charging — opt-in, advance-timed, scheduled in IaC
 
-- **Status:** accepted, 2026-07-04
+- **Status:** accepted, 2026-07-04; **decision 1 amended 2026-08-01** — the flag
+  now defaults to `true`, so automatic charging is **opt-out**. See
+  [Amendment — 2026-08-01](#amendment--2026-08-01-the-default-flips-to-on)
+  at the end of this file. Decisions 2–5 stand unchanged and are current.
 - **Context owner:** money subledger (docs/api-guide.md §7) + ops (render.yaml)
 - **Implements:** migration `20260704000001_auto_rent_charging`, route
-  `api/src/routes/settings.ts`, runner `api/src/admin/run-rent-charges.ts`.
+  `api/src/routes/settings.ts`, runner `api/src/admin/run-rent-charges.ts`;
+  amended by migration `20260801000001_auto_charge_default_on`.
 
 ## Context
 
@@ -29,6 +33,11 @@ Two facts constrain all four:
 ## Decision
 
 **1. Opt-in per account (`accounts.auto_charge_enabled`, default `false`).**
+_Amended 2026-08-01: the default is now `true`. The paragraph below is retained
+as the original decision and the reasoning that made default-`false` right in
+July 2026 — see the Amendment at the end of this file for what replaced it and
+why. The per-account flag, the RLS gate, and the single-writable-column shape
+are unchanged._
 No account is billed until its owner/manager deliberately flips the flag via
 `PATCH /accounts/{accountId}/settings`. The write runs under the caller's JWT
 through PostgREST, gated by RLS policy `accounts_member_settings_update`
@@ -78,7 +87,9 @@ have skipped.
 
 - **No account is billed by accident.** Opt-in default-false plus the double
   flag check means an imported schedule sits inert until a human turns billing
-  on; a mis-scoped RPC cannot override that.
+  on; a mis-scoped RPC cannot override that. _(Amended 2026-08-01 — the default
+  is now `true`; the guarantee is now "no account is billed without a live rent
+  schedule". See the Amendment at the end of this file.)_
 - **Scheduling is now a reviewable artifact.** Whether the generator runs, and
   when, is visible in `render.yaml` — the failure mode that shipped twice
   (function defined, never scheduled) is caught in code review.
@@ -105,3 +116,77 @@ have skipped.
 - **Instance/scale changes** → the cron is a separate one-shot service, so it is
   unaffected by web autoscaling (ADR-0005); revisit only if a second scheduler
   could race it (it cannot today — idempotency makes a double-run safe anyway).
+
+## Amendment — 2026-08-01: the default flips to ON
+
+- **Amends:** decision 1 only. Decisions 2 (advance timing), 3 (Render cron),
+  4 (tenancy-end cascade) and 5 (defense-in-depth flag check) are unchanged.
+- **Implements:** migration `20260801000001_auto_charge_default_on`.
+
+### What changed
+
+`accounts.auto_charge_enabled` now defaults to `true`, and every live account
+that still carried the `false` default was backfilled to `true` in the same
+migration. Automatic rent charging is **opt-out**: a landlord who does not want
+it flips the flag off via `PATCH /accounts/{accountId}/settings`, the same
+owner/manager-gated write as before.
+
+### Why the original rationale expired
+
+Decision 1 rested on one fact: *"a `rent_schedules` row is not consent to
+bill"*, because bulk import had already written schedules for accounts that
+never asked to be billed. That cohort is gone, and the audit that closed the
+question is small enough to state in full (read-only queries against prod,
+2026-08-01):
+
+| Fleet fact | Count |
+| --- | --- |
+| Live accounts | 8 |
+| Accounts with at least one live rent schedule | 2 |
+| …of those, already `auto_charge_enabled = true` | 2 |
+| Accounts with `auto_charge_enabled = false` | 6 |
+| …of those, with any live rent schedule | 0 |
+| Accounts billing manually *alongside* a live schedule (double-billing risk) | 0 |
+
+So the backfill changes **no billing behaviour for any account that exists
+today** — every account it touches has nothing to bill. What it changes is the
+expectation for the next schedule anybody records, on any account.
+
+The second reason is a product one. Default-`false` made the money surface lie
+by omission: a landlord records "rent is $2,000 on the 1st", the app accepts it,
+and the ledger then stays empty because a switch they had no reason to look for
+was off. Recording the schedule **is** the instruction to bill. Declining to
+bill is the deliberate act, so declining is what should require the explicit
+flip.
+
+### What did not change, and why this is not a surprise-billing regression
+
+- A charge is still only minted where a **live rent schedule covers the
+  period**. A flag-on account with no schedule is billed exactly nothing, so
+  flipping the default cannot by itself create a charge anywhere.
+- The generator still **never backfills**: it emits at most one window per
+  schedule per run, so turning the flag on cannot produce a stack of back-months
+  for a retroactively-imported schedule.
+- Decision 5's double flag check is intact — the runner enumerates
+  `auto_charge_enabled = true` and the generator re-checks the same flag. The
+  flag remains the single switch; only its default moved.
+- The ended-tenancy guard and the tenancy-end cascade (decision 4) still stop
+  billing when a tenancy ends.
+
+### Consequences that this amendment replaces
+
+- The consequence *"No account is billed by accident"* now reads: no account is
+  billed **without a live rent schedule**. Consent is expressed by recording the
+  schedule rather than by a second, separate switch.
+- The safeguard against a mass-import cohort is now the **absence of that
+  cohort** plus the schedule requirement, not the column default. A future bulk
+  import that writes `rent_schedules` for accounts that did not ask to be billed
+  must set `auto_charge_enabled = false` on the rows it creates — that is the
+  new revisit trigger below.
+
+### Revisit trigger added
+
+- **A bulk import (or any mechanical writer) starts creating `rent_schedules`
+  rows on behalf of accounts that did not enter them** → the schedule is no
+  longer a reliable proxy for consent, and the importer must explicitly opt
+  those accounts out, or the default must be reconsidered.

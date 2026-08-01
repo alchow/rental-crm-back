@@ -15,12 +15,18 @@ import { ApiError } from '../routes/_lib/error';
 // client is the only caller that can reach it — the exact same reasoning as the
 // evidence-retention janitor (admin/evidence.ts).
 //
-// Enumeration is OPT-IN ONLY: we bill just the accounts that set
-// auto_charge_enabled = true. This is defence-in-depth with the generator,
-// which re-checks the SAME flag on every call and returns the empty set for a
-// non-opted-in (or missing) account — so even a loose enumeration here (or a
-// stray manual RPC elsewhere) can never surprise-bill an account that never
-// opted in.
+// Enumeration is FLAG-GATED: we bill just the accounts where
+// auto_charge_enabled = true. Since 2026-08-01 that flag DEFAULTS to true
+// (migration 20260801000001, ADR-0011 amendment), so the enumeration set is
+// "every account that has not opted OUT" rather than the old opt-in cohort.
+// The gate itself is unchanged and is still defence-in-depth with the
+// generator, which re-checks the SAME flag on every call and returns the empty
+// set for an opted-out (or missing) account — so even a loose enumeration here
+// (or a stray manual RPC elsewhere) can never bill an account that turned it
+// off. What protects an account that never thought about the flag is the
+// generator's other requirement: it mints a charge only where a LIVE rent
+// schedule covers the period, so an account with no schedules is billed
+// nothing.
 //
 // PER-ACCOUNT calls (not one fleet-wide RPC): each generate_rent_charges call
 // takes the migration's per-account advisory lock and runs in its own short
@@ -33,7 +39,7 @@ import { ApiError } from '../routes/_lib/error';
 // slack that makes a one-day heal harmless.
 
 export interface RentChargeRunResult {
-  /** Accounts with auto_charge_enabled = true (the enumeration set). */
+  /** Accounts with auto_charge_enabled = true, i.e. not opted out (the enumeration set). */
   accounts_enabled: number;
   /** Accounts whose generate_rent_charges call completed without error. */
   accounts_processed: number;
@@ -88,7 +94,7 @@ async function enumerateAccountIds(
       throw new ApiError(
         500,
         'database_error',
-        `${optedInOnly ? 'opt-in account' : 'account'} scan failed: ${error.message}`,
+        `${optedInOnly ? 'enabled-account' : 'account'} scan failed: ${error.message}`,
       );
     }
     const page = (data ?? []) as { id: string }[];
@@ -99,10 +105,10 @@ async function enumerateAccountIds(
 }
 
 /**
- * Generate rent charges for every opted-in account, one per-account RPC at a
+ * Generate rent charges for every enabled account, one per-account RPC at a
  * time. Idempotent and crash-safe by construction (the generator dedupes on
  * ON CONFLICT (source_schedule_id, period_start)), so a retried or overlapping
- * run cannot double-bill. Throws only on a SYSTEMIC failure (the opt-in account
+ * run cannot double-bill. Throws only on a SYSTEMIC failure (the enabled-account
  * scan itself failing) — a per-account failure is logged and the run continues,
  * mirroring the evidence-retention janitor.
  */
@@ -111,7 +117,7 @@ export async function runRentCharges(now: Date = new Date()): Promise<RentCharge
   const admin = getAdminClient();
   const asOf = now.toISOString();
 
-  // Enumerate ALL opted-in accounts (the billing set), paginated to dodge
+  // Enumerate ALL enabled accounts (the billing set), paginated to dodge
   // PostgREST's silent max-rows cap -- see enumerateAccountIds.
   const accounts = await enumerateAccountIds(admin, true);
 

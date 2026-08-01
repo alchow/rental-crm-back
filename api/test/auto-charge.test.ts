@@ -3,9 +3,14 @@
 //
 // Covers the three pieces that migration adds on top of the Phase 9 generator:
 //
-//   (A) Opt-in gate. With accounts.auto_charge_enabled = false (the default),
+//   (A) Flag gate. With accounts.auto_charge_enabled = false,
 //       generate_rent_charges returns ZERO rows and writes NO charge, even for
 //       a perfectly billable schedule. Flipping the flag true unblocks it.
+//       NOTE: the column DEFAULTS to true since migration 20260801000001
+//       (ADR-0011 amendment: billing is opt-OUT), so this case sets the flag
+//       false EXPLICITLY. It must never lean on the column default again —
+//       that is exactly what made this assertion silently vacuous when the
+//       default moved.
 //
 //   (B) Advance timing. The period_start of the generated charge follows the
 //       "next due date at or after we pass this month's due day" rule:
@@ -274,7 +279,17 @@ async function main(): Promise<void> {
   // (A) Opt-in gate
   // =========================================================================
 
-  await check('flag OFF (default): generate returns 0 rows and writes no charge', async () => {
+  await check('flag OFF (explicit): generate returns 0 rows and writes no charge', async () => {
+    // Set the flag false EXPLICITLY. The column default is true (migration
+    // 20260801000001), so a test that assumed the default here would be
+    // asserting nothing — it would exercise the flag-ON path and still pass
+    // only by accident if the generator broke.
+    const off = await admin
+      .from('accounts')
+      .update({ auto_charge_enabled: false })
+      .eq('id', A.accountId);
+    if (off.error) throw new Error(`disable flag: ${off.error.message}`);
+
     const { scheduleId } = await seed({ dueDay: 1 });
     const rows = await generate('2026-07-02T12:00:00Z');
     const mine = rows.filter((r) => r.o_schedule_id === scheduleId);
@@ -285,8 +300,9 @@ async function main(): Promise<void> {
       throw new Error(`expected 0 charges while flag off, got ${charges.length}`);
   });
 
-  // Flip the opt-in on for A (admin path -- the API PATCH route would do this
+  // Flip the flag back ON for A (admin path -- the API PATCH route would do this
   // under the user's JWT via the accounts_manager_update policy + column grant).
+  // Every case below this line runs with billing enabled.
   await check('flag ON: admin sets auto_charge_enabled=true', async () => {
     const { error } = await admin
       .from('accounts')

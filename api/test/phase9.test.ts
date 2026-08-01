@@ -218,8 +218,10 @@ async function main(): Promise<void> {
     }).select('id').single();
     if (schedRes.error || !schedRes.data) throw new Error(`seed schedule: ${schedRes.error?.message}`);
 
-    // generate_rent_charges is OPT-IN (migration 20260704000002): it returns
-    // empty unless the account has auto_charge_enabled=true. Flip it on for A.
+    // generate_rent_charges is FLAG-GATED (migration 20260704000002): it returns
+    // empty unless the account has auto_charge_enabled=true. That flag defaults
+    // to true since 20260801000001, but this set is deliberately explicit so the
+    // case never depends on the default in either direction.
     const optIn = await admin
       .from('accounts')
       .update({ auto_charge_enabled: true })

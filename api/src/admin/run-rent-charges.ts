@@ -6,8 +6,8 @@
 //
 // Requires the API's env (SUPABASE_URL, SUPABASE_ANON_KEY,
 // SUPABASE_SERVICE_ROLE_KEY). Exits non-zero so the scheduler alerts when
-// either (a) a SYSTEMIC failure occurs (the opt-in account scan throws) or
-// (b) accounts were opted in but NONE could be processed (every per-account
+// either (a) a SYSTEMIC failure occurs (the enabled-account scan throws) or
+// (b) accounts were enabled but NONE could be processed (every per-account
 // RPC failed) — a run that billed nobody while billing was enabled is not a
 // success. An INDIVIDUAL account failure while others succeed is logged loudly
 // (event: rent_charges_account_failed) but does NOT fail the run: the generator

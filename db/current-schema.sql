@@ -9924,7 +9924,7 @@ CREATE TABLE IF NOT EXISTS "public"."accounts" (
     "deleted_at" timestamp with time zone,
     "email_subdomain" "text",
     "sender_display_name" "text",
-    "auto_charge_enabled" boolean DEFAULT false NOT NULL,
+    "auto_charge_enabled" boolean DEFAULT true NOT NULL,
     "persona_local_part" "text",
     CONSTRAINT "accounts_email_subdomain_format" CHECK ((("email_subdomain" IS NULL) OR ("email_subdomain" ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'::"text"))),
     CONSTRAINT "accounts_email_subdomain_no_punycode" CHECK ((("email_subdomain" IS NULL) OR ("email_subdomain" !~~ 'xn--%'::"text"))),
@@ -9946,7 +9946,7 @@ ALTER TABLE "public"."accounts" OWNER TO "postgres";
 -- Name: COLUMN "accounts"."auto_charge_enabled"; Type: COMMENT; Schema: public; Owner: postgres
 --
 
-COMMENT ON COLUMN "public"."accounts"."auto_charge_enabled" IS 'Opt-in switch for the automatic rent-charge cron. Default false so existing accounts (whose rent_schedules were created by bulk import) are never surprise-billed when auto-charging is enabled fleet-wide. Only the account owner/manager may flip it (RLS policy accounts_manager_update + the column-level UPDATE grant below); generate_rent_charges returns empty for any account where this is false.';
+COMMENT ON COLUMN "public"."accounts"."auto_charge_enabled" IS 'Automatic rent-charge switch. Default TRUE since 2026-08-01 (amendment to ADR-0011): a landlord who records a rent schedule expects the rent to be billed, so billing is the default and opting OUT is the deliberate act. A charge is still only minted where a live rent schedule covers the period, so a flag-on account with no schedule is billed nothing. Per-account opt-out via PATCH /v1/accounts/{accountId}/settings (owner/manager only: RLS policy accounts_manager_update + the column-level UPDATE grant); generate_rent_charges returns the empty set for any account where this is false.';
 
 
 --

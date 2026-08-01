@@ -25695,7 +25695,7 @@
         "tags": [
           "settings"
         ],
-        "summary": "Update this account’s settings. Owner/manager only (RLS) — flips the automatic rent-charge opt-in.",
+        "summary": "Update this account’s settings. Owner/manager only (RLS) — toggles account-wide automatic rent charging.",
         "parameters": [
           {
             "schema": {
