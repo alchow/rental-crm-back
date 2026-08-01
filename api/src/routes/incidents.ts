@@ -397,7 +397,9 @@ const remove = createRoute({
   summary: 'Dismiss an incident (audited soft delete)',
   description:
     'Owner/manager only. Dismissal is a soft delete: the row and its audit ' +
-    'events are preserved; the incident just leaves the working set.',
+    'events are preserved; the incident just leaves the working set. Its ' +
+    'citations stay live and cited journal entries stay frozen — unlink items ' +
+    'first (they remain readable via GET items) if evidence must be released.',
   request: { params: AccountAndIdParam },
   responses: {
     204: { description: 'dismissed' },
@@ -414,7 +416,7 @@ const createItem = createRoute({
     'maintenance_request_id | notice_id | inspection_id) as evidence. While the ' +
     'citation is live, the cited journal entry’s probative fields are frozen by ' +
     'a DB trigger. Citations are never edited or re-pointed — unlink and cite ' +
-    'again instead. 409 already_cited/conflict when the same row is already ' +
+    'again instead. 409 already_cited when the same row is already ' +
     'live-cited by this incident.',
   request: {
     params: AccountAndIdParam,
@@ -439,7 +441,8 @@ const listItems = createRoute({
     '(interaction | maintenance_request | notice | inspection) — a compact ' +
     'projection of the cited record. Soft-unlinked citations are excluded ' +
     'unless include_unlinked=true (unlinked rows are citation history, with ' +
-    'unlinked_at set).',
+    'unlinked_at set). A missing or dismissed incident yields an empty page — ' +
+    'deliberately, so a dismissed incident’s citation history stays readable.',
   request: { params: AccountAndIdParam, query: ItemListQuery },
   responses: {
     200: {
@@ -658,7 +661,7 @@ incidentsApp.openapi(createItem, async (c) => {
       throw new ApiError(404, 'not_found', 'cited record not found in this account');
     }
     if (error.code === '23505') {
-      throw new ApiError(409, 'conflict', 'already cited by this incident');
+      throw new ApiError(409, 'already_cited', 'already cited by this incident');
     }
     if (error.code === '23514') {
       throw new ApiError(400, 'invalid_request', error.message);

@@ -135,6 +135,7 @@ export type ErrorCode =
   // Incidents conflicts (same fine-grained convention: each code implies a
   // distinct next action).
   | 'unclassified' // recurrence on an unclassified incident: PATCH category first
+  | 'already_cited' // duplicate live citation of the same evidence row: nothing to do
   | 'already_unlinked'; // repeat unlink of a citation: nothing to do, do not retry
 
 export class ApiError extends Error {

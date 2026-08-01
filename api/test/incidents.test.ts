@@ -673,8 +673,9 @@ async function main(): Promise<void> {
         .eq('id', interactionId)
         .select('id');
       assert(
-        frozenBody.error?.code === '23514',
-        `cited body UPDATE should be rejected, got ${JSON.stringify(frozenBody.error)}`,
+        frozenBody.error?.code === '23514' &&
+          /cited by incident [0-9a-f-]{36}/.test(frozenBody.error.message),
+        `cited body UPDATE should be rejected naming the citing incident, got ${JSON.stringify(frozenBody.error)}`,
       );
 
       // confirmed_at/confirmed_by are workflow, not testimony -> still writable.
@@ -1043,8 +1044,8 @@ async function main(): Promise<void> {
         `duplicate live citation expected 409, got ${twice.status} ${JSON.stringify(twice.body)}`,
       );
       assert(
-        errorCode(twice.body) === 'conflict',
-        `expected code 'conflict', got '${errorCode(twice.body)}'`,
+        errorCode(twice.body) === 'already_cited',
+        `expected code 'already_cited', got '${errorCode(twice.body)}'`,
       );
 
       // A capture is never lost to a bad link: the incident is created (201) and
