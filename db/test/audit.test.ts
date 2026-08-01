@@ -382,8 +382,19 @@ async function main(): Promise<void> {
     'UPDATE on interactions.logged_at is rejected',
     async () => {
       await asSuper(async (c) => {
+        // Pick an UNCITED row: an interaction cited by a live incident item is
+        // frozen by the linked-evidence trigger, which would intercept this
+        // UPDATE before the logged_at guard this test exists to prove.
         const i = await c.query<{ id: string }>(
-          `select id from public.interactions where account_id = $1 limit 1`,
+          `select i.id from public.interactions i
+            where i.account_id = $1
+              and not exists (
+                select 1 from public.incident_items li
+                 where li.account_id = i.account_id
+                   and li.interaction_id = i.id
+                   and li.deleted_at is null
+              )
+            limit 1`,
           [ACCOUNT_A],
         );
         if (i.rowCount !== 1) {

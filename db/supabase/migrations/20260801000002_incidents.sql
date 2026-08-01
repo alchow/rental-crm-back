@@ -139,6 +139,10 @@ begin
 end;
 $$;
 
+-- deleted_at is mutable in BOTH directions on purpose: dismissal is a
+-- soft-delete and un-dismissal (restore) is a legitimate, _emit_event-audited
+-- correction of a mistaken dismissal. The API does not expose restore yet;
+-- when it does, no migration is needed.
 create trigger incidents_frozen_fields
   before update on public.incidents
   for each row execute function public._reject_incident_frozen_field_mutation();
