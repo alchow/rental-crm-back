@@ -2,6 +2,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
+import { requireManager } from './_lib/guards';
 import { keysetPage } from './_lib/cursor';
 import { paginated } from './_lib/list-response';
 import {
@@ -75,6 +76,7 @@ const ENTITY_TABLES = [
   'document_versions',
   'leases',
   'notices',
+  'incidents',
 ] as const;
 type EntityTable = (typeof ENTITY_TABLES)[number];
 const ENTITY_TABLE_SET = new Set<string>(ENTITY_TABLES);
@@ -191,6 +193,11 @@ attachmentsApp.openapi(upload, async (c) => {
     throw new ApiError(400, 'invalid_request', 'entity_type missing or not allowed');
   }
   const entityTable = entityType as EntityTable;
+  // Incident evidence is human-only end to end: the incidents surface denies
+  // agent/viewer writes at route AND RLS, and photo evidence must not be the
+  // one back door (attachment writes run through the service-role storage
+  // helper, so RLS never applies to them).
+  if (entityTable === 'incidents') requireManager(c);
   if (!entityId || !/^[0-9a-f-]{36}$/i.test(entityId)) {
     throw new ApiError(400, 'invalid_request', 'entity_id missing or not a uuid');
   }
@@ -307,6 +314,19 @@ attachmentsApp.get('/accounts/:accountId/attachments/:id/download', async (c) =>
 // ---- delete -----------------------------------------------------------------
 attachmentsApp.openapi(remove, async (c) => {
   const { accountId, id } = c.req.valid('param');
+  // Same human-only rule as upload: deleting incident evidence is a
+  // manager act. The row lookup rides caller RLS (SELECT is granted).
+  const sb = getSb(c);
+  const { data: row, error } = await sb
+    .from('attachments')
+    .select('entity_type')
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  if (!row) throw new ApiError(404, 'not_found', 'not found');
+  if (row.entity_type === 'incidents') requireManager(c);
   await softDeleteAttachment(accountId, id);
   return c.body(null, 204);
 });

@@ -47,6 +47,10 @@
       "description": "Multi-status list filters and pagination."
     },
     { "script": "test:maintenance-reporter", "description": "Maintenance reporter provenance." },
+    {
+      "script": "test:incidents",
+      "description": "Incident case records: frozen testimony, citation lifecycle, recurrence, human-only writes."
+    },
     { "script": "test:imports", "description": "Onboarding import pipeline with a fake LLM." },
     {
       "script": "test:agent-principal",

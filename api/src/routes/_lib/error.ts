@@ -129,9 +129,14 @@ export type ErrorCode =
   | 'schedule_has_charges' // DELETE of a schedule with non-voided charges: void them first
   | 'property_requires_area' // property scope has zero/multiple live units: caller must choose area_id
   | 'tenancy_already_ended' // POST /tenancies/{id}/end was already applied: do not retry
-  | 'tenancy_has_money'; // PATCH start_date once non-voided charges/payments exist:
-// the money rows anchor the timeline — void them first
-// (ADR-0012 recipes) or leave start_date alone
+  | 'tenancy_has_money' // PATCH start_date once non-voided charges/payments exist:
+  // the money rows anchor the timeline — void them first
+  // (ADR-0012 recipes) or leave start_date alone
+  // Incidents conflicts (same fine-grained convention: each code implies a
+  // distinct next action).
+  | 'unclassified' // recurrence on an unclassified incident: PATCH category first
+  | 'already_cited' // duplicate live citation of the same evidence row: nothing to do
+  | 'already_unlinked'; // repeat unlink of a citation: nothing to do, do not retry
 
 export class ApiError extends Error {
   constructor(
