@@ -68,6 +68,15 @@ The `interactions` journal is append-only. Corrections and retractions append a
 new row rather than overwriting history. The `events` spine stores immutable,
 hash-chained mutation snapshots for audited tables.
 
+Incidents are evidence-grade case records: `incidents` rows freeze their
+testimony fields (`description`, `occurred_at`) at the database on capture, and
+`incident_items` cite existing records (journal entries, maintenance requests,
+notices, inspections) through typed FK slots that are insert + soft-unlink
+only. A journal entry cited by a live item is write-blocked on its probative
+fields — including retraction — until the citation is unlinked; this is the one
+DB-enforced exception to the journal's corrections-append story. Incident
+writes require owner/manager at the RLS layer, not just the route guard.
+
 Evidence-changing flow:
 
 ```text

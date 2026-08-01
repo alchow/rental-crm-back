@@ -52,6 +52,9 @@ declare
   -- Comms ledger (20260701000002)
   v_thread_a uuid; v_thread_b uuid;
   v_part_a uuid; v_part_b uuid;
+  -- Incidents (20260801000002)
+  v_incident_a uuid; v_incident_b uuid;
+  v_int_a2 uuid; v_int_b2 uuid;
 begin
   -- Identity
   insert into auth.users (id, email) values
@@ -325,6 +328,40 @@ begin
   ) values
     (v_acc_a, 'rent_reminder', 'sms', '{"days_before": 3}'::jsonb, v_user_a),
     (v_acc_b, 'rent_reminder', 'sms', '{"days_before": 3}'::jsonb, v_user_b);
+
+  -- Incidents (20260801000002): one incident + one evidence citation per
+  -- account so the isolation suite gets its own>0 / cross==0 check on both
+  -- tables. Plain inserts -- incidents have no workflow guard by design.
+  -- The citation targets a DEDICATED second interaction (v_int_a2/v_int_b2):
+  -- citing freezes the cited row permanently, and other suites (audit) need
+  -- the primary seeded interaction to stay mutable. This still exercises the
+  -- linked-evidence freeze trigger's live-link path.
+  v_int_a2 := gen_random_uuid(); v_int_b2 := gen_random_uuid();
+  insert into public.interactions (
+    id, account_id, actor, party_type, party_id, channel, direction,
+    body, occurred_at, tenancy_id, area_id
+  ) values
+    (v_int_a2, v_acc_a, 'user:' || v_user_a::text, 'tenant', v_tenant_a,
+       'phone', 'inbound', 'A neighbor call about loud parties (cited)', '2026-02-01T08:05:00Z',
+       v_tenancy_a, v_unit_a),
+    (v_int_b2, v_acc_b, 'user:' || v_user_b::text, 'tenant', v_tenant_b,
+       'phone', 'inbound', 'B neighbor call about loud parties (cited)', '2026-02-01T08:05:00Z',
+       v_tenancy_b, v_unit_b);
+
+  v_incident_a := gen_random_uuid(); v_incident_b := gen_random_uuid();
+  insert into public.incidents (
+    id, account_id, tenancy_id, category, description, occurred_at
+  ) values
+    (v_incident_a, v_acc_a, v_tenancy_a, 'noise',
+       'A neighbors reported loud parties', '2026-02-01T08:00:00Z'),
+    (v_incident_b, v_acc_b, v_tenancy_b, 'noise',
+       'B neighbors reported loud parties', '2026-02-01T08:00:00Z');
+
+  insert into public.incident_items (
+    account_id, incident_id, interaction_id
+  ) values
+    (v_acc_a, v_incident_a, v_int_a2),
+    (v_acc_b, v_incident_b, v_int_b2);
 end $$;
 
 -- Phase 3 (ADR-0002): establish a chain watermark per account so the

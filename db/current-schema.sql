@@ -1895,6 +1895,30 @@ $$;
 ALTER FUNCTION "public"."_inbound_provenance_guard_update"() OWNER TO "postgres";
 
 --
+-- Name: _incident_items_unlink_only(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_incident_items_unlink_only"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  if OLD.deleted_at is null
+     and NEW.deleted_at is not null
+     and (to_jsonb(NEW) - array['deleted_at', 'updated_at'])
+         is not distinct from (to_jsonb(OLD) - array['deleted_at', 'updated_at'])
+  then
+    return NEW;
+  end if;
+  raise exception 'incident evidence links are append-only; unlink is the only permitted change'
+    using errcode = 'check_violation';
+end;
+$$;
+
+
+ALTER FUNCTION "public"."_incident_items_unlink_only"() OWNER TO "postgres";
+
+--
 -- Name: _interaction_participants_immutable(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -2430,6 +2454,72 @@ $$;
 ALTER FUNCTION "public"."_reject_completed_inspection_update"() OWNER TO "postgres";
 
 --
+-- Name: _reject_incident_frozen_field_mutation(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_reject_incident_frozen_field_mutation"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_mutable constant text[] :=
+    array['category', 'resolved_at', 'resolution_note', 'updated_at', 'deleted_at'];
+  v_frozen_old jsonb := to_jsonb(OLD) - v_mutable;
+  v_frozen_new jsonb := to_jsonb(NEW) - v_mutable;
+  v_field text;
+begin
+  if v_frozen_new is distinct from v_frozen_old then
+    select k.key
+      into v_field
+      from jsonb_object_keys(v_frozen_new) as k(key)
+     where v_frozen_new -> k.key is distinct from v_frozen_old -> k.key
+     order by k.key
+     limit 1;
+    raise exception 'incident field % is frozen; append a journal note instead of editing testimony', v_field
+      using errcode = 'check_violation';
+  end if;
+  return NEW;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."_reject_incident_frozen_field_mutation"() OWNER TO "postgres";
+
+--
+-- Name: _reject_incident_hard_delete(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_reject_incident_hard_delete"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  raise exception 'incidents cannot be hard-deleted; dismiss (soft-delete) instead'
+    using errcode = 'check_violation';
+end;
+$$;
+
+
+ALTER FUNCTION "public"."_reject_incident_hard_delete"() OWNER TO "postgres";
+
+--
+-- Name: _reject_incident_item_delete(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_reject_incident_item_delete"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  raise exception 'incident evidence links cannot be deleted; unlink preserves the citation history'
+    using errcode = 'check_violation';
+end;
+$$;
+
+
+ALTER FUNCTION "public"."_reject_incident_item_delete"() OWNER TO "postgres";
+
+--
 -- Name: _reject_item_update_on_completed_inspection(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -2453,6 +2543,52 @@ $$;
 
 
 ALTER FUNCTION "public"."_reject_item_update_on_completed_inspection"() OWNER TO "postgres";
+
+--
+-- Name: _reject_linked_evidence_mutation(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_reject_linked_evidence_mutation"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_allowed constant text[] := array[
+    'attestation', 'confirmed_at', 'confirmed_by', 'updated_at'
+  ];
+  v_incident_id uuid;
+begin
+  -- Cheap probe on every interactions write, served by
+  -- incident_items_live_interaction_probe_idx.
+  select li.incident_id
+    into v_incident_id
+    from public.incident_items li
+   where li.account_id = OLD.account_id
+     and li.interaction_id = OLD.id
+     and li.deleted_at is null
+   limit 1;
+  if v_incident_id is null then
+    if TG_OP = 'DELETE' then
+      return OLD;
+    end if;
+    return NEW;
+  end if;
+
+  if TG_OP = 'DELETE' then
+    raise exception 'journal entry is cited by incident %; unlink that citation before deleting', v_incident_id
+      using errcode = 'check_violation';
+  end if;
+
+  if (to_jsonb(NEW) - v_allowed) is distinct from (to_jsonb(OLD) - v_allowed) then
+    raise exception 'journal entry is cited by incident %; testimony fields are frozen while cited (unlink the citation first)', v_incident_id
+      using errcode = 'check_violation';
+  end if;
+  return NEW;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."_reject_linked_evidence_mutation"() OWNER TO "postgres";
 
 --
 -- Name: _reject_logged_at_change(); Type: FUNCTION; Schema: public; Owner: postgres
@@ -10548,6 +10684,55 @@ ALTER TABLE ONLY "public"."inbound_raw" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "public"."inbound_raw" OWNER TO "postgres";
 
 --
+-- Name: incident_items; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."incident_items" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "account_id" "uuid" NOT NULL,
+    "incident_id" "uuid" NOT NULL,
+    "interaction_id" "uuid",
+    "maintenance_request_id" "uuid",
+    "notice_id" "uuid",
+    "inspection_id" "uuid",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "deleted_at" timestamp with time zone,
+    CONSTRAINT "incident_items_check" CHECK (("num_nonnulls"("interaction_id", "maintenance_request_id", "notice_id", "inspection_id") = 1))
+);
+
+ALTER TABLE ONLY "public"."incident_items" FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."incident_items" OWNER TO "postgres";
+
+--
+-- Name: incidents; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."incidents" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "account_id" "uuid" NOT NULL,
+    "tenancy_id" "uuid" NOT NULL,
+    "category" "text",
+    "description" "text" NOT NULL,
+    "occurred_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "resolved_at" timestamp with time zone,
+    "resolution_note" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "deleted_at" timestamp with time zone,
+    CONSTRAINT "incidents_category_check" CHECK (("category" = ANY (ARRAY['noise'::"text", 'nonpayment'::"text", 'property_damage'::"text", 'unauthorized_occupant'::"text", 'unauthorized_pet'::"text", 'smoking'::"text", 'illegal_activity'::"text", 'harassment'::"text", 'sanitation'::"text", 'unauthorized_sublet'::"text", 'access_refusal'::"text", 'unauthorized_alteration'::"text", 'injury_claim'::"text", 'abandonment'::"text", 'holdover'::"text", 'police_activity'::"text", 'hoa_violation'::"text", 'other'::"text"]))),
+    CONSTRAINT "incidents_description_check" CHECK ((("length"("description") >= 1) AND ("length"("description") <= 5000))),
+    CONSTRAINT "incidents_resolution_note_check" CHECK ((("resolution_note" IS NULL) OR (("length"("resolution_note") >= 1) AND ("length"("resolution_note") <= 2000))))
+);
+
+ALTER TABLE ONLY "public"."incidents" FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."incidents" OWNER TO "postgres";
+
+--
 -- Name: inspection_capture_tokens; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -11803,6 +11988,38 @@ ALTER TABLE ONLY "public"."inbound_raw"
 
 
 --
+-- Name: incident_items incident_items_account_id_id_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."incident_items"
+    ADD CONSTRAINT "incident_items_account_id_id_key" UNIQUE ("account_id", "id");
+
+
+--
+-- Name: incident_items incident_items_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."incident_items"
+    ADD CONSTRAINT "incident_items_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: incidents incidents_account_id_id_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."incidents"
+    ADD CONSTRAINT "incidents_account_id_id_key" UNIQUE ("account_id", "id");
+
+
+--
+-- Name: incidents incidents_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."incidents"
+    ADD CONSTRAINT "incidents_pkey" PRIMARY KEY ("id");
+
+
+--
 -- Name: inspection_capture_tokens inspection_capture_tokens_account_id_id_key; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -12962,6 +13179,62 @@ CREATE INDEX "inbound_raw_orphan_idx" ON "public"."inbound_raw" USING "btree" ("
 
 
 --
+-- Name: incident_items_account_incident_created_idx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "incident_items_account_incident_created_idx" ON "public"."incident_items" USING "btree" ("account_id", "incident_id", "created_at", "id");
+
+
+--
+-- Name: incident_items_live_inspection_key; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE UNIQUE INDEX "incident_items_live_inspection_key" ON "public"."incident_items" USING "btree" ("account_id", "incident_id", "inspection_id") WHERE (("inspection_id" IS NOT NULL) AND ("deleted_at" IS NULL));
+
+
+--
+-- Name: incident_items_live_interaction_key; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE UNIQUE INDEX "incident_items_live_interaction_key" ON "public"."incident_items" USING "btree" ("account_id", "incident_id", "interaction_id") WHERE (("interaction_id" IS NOT NULL) AND ("deleted_at" IS NULL));
+
+
+--
+-- Name: incident_items_live_interaction_probe_idx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "incident_items_live_interaction_probe_idx" ON "public"."incident_items" USING "btree" ("account_id", "interaction_id") WHERE (("interaction_id" IS NOT NULL) AND ("deleted_at" IS NULL));
+
+
+--
+-- Name: incident_items_live_maintenance_request_key; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE UNIQUE INDEX "incident_items_live_maintenance_request_key" ON "public"."incident_items" USING "btree" ("account_id", "incident_id", "maintenance_request_id") WHERE (("maintenance_request_id" IS NOT NULL) AND ("deleted_at" IS NULL));
+
+
+--
+-- Name: incident_items_live_notice_key; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE UNIQUE INDEX "incident_items_live_notice_key" ON "public"."incident_items" USING "btree" ("account_id", "incident_id", "notice_id") WHERE (("notice_id" IS NOT NULL) AND ("deleted_at" IS NULL));
+
+
+--
+-- Name: incidents_account_created_idx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "incidents_account_created_idx" ON "public"."incidents" USING "btree" ("account_id", "created_at", "id") WHERE ("deleted_at" IS NULL);
+
+
+--
+-- Name: incidents_recurrence_idx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "incidents_recurrence_idx" ON "public"."incidents" USING "btree" ("account_id", "tenancy_id", "category", "occurred_at") WHERE ("deleted_at" IS NULL);
+
+
+--
 -- Name: inspection_capture_tokens_account_id_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
@@ -13865,6 +14138,48 @@ CREATE OR REPLACE TRIGGER "inbound_provenance_guard_update" BEFORE UPDATE ON "pu
 
 
 --
+-- Name: incident_items incident_items_audit; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "incident_items_audit" AFTER INSERT OR DELETE OR UPDATE ON "public"."incident_items" FOR EACH ROW EXECUTE FUNCTION "public"."_emit_event"();
+
+
+--
+-- Name: incident_items incident_items_no_delete; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "incident_items_no_delete" BEFORE DELETE ON "public"."incident_items" FOR EACH ROW EXECUTE FUNCTION "public"."_reject_incident_item_delete"();
+
+
+--
+-- Name: incident_items incident_items_unlink_only; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "incident_items_unlink_only" BEFORE UPDATE ON "public"."incident_items" FOR EACH ROW EXECUTE FUNCTION "public"."_incident_items_unlink_only"();
+
+
+--
+-- Name: incidents incidents_audit; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "incidents_audit" AFTER INSERT OR DELETE OR UPDATE ON "public"."incidents" FOR EACH ROW EXECUTE FUNCTION "public"."_emit_event"();
+
+
+--
+-- Name: incidents incidents_frozen_fields; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "incidents_frozen_fields" BEFORE UPDATE ON "public"."incidents" FOR EACH ROW EXECUTE FUNCTION "public"."_reject_incident_frozen_field_mutation"();
+
+
+--
+-- Name: incidents incidents_no_delete; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "incidents_no_delete" BEFORE DELETE ON "public"."incidents" FOR EACH ROW EXECUTE FUNCTION "public"."_reject_incident_hard_delete"();
+
+
+--
 -- Name: inspection_capture_tokens inspection_capture_tokens_audit; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
@@ -14009,6 +14324,13 @@ CREATE OR REPLACE TRIGGER "interactions_enforce_agent_capacity" BEFORE INSERT ON
 --
 
 CREATE OR REPLACE TRIGGER "interactions_logged_at_immutable" BEFORE UPDATE ON "public"."interactions" FOR EACH ROW EXECUTE FUNCTION "public"."_reject_logged_at_change"();
+
+
+--
+-- Name: interactions interactions_reject_linked_evidence_mutation; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "interactions_reject_linked_evidence_mutation" BEFORE DELETE OR UPDATE ON "public"."interactions" FOR EACH ROW EXECUTE FUNCTION "public"."_reject_linked_evidence_mutation"();
 
 
 --
@@ -14780,6 +15102,54 @@ ALTER TABLE ONLY "public"."inbound_provenance"
 
 ALTER TABLE ONLY "public"."inbound_raw"
     ADD CONSTRAINT "inbound_raw_matched_account_id_fkey" FOREIGN KEY ("matched_account_id") REFERENCES "public"."accounts"("id");
+
+
+--
+-- Name: incident_items incident_items_account_id_incident_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."incident_items"
+    ADD CONSTRAINT "incident_items_account_id_incident_id_fkey" FOREIGN KEY ("account_id", "incident_id") REFERENCES "public"."incidents"("account_id", "id") ON DELETE RESTRICT;
+
+
+--
+-- Name: incident_items incident_items_account_id_inspection_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."incident_items"
+    ADD CONSTRAINT "incident_items_account_id_inspection_id_fkey" FOREIGN KEY ("account_id", "inspection_id") REFERENCES "public"."inspections"("account_id", "id") ON DELETE RESTRICT;
+
+
+--
+-- Name: incident_items incident_items_account_id_interaction_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."incident_items"
+    ADD CONSTRAINT "incident_items_account_id_interaction_id_fkey" FOREIGN KEY ("account_id", "interaction_id") REFERENCES "public"."interactions"("account_id", "id") ON DELETE RESTRICT;
+
+
+--
+-- Name: incident_items incident_items_account_id_maintenance_request_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."incident_items"
+    ADD CONSTRAINT "incident_items_account_id_maintenance_request_id_fkey" FOREIGN KEY ("account_id", "maintenance_request_id") REFERENCES "public"."maintenance_requests"("account_id", "id") ON DELETE RESTRICT;
+
+
+--
+-- Name: incident_items incident_items_account_id_notice_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."incident_items"
+    ADD CONSTRAINT "incident_items_account_id_notice_id_fkey" FOREIGN KEY ("account_id", "notice_id") REFERENCES "public"."notices"("account_id", "id") ON DELETE RESTRICT;
+
+
+--
+-- Name: incidents incidents_account_id_tenancy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."incidents"
+    ADD CONSTRAINT "incidents_account_id_tenancy_id_fkey" FOREIGN KEY ("account_id", "tenancy_id") REFERENCES "public"."tenancies"("account_id", "id") ON DELETE RESTRICT;
 
 
 --
@@ -15834,6 +16204,76 @@ CREATE POLICY "inbound_provenance_member_select" ON "public"."inbound_provenance
 ALTER TABLE "public"."inbound_raw" ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: incident_items; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."incident_items" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: incident_items incident_items_member_insert; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "incident_items_member_insert" ON "public"."incident_items" FOR INSERT WITH CHECK (("account_id" IN ( SELECT "m"."account_id"
+   FROM "public"."account_members" "m"
+  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL) AND ("m"."role" = ANY (ARRAY['owner'::"text", 'manager'::"text"]))))));
+
+
+--
+-- Name: incident_items incident_items_member_select; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "incident_items_member_select" ON "public"."incident_items" FOR SELECT USING (("account_id" IN ( SELECT "m"."account_id"
+   FROM "public"."account_members" "m"
+  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL)))));
+
+
+--
+-- Name: incident_items incident_items_member_update; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "incident_items_member_update" ON "public"."incident_items" FOR UPDATE USING (("account_id" IN ( SELECT "m"."account_id"
+   FROM "public"."account_members" "m"
+  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL) AND ("m"."role" = ANY (ARRAY['owner'::"text", 'manager'::"text"])))))) WITH CHECK (("account_id" IN ( SELECT "m"."account_id"
+   FROM "public"."account_members" "m"
+  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL) AND ("m"."role" = ANY (ARRAY['owner'::"text", 'manager'::"text"]))))));
+
+
+--
+-- Name: incidents; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."incidents" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: incidents incidents_member_insert; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "incidents_member_insert" ON "public"."incidents" FOR INSERT WITH CHECK (("account_id" IN ( SELECT "m"."account_id"
+   FROM "public"."account_members" "m"
+  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL) AND ("m"."role" = ANY (ARRAY['owner'::"text", 'manager'::"text"]))))));
+
+
+--
+-- Name: incidents incidents_member_select; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "incidents_member_select" ON "public"."incidents" FOR SELECT USING (("account_id" IN ( SELECT "m"."account_id"
+   FROM "public"."account_members" "m"
+  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL)))));
+
+
+--
+-- Name: incidents incidents_member_update; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "incidents_member_update" ON "public"."incidents" FOR UPDATE USING (("account_id" IN ( SELECT "m"."account_id"
+   FROM "public"."account_members" "m"
+  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL) AND ("m"."role" = ANY (ARRAY['owner'::"text", 'manager'::"text"])))))) WITH CHECK (("account_id" IN ( SELECT "m"."account_id"
+   FROM "public"."account_members" "m"
+  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL) AND ("m"."role" = ANY (ARRAY['owner'::"text", 'manager'::"text"]))))));
+
+
+--
 -- Name: inspection_capture_tokens; Type: ROW SECURITY; Schema: public; Owner: postgres
 --
 
@@ -16622,6 +17062,13 @@ GRANT ALL ON FUNCTION "public"."_inbound_provenance_guard_update"() TO "service_
 
 
 --
+-- Name: FUNCTION "_incident_items_unlink_only"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_incident_items_unlink_only"() FROM PUBLIC;
+
+
+--
 -- Name: FUNCTION "_interaction_participants_immutable"(); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -16718,12 +17165,40 @@ GRANT ALL ON FUNCTION "public"."_reject_completed_inspection_update"() TO "servi
 
 
 --
+-- Name: FUNCTION "_reject_incident_frozen_field_mutation"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_reject_incident_frozen_field_mutation"() FROM PUBLIC;
+
+
+--
+-- Name: FUNCTION "_reject_incident_hard_delete"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_reject_incident_hard_delete"() FROM PUBLIC;
+
+
+--
+-- Name: FUNCTION "_reject_incident_item_delete"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_reject_incident_item_delete"() FROM PUBLIC;
+
+
+--
 -- Name: FUNCTION "_reject_item_update_on_completed_inspection"(); Type: ACL; Schema: public; Owner: postgres
 --
 
 GRANT ALL ON FUNCTION "public"."_reject_item_update_on_completed_inspection"() TO "anon";
 GRANT ALL ON FUNCTION "public"."_reject_item_update_on_completed_inspection"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."_reject_item_update_on_completed_inspection"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "_reject_linked_evidence_mutation"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_reject_linked_evidence_mutation"() FROM PUBLIC;
 
 
 --
@@ -17837,6 +18312,22 @@ GRANT ALL ON TABLE "public"."import_sessions" TO "service_role";
 --
 
 GRANT ALL ON TABLE "public"."inbound_raw" TO "service_role";
+
+
+--
+-- Name: TABLE "incident_items"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT,INSERT,UPDATE ON TABLE "public"."incident_items" TO "authenticated";
+GRANT SELECT,INSERT,UPDATE ON TABLE "public"."incident_items" TO "service_role";
+
+
+--
+-- Name: TABLE "incidents"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT,INSERT,UPDATE ON TABLE "public"."incidents" TO "authenticated";
+GRANT SELECT,INSERT,UPDATE ON TABLE "public"."incidents" TO "service_role";
 
 
 --
