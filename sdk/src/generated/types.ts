@@ -5241,7 +5241,7 @@ export interface paths {
         };
         /**
          * Count same-category incidents on the tenancy in a trailing window
-         * @description Member-wide read. Counts live incidents with the SAME tenancy and SAME category whose occurred_at falls in the trailing window measured back from NOW (not from this incident’s occurred_at); the incident itself is included when in-window. Because occurred_at is frozen at capture, the count cannot be manufactured after the fact. 409 unclassified until the incident has a category.
+         * @description Member-wide read. Counts live incidents with the SAME tenancy and SAME category whose occurred_at falls in the trailing window measured back from NOW (not from this incident’s occurred_at); the incident itself is included when in-window. Because occurred_at is frozen at capture, the count cannot be manufactured after the fact. 409 unclassified until the incident has a category. Window arithmetic is calendar-month based: on month-end days the cutoff can land up to 3 days late (a slight, always conservative undercount).
          */
         get: {
             parameters: {
@@ -17996,7 +17996,7 @@ export interface components {
             category?: components["schemas"]["IncidentCategory"] & string;
             /**
              * Format: date-time
-             * @description When the incident happened; defaults to now. Frozen after capture.
+             * @description When the incident happened; defaults to now. Frozen after capture. Must not be in the future (beyond 5 minutes of clock skew) — a record of a future event is never valid testimony.
              */
             occurred_at?: string;
             source?: components["schemas"]["IncidentSource"];
@@ -18034,6 +18034,7 @@ export interface components {
             attestation: string | null;
             /** Format: uuid */
             thread_id: string | null;
+            deleted_at: string | null;
         };
         IncidentCitedMaintenanceRequest: {
             /** Format: uuid */

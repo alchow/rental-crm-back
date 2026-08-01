@@ -798,6 +798,17 @@ async function main(): Promise<void> {
         `expected code 'already_unlinked', got '${errorCode(second.body)}'`,
       );
 
+      // The contract promises "unlink and cite again": the per-slot unique
+      // index is partial on deleted_at, so a fresh live citation of the same
+      // evidence row must succeed after the unlink.
+      const recited = await cite(A, created.incidentId, { interaction_id: interactionId });
+      assert(recited.status === 201, `re-cite after unlink expected 201, got ${recited.status}`);
+      const relisted = await listItems(A, created.incidentId);
+      assert(
+        relisted.data.length === 1 && relisted.data[0]!.id !== itemId,
+        `re-cite must be a NEW live row alongside the history row, got ${JSON.stringify(relisted.data)}`,
+      );
+
       // A member has no DELETE grant at all on incident_items -- the citation row
       // is not erasable through the client credential.
       const rawDelete = await landlordSb
@@ -834,6 +845,29 @@ async function main(): Promise<void> {
       }
     },
   );
+
+  await check('incidents survive privileged hard delete (trigger backstop)', async () => {
+    const t = await newTenancy(A, 'nodelete');
+    const created = await createIncident(A, {
+      tenancy_id: t.tenancyId,
+      description: 'May be dismissed, never erased.',
+    });
+    const pg = new PgClient({ connectionString: status.DB_URL });
+    await pg.connect();
+    try {
+      await pg.query('delete from public.incidents where id = $1', [created.incidentId]);
+      throw new Error('privileged hard delete of an incident was NOT rejected');
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      const message = (error as { message?: string }).message ?? '';
+      assert(
+        code === '23514' && /cannot be hard-deleted/.test(message),
+        `expected the incidents no-delete trigger, got code=${String(code)} message=${message}`,
+      );
+    } finally {
+      await pg.end();
+    }
+  });
 
   // ==========================================================================
   // UC2 + UC6 -- an inspection and a maintenance request are evidence slots.
@@ -1165,6 +1199,49 @@ async function main(): Promise<void> {
         body.category === 'noise' && body.deleted_at === null,
         `refused writes leaked: ${JSON.stringify(body)}`,
       );
+
+      // The denial does not rest on the route guard: the RLS insert/update
+      // policies require owner|manager, so the same writes fail straight at
+      // PostgREST with the raw JWTs.
+      for (const [who, token] of [
+        ['agent', A.agentToken],
+        ['viewer', A.viewerToken],
+      ] as const) {
+        const raw = memberClient(token);
+        const rawInsert = await raw
+          .from('incidents')
+          .insert({
+            account_id: A.accountId,
+            tenancy_id: noise.tenancyId,
+            description: `${who} raw-authored testimony`,
+          })
+          .select('id');
+        assert(
+          rawInsert.error?.code === '42501',
+          `${who} raw PostgREST insert should hit RLS (42501), got ${JSON.stringify(rawInsert.error)}`,
+        );
+        const rawUpdate = await raw
+          .from('incidents')
+          .update({ category: 'other' })
+          .eq('id', noiseIncidentId)
+          .select('id');
+        assert(
+          !rawUpdate.error && (rawUpdate.data ?? []).length === 0,
+          `${who} raw PostgREST update should match zero rows under the RLS USING filter, got ${JSON.stringify(rawUpdate)}`,
+        );
+      }
+      const stillNoise = await api(
+        'GET',
+        `/v1/accounts/${A.accountId}/incidents/${noiseIncidentId}`,
+        { token: A.token },
+      );
+      const afterRaw = assertStatus(stillNoise, 200, 'incident after raw probes') as {
+        category: string;
+      };
+      assert(
+        afterRaw.category === 'noise',
+        `raw PostgREST probe leaked a write: ${JSON.stringify(afterRaw)}`,
+      );
     },
   );
 
@@ -1198,6 +1275,36 @@ async function main(): Promise<void> {
       listed.data.some((r) => r.id === uploaded.attachment.id),
       'the uploaded incident attachment did not list back',
     );
+
+    // Incident evidence photos are human-only end to end: the agent and
+    // viewer principals are refused at upload AND delete (the storage helper
+    // is service-role, so this route guard is the enforcement).
+    for (const [who, token] of [
+      ['agent', A.agentToken],
+      ['viewer', A.viewerToken],
+    ] as const) {
+      const f = new FormData();
+      f.set('entity_type', 'incidents');
+      f.set('entity_id', noiseIncidentId);
+      f.set('file', new File([PNG_1X1], `${who}.png`, { type: 'image/png' }));
+      const attempt = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
+        token,
+        multipart: f,
+      });
+      assert(
+        attempt.status === 403,
+        `${who} incident-photo upload expected 403, got ${attempt.status}`,
+      );
+      const del = await api(
+        'DELETE',
+        `/v1/accounts/${A.accountId}/attachments/${uploaded.attachment.id}`,
+        { token },
+      );
+      assert(
+        del.status === 403,
+        `${who} incident-photo delete expected 403, got ${del.status}`,
+      );
+    }
   });
 
   // ==========================================================================

@@ -129,9 +129,19 @@ const CreateIncidentBody = z
       description: 'The testimony. Frozen after capture; corrections are appended as journal notes.',
     }),
     category: IncidentCategory.optional(),
-    occurred_at: z.string().datetime().optional().openapi({
-      description: 'When the incident happened; defaults to now. Frozen after capture.',
-    }),
+    occurred_at: z
+      .string()
+      .datetime()
+      .optional()
+      .refine((v) => v === undefined || Date.parse(v) <= Date.now() + 5 * 60 * 1000, {
+        message: 'occurred_at cannot be in the future',
+      })
+      .openapi({
+        description:
+          'When the incident happened; defaults to now. Frozen after capture. ' +
+          'Must not be in the future (beyond 5 minutes of clock skew) — a ' +
+          'record of a future event is never valid testimony.',
+      }),
     source: IncidentSource.optional().openapi({
       description:
         'Optional origin evidence to cite in the same call (exactly one slot). ' +
@@ -187,6 +197,10 @@ const CitedInteraction = z
     party_label: z.string().nullable(),
     attestation: z.string().nullable(),
     thread_id: z.string().uuid().nullable(),
+    // Non-null when the cited journal entry was retracted (retract-before-cite
+    // or retract-after-unlink history rows). Clients should suppress the body
+    // the way the evidence export does ("(retracted journal entry)").
+    deleted_at: z.string().nullable(),
   })
   .openapi('IncidentCitedInteraction');
 
@@ -480,7 +494,9 @@ const recurrence = createRoute({
     'from NOW (not from this incident’s occurred_at); the incident itself is ' +
     'included when in-window. Because occurred_at is frozen at capture, the ' +
     'count cannot be manufactured after the fact. 409 unclassified until the ' +
-    'incident has a category.',
+    'incident has a category. Window arithmetic is calendar-month based: on ' +
+    'month-end days the cutoff can land up to 3 days late (a slight, always ' +
+    'conservative undercount).',
   request: { params: AccountAndIdParam, query: RecurrenceQuery },
   responses: {
     200: {
@@ -706,7 +722,7 @@ incidentsApp.openapi(listItems, async (c) => {
       ? sb
           .from('interactions')
           .select(
-            'id, kind, channel, direction, body, occurred_at, logged_at, party_type, party_label, attestation, thread_id',
+            'id, kind, channel, direction, body, occurred_at, logged_at, party_type, party_label, attestation, thread_id, deleted_at',
           )
           .eq('account_id', accountId)
           .in('id', interactionIds)
