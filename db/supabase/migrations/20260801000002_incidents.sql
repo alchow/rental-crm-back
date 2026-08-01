@@ -70,6 +70,10 @@ create policy incidents_member_select
        and m.deleted_at is null
   ));
 
+-- Writes are owner/manager AT THE DATABASE, not just at the route guard:
+-- the locked product decision is "agent read-only, viewers read-only", and a
+-- new evidence table has no legacy constraint forcing the weaker API-surface
+-- posture the journal carries. Reads stay member-wide.
 create policy incidents_member_insert
   on public.incidents
   for insert
@@ -78,6 +82,7 @@ create policy incidents_member_insert
       from public.account_members m
      where m.user_id = (select auth.uid())
        and m.deleted_at is null
+       and m.role in ('owner', 'manager')
   ));
 
 create policy incidents_member_update
@@ -88,12 +93,14 @@ create policy incidents_member_update
       from public.account_members m
      where m.user_id = (select auth.uid())
        and m.deleted_at is null
+       and m.role in ('owner', 'manager')
   ))
   with check (account_id in (
     select m.account_id
       from public.account_members m
      where m.user_id = (select auth.uid())
        and m.deleted_at is null
+       and m.role in ('owner', 'manager')
   ));
 
 -- No DELETE for anyone: dismissal is a soft-delete UPDATE so the audit chain
@@ -135,6 +142,24 @@ $$;
 create trigger incidents_frozen_fields
   before update on public.incidents
   for each row execute function public._reject_incident_frozen_field_mutation();
+
+-- Backstop against hard deletes, symmetric with incident_items: client roles
+-- hold no DELETE grant, but a future privileged path must not erase an
+-- incident silently either -- dismissal (audited soft delete) is the only exit.
+create or replace function public._reject_incident_hard_delete()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  raise exception 'incidents cannot be hard-deleted; dismiss (soft-delete) instead'
+    using errcode = 'check_violation';
+end;
+$$;
+
+create trigger incidents_no_delete
+  before delete on public.incidents
+  for each row execute function public._reject_incident_hard_delete();
 
 create trigger incidents_audit
   after insert or update or delete on public.incidents
@@ -218,6 +243,7 @@ create policy incident_items_member_select
        and m.deleted_at is null
   ));
 
+-- Same owner/manager write posture as incidents (see comment there).
 create policy incident_items_member_insert
   on public.incident_items
   for insert
@@ -226,6 +252,7 @@ create policy incident_items_member_insert
       from public.account_members m
      where m.user_id = (select auth.uid())
        and m.deleted_at is null
+       and m.role in ('owner', 'manager')
   ));
 
 create policy incident_items_member_update
@@ -236,12 +263,14 @@ create policy incident_items_member_update
       from public.account_members m
      where m.user_id = (select auth.uid())
        and m.deleted_at is null
+       and m.role in ('owner', 'manager')
   ))
   with check (account_id in (
     select m.account_id
       from public.account_members m
      where m.user_id = (select auth.uid())
        and m.deleted_at is null
+       and m.role in ('owner', 'manager')
   ));
 
 revoke all on public.incident_items
@@ -305,14 +334,15 @@ create trigger incident_items_audit
 -- (20260706000001_instrument_anchored_rent_changes.sql:581), where a notice
 -- anchoring a live rent schedule becomes write-blocked.
 --
--- Frozen while live-linked: body, occurred_at, party_type, party_id, channel,
--- direction, deleted_at (soft delete included -- unlink first if the citation
--- was a mistake). Everything else stays writable: the allowlist below names
--- every OTHER current interactions column, so confirm flows (confirmed_by /
--- confirmed_at), delivery/threading backfills (thread_id, rfc822_message_id,
--- references_interaction_id, external_ref) and updated_at keep working. A
--- column added to interactions later is frozen-by-default until it is
--- deliberately added here (fail closed).
+-- While live-linked, ONLY the attestation-confirm transition may touch the
+-- row: the schema's two UPDATE writers on interactions are
+-- confirm_unverified_sender (attestation / confirmed_by / confirmed_at /
+-- updated_at -- allowed) and retract_unverified_interaction (sets deleted_at
+-- -- deliberately blocked: unlink the citation first, then retract). Every
+-- other column, including ones added to interactions later, is frozen while
+-- cited (fail closed). The error names the citing incident so the caller can
+-- find and unlink the citation -- a dismissed incident is invisible in list
+-- reads, and without the id the freeze would be an undiscoverable dead end.
 create or replace function public._reject_linked_evidence_mutation()
 returns trigger
 language plpgsql
@@ -320,24 +350,20 @@ set search_path = public
 as $$
 declare
   v_allowed constant text[] := array[
-    'account_id', 'actor', 'approval_ref', 'approved_by', 'area_id',
-    'attestation', 'author_type', 'confirmed_at', 'confirmed_by',
-    'correction_kind', 'corrects_id', 'created_at', 'deleted_by',
-    'deleted_reason', 'entry_type', 'external_ref', 'id', 'kind', 'logged_at',
-    'maintenance_request_id', 'party_label', 'references_interaction_id',
-    'rfc822_message_id', 'tenancy_id', 'thread_id', 'updated_at', 'vendor_id',
-    'work_order_id'
+    'attestation', 'confirmed_at', 'confirmed_by', 'updated_at'
   ];
+  v_incident_id uuid;
 begin
-  -- Cheap EXISTS probe on every interactions write, served by
+  -- Cheap probe on every interactions write, served by
   -- incident_items_live_interaction_probe_idx.
-  if not exists (
-    select 1
-      from public.incident_items li
-     where li.account_id = OLD.account_id
-       and li.interaction_id = OLD.id
-       and li.deleted_at is null
-  ) then
+  select li.incident_id
+    into v_incident_id
+    from public.incident_items li
+   where li.account_id = OLD.account_id
+     and li.interaction_id = OLD.id
+     and li.deleted_at is null
+   limit 1;
+  if v_incident_id is null then
     if TG_OP = 'DELETE' then
       return OLD;
     end if;
@@ -345,12 +371,12 @@ begin
   end if;
 
   if TG_OP = 'DELETE' then
-    raise exception 'journal entry is cited by an incident and cannot be deleted'
+    raise exception 'journal entry is cited by incident %; unlink that citation before deleting', v_incident_id
       using errcode = 'check_violation';
   end if;
 
   if (to_jsonb(NEW) - v_allowed) is distinct from (to_jsonb(OLD) - v_allowed) then
-    raise exception 'journal entry is cited by an incident; testimony fields are frozen'
+    raise exception 'journal entry is cited by incident %; testimony fields are frozen while cited (unlink the citation first)', v_incident_id
       using errcode = 'check_violation';
   end if;
   return NEW;
@@ -364,6 +390,8 @@ create trigger interactions_reject_linked_evidence_mutation
 -- Trigger functions are not application RPCs. Remove Supabase's default
 -- EXECUTE grants explicitly; PostgreSQL trigger invocation does not need them.
 revoke all on function public._reject_incident_frozen_field_mutation()
+  from public, anon, authenticated, service_role;
+revoke all on function public._reject_incident_hard_delete()
   from public, anon, authenticated, service_role;
 revoke all on function public._incident_items_unlink_only()
   from public, anon, authenticated, service_role;

@@ -2486,6 +2486,23 @@ $$;
 ALTER FUNCTION "public"."_reject_incident_frozen_field_mutation"() OWNER TO "postgres";
 
 --
+-- Name: _reject_incident_hard_delete(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_reject_incident_hard_delete"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  raise exception 'incidents cannot be hard-deleted; dismiss (soft-delete) instead'
+    using errcode = 'check_violation';
+end;
+$$;
+
+
+ALTER FUNCTION "public"."_reject_incident_hard_delete"() OWNER TO "postgres";
+
+--
 -- Name: _reject_incident_item_delete(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -2537,24 +2554,20 @@ CREATE OR REPLACE FUNCTION "public"."_reject_linked_evidence_mutation"() RETURNS
     AS $$
 declare
   v_allowed constant text[] := array[
-    'account_id', 'actor', 'approval_ref', 'approved_by', 'area_id',
-    'attestation', 'author_type', 'confirmed_at', 'confirmed_by',
-    'correction_kind', 'corrects_id', 'created_at', 'deleted_by',
-    'deleted_reason', 'entry_type', 'external_ref', 'id', 'kind', 'logged_at',
-    'maintenance_request_id', 'party_label', 'references_interaction_id',
-    'rfc822_message_id', 'tenancy_id', 'thread_id', 'updated_at', 'vendor_id',
-    'work_order_id'
+    'attestation', 'confirmed_at', 'confirmed_by', 'updated_at'
   ];
+  v_incident_id uuid;
 begin
-  -- Cheap EXISTS probe on every interactions write, served by
+  -- Cheap probe on every interactions write, served by
   -- incident_items_live_interaction_probe_idx.
-  if not exists (
-    select 1
-      from public.incident_items li
-     where li.account_id = OLD.account_id
-       and li.interaction_id = OLD.id
-       and li.deleted_at is null
-  ) then
+  select li.incident_id
+    into v_incident_id
+    from public.incident_items li
+   where li.account_id = OLD.account_id
+     and li.interaction_id = OLD.id
+     and li.deleted_at is null
+   limit 1;
+  if v_incident_id is null then
     if TG_OP = 'DELETE' then
       return OLD;
     end if;
@@ -2562,12 +2575,12 @@ begin
   end if;
 
   if TG_OP = 'DELETE' then
-    raise exception 'journal entry is cited by an incident and cannot be deleted'
+    raise exception 'journal entry is cited by incident %; unlink that citation before deleting', v_incident_id
       using errcode = 'check_violation';
   end if;
 
   if (to_jsonb(NEW) - v_allowed) is distinct from (to_jsonb(OLD) - v_allowed) then
-    raise exception 'journal entry is cited by an incident; testimony fields are frozen'
+    raise exception 'journal entry is cited by incident %; testimony fields are frozen while cited (unlink the citation first)', v_incident_id
       using errcode = 'check_violation';
   end if;
   return NEW;
@@ -14160,6 +14173,13 @@ CREATE OR REPLACE TRIGGER "incidents_frozen_fields" BEFORE UPDATE ON "public"."i
 
 
 --
+-- Name: incidents incidents_no_delete; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "incidents_no_delete" BEFORE DELETE ON "public"."incidents" FOR EACH ROW EXECUTE FUNCTION "public"."_reject_incident_hard_delete"();
+
+
+--
 -- Name: inspection_capture_tokens inspection_capture_tokens_audit; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
@@ -16195,7 +16215,7 @@ ALTER TABLE "public"."incident_items" ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "incident_items_member_insert" ON "public"."incident_items" FOR INSERT WITH CHECK (("account_id" IN ( SELECT "m"."account_id"
    FROM "public"."account_members" "m"
-  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL)))));
+  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL) AND ("m"."role" = ANY (ARRAY['owner'::"text", 'manager'::"text"]))))));
 
 
 --
@@ -16213,9 +16233,9 @@ CREATE POLICY "incident_items_member_select" ON "public"."incident_items" FOR SE
 
 CREATE POLICY "incident_items_member_update" ON "public"."incident_items" FOR UPDATE USING (("account_id" IN ( SELECT "m"."account_id"
    FROM "public"."account_members" "m"
-  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL))))) WITH CHECK (("account_id" IN ( SELECT "m"."account_id"
+  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL) AND ("m"."role" = ANY (ARRAY['owner'::"text", 'manager'::"text"])))))) WITH CHECK (("account_id" IN ( SELECT "m"."account_id"
    FROM "public"."account_members" "m"
-  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL)))));
+  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL) AND ("m"."role" = ANY (ARRAY['owner'::"text", 'manager'::"text"]))))));
 
 
 --
@@ -16230,7 +16250,7 @@ ALTER TABLE "public"."incidents" ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "incidents_member_insert" ON "public"."incidents" FOR INSERT WITH CHECK (("account_id" IN ( SELECT "m"."account_id"
    FROM "public"."account_members" "m"
-  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL)))));
+  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL) AND ("m"."role" = ANY (ARRAY['owner'::"text", 'manager'::"text"]))))));
 
 
 --
@@ -16248,9 +16268,9 @@ CREATE POLICY "incidents_member_select" ON "public"."incidents" FOR SELECT USING
 
 CREATE POLICY "incidents_member_update" ON "public"."incidents" FOR UPDATE USING (("account_id" IN ( SELECT "m"."account_id"
    FROM "public"."account_members" "m"
-  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL))))) WITH CHECK (("account_id" IN ( SELECT "m"."account_id"
+  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL) AND ("m"."role" = ANY (ARRAY['owner'::"text", 'manager'::"text"])))))) WITH CHECK (("account_id" IN ( SELECT "m"."account_id"
    FROM "public"."account_members" "m"
-  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL)))));
+  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL) AND ("m"."role" = ANY (ARRAY['owner'::"text", 'manager'::"text"]))))));
 
 
 --
@@ -17149,6 +17169,13 @@ GRANT ALL ON FUNCTION "public"."_reject_completed_inspection_update"() TO "servi
 --
 
 REVOKE ALL ON FUNCTION "public"."_reject_incident_frozen_field_mutation"() FROM PUBLIC;
+
+
+--
+-- Name: FUNCTION "_reject_incident_hard_delete"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_reject_incident_hard_delete"() FROM PUBLIC;
 
 
 --
