@@ -492,7 +492,7 @@ async function main(): Promise<void> {
   };
 
   await check(
-    'party_id: returns the cast-bearing entry (resolved through the cast, not the slot)',
+    'party_id: returns the entry naming the person (cast leg OR row-slot leg)',
     async () => {
       const target = crypto.randomUUID();
       const withTarget = assertStatus(
@@ -525,18 +525,24 @@ async function main(): Promise<void> {
       const rows = await listBy(`?party_id=${target}&limit=100`);
       const ids = new Set(rows.map((r) => r.id));
       if (!ids.has(withTarget.id)) throw new Error('target entry missing from party_id filter');
-      // Every returned row must actually carry the target in its cast.
+      // No false positives: every returned row must name the target on one of
+      // the two legs the RPC matches — its cast, or its own party slot.
       for (const r of rows) {
-        if (!r.participants.some((p) => p.party_id === target)) {
+        const inCast = r.participants.some((p) => p.party_id === target);
+        const inSlot = r.party_id === target;
+        if (!inCast && !inSlot) {
           throw new Error(
-            `row ${r.id} matched party_id but its cast lacks the target: ${JSON.stringify(r.participants)}`,
+            `row ${r.id} matched party_id but names the target in neither its cast nor its slot: cast=${JSON.stringify(r.participants)} slot=${r.party_id}`,
           );
         }
       }
     },
   );
 
-  await check('party_id + party_type: narrows to the matching cast leg', async () => {
+  // party_type narrows whichever leg matched. Both fixtures here carry the
+  // person only in the cast (commBody's slot is party_type='unspecified' with
+  // no party_id), so this pins the cast-leg narrowing specifically.
+  await check('party_id + party_type: narrows to the matching leg (cast)', async () => {
     const shared = crypto.randomUUID(); // same uuid cast under two party_types
     const asTenant = assertStatus(
       await createInteraction(
@@ -648,6 +654,9 @@ async function main(): Promise<void> {
       // Three rows cast to one person, ALL sharing occurred_at, plus one later
       // row: the walk must rely on the (occurred_at, id) tie-break. A dup/skip
       // regression in list_interactions_for_party's keyset predicate fails here.
+      // Also the no-duplicates proof for the cast-OR-slot predicate
+      // (20260801000004): the OR is a filter inside one scan, not a join, so a
+      // row satisfying both legs is still emitted exactly once.
       const person = crypto.randomUUID();
       const mk = (body: string, when: string) =>
         createInteraction(
@@ -770,41 +779,13 @@ async function main(): Promise<void> {
     if (!byProperty.some((row) => row.id === created.id)) {
       throw new Error('property_id list filter omitted the interaction');
     }
+    // This fixture names the person in BOTH legs (the slot, plus the one-person
+    // cast Item C derives from it) — the OR predicate must still yield one row.
     const byPersonAndProperty = await listBy(
       `?party_id=${person}&property_id=${A.propertyId}&limit=100`,
     );
     if (byPersonAndProperty.length !== 1 || byPersonAndProperty[0]!.id !== created.id) {
       throw new Error('party_id + property_id SQL filter did not compose');
-    }
-
-    // Deployment compatibility: the schema migration lands before the API.
-    // Prove the previous 11-argument RPC remains callable while the new API
-    // uses the property-aware 12-argument overload.
-    const legacyRpc = await fetch(`${status.API_URL}/rest/v1/rpc/list_interactions_for_party`, {
-      method: 'POST',
-      headers: {
-        apikey: status.ANON_KEY,
-        authorization: `Bearer ${A.accessToken}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        p_account_id: A.accountId,
-        p_party_type: null,
-        p_party_id: person,
-        p_tenancy_id: null,
-        p_maintenance_request_id: null,
-        p_area_id: null,
-        p_direction: null,
-        p_latest_only: false,
-        p_before_occurred_at: null,
-        p_before_id: null,
-        p_limit: 100,
-      }),
-    });
-    if (!legacyRpc.ok) {
-      throw new Error(
-        `legacy party-filter RPC unavailable: ${legacyRpc.status} ${await legacyRpc.text()}`,
-      );
     }
   });
 
@@ -1022,14 +1003,15 @@ async function main(): Promise<void> {
   );
 
   await check(
-    'party_id + latest_only=true: the documented head caveat (corrected chain excluded)',
+    'party_id + latest_only=true: the castless correction head matches via its inherited slot',
     async () => {
       const person = crypto.randomUUID();
       const original = assertStatus(
         await createInteraction(
           commBody({
             party_type: 'tenant',
-            body: 'Original, cast names the person.',
+            party_id: person,
+            body: 'Original, cast and slot both name the person.',
             participants: [
               { role: 'sender', party_type: 'tenant', party_id: person, label: 'Person' },
             ],
@@ -1038,7 +1020,8 @@ async function main(): Promise<void> {
         201,
         'original',
       ) as InteractionRow;
-      // Amend it: the correction ROW carries no cast (the cast belongs to the root).
+      // Amend it: the correction ROW carries no cast (the cast belongs to the
+      // root) but DOES inherit the corrected row's party slot.
       const amend = assertStatus(
         await createInteraction({
           corrects_id: original.id,
@@ -1048,20 +1031,155 @@ async function main(): Promise<void> {
         201,
         'amend',
       ) as InteractionRow;
-
-      // Without latest_only: the root (which holds the cast) is found.
-      const full = await listBy(`?party_id=${person}&limit=100`);
-      if (!full.some((r) => r.id === original.id)) {
-        throw new Error('root entry (holds the cast) must be found without latest_only');
+      if (amend.participants.length !== 0) {
+        throw new Error(
+          `correction row should be castless, got ${JSON.stringify(amend.participants)}`,
+        );
       }
-      // With latest_only=true: the root is superseded (not head) and the head
-      // (the amend) is castless -> the whole chain drops out. This is the caveat.
+      if (amend.party_id !== person) throw new Error('amend did not inherit the party slot');
+
+      // Without latest_only both entries of the chain are returned.
+      const full = await listBy(`?party_id=${person}&limit=100`);
+      const fullIds = new Set(full.map((r) => r.id));
+      if (!fullIds.has(original.id))
+        throw new Error('root entry must be found without latest_only');
+      if (!fullIds.has(amend.id))
+        throw new Error('correction row must be found without latest_only');
+
+      // With latest_only=true the head is the castless amend: it now matches on
+      // the row-slot leg (20260801000004), so the chain no longer drops out.
+      // The root is still absent — excluded by latest_only (superseded), which
+      // is the only reason it should ever be missing here.
       const heads = await listBy(`?party_id=${person}&latest_only=true&limit=100`);
       const headIds = new Set(heads.map((r) => r.id));
+      if (!headIds.has(amend.id))
+        throw new Error('castless correction head should match party_id via its inherited slot');
       if (headIds.has(original.id))
         throw new Error('superseded root should not appear under latest_only');
-      if (headIds.has(amend.id))
-        throw new Error('castless correction head should not match party_id');
+    },
+  );
+
+  await check(
+    'party_id + latest_only=true RESIDUAL: a cast-only participant of a corrected entry does not match (documented caveat)',
+    async () => {
+      // The slot leg rescues a corrected chain only for the HEADLINE party.
+      // Someone named ONLY in the superseded row's cast (a cc, a witness, a
+      // group-message member) still drops out under latest_only, because the
+      // correction inherits the root's slot, which names someone else. Pinned
+      // so the contract caveat (route description, 20260801000004 header) and
+      // reality cannot drift apart; the fix is a chain-walking read model, not
+      // another predicate arm.
+      const headline = crypto.randomUUID();
+      const ccOnly = crypto.randomUUID();
+      const original = assertStatus(
+        await createInteraction(
+          commBody({
+            party_type: 'tenant',
+            party_id: headline,
+            body: 'Root: headline in slot+cast, second person in cast only.',
+            participants: [
+              { role: 'sender', party_type: 'tenant', party_id: headline, label: 'Headline' },
+              { role: 'cc', party_type: 'tenant', party_id: ccOnly, label: 'CC only' },
+            ],
+          }),
+        ),
+        201,
+        'root with two-person cast',
+      ) as InteractionRow;
+      const amend = assertStatus(
+        await createInteraction({
+          corrects_id: original.id,
+          correction_kind: 'amend',
+          body: 'Amended.',
+        }),
+        201,
+        'amend',
+      ) as InteractionRow;
+
+      // Full set: the cc-only person still finds the root (their evidence).
+      const full = await listBy(`?party_id=${ccOnly}&limit=100`);
+      if (!full.some((r) => r.id === original.id))
+        throw new Error('cc-only participant must find the root without latest_only');
+
+      // latest_only: the head matches the headline party but NOT the cc-only
+      // person — the residual exclusion this test pins.
+      const ccHeads = await listBy(`?party_id=${ccOnly}&latest_only=true&limit=100`);
+      if (ccHeads.some((r) => r.id === amend.id || r.id === original.id))
+        throw new Error(
+          'residual caveat no longer holds — cast-only participant matched under latest_only; update the route description, guide, and 20260801000004 header before changing this pin',
+        );
+      const headlineHeads = await listBy(`?party_id=${headline}&latest_only=true&limit=100`);
+      if (!headlineHeads.some((r) => r.id === amend.id))
+        throw new Error('headline party must still match the correction head');
+    },
+  );
+
+  await check('party_id: a party-carrying NOTE matches, and stays castless', async () => {
+    // Notes take the plain-insert branch by design (no wire cast to record), so
+    // the only thing that can match them is the row-slot leg.
+    const who = crypto.randomUUID();
+    const note = assertStatus(
+      await createInteraction({
+        kind: 'note',
+        occurred_at: '2026-04-02T09:00:00.000Z',
+        body: 'Spoke to the tenant about the boiler.',
+        party_type: 'tenant',
+        party_id: who,
+      }),
+      201,
+      'party-carrying note',
+    ) as InteractionRow;
+    if (note.participants.length !== 0) {
+      throw new Error(`note should stay castless, got ${JSON.stringify(note.participants)}`);
+    }
+    const rows = await listBy(`?party_id=${who}&limit=100`);
+    if (!rows.some((r) => r.id === note.id)) {
+      throw new Error('party-carrying note missing from the party_id filter');
+    }
+
+    // (c) party_type narrows the slot leg: the note is a tenant row.
+    const asVendor = await listBy(`?party_id=${who}&party_type=vendor&limit=100`);
+    if (asVendor.some((r) => r.id === note.id)) {
+      throw new Error('tenant-slot note must not match party_type=vendor');
+    }
+  });
+
+  await check(
+    'party_id: a classify that adds the who makes the correction head match',
+    async () => {
+      // The capture flow's real sequence: log the note first, name the person
+      // after. The classify row inherits nothing to match on except the slot it
+      // just filled, and it carries no cast of its own.
+      const who = crypto.randomUUID();
+      const note = assertStatus(
+        await createInteraction({
+          kind: 'note',
+          occurred_at: '2026-04-03T09:00:00.000Z',
+          body: 'Reported a cracked tile on the roof.',
+        }),
+        201,
+        'party-less note',
+      ) as InteractionRow;
+      const classified = assertStatus(
+        await createInteraction({
+          corrects_id: note.id,
+          correction_kind: 'classify',
+          party_type: 'tenant',
+          party_id: who,
+        }),
+        201,
+        'classify adds the who',
+      ) as InteractionRow;
+
+      const heads = await listBy(`?party_id=${who}&latest_only=true&limit=100`);
+      if (!heads.some((r) => r.id === classified.id)) {
+        throw new Error('classify head that named the person must match party_id');
+      }
+      // The party-less root never named anyone, so it must NOT match.
+      const full = await listBy(`?party_id=${who}&limit=100`);
+      if (full.some((r) => r.id === note.id)) {
+        throw new Error('the party-less root should not match party_id');
+      }
     },
   );
 

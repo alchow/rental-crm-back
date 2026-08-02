@@ -21,6 +21,9 @@
 //       amending/retracting a retracted head → 409; malformed correction
 //       bodies → 400.
 //   (F) Immutability holds: no PATCH/DELETE route exists on interactions.
+//   (F2) ...and it holds BELOW the route surface (20260801000003): a member
+//       JWT talking straight to PostgREST is denied UPDATE/DELETE (42501),
+//       and two of the route's party-shape 400s are DB checks (23514).
 //   (G) Cross-account corrects_id → 404, nothing created. Plus the two DB
 //       invariants behind the app checks: the partial unique index keeps
 //       chains linear even for a direct write (23505), and the composite
@@ -74,10 +77,20 @@ _resetJwksCacheForTests();
 const { _resetAdminClientForTests, getAdminClient } = await import('../src/admin/supabase-admin');
 _resetAdminClientForTests();
 const { buildApp } = await import('../src/app');
+const { createClient } = await import('@supabase/supabase-js');
 
 const app = buildApp();
 
 // --- helpers ----------------------------------------------------------------
+
+/** A member's REAL JWT straight at PostgREST: the raw-write path no route
+ *  schema can see, and the one 20260801000003 shuts. */
+function memberClient(token: string) {
+  return createClient(status.API_URL, status.ANON_KEY, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
+}
 
 interface ApiResp { status: number; body: unknown; headers: Record<string, string> }
 
@@ -645,6 +658,79 @@ async function main(): Promise<void> {
     if (d.status < 400) throw new Error(`DELETE must not exist; got ${d.status}`);
     const after = await snapRow(orig.id);
     if (JSON.stringify(after) !== JSON.stringify(beforeRow)) throw new Error('row changed');
+  });
+
+  // =========================================================================
+  // (F2) Immutability below the route surface (20260801000003)
+  //
+  // "No PATCH/DELETE route" only binds callers who go through the API. A
+  // member holds a real Supabase JWT and can talk to PostgREST directly, so
+  // append-only has to be a GRANT fact, not a routing fact. Two of the route's
+  // party-shape 400s get the same treatment: a direct insert (including via
+  // the authenticated-callable journal_with_participants RPC) must not be able
+  // to store a shape the API would have refused.
+  // =========================================================================
+
+  const memberSb = memberClient(A.accessToken);
+
+  await check('hardening: a member JWT cannot UPDATE a journal row (42501)', async () => {
+    const r = await memberSb
+      .from('interactions')
+      .update({ body: 'tampered' })
+      .eq('id', orig.id)
+      .select('id');
+    if (r.error?.code !== '42501') {
+      throw new Error(`expected 42501 permission denied, got ${JSON.stringify(r.error)}`);
+    }
+    const after = await snapRow(orig.id);
+    if (JSON.stringify(after) !== JSON.stringify(beforeRow)) throw new Error('row changed');
+  });
+
+  await check('hardening: a member JWT cannot DELETE a journal row (42501)', async () => {
+    const r = await memberSb.from('interactions').delete().eq('id', orig.id).select('id');
+    if (r.error?.code !== '42501') {
+      throw new Error(`expected 42501 permission denied, got ${JSON.stringify(r.error)}`);
+    }
+    const after = await snapRow(orig.id);
+    if (JSON.stringify(after) !== JSON.stringify(beforeRow)) throw new Error('row changed');
+  });
+
+  await check("hardening: a direct insert cannot give a communication party_type 'none' (23514)", async () => {
+    const r = await memberSb.from('interactions').insert({
+      account_id: A.accountId,
+      actor: `user:${A.userId}`,
+      kind: 'communication',
+      channel: 'email',
+      direction: 'inbound',
+      party_type: 'none',
+      occurred_at: '2026-03-20T09:00:00.000Z',
+    });
+    if (r.error?.code !== '23514') {
+      throw new Error(`expected 23514 check violation, got ${JSON.stringify(r.error)}`);
+    }
+    if (!r.error.message.includes('interactions_comm_party_named')) {
+      throw new Error(`expected interactions_comm_party_named, got ${r.error.message}`);
+    }
+  });
+
+  await check('hardening: a direct insert cannot give a note a party_id without a role (23514)', async () => {
+    const r = await memberSb.from('interactions').insert({
+      account_id: A.accountId,
+      actor: `user:${A.userId}`,
+      kind: 'note',
+      channel: 'note',
+      direction: 'none',
+      party_type: 'none',
+      party_id: crypto.randomUUID(),
+      occurred_at: '2026-03-20T09:05:00.000Z',
+      body: 'note naming a party it will not classify',
+    });
+    if (r.error?.code !== '23514') {
+      throw new Error(`expected 23514 check violation, got ${JSON.stringify(r.error)}`);
+    }
+    if (!r.error.message.includes('interactions_note_fields')) {
+      throw new Error(`expected interactions_note_fields, got ${r.error.message}`);
+    }
   });
 
   // =========================================================================

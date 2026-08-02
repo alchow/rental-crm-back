@@ -19,9 +19,12 @@
 //
 // The DB-level probes matter as much as the HTTP ones: the route schema is a
 // polite refusal, migration 20260801000002 is the enforcement layer. So every
-// freeze is asserted twice -- once through the API, once through a real member
-// JWT talking straight to PostgREST (and, for the no-hard-delete backstop,
-// through a privileged SQL connection that bypasses RLS entirely).
+// freeze is asserted twice -- once through the API, once below it. Which
+// "below" depends on the table: incidents still grants members DML, so its
+// freeze is probed with a real member JWT straight to PostgREST. interactions
+// does not (20260801000003 revoked member UPDATE/DELETE), so there the member
+// probe proves the denial and a privileged SQL connection -- which owns the
+// table and bypasses RLS -- proves the trigger behind it.
 // ----------------------------------------------------------------------------
 
 import { createHash } from 'node:crypto';
@@ -643,9 +646,17 @@ async function main(): Promise<void> {
   // ==========================================================================
   // UC11 -- a live citation freezes the cited journal entry; the freeze is
   // citation-scoped, so unlinking releases it.
+  //
+  // Two layers, asserted separately since 20260801000003:
+  //   - a member JWT has no UPDATE/DELETE grant on interactions at all, so the
+  //     journal is denied direct mutation before any trigger runs (42501);
+  //   - the freeze trigger itself is proven on the privileged SQL connection,
+  //     which owns the table and therefore still reaches the trigger. That is
+  //     the path a future admin/service-role writer would take, so the field
+  //     allowlist has to hold there.
   // ==========================================================================
   await check(
-    'UC11 linked-evidence freeze: probative fields lock while cited, release on unlink',
+    'UC11 linked-evidence freeze: member writes denied outright; trigger allowlist holds on the privileged path',
     async () => {
       const t = await newTenancy(A, 'freeze');
       const interactionId = await journal(
@@ -667,77 +678,90 @@ async function main(): Promise<void> {
       );
       const itemId = (cited.body as { id: string }).id;
 
-      // body is testimony the incident rests on -> frozen.
-      const frozenBody = await landlordSb
+      // Layer 1: the member credential cannot write the journal at all. This
+      // stops short of the freeze trigger -- the grant check comes first.
+      const memberTamper = await landlordSb
         .from('interactions')
         .update({ body: 'tampered evidence' })
         .eq('id', interactionId)
         .select('id');
       assert(
-        frozenBody.error?.code === '23514' &&
-          /cited by incident [0-9a-f-]{36}/.test(frozenBody.error.message),
-        `cited body UPDATE should be rejected naming the citing incident, got ${JSON.stringify(frozenBody.error)}`,
+        memberTamper.error?.code === '42501',
+        `a member JWT must be denied UPDATE on interactions, got ${JSON.stringify(memberTamper.error)}`,
       );
 
-      // confirmed_at/confirmed_by are workflow, not testimony -> still writable.
-      // (The table CHECK pairs the two, so they move together.)
-      const confirmedAt = new Date().toISOString();
-      const allowed = await landlordSb
-        .from('interactions')
-        .update({ confirmed_at: confirmedAt, confirmed_by: A.userId })
-        .eq('id', interactionId)
-        .select('confirmed_at, confirmed_by')
-        .single();
-      assert(
-        !allowed.error,
-        `confirmed_at UPDATE should be allowed: ${JSON.stringify(allowed.error)}`,
-      );
-      const confirmedRow = allowed.data as {
-        confirmed_at: string | null;
-        confirmed_by: string | null;
-      } | null;
-      assert(
-        confirmedRow?.confirmed_at !== null && confirmedRow?.confirmed_by === A.userId,
-        `confirm stamp did not apply: ${JSON.stringify(confirmedRow)}`,
-      );
+      // Layer 2: the freeze trigger, on the connection that still holds the
+      // grant. Same three assertions as before, one level down.
+      const pg = new PgClient({ connectionString: status.DB_URL });
+      await pg.connect();
+      try {
+        // body is testimony the incident rests on -> frozen, and the refusal
+        // names the citing incident so the caller can find and unlink it.
+        try {
+          await pg.query('update public.interactions set body = $1 where id = $2', [
+            'tampered evidence',
+            interactionId,
+          ]);
+          throw new Error('privileged UPDATE of cited body was NOT rejected');
+        } catch (error) {
+          const code = (error as { code?: string }).code;
+          const message = (error as { message?: string }).message ?? '';
+          assert(
+            code === '23514' && /cited by incident [0-9a-f-]{36}/.test(message),
+            `expected the freeze trigger naming the incident, got code=${String(code)} message=${message}`,
+          );
+        }
 
-      // Deleting cited evidence would hollow out the incident -> refused.
-      const deleteCited = await landlordSb
-        .from('interactions')
-        .delete()
-        .eq('id', interactionId)
-        .select('id');
-      assert(
-        deleteCited.error?.code === '23514',
-        `deleting cited evidence should be rejected, got ${JSON.stringify(deleteCited.error)}`,
-      );
+        // confirmed_at/confirmed_by are workflow, not testimony -> still
+        // writable. (The table CHECK pairs the two, so they move together.)
+        const allowed = await pg.query<{ confirmed_at: string | null; confirmed_by: string | null }>(
+          `update public.interactions
+              set confirmed_at = now(), confirmed_by = $1
+            where id = $2
+        returning confirmed_at, confirmed_by`,
+          [A.userId, interactionId],
+        );
+        const confirmedRow = allowed.rows[0];
+        assert(
+          confirmedRow?.confirmed_at !== null && confirmedRow?.confirmed_by === A.userId,
+          `confirm stamp did not apply: ${JSON.stringify(confirmedRow)}`,
+        );
 
-      // Unlink -> the freeze is citation-scoped, so the entry is writable again.
-      const unlink = await api(
-        'DELETE',
-        `/v1/accounts/${A.accountId}/incidents/${created.incidentId}/items/${itemId}`,
-        { token: A.token },
-      );
-      assert(
-        unlink.status === 204,
-        `unlink expected 204, got ${unlink.status} ${JSON.stringify(unlink.body)}`,
-      );
+        // Deleting cited evidence would hollow out the incident -> refused.
+        try {
+          await pg.query('delete from public.interactions where id = $1', [interactionId]);
+          throw new Error('privileged DELETE of cited evidence was NOT rejected');
+        } catch (error) {
+          const code = (error as { code?: string }).code;
+          assert(
+            code === '23514',
+            `deleting cited evidence should be rejected, got code=${String(code)}`,
+          );
+        }
 
-      const afterUnlink = await landlordSb
-        .from('interactions')
-        .update({ body: 'edited after the citation was withdrawn' })
-        .eq('id', interactionId)
-        .select('body')
-        .single();
-      assert(
-        !afterUnlink.error,
-        `body UPDATE after unlink should succeed: ${JSON.stringify(afterUnlink.error)}`,
-      );
-      assert(
-        (afterUnlink.data as { body: string } | null)?.body ===
-          'edited after the citation was withdrawn',
-        'post-unlink body edit did not apply',
-      );
+        // Unlink -> the freeze is citation-scoped, so the entry is writable
+        // again on the privileged path.
+        const unlink = await api(
+          'DELETE',
+          `/v1/accounts/${A.accountId}/incidents/${created.incidentId}/items/${itemId}`,
+          { token: A.token },
+        );
+        assert(
+          unlink.status === 204,
+          `unlink expected 204, got ${unlink.status} ${JSON.stringify(unlink.body)}`,
+        );
+
+        const afterUnlink = await pg.query<{ body: string }>(
+          'update public.interactions set body = $1 where id = $2 returning body',
+          ['edited after the citation was withdrawn', interactionId],
+        );
+        assert(
+          afterUnlink.rows[0]?.body === 'edited after the citation was withdrawn',
+          'post-unlink body edit did not apply',
+        );
+      } finally {
+        await pg.end();
+      }
     },
   );
 
