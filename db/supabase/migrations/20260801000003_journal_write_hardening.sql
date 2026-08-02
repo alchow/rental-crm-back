@@ -23,6 +23,33 @@
 revoke update, delete, truncate on public.interactions
   from public, anon, authenticated;
 
+-- Precheck: both constraints below validate every existing row at apply time.
+-- The operator apply path sweeps all pending migrations (supabase db push via
+-- scripts like apply-incidents-migration.sh), so this file must carry its own
+-- diagnostics: fail HERE with a message naming the cause rather than an opaque
+-- check_violation mid-ALTER. A nonzero count is evidence the direct-write
+-- bypass these constraints close was actually used -- investigate, don't
+-- delete.
+do $$
+declare
+  v_comm_none int;
+  v_bad_note  int;
+begin
+  select
+    count(*) filter (where kind = 'communication' and party_type = 'none'),
+    count(*) filter (where channel = 'note' and party_id is not null
+                     and party_type not in ('tenant', 'vendor', 'inspector', 'other'))
+    into v_comm_none, v_bad_note
+  from public.interactions;
+  if v_comm_none > 0 or v_bad_note > 0 then
+    raise exception using message = format(
+      'journal hardening precheck failed: %s communication row(s) with '
+      'party_type=''none'', %s note row(s) with a party_id but no concrete '
+      'role. These rows are evidence of a direct-write bypass (see header); '
+      'investigate before applying.', v_comm_none, v_bad_note);
+  end if;
+end $$;
+
 -- DB shadow for "party_type 'none' is reserved for kind='note'"
 -- (routes/interactions.ts returns 400). Until now any direct insert --
 -- including the authenticated-callable journal_with_participants RPC, which
