@@ -70,15 +70,17 @@ const ListQuery = z.object({
   /** Filter by counterparty attribution. party_type='unspecified' is the
    *  unresolved-sender queue: comm rows whose sender did not verify
    *  (sender_mismatch captures) waiting for a human classify. When party_id is
-   *  ALSO present, party_type narrows the matched CAST leg (a tenant vs. a
-   *  vendor participant), not the row slot. */
+   *  ALSO present, party_type narrows whichever leg matched — the cast leg by
+   *  participant party_type, the row-slot leg by the row's own party_type. */
   party_type: PartyType.optional(),
   direction: Direction.optional(),
-  /** Everything involving one person, resolved through the CAST
-   *  (interaction_participants), not the legacy single-slot party_id — so a
-   *  witnessed exchange or group message where the person is one of several
-   *  participants still matches. Keyset pagination stays correct: the person is
-   *  pruned by a SQL semi-join, never a materialized id set. */
+  /** Everything involving one person: a row matches when the CAST
+   *  (interaction_participants) names them OR the row's own party fields do —
+   *  so a witnessed exchange or group message where the person is one of
+   *  several participants still matches, and so do castless shapes like a
+   *  party-carrying note or a correction head that inherited the slot. Keyset
+   *  pagination stays correct: the person is pruned inside the SQL scan, never
+   *  by a materialized id set. */
   party_id: z.string().uuid().optional(),
   /** Filter to interactions scoped to one area (direct column on the row). */
   area_id: z.string().uuid().optional(),
@@ -125,15 +127,15 @@ const list = createRoute({
   description:
     'Chronological journal feed. Filters: tenancy_id, maintenance_request_id, ' +
     'area_id, property_id, direction, party_type, latest_only, and party_id. `party_id` ' +
-    'resolves the person through the CAST (interaction_participants), so a ' +
-    'group message or witnessed exchange in which they were one of several ' +
-    'participants still matches; combine it with party_type to narrow to that ' +
-    "person's tenant vs. vendor leg. HEADS CAVEAT: the cast belongs to the " +
-    'ROOT entry of a correction chain — a correction/retraction row carries no ' +
-    'cast of its own. So `party_id` combined with `latest_only=true` can EXCLUDE ' +
-    'a corrected communication whose current head is a castless correction row; ' +
-    'omit latest_only (the default full set) to see every entry that names the ' +
-    'person.',
+    'matches an entry whose CAST (interaction_participants) names the person OR ' +
+    'whose own party fields do, so a group message or witnessed exchange in ' +
+    'which they were one of several participants matches, and so do castless ' +
+    'entries such as a party-carrying note or a correction head that inherited ' +
+    'the party from the entry it corrects. Combine it with party_type to narrow ' +
+    "the matched leg to that person's tenant vs. vendor role. CAVEAT: with " +
+    'latest_only=true, a person named ONLY in a superseded entry\'s cast (a cc ' +
+    'on a corrected message) does not match — the correction head inherits just ' +
+    'the headline party. Omit latest_only for the complete involving-them set.',
   request: { params: AccountParam, query: ListQuery },
   responses: {
     200: { description: 'page', content: { 'application/json': { schema: ListResponse } } },
@@ -191,13 +193,14 @@ interactionsApp.openapi(list, async (c) => {
   } = c.req.valid('query');
   const sb = getSb(c);
 
-  // Both read paths converge on the same cast-load + map tail. When party_id
-  // is present the person is resolved through the CAST (interaction_participants)
-  // by a SQL function that reimplements this page's (occurred_at, id) keyset —
-  // the PostgREST view embed is ambiguous on interactions_with_chain (see
-  // 20260716000001). The rows it returns ARE interactions_with_chain rows, so
-  // there is no embedded key to strip. When party_id is absent the view query
-  // keeps its exact prior behaviour (row-slot party_type filter included).
+  // Both read paths converge on the same cast-load + map tail. When party_id is
+  // present the person is resolved by a SQL function that matches the CAST
+  // (interaction_participants) OR the row's own party slot (20260801000004) and
+  // reimplements this page's (occurred_at, id) keyset — the PostgREST view embed
+  // is ambiguous on interactions_with_chain (see 20260716000001). The rows it
+  // returns ARE interactions_with_chain rows, so there is no embedded key to
+  // strip. When party_id is absent the view query keeps its exact prior
+  // behaviour (row-slot party_type filter included).
   let items: Array<Record<string, unknown> & { id: string }>;
   let nextCursor: string | null;
 
@@ -481,14 +484,7 @@ interface CastParticipant {
 // Role follows direction, the same mapping the backfill (20260703000005) uses:
 // inbound → sender, outbound → recipient, anything else → attendee.
 //
-// FAST-FOLLOW (campaign-4 §12, BACKEND_ASKS): kind='note' rows never reach this
-// path — they take the plain-insert note branch above and write NO participant
-// cast. Since list_interactions_for_party resolves people through
-// interaction_participants (not the legacy row-slot party_id), a party-carrying
-// note will NOT yet match GET /interactions?party_id=<id>. Closing that gap
-// (derive an 'attendee' participant for party-carrying notes here, or teach the
-// RPC to union the note's row-slot party_id) is deferred; the FE tenant scope
-// filters client-side on party_id/participants so it does not depend on this.
+// A party-carrying note matches ?party_id= via the RPC's row-slot leg (20260801000004); notes still write no cast.
 function deriveSingleParticipant(
   body: {
     channel?: string;

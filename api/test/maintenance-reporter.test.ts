@@ -311,13 +311,16 @@ await check('GET, list, and PATCH derive the same immutable first report', async
   // The report link is an immutable fact, not a query over whichever live
   // inbound row happens to sort first today. Soft-deleting the journal row
   // must not cause a later follow-up to impersonate the original reporter.
+  //
+  // Service role, not the member JWT: 20260801000003 revoked member
+  // UPDATE/DELETE on interactions, so a member credential can no longer set up
+  // this fixture. The subject here is the reporter link, not who may write.
   const { createClient } = await import('@supabase/supabase-js');
-  const user = createClient(status.API_URL, status.ANON_KEY, {
-    global: { headers: { Authorization: `Bearer ${A.token}` } },
+  const privileged = createClient(status.API_URL, status.SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
   const now = new Date().toISOString();
-  const deleted = await user
+  const deleted = await privileged
     .from('interactions')
     .update({ deleted_at: now, updated_at: now })
     .eq('account_id', A.accountId)

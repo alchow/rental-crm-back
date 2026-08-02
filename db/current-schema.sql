@@ -7156,6 +7156,7 @@ CREATE TABLE IF NOT EXISTS "public"."interactions" (
     CONSTRAINT "interactions_attestation_kind_check" CHECK ((("kind" <> 'agent_event'::"text") OR ("attestation" IS NULL))),
     CONSTRAINT "interactions_author_type_check" CHECK (("author_type" = ANY (ARRAY['landlord'::"text", 'tenant'::"text", 'agent'::"text", 'system'::"text", 'vendor'::"text"]))),
     CONSTRAINT "interactions_channel_check" CHECK (("channel" = ANY (ARRAY['in_person'::"text", 'phone'::"text", 'voicemail'::"text", 'sms'::"text", 'email'::"text", 'letter'::"text", 'in_app'::"text", 'import'::"text", 'note'::"text", 'agent_event'::"text"]))),
+    CONSTRAINT "interactions_comm_party_named" CHECK ((("kind" <> 'communication'::"text") OR ("party_type" <> 'none'::"text"))),
     CONSTRAINT "interactions_confirm_pairing" CHECK ((("confirmed_by" IS NULL) = ("confirmed_at" IS NULL))),
     CONSTRAINT "interactions_correction_kind_check" CHECK (("correction_kind" = ANY (ARRAY['amend'::"text", 'retract'::"text", 'classify'::"text"]))),
     CONSTRAINT "interactions_correction_pairing" CHECK ((("corrects_id" IS NULL) = ("correction_kind" IS NULL))),
@@ -7167,7 +7168,7 @@ CREATE TABLE IF NOT EXISTS "public"."interactions" (
     CONSTRAINT "interactions_entry_type_pairing" CHECK ((("entry_type" IS NOT NULL) = ("kind" = 'agent_event'::"text"))),
     CONSTRAINT "interactions_external_ref_check" CHECK ((("length"("external_ref") >= 1) AND ("length"("external_ref") <= 255))),
     CONSTRAINT "interactions_kind_check" CHECK (("kind" = ANY (ARRAY['communication'::"text", 'note'::"text", 'agent_event'::"text"]))),
-    CONSTRAINT "interactions_note_fields" CHECK ((("channel" <> 'note'::"text") OR (("direction" = 'none'::"text") AND (("party_type" <> 'unspecified'::"text") OR ("party_id" IS NULL))))),
+    CONSTRAINT "interactions_note_fields" CHECK ((("channel" <> 'note'::"text") OR (("direction" = 'none'::"text") AND (("party_id" IS NULL) OR ("party_type" = ANY (ARRAY['tenant'::"text", 'vendor'::"text", 'inspector'::"text", 'other'::"text"])))))),
     CONSTRAINT "interactions_note_shape" CHECK ((("kind" = 'note'::"text") = ("channel" = 'note'::"text"))),
     CONSTRAINT "interactions_party_type_check" CHECK (("party_type" = ANY (ARRAY['tenant'::"text", 'vendor'::"text", 'inspector'::"text", 'other'::"text", 'none'::"text", 'unspecified'::"text"]))),
     CONSTRAINT "interactions_rfc822_message_id_len" CHECK ((("rfc822_message_id" IS NULL) OR (("length"("rfc822_message_id") >= 3) AND ("length"("rfc822_message_id") <= 998)))),
@@ -7655,47 +7656,6 @@ CREATE OR REPLACE VIEW "public"."interactions_with_chain" WITH ("security_invoke
 ALTER VIEW "public"."interactions_with_chain" OWNER TO "postgres";
 
 --
--- Name: list_interactions_for_party("uuid", "text", "uuid", "uuid", "uuid", "uuid", "text", boolean, timestamp with time zone, "uuid", integer); Type: FUNCTION; Schema: public; Owner: postgres
---
-
-CREATE OR REPLACE FUNCTION "public"."list_interactions_for_party"("p_account_id" "uuid", "p_party_type" "text", "p_party_id" "uuid", "p_tenancy_id" "uuid", "p_maintenance_request_id" "uuid", "p_area_id" "uuid", "p_direction" "text", "p_latest_only" boolean, "p_before_occurred_at" timestamp with time zone, "p_before_id" "uuid", "p_limit" integer) RETURNS SETOF "public"."interactions_with_chain"
-    LANGUAGE "sql" STABLE
-    SET "search_path" TO 'public'
-    AS $$
-  select v.*
-  from public.interactions_with_chain v
-  where v.account_id = p_account_id
-    and v.deleted_at is null
-    -- Resolve the person through the cast (semi-join), pruning parents that
-    -- carry no matching participant. party_type, when supplied, narrows the
-    -- SAME participant (a tenant leg vs. a vendor leg), never the row slot.
-    and exists (
-      select 1
-        from public.interaction_participants ip
-       where ip.account_id = v.account_id
-         and ip.interaction_id = v.id
-         and ip.party_id = p_party_id
-         and (p_party_type is null or ip.party_type = p_party_type)
-    )
-    and (p_tenancy_id is null or v.tenancy_id = p_tenancy_id)
-    and (p_maintenance_request_id is null or v.maintenance_request_id = p_maintenance_request_id)
-    and (p_area_id is null or v.area_id = p_area_id)
-    and (p_direction is null or v.direction = p_direction)
-    and (not coalesce(p_latest_only, false) or v.is_head)
-    -- Ascending (occurred_at, id) keyset: strictly after the last-seen row.
-    and (
-      p_before_occurred_at is null
-      or v.occurred_at > p_before_occurred_at
-      or (v.occurred_at = p_before_occurred_at and v.id > p_before_id)
-    )
-  order by v.occurred_at asc, v.id asc
-  limit p_limit;
-$$;
-
-
-ALTER FUNCTION "public"."list_interactions_for_party"("p_account_id" "uuid", "p_party_type" "text", "p_party_id" "uuid", "p_tenancy_id" "uuid", "p_maintenance_request_id" "uuid", "p_area_id" "uuid", "p_direction" "text", "p_latest_only" boolean, "p_before_occurred_at" timestamp with time zone, "p_before_id" "uuid", "p_limit" integer) OWNER TO "postgres";
-
---
 -- Name: list_interactions_for_party("uuid", "text", "uuid", "uuid", "uuid", "uuid", "uuid", "text", boolean, timestamp with time zone, "uuid", integer); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -7707,13 +7667,19 @@ CREATE OR REPLACE FUNCTION "public"."list_interactions_for_party"("p_account_id"
   from public.interactions_with_chain v
   where v.account_id = p_account_id
     and v.deleted_at is null
-    and exists (
-      select 1
-        from public.interaction_participants ip
-       where ip.account_id = v.account_id
-         and ip.interaction_id = v.id
-         and ip.party_id = p_party_id
-         and (p_party_type is null or ip.party_type = p_party_type)
+    and (
+      exists (
+        select 1
+          from public.interaction_participants ip
+         where ip.account_id = v.account_id
+           and ip.interaction_id = v.id
+           and ip.party_id = p_party_id
+           and (p_party_type is null or ip.party_type = p_party_type)
+      )
+      or (
+        v.party_id = p_party_id
+        and (p_party_type is null or v.party_type = p_party_type)
+      )
     )
     and (p_tenancy_id is null or v.tenancy_id = p_tenancy_id)
     and (p_maintenance_request_id is null or v.maintenance_request_id = p_maintenance_request_id)
@@ -17639,8 +17605,8 @@ GRANT ALL ON FUNCTION "public"."is_approver_member"("p_account_id" "uuid", "p_us
 -- Name: TABLE "interactions"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON TABLE "public"."interactions" TO "anon";
-GRANT ALL ON TABLE "public"."interactions" TO "authenticated";
+GRANT SELECT,INSERT,REFERENCES,TRIGGER,MAINTAIN ON TABLE "public"."interactions" TO "anon";
+GRANT SELECT,INSERT,REFERENCES,TRIGGER,MAINTAIN ON TABLE "public"."interactions" TO "authenticated";
 GRANT ALL ON TABLE "public"."interactions" TO "service_role";
 
 
@@ -17694,15 +17660,6 @@ GRANT ALL ON TABLE "public"."areas" TO "service_role";
 GRANT ALL ON TABLE "public"."interactions_with_chain" TO "anon";
 GRANT ALL ON TABLE "public"."interactions_with_chain" TO "authenticated";
 GRANT ALL ON TABLE "public"."interactions_with_chain" TO "service_role";
-
-
---
--- Name: FUNCTION "list_interactions_for_party"("p_account_id" "uuid", "p_party_type" "text", "p_party_id" "uuid", "p_tenancy_id" "uuid", "p_maintenance_request_id" "uuid", "p_area_id" "uuid", "p_direction" "text", "p_latest_only" boolean, "p_before_occurred_at" timestamp with time zone, "p_before_id" "uuid", "p_limit" integer); Type: ACL; Schema: public; Owner: postgres
---
-
-REVOKE ALL ON FUNCTION "public"."list_interactions_for_party"("p_account_id" "uuid", "p_party_type" "text", "p_party_id" "uuid", "p_tenancy_id" "uuid", "p_maintenance_request_id" "uuid", "p_area_id" "uuid", "p_direction" "text", "p_latest_only" boolean, "p_before_occurred_at" timestamp with time zone, "p_before_id" "uuid", "p_limit" integer) FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."list_interactions_for_party"("p_account_id" "uuid", "p_party_type" "text", "p_party_id" "uuid", "p_tenancy_id" "uuid", "p_maintenance_request_id" "uuid", "p_area_id" "uuid", "p_direction" "text", "p_latest_only" boolean, "p_before_occurred_at" timestamp with time zone, "p_before_id" "uuid", "p_limit" integer) TO "authenticated";
-GRANT ALL ON FUNCTION "public"."list_interactions_for_party"("p_account_id" "uuid", "p_party_type" "text", "p_party_id" "uuid", "p_tenancy_id" "uuid", "p_maintenance_request_id" "uuid", "p_area_id" "uuid", "p_direction" "text", "p_latest_only" boolean, "p_before_occurred_at" timestamp with time zone, "p_before_id" "uuid", "p_limit" integer) TO "service_role";
 
 
 --
