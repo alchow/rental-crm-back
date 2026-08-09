@@ -4,42 +4,11 @@ import { getAdminClient } from '../supabase-admin';
 import { ApiError } from '../../routes/_lib/error';
 import { recordHeicRenditionFailure, recordHeicRenditionSuccess } from '../heic-capability';
 
-// ============================================================================
-// Attachment storage helpers (admin-side, service-role).
-// ============================================================================
-//
-// Why admin-side: Supabase Storage with our RLS policies grants SELECT to
-// account members (member-read) but NOT INSERT / UPDATE / DELETE. All
-// writes route through this module so that:
-//
-//   (1) the content hash is computed SERVER-SIDE from the bytes we actually
-//       store (a client-supplied hash is worthless for tamper evidence);
-//   (2) the path is server-constructed; submitters never get to choose
-//       which account / entity their file lands under;
-//   (3) ordinary attachment paths are content-addressed. Document staging
-//       paths also include a service-authored receipt id, so cleanup of one
-//       abandoned upload cannot race another upload of identical bytes.
-//
-// HEIC handling (Phase 9):
-//
-// iPhones shoot HEIC by default. A HEIC stored as-is renders as a black
-// placeholder in pdfkit -- so the inspection report PDF (the single most
-// probative artifact in a habitability dispute) silently loses the
-// photo. We can't strip HEIC because that destroys evidence. So at upload
-// we keep BOTH:
-//
-//   * the original HEIC bytes (hashed, stored, attachments row #1)
-//   * a derived JPEG (hashed, stored, attachments row #2 with
-//     derived_from = #1)
-//
-// The derivation is server-side and recorded in the DB, so chain of
-// custody for the JPEG is explicit: "this JPEG was computed from that
-// HEIC at upload by the server, no human in the loop".
-//
-// Reads also route through the API (a tiny proxy below) so we can force
-// Content-Disposition: attachment + a safe Content-Type. Serving an
-// uploaded HTML / SVG inline from the app origin would be stored-XSS;
-// proxying with explicit headers removes that path.
+// Admin-only storage boundary. Hash bytes and construct paths server-side;
+// clients never choose evidence identity or scope. HEIC uploads preserve the
+// original and record a derived JPEG for rendering, maintaining explicit chain
+// of custody. Reads remain API-proxied to force download disposition and safe
+// content types, preventing uploaded HTML/SVG from executing inline.
 
 export const BUCKET = 'attachments';
 export const MAX_BYTES = 20 * 1024 * 1024; // 20 MiB
@@ -413,19 +382,10 @@ export async function probeStoredHeicRendition(bytes: Uint8Array): Promise<void>
 }
 
 /**
- * Validates inputs, hashes server-side, uploads the bytes to private
- * storage, and -- if the input is HEIC -- transcodes a JPEG derivative and
- * uploads that too. Does NOT touch the attachments DB table; callers are
- * responsible for the row INSERT (either directly or via a SECURITY
- * DEFINER RPC like submit_intake_with_attachment).
- *
- * Two-step separation makes the intake path atomic: the caller computes
- * paths via this helper, calls the RPC (one txn for request + interaction
- * + attachment + derivative rows), and only THEN uploads the bytes. An
- * RPC failure leaves zero rows AND zero storage objects in a final state
- * that needs cleanup; a bytes-upload-success-rpc-failure path leaves
- * orphan objects, which a future cron can prune by storage_path ∉
- * attachments.
+ * Validate, hash, and upload private bytes plus an optional HEIC-derived JPEG;
+ * callers then create attachment rows. Intake uploads first so committed rows
+ * always reference available blobs. An RPC failure may leave unreferenced
+ * objects for the storage janitor.
  */
 export async function processAndStoreBytes(
   accountId: string,

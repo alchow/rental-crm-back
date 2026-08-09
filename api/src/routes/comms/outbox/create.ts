@@ -105,7 +105,7 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
       }
     }
 
-    // Explicit party intent (persona routing v2 PR 3): to_party / cc_parties
+    // Explicit party intent: to_party / cc_parties
     // let a bare-send caller state the party it already knows instead of
     // making core re-derive it from the address. Same shape gate as
     // cc_addresses — bare email only — plus the presence coupling the DB
@@ -140,30 +140,11 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
       });
     }
 
-    // HARD GATE (product decision 2026-07-17; extended to thread legs by W1,
-    // 2026-07-18): NO CONVERSATIONAL email without branding. A conversational
-    // email send — bare (thread-less) OR a thread leg — is rendered From the
-    // account persona / minted under the account's branded subdomain; when
-    // branding is incomplete the transport falls back to the platform noreply@,
-    // whose replies are dropped, black-holing the reply on the one surface
-    // built to carry it. Refuse to mint the intent instead, with a stable
-    // message the frontend keys on (same exact-string pattern as the premium
-    // subdomain reason). Engages only when the platform parent domain is
-    // configured — without it the branding feature does not exist and blocking
-    // would brick email, not nudge setup.
-    //
-    // Deliberate admin-client bypass (this route is JWT-bearing only; core's
-    // system tier writes comm_outbox through the admin client, never through
-    // here, so those sends never see this gate — by design):
-    //   - persona-ack: SAFE — it only ever mints for an account that already
-    //     resolves a persona (i.e. a branded account), so it cannot emit an
-    //     unbranded conversational send in the first place.
-    //   - inspection capture_renewal (api/src/admin/inspection-capture.ts:312)
-    //     is DELIBERATELY allowed through unbranded: it is a no-reply
-    //     transactional LINK email, not a conversation, so the noreply
-    //     fallback is the intended reply path, not a black hole.
-    // The honest invariant this route enforces is therefore "no CONVERSATIONAL
-    // email without branding" — transactional system link mail is out of scope.
+    // INVARIANT: Refuse conversational email when platform branding exists but
+    // the account is incomplete; a noreply fallback would black-hole replies.
+    // Use the stable error message expected by the frontend. System-authored
+    // transactional link mail bypasses this JWT route by design; persona acks
+    // already require a resolved persona.
     if (body.channel === 'email') {
       const parent = loadEnv().EMAIL_PLATFORM_PARENT_DOMAIN;
       if (parent !== null) {
@@ -457,10 +438,8 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
         participant = part;
       }
 
-      // Relay demoted to notification (persona routing v2 PR 7): an email
-      // relay leg addressed to a landlord_user participant is a NOTIFICATION
-      // of mail the visible-Cc surface already carries, so its recipient comes
-      // from the account's AUTHORITATIVE owner/manager email — not the thread
+      // A relay addressed to a landlord_user is a notification: its recipient
+      // comes from the account's AUTHORITATIVE owner/manager email, not the thread
       // binding, which is minted from channel_identities at thread creation
       // and once froze the TENANT's address as the landlord leg (a bad claim
       // relayed the tenant's own message back to them). The binding/address
@@ -636,27 +615,12 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
         }
       }
 
-      // cc_relayed delivery shape (PRODUCT DECISION 2026-07-18; contract doc
-      // "The cc_relayed delivery shape"): a relay leg that DELIVERS a
-      // landlord's persona reply — the source journal row is the capture cc
-      // arm's landlord-authored outbound (actor 'system:comm-persona-cc') —
-      // to a tenant/vendor carries the landlord's AUTHORITATIVE email as a
-      // visible Cc, derived here server-side (the transport stays thin and a
-      // thread leg still accepts no caller Cc). Every delivery then REBUILDS
-      // the group thread: the counterparty's next reply-all includes the
-      // landlord directly (self-healing topology, converging on the
-      // visible-CC model), and the landlord's copy doubles as a delivery
-      // receipt. Resolution reuses resolve_relay_landlord_recipient
-      // (authoritative owner/manager email; sender-cast address fallback).
-      // Its already_delivered verdict is deliberately IGNORED: the landlord
-      // is the AUTHOR of this mail — their address in the source cast is the
-      // sender leg, not evidence of a delivered copy, and the Cc is a
-      // deliberate receipt. No loop: the counterparty's reply-all carries
-      // the landlord on To/Cc, so its persona capture splits to cc_journaled
-      // (relay nothing). Best-effort by design: an unresolvable Cc never
-      // blocks the delivery (the black hole is the failure mode this arm
-      // exists to prevent); the opt-out trigger scrubs a registered Cc at
-      // INSERT and the snapshot trigger freezes whatever survives.
+      // DATA FLOW: A cc_relayed delivery to a tenant/vendor adds the author's
+      // authoritative landlord email as a server-derived visible Cc. This
+      // rebuilds reply-all and gives the landlord a delivery receipt. Ignore
+      // already_delivered because the source cast names the landlord as sender,
+      // not recipient. Missing Cc data never blocks delivery; DB triggers scrub
+      // opt-outs and freeze the surviving snapshot. See persona-email-contract.md.
       if (
         body.channel === 'email' &&
         body.thread_id !== undefined &&
@@ -713,30 +677,11 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
         }
       }
 
-      // Matched relay group rebuild (the mirror of the cc_relayed delivery
-      // shape above): a relay leg that DELIVERS a tenant/vendor-authored inbound
-      // to the LANDLORD notification leg carries the AUTHOR's real address as a
-      // visible Cc, derived here server-side. This makes the tenant->landlord
-      // direction reply-all capable, matching the landlord->tenant direction and
-      // the original inspection welcome (which already sends To: tenant,
-      // Cc: landlord). Without it the relay is a single-recipient notification,
-      // so the landlord can only reply to the persona and the system must relay
-      // every hop one-by-one; with the author on Cc the landlord's next
-      // reply-all reaches the tenant directly and the conversation is a
-      // self-sustaining group thread. The author address is the source inbound's
-      // sender-cast address, which capture froze from the From. The
-      // 'unverified' (forged-From) attestation tier is EXCLUDED — a spoofed
-      // address must never land on the landlord's visible Cc / reply-all target
-      // — so this only Cc's an authenticated ('provider_verified') or
-      // human-vouched ('attested') author. Core enforces this here rather than
-      // trusting the transport's "relay only on matched" convention. No loop:
-      // the landlord's reply-all carries the tenant on To/Cc, so its persona
-      // capture splits to cc_journaled (relay nothing); and a tenant reply-all
-      // that already carries the landlord is refused upstream by the
-      // isLandlordEmailRelay already_delivered 409. Best-effort by design: an
-      // unresolvable/malformed author address is DROPPED, never blocks the
-      // relay; the opt-out trigger scrubs a registered Cc at INSERT and the
-      // snapshot trigger freezes whatever survives.
+      // DATA FLOW: A matched tenant/vendor relay to the landlord adds the
+      // author's frozen address as a visible Cc, rebuilding reply-all in the
+      // opposite direction. SECURITY: Exclude unverified authors so a forged
+      // From never becomes a reply target. Missing/malformed Cc data never
+      // blocks delivery; DB triggers scrub opt-outs and freeze the snapshot.
       if (isLandlordEmailRelay) {
         const { data: relaySource, error: relSrcErr } = await sb
           .from('interactions')
@@ -797,7 +742,7 @@ export function registerOutboxCreateRoute(app: CommsApp): void {
       }
     }
 
-    // Persona routing v2 PR 3: verify the explicit party intent BEFORE the
+    // Verify explicit party intent BEFORE the
     // insert, mapping each hint to a stable, field-scoped error. The DB
     // snapshot trigger re-verifies with the same predicate as an independent
     // backstop — this pre-check exists for the specific status codes.

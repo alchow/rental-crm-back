@@ -1,41 +1,16 @@
 #!/usr/bin/env bash
-# ============================================================================
-# Apply the auto-charge default-ON migration
-# (20260801000001_auto_charge_default_on) and verify it landed. Modelled on
-# scripts/apply-auto-charge-migration.sh.
-#
-# NOTHING IN THIS REPO RUNS THIS FOR YOU. Migrations are not auto-applied on
-# deploy; an operator runs this deliberately, in a regular terminal
-# (Terminal.app / iTerm), because it asks confirmation questions a one-shot
-# console cannot answer.
+# Apply and verify 20260801000001_auto_charge_default_on. This interactive
+# script is the operator action; deploys do not apply migrations automatically.
 #
 #   bash scripts/apply-auto-charge-default-on-migration.sh local        # local stack
 #   bash scripts/apply-auto-charge-default-on-migration.sh prod         # PROD (pooler + confirm)
 #   bash scripts/apply-auto-charge-default-on-migration.sh verify local # verify only
 #   bash scripts/apply-auto-charge-default-on-migration.sh verify prod
 #
-# WHAT IT CHANGES (ADR-0011 amendment, 2026-08-01)
-#   1. accounts.auto_charge_enabled DEFAULT false -> true (catalog only).
-#   2. One-shot backfill of live accounts still holding the false default.
-#   3. A rewritten column comment.
-#
-# WHY THE BACKFILL IS SAFE
-# The generator only mints a charge where a LIVE rent schedule covers the
-# period, so flipping the flag on an account with no schedules bills nothing.
-# At the time this was written, every account carrying the false default had
-# ZERO live rent schedules, and both accounts that DO have schedules were
-# already flag-on. Re-verify with the fleet snapshot this script prints BEFORE
-# you confirm the apply — if the "flag_off_with_schedules" count is not 0, stop
-# and talk to those landlords first: those accounts would start billing on the
-# next 08:00 UTC generator run.
-#
-# ORDERING: this migration is independent of the API code. The running app
-# reads and writes the same column either way, so schema-first (the usual
-# order here) is fine.
-#
-# `supabase db push` applies EVERY pending migration in order, not just this
-# one — the script prints the pending set and makes you confirm it first.
-# ============================================================================
+# SAFETY: The migration changes the default to true and backfills false rows.
+# Confirm the printed flag_off_with_schedules count is zero; otherwise stop and
+# coordinate before enabling billing. `db push` applies every pending migration,
+# so inspect the full set before confirming.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

@@ -86,9 +86,8 @@ const CreateNoticeBody = z
   })
   .openapi('CreateNoticeBody');
 
-// notice_type joined the patchable set with notice_class (frontend
-// BACKEND_ASKS #25): a typo in a string that renders verbatim into a court
-// PDF needs a correction path WHILE the notice is free-floating. Once it
+// A typo in notice_type or notice_class needs a correction path while the
+// notice is free-floating because it renders into court-facing PDFs. Once it
 // anchors a rent schedule the whole PATCH is refused 409 (pre-check below +
 // DB trigger backstop), so the correction window closes exactly when the
 // record becomes evidence.

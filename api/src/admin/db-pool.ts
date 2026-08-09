@@ -14,8 +14,8 @@ import { ApiError } from '../routes/_lib/error';
 //
 // Connects with SUPABASE_DB_URL (the `postgres` role). The executor issues
 // `SET LOCAL role = service_role` per-transaction so its writes BYPASS RLS
-// while auth.uid() stays NULL -- which is exactly what lets `audit.actor` win
-// attribution (Phase 4 actor-integrity rule). Lives in src/admin/ alongside
+// while auth.uid() stays NULL -- which lets `audit.actor` win attribution.
+// Lives in src/admin/ alongside
 // the other privileged surfaces; nothing outside src/admin/ imports it.
 
 let pool: Pool | null = null;

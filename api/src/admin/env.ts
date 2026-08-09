@@ -4,7 +4,7 @@ import { z } from 'zod';
 // so this module is quarantined to api/src/admin/. Importing this from
 // outside src/admin/ is a security incident, enforced by:
 //   1. scripts/lint-service-role.sh (grep gate in CI)
-//   2. (phase 4) an ESLint rule forbidding cross-boundary import of the
+//   2. an ESLint rule forbidding cross-boundary import of the
 //      admin Supabase client and its type.
 
 const AdminEnvSchema = z.object({

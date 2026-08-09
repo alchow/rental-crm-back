@@ -25,30 +25,12 @@ import {
   type RegionEntityMapping,
 } from '../admin/import-catalog';
 
-// ============================================================================
-// Onboarding import — upload an arbitrary Excel/CSV, recognize it, map it to
-// our schema via an interactive LLM-assisted flow, PREVIEW the result, and
-// COMMIT it. The LLM only proposes; the deterministic executor writes.
-//
-// Pipeline / status machine:
-//   POST   /imports                      multipart -> parse, recognize, suggest
-//   GET    /imports                      list sessions
-//   GET    /imports/{sessionId}          one session
-//   PATCH  /imports/{sessionId}/mapping  confirm/override column->field mapping
-//   PATCH  /imports/{sessionId}/parents  resolve required-parent ambiguity
-//   POST   /imports/{sessionId}/chat     LLM-assisted mapping refinement
-//   GET    /imports/{sessionId}/rows     parsed rows (raw cell values)
-//   PATCH  /imports/{sessionId}/rows     include/exclude rows
-//   POST   /imports/{sessionId}/preview  dry-run (rolled back) -> preview_summary
-//   POST   /imports/{sessionId}/confirm  commit (409 if blockers remain)
-//   DELETE /imports/{sessionId}          soft-delete the session
-//
-// Ordinary session/row reads + mapping/parent/exclusion writes go through the
-// user client under RLS. Only two operations are privileged and routed through
-// admin helpers: archiving the source file (service-role storage) and the
-// executor's transactional preview/commit (raw pg). Privacy: the LLM only ever
-// receives column names + <=5 sample values per column — never full row data.
-// ============================================================================
+// Import data flow: upload -> recognize/map -> preview in a rolled-back
+// transaction -> confirm and commit. The LLM proposes mappings; only the
+// deterministic executor writes. Session and row operations use caller RLS;
+// admin helpers are limited to source-file storage and transactional execution.
+// PRIVACY: Recognition receives column names and at most five sample values per
+// column, never full rows.
 
 // ----- schemas ---------------------------------------------------------------
 
@@ -464,7 +446,7 @@ function chunk<T>(arr: T[], size: number): T[][] {
 }
 
 /** Mutating session operations are meaningless while the background
- *  recognition job is still writing (Phase 2.2): mapping would be clobbered
+ *  recognition job is still writing: mapping would be clobbered
  *  by the job's own mapping write, previews would see half-persisted rows.
  *  Reads stay open; mutations 409 until the job reaches a terminal status. */
 function assertNotParsing(session: Record<string, unknown>): void {
@@ -545,12 +527,9 @@ importsApp.openapi(upload, async (c) => {
     throw new ApiError(500, 'internal_error', msg);
   }
 
-  // 3-5 moved to a background job (Phase 2.2): parse + LLM recognition +
-  //    row persistence ran in-request before, which meant minutes-long
-  //    requests (Opus, effort high), proxy timeouts, and doubled LLM spend
-  //    on client retries. The handler returns the 'parsing' session NOW and
-  //    the client polls GET until the status machine reaches
-  //    awaiting_mapping / no_importable_data / failed.
+  // DATA FLOW: return the 'parsing' session immediately, then run parsing,
+  // LLM recognition, and row persistence in the background. The client polls
+  // GET until status reaches awaiting_mapping, no_importable_data, or failed.
   //
   //    The job runs with a client bound to the CALLER'S access token,
   //    captured here: RLS still applies to every row/session write and the

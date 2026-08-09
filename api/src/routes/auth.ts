@@ -11,9 +11,8 @@ import { getLogger } from '../log';
 // underlying supabase-js calls and the atomic account-creation RPC are
 // invisible to them.
 //
-// Phase 11: typed via @hono/zod-openapi so the routes appear in
-// openapi.json and the generated SDK -- "swappable front-end" is only
-// real if the auth surface is in the spec too.
+// CONTRACT: Keep auth routes in OpenAPI so clients can use the generated SDK
+// without depending directly on supabase-js.
 
 const Session = z
   .object({
@@ -204,9 +203,9 @@ auth.openapi(refreshRoute, async (c) => {
   // MANY sessions: the agent transport refreshes one session per granted
   // account, and those land on the same tick because they were minted
   // together at agent boot — under the shared client every account received
-  // the same winner's session, so all cross-account calls 404'd under RLS
-  // (prod incident 2026-07-17). Stateless REST per request has no shared
-  // client state to collapse on — same posture as the logout handler below.
+  // the same winner's session, so those requests 404'd under RLS. Stateless
+  // REST per request has no shared client state to
+  // collapse on — the same posture as the logout handler below.
   const body = c.req.valid('json');
   const env = loadEnv();
   const url = `${env.SUPABASE_URL.replace(/\/+$/, '')}/auth/v1/token?grant_type=refresh_token`;

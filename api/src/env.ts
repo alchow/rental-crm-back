@@ -3,8 +3,8 @@ import { z } from 'zod';
 // Access tokens are verified via Supabase's asymmetric signing keys (ES256)
 // served at the project's JWKS endpoint — not the HS256 shared secret. The
 // JWKS URL, issuer, and audience are derived from SUPABASE_URL by default,
-// but may be overridden explicitly (e.g. for self-hosted deployments or
-// test fixtures). See api/src/middleware/auth.ts (added in phase 4).
+// but may be overridden explicitly for self-hosted deployments or tests.
+// See api/src/middleware/auth.ts.
 
 const RawEnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),

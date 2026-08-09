@@ -1,15 +1,10 @@
 // ----------------------------------------------------------------------------
-// Tenancy start_date correction path (usability finding C3).
-//
-// start_date was immutable after creation, which made a mis-entered move-in
-// date permanent corruption in an evidence-grade record. The PATCH now
-// accepts start_date under guards; these tests pin every guard:
-//
-//   * money-free tenancy: correction succeeds and persists.
-//   * any non-voided charge OR payment: 409 tenancy_has_money.
-//   * voiding the money row re-opens the correction path.
-//   * a future start_date requires status='upcoming' in the same PATCH.
-//   * start_date must not pass the effective end_date.
+// Tenancy start_date correction guards:
+// - A money-free tenancy can be corrected.
+// - Any active charge or payment returns tenancy_has_money.
+// - Voiding all money rows permits correction again.
+// - A future start requires status='upcoming' in the same PATCH.
+// - start_date cannot pass the effective end_date.
 //   * PATCHes without start_date are untouched (regression).
 //   * a no-op correction (same value) skips the money guard.
 //

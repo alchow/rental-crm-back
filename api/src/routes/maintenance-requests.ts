@@ -8,7 +8,7 @@ import { parseCsvEnum } from './_lib/csv-enum';
 
 // Maintenance requests come from two sources:
 //   * landlord-initiated (POST below; opened_by = the JWT's user_id)
-//   * tenant intake     (Phase 7 admin path; opened_by = null,
+//   * tenant intake     (public admin-quarantined path; opened_by = null,
 //                        intake_token = 'tenant:<token_id>')
 //
 // Status transitions are SERVER-ENFORCED. A bare PATCH that tries to jump

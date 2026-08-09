@@ -82,7 +82,7 @@ export async function importCapability(): Promise<ImportCapability> {
 }
 
 // ----------------------------------------------------------------------------
-// Boot recovery (Phase 2.2): recognition runs as an in-process job that does
+// Boot recovery: recognition runs as an in-process job that does
 // not survive a restart. A session still in 'parsing' at boot can never
 // finish -- mark it failed with an actionable message. (v2 option: re-run
 // recognition from the archived source_path instead of failing.) Must never

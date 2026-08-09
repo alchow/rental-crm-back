@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# ============================================================================
-# Apply the note-party migration (20260717000001_note_party) and verify it
-# landed. Modelled on scripts/apply-rent-change-migration.sh: NON-INTERACTIVE,
-# `prod` alone is a DRY RUN that prints the pending set, and applying requires
-# an explicit second argument.
+# Apply and verify 20260717000001_note_party. `prod` is a dry run; production
+# apply requires `prod confirm`.
 #
 #   bash scripts/apply-note-party-migration.sh local          # local stack (applies)
 #   bash scripts/apply-note-party-migration.sh prod           # DRY RUN: list pending, verify nothing
@@ -11,30 +8,10 @@
 #   bash scripts/apply-note-party-migration.sh verify local   # verify only, no apply
 #   bash scripts/apply-note-party-migration.sh verify prod
 #
-# Prod credentials: SUPABASE_DB_URL_PROD from the environment, else read from
-# .env.local (gitignored). The URL is NEVER echoed — safe for a logged console.
-# This is the POOLER URL that survived the IPv6 incident — do NOT swap in
-# db.<ref>.supabase.co.
-#
-# The migration is a single CHECK-constraint swap (interactions_note_fields):
-# a note keeps direction='none' but MAY now carry a party under the same
-# id-coherence rule communications use. No data migration — every existing
-# note (party_type='none', party_id/party_label null) is valid under the
-# relaxed check, so the ADD CONSTRAINT validation pass cannot fail on
-# legacy rows. Safe to apply BEFORE or AFTER the code deploy: the old code
-# never sends a party on a note, and the new code's zod/handler layers are
-# a strict superset of the old shape.
-#
-# ORDERING: 20260717000001 deliberately sorts BEFORE the 20260718xxxxxx set
-# (money_semantics reserved the slot — see its header comment). If prod has
-# already applied any 20260718 migration, `supabase db push` will refuse the
-# out-of-order insert; re-run with APPLY_INCLUDE_ALL=1 to pass --include-all
-# after reviewing that 20260717000001 is the ONLY out-of-order file.
-#
-# `supabase db push` applies EVERY pending migration in order, not just this
-# one — the dry run prints the pending set so you can review it BEFORE
-# re-running with `confirm`.
-# ============================================================================
+# SECURITY: Use the pooler URL from SUPABASE_DB_URL_PROD/.env.local; never echo
+# it. The relaxed CHECK accepts every existing note. If later versions already
+# exist remotely, set APPLY_INCLUDE_ALL=1 only after confirming this is the sole
+# out-of-order file. Review every pending migration before applying.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

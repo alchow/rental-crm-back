@@ -1,19 +1,7 @@
-// Premium-subdomain boot sync — reconcile the DB backstop to the config file.
-//
-// The premium reserved names live in api/src/config/premium-subdomains.json
-// (loaded + frozen by routes/_lib/premium-subdomains.ts). The DB backstop
-// (public.reserved_subdomain_labels, migration 20260721000001) must mirror the
-// file's premium rows so the accounts write-trigger rejects them on the direct
-// PostgREST path. This runs at API boot and makes the table follow the file:
-//
-//   * INSERT any file label missing from the table (a newly reserved name).
-//   * DELETE any kind='premium' row NOT in the file (a sold/released name).
-//   * NEVER touch kind='ops' rows — those are migration-managed.
-//
-// Uses the service-role client (hence this module lives in the admin
-// quarantine). Idempotent — a second run with no config change is a no-op — and
-// safe under concurrent multi-instance boot: inserts use ON CONFLICT DO NOTHING
-// and deletes are set-based, so two instances racing converge without error.
+// Reconciles premium-subdomains.json to the DB write backstop at boot. Insert
+// missing premium rows, delete released premium rows, and never touch
+// migration-managed `ops` rows. Service-role-only, idempotent, and safe under
+// concurrent boot because inserts ignore conflicts and deletes are set-based.
 
 import { getAdminClient } from './supabase-admin';
 import { getLogger } from '../log';

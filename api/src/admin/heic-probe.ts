@@ -7,24 +7,10 @@ import {
 import { HEVC_HEIC_FIXTURE } from './hevc-heic-fixture';
 import { probeStoredHeicRendition } from './storage';
 
-// ============================================================================
-// Hosted Storage HEVC rendition probe.
-// ============================================================================
-//
-// HEIC is what iPhones shoot by default. To render a HEIC photo in our
-// inspection-report PDF (the single most probative artifact in a
-// habitability dispute), we preserve the original in Storage and ask
-// Supabase's bounded image-transform service for the JPEG rendition. HEVC
-// pixels therefore never expand inside the small API process.
-//
-// If Storage transformation is unavailable, uploads answer retryable 503
-// before attachment/document rows commit. The content-addressed original may
-// already be in private Storage, so a retry can safely finish the rendition.
-//
-// Silently degrading evidence rendering is the failure mode we are
-// defending against. This module surfaces it LOUDLY at startup so ops
-// can see the warning in deploy logs / health checks rather than
-// discovering it from a missing photo three months into a dispute.
+// Probes hosted HEIC-to-JPEG rendition without expanding HEVC in the API.
+// Preserve the original as evidence; use bounded Storage transformation for
+// PDF rendering. If unavailable, fail uploads with retryable 503 before rows
+// commit and surface the degraded capability through startup logs/health.
 
 interface ProbeResult {
   supported: boolean;

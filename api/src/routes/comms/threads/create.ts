@@ -101,22 +101,10 @@ export function registerThreadCreateRoute(app: CommsApp): void {
     if (acctErr) throw commDbError(acctErr);
     const senderDisplayName = (account?.sender_display_name ?? null) as string | null;
 
-    // Email threads mint a UNIQUE tokenized reply address per participant under a
-    // receiving domain, resolved by a strict W1 ladder (no CONVERSATIONAL email
-    // without branding):
-    //   1. Branded account (subdomain + platform parent both set) → mint under
-    //      `<subdomain>.<EMAIL_PLATFORM_PARENT_DOMAIN>`.
-    //   2. Platform parent configured but this account is unbranded → 422 hard
-    //      gate with the SAME stable message the bare/thread-leg outbox gate
-    //      keys on. An email thread here would mint on a shared domain and
-    //      dispatch From the platform noreply@ — a conversation nobody can
-    //      answer. Refuse, so the frontend routes the owner into branding setup.
-    //   3. Platform parent NOT configured at all (platform-env-missing) →
-    //      branding does not exist as a feature; fall back to the shared
-    //      EMAIL_REPLY_DOMAIN rather than brick email.
-    //   4. Nothing configured anywhere → 503, nowhere for replies to land
-    //      (retryable once ops configures a domain).
-    // Non-email threads never enter this block.
+    // Email reply-domain ladder: branded platform domain; 422 when branding is
+    // available but this account is unbranded; shared EMAIL_REPLY_DOMAIN when
+    // the platform parent is absent; 503 when no receiving domain exists.
+    // This prevents creating conversations whose replies have nowhere to land.
     let domain: string | null = null;
     if (isEmail) {
       const env = loadEnv();
@@ -336,25 +324,10 @@ export function registerThreadCreateRoute(app: CommsApp): void {
         );
       }
 
-      // The landlord's leg must be the caller's OWN verified phone.
-      //
-      // This gate lives here, and not in the agent or the frontend, because
-      // this is the only chokepoint a landlord cannot route around: they hold a
-      // JWT and can POST here directly. users.phone_verified_at is written only
-      // by set_owner_phone_verified (agent-only, behind the SMS OTP), so it is
-      // the one signal that someone proved control of the number.
-      //
-      // Why it matters concretely: a group text puts the landlord's personal
-      // number in front of a tenant, and every tenant reply fans out to it. An
-      // unverified — meaning possibly mistyped — number would leak the
-      // conversation to whoever actually owns that phone, and the landlord
-      // would never see the thread they think they started.
-      //
-      // Restricted to the caller (rather than any account member) for two
-      // reasons: public.users is self-select under RLS, so a manager cannot
-      // read the owner's verification state at all; and enrolling a colleague's
-      // personal phone into a tenant-facing thread they did not initiate is not
-      // a thing one member should be able to do to another.
+      // SECURITY: The landlord leg must use the caller's own OTP-verified phone.
+      // Group replies fan out to this number, so an unverified value could leak
+      // the tenant conversation. Restricting it to the caller also prevents one
+      // member from enrolling another member's personal phone.
       const callerId = c.get('auth').userId;
       const { data: caller, error: callerErr } = await sb
         .from('users')

@@ -4,28 +4,12 @@ import { getSb } from '../supabase/request-client';
 import { ApiError, dbError, errorResponses } from './_lib/error';
 import { normalizePhone } from './_lib/phone';
 
-// ---------------------------------------------------------------------------
-// Owner (landlord) phone verification — agent-only persist endpoint.
-//
-// POST /accounts/{accountId}/owner-phone-verifications
-//   body: { user_id, phone }
-//
-// This is the COMMIT of the SMS OTP flow. landlord-agent owns the challenge
-// lifecycle (issues the code, sends it over Telnyx, checks the reply). After it
-// confirms the code it calls THIS endpoint, authenticated as the agent
-// principal, to record the verified number in the system of record. The number
-// then reads back as verified on GET /v1/profile (phone + phone_verified_at).
-//
-// Why agent-only: if a landlord token could set phone_verified_at, the SMS step
-// could be skipped entirely. The handler rejects any non-agent principal, and
-// the underlying set_owner_phone_verified() RPC re-checks the same thing from
-// the JWT (defence in depth). The RPC is SECURITY DEFINER because the agent's
-// JWT (auth.uid() = agent) cannot write the landlord's users row under RLS.
-//
-// Account-scoped, so the shared v1 middleware (auth -> membership -> principal
-// -> idempotency) applies: an Idempotency-Key is required, matching every other
-// mutating account-scoped route.
-// ---------------------------------------------------------------------------
+// Commits an SMS OTP verification completed by the agent service.
+// DATA FLOW: agent verifies OTP -> this route -> set_owner_phone_verified RPC
+// -> GET /v1/profile exposes phone + phone_verified_at.
+// SECURITY: Both route and RPC require the agent principal; allowing a landlord
+// token would bypass OTP. The SECURITY DEFINER RPC writes the landlord row that
+// the agent JWT cannot update under RLS.
 
 const AccountParam = z.object({
   accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),

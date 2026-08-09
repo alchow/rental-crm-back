@@ -32,19 +32,10 @@ export function hashCaptureSecret(secret: string): Buffer {
 }
 
 /**
- * Origin of the frontend that serves the tenant condition-form page. Declared
- * as APP_BASE_URL (api/src/env.ts) rather than read raw, so it is covered by
- * the env schema and the render-env drift gate.
- *
- * "capture" here is the DOMAIN concept (capture tokens, capture form, this
- * module) -- the frontend serves it at /inventory/<secret>, not /capture. See
- * CAPTURE_LINK_PATH below.
- *
- * The 'https://app.example' fallback keeps dev/CI/test booting without the
- * var, but it is a dead host: any renewal email built off it ships a link the
- * tenant cannot open. That failure is invisible from the outside -- the route
- * still 202s, the ledger row still looks healthy -- so warn loudly rather than
- * fall back in silence.
+ * APP_BASE_URL is schema- and deployment-guarded because renewal emails build
+ * tenant `/inventory/<secret>` links from it. The app.example fallback keeps
+ * local/test booting but is intentionally noisy: production mail built from it
+ * contains an unusable link while every API status still looks healthy.
  */
 function captureBaseUrl(): string {
   const configured = loadEnv().APP_BASE_URL;

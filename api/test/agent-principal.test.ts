@@ -1,27 +1,8 @@
 // ----------------------------------------------------------------------------
-// Agent principal integration tests (agent-api plan Workstream B + D).
-//
-// Covers:
-//   (a) agent POST agent_event proposal_created → 201, author_type='agent',
-//       entry_type persisted, chain event payload confirms author_type='agent'.
-//   (b) agent kind='communication' is provenance-gated: bare/non-grant refs
-//       → 403 agent_entry_type_forbidden; grant:-ref or approved_by+ref → 201
-//       with provenance persisted (comms build M0).
-//   (c) agent correction (corrects_id) → 403 agent_forbidden.
-//   (d) agent note without approvals → 400; agent note with approved_by+ref → 201.
-//   (e) agent note with approved_by=agent's own id → 400 (non-agent member rule).
-//   (f) agent step_executed without entity ref → 400; with tenancy_id → 201.
-//   (g) agent agent_event with 1001-char body → 400.
-//   (h) landlord kind='agent_event' → 403 agent_only; landlord note with
-//       approval_ref → 400.
-//   (i) landlord plain communication and note → 201 with author_type='landlord';
-//       response carries approved_by/approval_ref/entry_type/external_ref nulls.
-//   (j) idempotency principal isolation: landlord POSTs a note with key K;
-//       agent POSTs agent_event with the SAME key K → 409 conflict.
-//   (k) agent invalid entry_type 'chat_message' → 400 (zod enum).
-//   (l) landlord GET list: agent rows visible with author_type='agent'.
-//   (m) legacy resolution: admin-direct interaction with actor='tenant:legacy-tok'
-//       and author_type=null → GET by id resolves author_type='tenant'.
+// Agent-principal integration tests cover authorship, provenance, approval, and
+// entity-reference guards. They also verify correction restrictions, request
+// limits, landlord/agent capability separation, idempotency isolation between
+// principals, list visibility, and legacy author_type resolution.
 // ----------------------------------------------------------------------------
 
 import { execSync } from 'node:child_process';

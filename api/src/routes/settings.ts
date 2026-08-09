@@ -3,32 +3,10 @@ import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, dbError, errorResponses } from './_lib/error';
 
-// ---------------------------------------------------------------------------
-// Account settings — the per-account knobs a landlord controls directly.
-//
-// Today this exposes exactly ONE field, auto_charge_enabled: the switch for
-// the automatic rent-charge cron (migration 20260704000002). Since 2026-08-01
-// it DEFAULTS TO TRUE (migration 20260801000001, ADR-0011 amendment), so this
-// PATCH is primarily the OPT-OUT door — a landlord who bills by hand turns it
-// off here. It is a separate resource from the account record itself because
-// the write path is deliberately narrow:
-//
-//   * READ  (GET) — any account member may see the setting. The shared
-//     accounts_member_select RLS policy authorises the SELECT.
-//   * WRITE (PATCH) — only an account owner/manager may flip it. The
-//     accounts_manager_update RLS policy scopes the UPDATE to owner/manager (a
-//     viewer's UPDATE matches zero rows), and a column-level UPDATE grant limits
-//     a user-JWT write to auto_charge_enabled — both established by the account
-//     migrations, so the API never has to police columns itself.
-//
-// Both run under the CALLER's JWT via getSb() (never the service-role admin
-// client) so RLS is the authority: the API layer exposes only this one
-// column, and RLS decides who may write it. Account-scoped, so the shared v1
-// middleware (auth -> membership -> principal -> idempotency) applies — the
-// PATCH therefore requires an Idempotency-Key like every other mutating
-// account-scoped route (the header is injected into the OpenAPI contract
-// centrally by injectIdempotencyContract; routes never declare it inline).
-// ---------------------------------------------------------------------------
+// Narrow account-settings surface for auto_charge_enabled (ADR-0011), which
+// defaults true and serves primarily as opt-out. Reads are member-wide; RLS and
+// a column-level grant restrict writes to owner/manager and this field only.
+// Both use the caller JWT, and PATCH inherits the shared idempotency contract.
 
 const AccountParam = z.object({
   accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),

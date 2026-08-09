@@ -953,8 +953,7 @@ async function setupOther(): Promise<OtherAccount> {
   });
   if (memErr) throw new Error(`other agent membership: ${memErr.message}`);
 
-  // A platform number owned by THIS account (used to prove account A cannot
-  // bind it — hardening F5).
+  // A number owned by this account must not be bindable by account A.
   const platformNumber = `+1616${SUFFIX}`;
   const { error: numErr } = await admin.from('platform_numbers').insert({
     account_id: accountId, number: platformNumber, provider: 'test', capabilities: ['sms'],

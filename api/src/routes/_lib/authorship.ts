@@ -1,4 +1,4 @@
-// Authorship-capacity resolution (agent-api plan Workstream A; ADR-0008).
+// Authorship-capacity resolution (ADR-0008).
 //
 // `author_type` is stamped explicitly on every NEW journal write. Legacy
 // rows (pre-capacity migration) carry NULL -- their authorship is already

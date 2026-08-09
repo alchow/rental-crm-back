@@ -10,7 +10,7 @@ import { CreateLeaseBody, CurrencyCode, LeaseStatus } from '../schemas/importabl
 // Leases attach to a tenancy. A tenancy can have zero, one, or many leases
 // (handshake / month-to-month / holdover are first-class -- they're tenancies
 // with no lease rows). The lease.rent_amount_cents is the CONTRACTED figure;
-// what actually gets billed comes from rent_schedules in Phase 6. We keep
+// what actually gets billed comes from rent_schedules. We keep
 // them separate so a rent change mid-lease (concession, addendum) writes a
 // new schedule without falsifying the lease record.
 

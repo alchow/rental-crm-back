@@ -3,17 +3,10 @@ import { loadEnv } from '../env';
 import { nullableRpcArg } from '../supabase/db-types';
 import { getAdminClient } from './supabase-admin';
 
-// ============================================================================
-// HMAC email unsubscribe (service-role). CAN-SPAM single-visit + RFC 8058
-// one-click honoring. The token is minted STATELESSLY by the transport repo
-// (which holds the same UNSUBSCRIBE_HMAC_SECRET) and carries the recipient
-// address; core stores nothing per-address until the recipient actually
-// unsubscribes. All service-role work (the admin client, record_opt_out with
-// p_account_id=null, the IP-rate RPC) is quarantined here so the public route
-// file never touches admin privileges.
-// ============================================================================
-//
-// Token format v1 (broadcast to the transport repo — must match byte-for-byte):
+// Stateless HMAC unsubscribe (CAN-SPAM/RFC 8058). The transport mints a token
+// carrying the address; core stores nothing until use. Service-role opt-out and
+// rate-limit work stays quarantined here.
+// Token format v1 (must match the transport byte-for-byte):
 //   address_lc = trim + lowercase of the recipient email address
 //   mac        = HMAC-SHA256(UNSUBSCRIBE_HMAC_SECRET (utf8),
 //                            'unsub:v1:email:' + address_lc)   -- full 32 bytes

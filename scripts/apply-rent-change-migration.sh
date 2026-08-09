@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-# ============================================================================
-# Apply the instrument-anchored-rent-changes migration
-# (20260706000001_instrument_anchored_rent_changes) and verify it landed.
-# Modelled on scripts/apply-auto-charge-migration.sh, but NON-INTERACTIVE so
-# it can run from a one-shot console (e.g. Claude Code's `!` prefix):
-# instead of y/N prompts, `prod` alone is a DRY RUN that prints the pending
-# set, and applying requires an explicit second argument.
+# Apply and verify 20260706000001_instrument_anchored_rent_changes. `prod` is a
+# dry run; production apply requires `prod confirm`.
 #
 #   bash scripts/apply-rent-change-migration.sh local          # local stack (applies)
 #   bash scripts/apply-rent-change-migration.sh prod           # DRY RUN: list pending, verify nothing
@@ -13,25 +8,9 @@
 #   bash scripts/apply-rent-change-migration.sh verify local   # verify only, no apply
 #   bash scripts/apply-rent-change-migration.sh verify prod
 #
-# Prod credentials: SUPABASE_DB_URL_PROD from the environment, else read from
-# .env.local (gitignored). The URL is NEVER echoed — safe for a logged console.
-# This is the POOLER URL that survived the IPv6 incident — do NOT swap in
-# db.<ref>.supabase.co.
-#
-# The migration is ADDITIVE (nullable provenance columns + two SECURITY
-# INVOKER functions + guard/reject triggers), so it is safe to apply to prod
-# BEFORE the code deploy — nothing reads the new objects until PR #60's code
-# ships, and the new triggers only reject writes that were previously corrupt
-# (cross-tenancy anchors, mutating anchored instruments, resurrecting
-# superseded leases). ORDERING: it must apply AFTER
-# 20260704000002_auto_rent_charging (detect_rent_drift reads
-# accounts.auto_charge_enabled; change_tenancy_rent voids charges the advance
-# generator created).
-#
-# `supabase db push` applies EVERY pending migration in order, not just this
-# one — the dry run prints the pending set so you can review it BEFORE
-# re-running with `confirm`.
-# ============================================================================
+# SECURITY: Use the pooler URL from SUPABASE_DB_URL_PROD/.env.local; never echo
+# it. The additive migration must follow 20260704000002_auto_rent_charging.
+# Review every pending migration before applying.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

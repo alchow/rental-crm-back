@@ -98,7 +98,7 @@ export type ErrorCode =
   | 'service_unavailable'
   // profile: a submitted phone number cannot be normalised to E.164
   | 'invalid_phone'
-  // agent-principal firewall codes (Workstream D)
+  // Agent-principal authorization failures.
   | 'agent_forbidden' // agent attempted a forbidden operation (correction/retraction)
   | 'agent_entry_type_forbidden' // agent attempted a communication append without provenance
   | 'agent_only' // landlord attempted an agent-only field or kind
@@ -209,8 +209,8 @@ export function classifyTransient(e: unknown): ApiError | null {
  * Map a PostgREST/Postgres write error to an ApiError. Use on user-scoped
  * write paths where a blanket 500 would mask an authorization outcome: a row
  * RLS refuses surfaces as Postgres 42501 (insufficient_privilege) -- map it to
- * a clean 403 rather than 500. This is the ADR-0009 Phase 4 fix for the
- * narrow window where a just-revoked agent still passes the cached membership
+ * a clean 403 rather than 500. This closes the ADR-0009 window where a
+ * just-revoked agent still passes the cached membership
  * middleware but the live RLS check denies the write. A transient dependency
  * blip surfaces as a retryable 503. Unrecognised codes keep the generic
  * database_error 500.

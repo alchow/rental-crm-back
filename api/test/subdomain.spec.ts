@@ -110,9 +110,7 @@ describe('validateEmailSubdomain', () => {
 const OPS = ['smoke', 'dkim', 'dmarc', 'spf', 'mta', 'autodiscover', 'autoconfig', 'sterling'];
 
 describe('premium + ops reserved subdomains', () => {
-  // File-integrity: the premium list is now loaded from the config file
-  // (api/src/config/premium-subdomains.json via routes/_lib/premium-subdomains),
-  // so these lock the invariants that used to be a fixed count + hardcoded array.
+  // Lock the config-loaded premium list's format and uniqueness invariants.
   it('is a non-empty, deduped list of well-formed labels', () => {
     expect(PREMIUM_SUBDOMAINS.length).toBeGreaterThan(0);
     // Deduped.

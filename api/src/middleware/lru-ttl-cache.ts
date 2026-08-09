@@ -1,21 +1,7 @@
-// Bounded LRU cache with per-entry TTL.
-//
-// Invariants:
-//   - Map insertion order == LRU order: the FIRST key is the OLDEST (least-
-//     recently-used); the LAST key is the MOST-recently-used.
-//   - On get(): if the entry is live, DELETE then re-SET so it moves to the
-//     end (most-recent). This refreshes LRU recency but intentionally does NOT
-//     extend expiresAt.
-//   - SECURITY: get() refreshes recency but NEVER extends the TTL. This means
-//     a revoked member is still evicted within MEMBERSHIP_CACHE_TTL_MS of
-//     revocation, regardless of how frequently their requests hit the cache.
-//     If recency also extended TTL, a busy agent could hold a stale membership
-//     entry indefinitely. Keeping them independent bounds the revocation
-//     visibility window to the configured TTL.
-//   - On set(): if inserting a NEW key would exceed `max`, evict the SINGLE
-//     oldest entry (map.keys().next().value) — never clear all. This prevents
-//     the thundering-herd cliff where one overflow forces every concurrent
-//     request to bypass the cache simultaneously.
+// Bounded LRU with fixed per-entry TTL. Map order is recency order; get moves a
+// live entry to the end without extending expiry. SECURITY: Fixed expiry bounds
+// stale-membership visibility even for hot keys. On overflow, evict only the
+// oldest entry to avoid a cache-wide thundering herd.
 
 export interface LruTtlCache<V> {
   /** Returns the value if present AND not expired. On a live hit, refreshes

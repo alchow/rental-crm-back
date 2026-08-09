@@ -73,24 +73,10 @@ export function usesLargeBodyLimit(path: string): boolean {
   return LARGE_BODY_PATH_RE.test(path);
 }
 
-// The Hono app, configured but NOT listening. index.ts mounts it on a
-// node-server port; tests call app.fetch(request) directly without binding
-// to a port.
-//
-// Route hierarchy:
-//   /healthz                                            (no auth)
-//   /v1/auth/{signup,login,refresh,logout}              (no auth)
-//   /v1/me                                              (requireAuth)
-//   /v1/profile                                         (requireAuth)
-//   /v1/accounts/{accountId}/properties/...             (requireAuth + requireAccountMembership)
-//   /v1/accounts/{accountId}/vendors/...                (same)
-//   /v1/accounts/{accountId}/tenants/...                (same)
-//   /openapi.json                                       (no auth)
-//
-// The account-membership middleware queries account_members through the
-// USER-scoped supabase client; RLS is the backstop. The middleware never
-// uses the admin client (the only place that could is api/src/admin/, and
-// even there only via a wrapping helper -- the ESLint rule enforces this).
+// Configured Hono app; index.ts listens while tests call app.fetch directly.
+// SECURITY: Public routes are mounted outside the user stack; account routes
+// pass through auth and caller-scoped membership before handlers. RLS remains
+// the backstop, and lint quarantines admin-client construction to src/admin.
 export function buildApp(): OpenAPIHono {
   // newApiApp wires the centralised validation-failure hook (zod errors ->
   // the 400 envelope). Every sub-app comes from the same factory because
@@ -267,7 +253,7 @@ export function buildApp(): OpenAPIHono {
   // token is the auth. Service-role work is quarantined in admin/unsubscribe.
   app.route('/v1', unsubscribeApp);
 
-  // ROOT-AUTHED agent token exchange (ADR-0009 Phase 3). In src/admin/ because
+  // ROOT-AUTHED agent token exchange (ADR-0009). In src/admin/ because
   // it mints per-account sessions with the service-role client. Authenticated
   // by the X-Agent-Secret header (a hashed bearer secret), NOT a user JWT --
   // so, like intakeApp, it is mounted OUTSIDE the v1 account stack

@@ -8,25 +8,9 @@ import { buildEvidenceExport } from '../admin/export-pdf';
 import { enqueue } from '../admin/job-runner';
 import { downloadAttachment } from '../admin/storage';
 
-// ============================================================================
-// Evidence exports
-// ============================================================================
-//
-// POST /v1/accounts/{accountId}/evidence-exports
-//   Body: { tenancy_id?, area_id?, from_date?, to_date? }
-//   Returns: { id, attachment_id, content_hash, size_bytes, generated_at,
-//              chain_verified, chain_message }
-//
-// GET  /v1/accounts/{accountId}/evidence-exports
-// GET  /v1/accounts/{accountId}/evidence-exports/{id}
-// GET  /v1/accounts/{accountId}/evidence-exports/{id}/download
-//
-// Builder lives in api/src/admin/export-pdf.ts because it uses the admin
-// (service-role) client to read across tables -- the export touches
-// soft-deleted tenancies and the events table, both of which we want a
-// uniform reader for. The route handler is responsible for verifying the
-// caller is a member of the account; the middleware stack mounted in
-// app.ts already does that for /v1/accounts/:accountId/*.
+// Account-scoped evidence-export lifecycle: create, poll/list, and download.
+// Middleware verifies caller membership before the admin builder reads complete
+// history, including soft-deleted tenancies and audit events.
 
 const ExportBody = z
   .object({
@@ -41,7 +25,7 @@ const ExportBody = z
   )
   .openapi('EvidenceExportRequest');
 
-// Async status machine (Phase 2.1): the row is created queued, a background
+// DATA FLOW: The row is created queued, a background
 // job renders the bundle, and the artifact fields (attachment_id,
 // chain_verified, chain_message, the real generated_at) are null/provisional
 // until status='done'. Clients poll GET until status is done or failed.

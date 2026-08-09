@@ -43,8 +43,8 @@ import type {
 
 // ----- the per-run execution context ----------------------------------------
 
-// Sentinel for "this name matches MORE than one live row" in the prefetched
-// lookup maps (Phase 2.3). Not a valid uuid, so it can never collide with a
+// Sentinel for "this name matches MORE than one live row" in prefetched
+// lookup maps. Not a valid UUID, so it cannot collide with a
 // real id. Preserves the pre-batching `limit 2` ambiguity semantics exactly.
 const AMBIGUOUS = '__ambiguous__';
 
@@ -58,14 +58,14 @@ export class ExecCtx {
   private tenancyCache = new Map<string, string>();
   private leaseCache = new Set<string>();
   private rentScheduleCache = new Set<string>();
-  // Phase 2.3 prefetch: the account's LIVE rows snapshotted once per run
+  // Snapshot the account's LIVE rows once per run
   // (inside the txn) so per-row existence SELECTs disappear. A value is an
   // id, or AMBIGUOUS when >1 live row shares the key. Rows the run itself
   // creates land in the per-run caches above, which are consulted first.
   private prefetchedProperties = new Map<string, string>(); // lower(name)
   private prefetchedAreas = new Map<string, string>(); // propertyId::kind::lower(name)
   private prefetchedTenants = new Map<string, string>(); // lower(full_name), first by created_at
-  // Phase 2.3 provenance buffering: one unnest INSERT per 500 entities
+  // Buffer provenance into one unnest INSERT per 500 entities
   // instead of one INSERT per entity. runImport flushes after the row loop.
   private provenanceBuf: { et: EntityType; entityId: string; region: number; row: number }[] = [];
   // Memoizes whether a user-supplied parent id actually belongs to THIS
@@ -972,7 +972,7 @@ export class ExecCtx {
 
   /** Persist per-row blockers for the UI (clears stale ones first). Runs after
    *  the savepoint rollback so it survives into the COMMIT. One unnest UPDATE
-   *  for all blocked rows (Phase 2.3) instead of one UPDATE per row. */
+   *  for all blocked rows instead of one UPDATE per row. */
   async persistRowBlockers(): Promise<void> {
     await this.client.query(
       `update import_rows set blockers = '[]'::jsonb, updated_at = now()

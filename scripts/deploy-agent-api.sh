@@ -1,26 +1,12 @@
 #!/usr/bin/env bash
-# ============================================================================
-# Agent-API deploy orchestrator (docs/agent-api-plan.md, executed 2026-06-12).
-#
-# RUN IN A REGULAR TERMINAL WINDOW (Terminal.app / iTerm) — the script asks
-# confirmation questions, which one-shot consoles can't answer.
-#
-# Stages are independent; run them when ready:
-#
+# Interactive agent-API deployment orchestrator. Stages are independent:
 #   bash scripts/deploy-agent-api.sh deploy    # migrations -> push -> verify
 #   bash scripts/deploy-agent-api.sh agent     # create agent user + membership
 #   bash scripts/deploy-agent-api.sh           # all of the above in order
 #
-# `deploy` is safe without the agent user: no request can classify as the
-# agent principal until the agent's role='agent' account membership row exists
-# (ADR-0009; the AGENT_USER_ID env var was retired in phase 0). Nothing
-# changes for the live PWA.
-#
-# WHY THE ORDER INSIDE `deploy` IS LOAD-BEARING: Render does NOT run DB
-# migrations, and the new code writes columns prod does not have yet — so
-# migrations MUST be applied to prod BEFORE the code push, or live journal
-# writes break.
-# ============================================================================
+# ORDERING: Render does not migrate the DB; apply migrations before pushing
+# code that writes the new columns. Agent classification remains impossible
+# until its role='agent' membership exists (ADR-0009).
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

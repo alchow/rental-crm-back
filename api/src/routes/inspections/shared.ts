@@ -4,8 +4,8 @@ import { ApiError } from '../_lib/error';
 // A "completed" inspection is locked: the DB triggers
 // _reject_completed_inspection_update + _reject_item_update_on_completed_
 // inspection refuse any change. Corrections happen via NEW events under
-// the audit spine, never edits to the report bytes. Phase 8's contribution
-// is the COMPLETE endpoint -- it sets completed_at AND renders the PDF
+// the audit spine, never edits to the report bytes. The COMPLETE endpoint
+// sets completed_at, renders the PDF,
 // (deterministically) AND stores it as a content-hashed attachment of
 // entity_type='inspection_report'.
 

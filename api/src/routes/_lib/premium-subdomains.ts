@@ -1,22 +1,8 @@
-// Premium email-subdomain loader — the config file is the single source of
-// truth for the property-category names the platform reserves for RESALE.
-//
-// The list lives in api/src/config/premium-subdomains.json (a JSON object, so
-// it self-documents). Removing a name there releases it for the next
-// owner/manager to claim (the sale flow); adding one reserves it. Both take
-// effect at the next deploy — no migration per edit. The DB backstop
-// (public.reserved_subdomain_labels) is reconciled to the file's premium rows
-// on every API boot (admin/sync-premium-subdomains.ts).
-//
-// WHY THE RESERVED/OPS/FORMAT PRIMITIVES LIVE HERE (not in subdomain.ts):
-// subdomain.ts imports PREMIUM_SUBDOMAINS from this module, and this module
-// needs RESERVED_SUBDOMAINS + OPS_SUBDOMAINS + the label rule to VALIDATE the
-// file at module-eval time (PREMIUM_SUBDOMAINS below is computed on import). If
-// those constants stayed in subdomain.ts, this module would import them back —
-// a cycle whose eval order lands RESERVED_SUBDOMAINS in the temporal dead zone
-// and crashes on boot. So the label primitives are OWNED here (a leaf that
-// imports only the JSON) and RE-EXPORTED from subdomain.ts, so nothing that
-// imported them before has to change.
+// Loads premium subdomains from the deployment-time source of truth. Boot sync
+// reconciles those labels to public.reserved_subdomain_labels.
+// ARCHITECTURE: This leaf owns all label primitives because it validates JSON
+// during module evaluation. Moving them to subdomain.ts creates a circular
+// import and a temporal-dead-zone boot failure; subdomain.ts re-exports them.
 
 import premiumConfig from '../../config/premium-subdomains.json';
 

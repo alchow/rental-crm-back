@@ -106,5 +106,18 @@ should change.
 - If `api/src/env.ts` adds a production operator setting, add it to
   `render.yaml` or explicitly exclude it in the Render env drift guard.
 
-Leave short comments where a rule is architectural rather than obvious from
-syntax. Comments should explain why a boundary exists, not narrate the code.
+## Comment Style
+
+- Comment only information that cannot be reliably inferred from the code.
+- Prefer one precise sentence; keep a local block under eight lines when practical.
+  Move longer rationale to a current doc or ADR and leave a stable reference.
+- Describe current behavior, not delivery history. Avoid phase, PR, work-item,
+  incident-date, and “used to” labels in runtime comments.
+- Use concrete conditions and data flows. Example:
+  `verified token -> account scope -> privileged write -> audit event`.
+- Prefix load-bearing notes consistently when useful: `SECURITY:`, `INVARIANT:`,
+  `DATA FLOW:`, `CONTRACT:`, `COMPAT:`, or `PROVENANCE:`.
+- Delete comments that merely translate the next expression into English.
+- Applied migrations are historical records and may retain change rationale.
+
+Comments should explain why a boundary exists, not narrate the code.

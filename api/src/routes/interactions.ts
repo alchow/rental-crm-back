@@ -14,34 +14,12 @@ import {
   type InteractionParticipantRow,
 } from '../schemas/importable';
 
-// The channel-aware contact log. The high-stakes records are OFFLINE
-// contacts logged after the fact -- a doorstep conversation, a phone call,
-// a verbal "I'll let it slide three days." This is the single log; intake
-// submissions land here too (via the public POST /v1/intake/:token in
-// src/admin/intake.ts, which sets actor=tenant:<token_id>).
-//
-// Server-set immutable: logged_at (DB trigger from Phase 3 rejects any
-// UPDATE that touches it). The CREATE body accepts only occurred_at; the
-// route never trusts a client-supplied logged_at and never sets one.
-//
-// Evidentiary journal: the table is append-only -- there is no PATCH and no
-// DELETE, deliberately. A "correction", a "retraction" and a "note" are all
-// just NEW immutable rows:
-//
-//   kind='note'                       dated observation, no counterparty
-//                                     ("inspected roof, cracked tile")
-//   corrects_id + correction_kind     this row supersedes corrects_id;
-//                                     'amend' (body = corrected content),
-//                                     'retract' (body = reason), or 'classify'
-//                                     (metadata only: body + occurred_at
-//                                     inherited, fill-only context fields)
-//
-// The original row is never written to. Supersession (superseded_by_id,
-// is_head) is DERIVED from the forward corrects_id link by the
-// interactions_with_chain view; chains are linear by DB invariant (partial
-// unique index on corrects_id) and same-account by composite FK. The
-// collapsed ?latest_only=true view is a client convenience -- the full set
-// is the default and the evidence export always renders complete chains.
+// Append-only contact journal for offline, intake, and communications evidence.
+// INVARIANT: logged_at is server-set and immutable. Amend, retract, classify,
+// and note operations append rows linked by corrects_id; originals never change.
+// DB constraints keep chains linear and account-safe, while
+// interactions_with_chain derives heads/supersession. Evidence exports always
+// include full chains even when API reads request latest_only.
 
 const AccountParam = z.object({
   accountId: z
@@ -462,29 +440,12 @@ interface CastParticipant {
   label: string | null;
 }
 
-// Item C — close the castless-cast gap. A landlord communication that names a
-// single counterparty in the legacy party slot but supplies no explicit cast
-// gets ONE derived participant, so "everything involving <person>" stays ONE
-// indexed cast query (the party_id filter) even for hand-logged contacts —
-// restoring the backfill's stated end state. Returns null (→ the plain insert,
-// no cast) when:
-//   - the principal is the agent: agent communications are cast by the verified
-//     comms transport (capture_inbound / complete_send always write a cast),
-//     and journal_with_participants both refuses agents AND cannot carry an
-//     agent's provenance (external_ref / approval_ref / approved_by), so the
-//     manual agent-journal path stays on the plain insert;
-//   - no counterparty is named: party_type 'unspecified' is the
-//     unresolved-sender queue (a later classify resolves it) with no name to
-//     cast; 'none' is a note; a concrete role with neither party_id nor
-//     party_label is just a headline bucket ("role known, person unknown");
-//   - a field the RPC cannot faithfully carry is present:
-//     references_interaction_id is dropped by journal_with_participants, and
-//     channel='import' would be stamped attestation='attested' instead of
-//     'imported' — both stay on the plain insert so behaviour is byte-identical.
-// Role follows direction, the same mapping the backfill (20260703000005) uses:
-// inbound → sender, outbound → recipient, anything else → attendee.
-//
-// A party-carrying note matches ?party_id= via the RPC's row-slot leg (20260801000004); notes still write no cast.
+// COMPAT: Derive one cast participant from a landlord's legacy counterparty
+// slot so party filters include hand-logged contacts. Use the plain insert for
+// agents, unresolved/no-party rows, imports, or referenced interactions because
+// journal_with_participants cannot preserve those semantics. Role mapping:
+// inbound -> sender, outbound -> recipient, otherwise attendee. Party-carrying
+// notes use the row-slot filter and still write no cast.
 function deriveSingleParticipant(
   body: {
     channel?: string;
@@ -857,7 +818,7 @@ interactionsApp.openapi(create, async (c) => {
       // actor/author_type from the caller — same values this handler computes.
       // Landlord-only at this point (agent guard above). TWO inputs converge
       // here: an EXPLICIT cast (body.participants), or a single DERIVED
-      // participant (Item C) when the body names a counterparty in the legacy
+      // participant when the body names a counterparty in the legacy
       // slot but supplies no cast. Both keep the plain insert below for the
       // no-counterparty case and the agent principal.
       const explicitCast: CastParticipant[] | undefined = body.participants?.map((p) => ({
@@ -952,8 +913,7 @@ interactionsApp.openapi(create, async (c) => {
     }
   }
 
-  // logged_at not passed -- DB default = now(); Phase 3 immutability
-  // trigger blocks any later UPDATE that changes it.
+  // Leave logged_at to the DB default; its immutability trigger blocks edits.
   const { data, error } = await sb
     .from('interactions')
     .insert(asDbInsert<'interactions'>(row))
@@ -972,7 +932,7 @@ interactionsApp.openapi(create, async (c) => {
     if (error.code === '23503') {
       throw new ApiError(404, 'not_found', 'a referenced row does not belong to this account');
     }
-    // 42501 (RLS denial) -> 403 (ADR-0009 Phase 4). Defensive: for mutating
+    // 42501 (RLS denial) -> 403. Defensive: for mutating
     // requests the idempotency middleware claims a key FIRST and a revoked
     // agent is denied there, so this branch fires only if a write ever reaches
     // the handler without that claim. Else 500.

@@ -1,25 +1,8 @@
-// Server-only conflict oracle for per-account tenant-email uniqueness.
-//
-// Wraps public._tenant_email_conflicts(account, emails, exclude?) — the SECURITY
-// DEFINER function (migration 20260721000002) that returns every holder already
-// carrying one of the candidate addresses within the account: other live tenants
-// ('tenant') AND owner/manager login emails ('account_user', read from
-// auth.users). Two reasons the call lives behind the service-role admin client
-// (and thus inside the admin quarantine, src/admin/):
-//
-//   1. CI guard: db/test/check_definer_grants.sql requires every non-allowlisted
-//      public SECURITY DEFINER function to be service_role-only. The function's
-//      grant is service_role-only, so it is only reachable through the admin
-//      client — hence this wrapper.
-//   2. Enumeration + auth.users exposure: a direct /rest/v1/rpc grant to
-//      authenticated would let a signed-in user of ANY account probe which
-//      addresses a landlord login uses (the oracle reads auth.users). Keeping the
-//      call server-side closes that hole.
-//
-// HTTP-surface gating lives at the ROUTE, not here: the tenants POST/PATCH
-// handlers are already account-scoped (a caller can only write tenants in an
-// account they belong to), the same principals who would learn "taken" from the
-// 409 anyway.
+// Server-only per-account tenant-email conflict oracle. The service-role-only
+// DEFINER RPC checks both tenants and owner/manager auth emails.
+// SECURITY: Keeping auth.users access behind this wrapper prevents arbitrary
+// signed-in users from probing landlord login addresses; account-scoped routes
+// separately control who may submit candidates.
 
 import { getAdminClient } from './supabase-admin';
 import { getLogger } from '../log';

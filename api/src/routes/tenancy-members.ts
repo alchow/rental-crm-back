@@ -64,10 +64,9 @@ const MemberParam = z.object({
     .openapi({ param: { name: 'id', in: 'path' } }),
 });
 
-// Account-wide sibling of the nested list above: one call across every
-// tenancy in the account instead of one-per-tenancy (the /tenants
-// directory's dominant cost -- Field Log ask #3). Same table, same
-// ListResponse shape; filterable down to a single tenant or tenancy.
+// Account-wide sibling of the nested list: one call replaces a
+// one-request-per-tenancy fan-out. Same rows and response shape, optionally
+// filtered to one tenant or tenancy.
 const AccountParam = z.object({
   accountId: z
     .string()

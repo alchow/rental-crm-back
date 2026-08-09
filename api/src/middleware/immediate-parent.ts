@@ -2,22 +2,10 @@ import type { MiddlewareHandler } from 'hono';
 import { getSb } from '../supabase/request-client';
 import { ApiError } from '../routes/_lib/error';
 
-// Resolves the IMMEDIATE path parent of a sub-resource against the active
-// account and 404s if the parent is not in this account (or doesn't exist
-// for this caller under RLS).
-//
-// Why this matters: without this, a URL like
-//   /v1/accounts/<A>/tenancies/<B>/members
-// passes the account-membership resolver (A IS in A) and the route's query
-// just filters by tenancy_id=<B>, which under RLS returns no rows. The
-// LIST endpoint then renders an empty roster -- not a leak, but it masks
-// the client bug (wrong id in URL) and is inconsistent with the BODY
-// equivalent: a cross-account reference in a body returns 404 via the
-// composite FK. This middleware unifies the behavior: cross-account parent
-// in the PATH also 404s, before any handler logic.
-//
-// Scope: IMMEDIATE parent only. Not a deep hierarchy walk. Each sub-resource
-// route mounts this with its own (table, paramName).
+// Resolves the immediate path parent under caller RLS and returns 404 when it
+// is absent or cross-account. This prevents a wrong parent ID from masquerading
+// as an empty list and aligns path behavior with account-safe body FKs. It is
+// intentionally not a recursive hierarchy walk.
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

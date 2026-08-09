@@ -1,18 +1,7 @@
-// Operational entry point for the automatic rent-charge generator
-// (admin/rent-charges.ts). Scheduled by the Render cron `rent-charge-generator`
-// (render.yaml), which runs daily:
-//
-//   pnpm --filter ./api charges:generate
-//
-// Requires the API's env (SUPABASE_URL, SUPABASE_ANON_KEY,
-// SUPABASE_SERVICE_ROLE_KEY). Exits non-zero so the scheduler alerts when
-// either (a) a SYSTEMIC failure occurs (the enabled-account scan throws) or
-// (b) accounts were enabled but NONE could be processed (every per-account
-// RPC failed) — a run that billed nobody while billing was enabled is not a
-// success. An INDIVIDUAL account failure while others succeed is logged loudly
-// (event: rent_charges_account_failed) but does NOT fail the run: the generator
-// is idempotent, so a missed account heals on the next daily run without
-// double-billing. Same convention as run-evidence-retention.ts.
+// Daily Render entry point for automatic rent charges. Exit non-zero on a
+// systemic scan failure or when every enabled account fails, so scheduling
+// alerts. Log isolated account failures without aborting successful accounts;
+// idempotency lets the next run heal them without double-billing.
 import { runRentCharges } from './rent-charges';
 
 runRentCharges()

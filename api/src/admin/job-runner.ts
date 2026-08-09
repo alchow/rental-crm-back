@@ -1,21 +1,9 @@
 import { getLogger } from '../log';
 
-// Minimal in-process job runner (architecture plan, Phase 2.1).
-//
-// CONCURRENCY 1 BY DESIGN: jobs run strictly sequentially on a promise
-// chain. The deploy target is a single small instance, and the jobs this
-// runs (evidence-export PDF rendering, import recognition) are exactly the
-// memory-/CPU-heavy work we just removed from request handlers -- running
-// two at once recreates the OOM risk. When the service scales past one
-// instance, this module is replaced by a jobs-table worker with
-// FOR UPDATE SKIP LOCKED (Phase 3 scale-out ADR); job STATE already lives
-// on the domain rows (evidence_exports.status, import_sessions.status), so
-// that swap does not change any schema or contract.
-//
-// Job state is the domain row's responsibility, not the runner's: a job fn
-// must itself flip its row to a terminal status on failure (the runner only
-// logs). The queue does not survive a restart -- boot-recovery code marks
-// orphaned rows failed (see recoverOrphanedEvidenceExports).
+// Single-concurrency in-process queue for memory-heavy work. Domain rows own
+// job state and must record terminal failures; boot recovery marks rows orphaned
+// by restart. Horizontal scale requires a persisted SKIP LOCKED worker, but no
+// domain contract change because status already lives on those rows.
 
 let chain: Promise<void> = Promise.resolve();
 let pending = 0;

@@ -3,35 +3,10 @@ import { createHash } from 'node:crypto';
 import { getAdminClient } from './supabase-admin';
 import { storeGeneratedArtifactBytes } from './storage';
 
-// ============================================================================
-// Deterministic inspection PDF rendering.
-// ============================================================================
-//
-// Why deterministic: the rendered PDF is stored as an attachment with its
-// own content hash; if rendering the same inspection twice produces
-// different bytes, the hash means nothing. The Phase 10 evidence export
-// will use this same approach for the bundled report -- the inspection PDF
-// is the dress rehearsal.
-//
-// pdfkit's non-determinism comes from:
-//   1. info.CreationDate / ModDate default to new Date()
-//   2. info.Producer / Creator default to "PDFKit"
-//   3. File ID (PDF trailer /ID) defaults to a random pair
-//   4. Embedded fonts can be subset differently across runs
-//
-// We pin all four:
-//   1+2: explicit info { ... } with the inspection's completed_at as both
-//        CreationDate and ModDate;
-//   3:   _id set to a deterministic pair derived from the inspection id;
-//   4:   Helvetica (one of the 14 PDF base fonts that PDF readers ship
-//        natively -- not embedded, not subset, byte-identical across runs).
-//
-// Phase 27 (condition reports): move-in/move-out inspections render extra
-// sections (report type/baseline header, per-item group/change_type lines, a
-// Checks section, and per-item photos). EVERY new bit is gated on kind or on
-// data presence -- a kind='general' inspection has null group/change_type, no
-// checks, and no item photos, so its rendering path (and therefore its bytes)
-// is UNCHANGED. The pre-existing golden output is preserved.
+// Deterministic inspection PDF rendering. Content hashes are meaningful only
+// if identical input yields identical bytes, so pin PDF dates, metadata, file
+// ID, and base font. Condition-only sections are gated by kind/data; `general`
+// inspections retain the legacy byte path and golden output.
 
 export interface InspectionPdfPhoto {
   id: string;
@@ -47,7 +22,7 @@ export interface InspectionPdfItem {
   condition: string | null;
   notes: string | null;
   created_at: string;
-  // Phase 27 (null for legacy 'general' inspections -> not rendered):
+  // Null for legacy `general` inspections; omitted from their reports.
   item_key?: string | null;
   group_label?: string | null;
   change_type?: string | null;
@@ -75,7 +50,7 @@ export interface InspectionPdfInput {
     performed_at: string | null;
     completed_at: string;
     notes: string | null;
-    // Phase 27:
+    // Condition-report fields:
     kind: string;
     baseline_inspection_id?: string | null;
   };
@@ -172,8 +147,7 @@ export async function renderInspectionPdf(input: InspectionPdfInput): Promise<Ui
     doc.text(`Performed at:  ${input.inspection.performed_at}`);
   }
   doc.text(`Completed at:  ${input.inspection.completed_at}`);
-  // Phase 27: report-type + baseline header (skipped for 'general' -> bytes
-  // unchanged for legacy reports).
+  // Report type and baseline are skipped for `general`, preserving legacy bytes.
   if (input.inspection.kind !== 'general') {
     doc.text(`Report type:   ${input.inspection.kind}`);
     if (input.inspection.baseline_inspection_id) {
@@ -194,7 +168,7 @@ export async function renderInspectionPdf(input: InspectionPdfInput): Promise<Ui
 
   // Sort items deterministically -- the test asserts byte-equivalence
   // across renders, so any unordered iteration would break determinism.
-  // sort_order (Phase 27, canonical form order) wins when present; legacy
+  // Canonical sort_order wins when present; legacy
   // items have null sort_order so they fall through to created_at/id exactly
   // as before.
   const items = [...input.items].sort((a, b) => {
@@ -218,7 +192,7 @@ export async function renderInspectionPdf(input: InspectionPdfInput): Promise<Ui
     }
   }
 
-  // ---- checks (Phase 27; skipped when empty -> bytes unchanged) -----------
+  // ---- checks (skipped when empty to preserve legacy bytes) --------------
   if (input.checks && input.checks.length > 0) {
     doc.moveDown(1);
     doc.fontSize(14).text('Checks', { underline: true });
@@ -260,7 +234,7 @@ export async function renderInspectionPdf(input: InspectionPdfInput): Promise<Ui
     }
   }
 
-  // ---- per-item photos (Phase 27; skipped when none -> bytes unchanged) ----
+  // ---- per-item photos (skipped when none to preserve legacy bytes) -------
   const itemsWithPhotos = items.filter((it) => it.photos && it.photos.length > 0);
   if (itemsWithPhotos.length > 0) {
     doc.addPage({ size: 'LETTER', margin: 54 });
@@ -285,7 +259,7 @@ export async function renderInspectionPdf(input: InspectionPdfInput): Promise<Ui
 // Load an entity's photos as renderable bytes. Originals (derived_from null)
 // drive identity; for a HEIC original we embed its server-derived JPEG instead
 // (pdfkit can't render HEIC) while KEEPING the original's content_hash as the
-// chain-of-custody identity. Mirrors the Phase 9 behaviour for inspection
+// chain-of-custody identity. This behavior is shared by inspection
 // photos; reused for both entity_type='inspections' and 'inspection_items'.
 async function loadRenderablePhotos(
   admin: ReturnType<typeof getAdminClient>,
@@ -332,21 +306,10 @@ async function loadRenderablePhotos(
 }
 
 /**
- * Composes the inspection PDF for a given inspection id, hashes the result,
- * and stores it as an attachment of entity_type='inspection_report'.
- * Returns the attachment row plus the hash.
- *
- * IDEMPOTENT: the PDF is byte-deterministic, so if a live inspection_report
- * attachment with the SAME content hash already exists for this inspection we
- * reuse it (no delete/insert) -- otherwise a re-run would strand the
- * document_versions.attachment_id pointing at a now-soft-deleted row. Only a
- * genuine renderer change (different bytes) replaces the report; the document
- * emitter then bumps the version pointing at the new row.
- *
- * Mutating: takes the inspection -> completed_at lock + writes the report.
- * Callers should run this inside the inspection-completion endpoint AFTER
- * setting completed_at; the DB trigger keeps the inspection immutable
- * thereafter.
+ * Render, hash, and store an inspection report. Reuse an existing live report
+ * with the same hash so reruns cannot strand document_versions; only changed
+ * bytes create a replacement. Call after setting completed_at, which locks the
+ * inspection against further mutation.
  */
 export async function generateAndStoreInspectionReport(opts: {
   accountId: string;
@@ -443,7 +406,7 @@ export async function generateAndStoreInspectionReport(opts: {
     };
   }
 
-  // Phase 9: content-addressed path -- same scheme as processAndStoreBytes()
+  // Use the same content-addressed path as processAndStoreBytes().
   // uses for user uploads. The inspection_id is captured on the attachments
   // row's entity_id, not in the path.
   const stored = await storeGeneratedArtifactBytes(opts.accountId, pdfBytes, 'application/pdf');

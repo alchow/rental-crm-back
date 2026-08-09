@@ -1,45 +1,15 @@
 #!/usr/bin/env bash
-# ============================================================================
-# Apply the notice_class migration (20260801000005_notice_class) and verify it
-# landed. Modelled on scripts/apply-incidents-migration.sh.
-#
-# NOTHING IN THIS REPO RUNS THIS FOR YOU. Migrations are not auto-applied on
-# deploy; an operator runs this deliberately, in a regular terminal
-# (Terminal.app / iTerm), because it asks confirmation questions a one-shot
-# console cannot answer.
+# Apply and verify 20260801000005_notice_class. This interactive script is the
+# operator action; deploys do not apply migrations automatically.
 #
 #   bash scripts/apply-notice-class-migration.sh local        # local stack
 #   bash scripts/apply-notice-class-migration.sh prod         # PROD (pooler + confirm)
 #   bash scripts/apply-notice-class-migration.sh verify local # verify only
 #   bash scripts/apply-notice-class-migration.sh verify prod
 #
-# WHAT IT CHANGES (frontend BACKEND_ASKS #25, 2026-08-08)
-#   1. public.notices gains ONE nullable column, notice_class — the
-#      machine-readable functional class beside the verbatim notice_type
-#      ('rent_change' | 'written_warning' | 'cure_or_quit' | 'other'),
-#      check-constrained, null for free text and out-of-app writers.
-#   2. One partial index, notices_class_lookback_idx (account_id, tenancy_id,
-#      notice_class, served_at) where deleted_at is null — serves the
-#      statutory lookback ("was a written warning served in the last 12
-#      months?") and the new ?notice_class= list filter.
-#   3. The anchored-notice freeze trigger (_reject_anchored_notice_mutation,
-#      from 20260706000001) is REPLACED with a body that also freezes
-#      notice_class — the enumerating trigger was fail-open to columns it
-#      predates, so without this a racing or direct write could re-class an
-#      anchored evidence record.
-#
-# WHY THE APPLY IS SAFE
-# Additive plus one trigger-body replacement: no data change, no RLS change,
-# no default. Every existing row reads notice_class = null, which is the
-# designed meaning ("unclassed"). Nothing backfills; nulls stay null. The
-# replaced trigger only ever ADDS a blocked case (re-classing an anchored
-# notice), and no client writes notice_class before this applies.
-#
-# ORDERING: code-first is fine (the API only writes the column when a client
-# actually sends the field, and no deployed client sends it yet). Apply
-# BEFORE merging the frontend change that starts sending notice_class, or
-# notice creation from the new frontend 500s on the missing column.
-# ============================================================================
+# SAFETY: Adds nullable notice_class plus an index and extends the anchored-row
+# freeze trigger; no data, default, or RLS change. Existing rows remain unclassed.
+# Apply before any client begins sending notice_class.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
