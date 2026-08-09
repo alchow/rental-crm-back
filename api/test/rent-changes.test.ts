@@ -361,7 +361,7 @@ async function main(): Promise<void> {
       const oldSched = await newSchedule(tid, { amount: 180000, dueDay: 1 });
       const nRes = await postA('/notices', {
         tenancy_id: tid,
-        notice_type: 'rent_increase',
+        notice_label: 'rent_increase',
         served_at: '2026-08-01T12:00:00Z',
         served_method: 'certified_mail',
       });
@@ -452,7 +452,7 @@ async function main(): Promise<void> {
     await newSchedule(tid);
     const nRes = await postA('/notices', {
       tenancy_id: tid,
-      notice_type: 'termination',
+      notice_label: 'termination',
       served_at: '2026-06-01T12:00:00Z',
     });
     const notice = nRes.body as { id: string };
@@ -500,7 +500,7 @@ async function main(): Promise<void> {
     // indistinguishable while every conflict shared the generic code.)
     const nRes = await postA('/notices', {
       tenancy_id: tid,
-      notice_type: 'rent_increase',
+      notice_label: 'rent_increase',
       served_at: '2026-07-01T00:00:00Z',
     });
     const notice = nRes.body as { id: string };
@@ -676,7 +676,7 @@ async function main(): Promise<void> {
     async () => {
       const tid = await newTenancy();
       await newSchedule(tid);
-      const notice = await postA('/notices', { tenancy_id: tid, notice_type: 'rent_increase' });
+      const notice = await postA('/notices', { tenancy_id: tid, notice_label: 'rent_increase' });
       const noticeId = (notice.body as { id: string }).id;
       // B's token against A's account URL: not a member -> 404 (never reaches the RPC).
       const r = await rentChange(
@@ -702,7 +702,7 @@ async function main(): Promise<void> {
     const tid = await newTenancy();
     const created = await postA('/notices', {
       tenancy_id: tid,
-      notice_type: 'entry_notice',
+      notice_label: 'entry_notice',
       served_method: 'email',
       body: 'entry at 9am',
     });
@@ -743,15 +743,15 @@ async function main(): Promise<void> {
 
   // =========================================================================
   // (H2) notice_class (migration 20260801000005): the nullable functional
-  // class BESIDE the verbatim notice_type. Omitted -> null (never guessed);
-  // the list filter matches classed rows only; notice_type gained a
+  // class BESIDE the verbatim notice_label. Omitted -> null (never guessed);
+  // the list filter matches classed rows only; notice_label gained a
   // correction path while free-floating; a garbage class -> 400.
   // =========================================================================
   await check('notice_class: null default, filter, corrections, validation', async () => {
     const tid = await newTenancy();
 
     // Omitted class stays null — an unclassed record never claims a class.
-    const bare = await postA('/notices', { tenancy_id: tid, notice_type: 'NTQ_2026_04' });
+    const bare = await postA('/notices', { tenancy_id: tid, notice_label: 'NTQ_2026_04' });
     if (bare.status !== 201) throw new Error(`bare create: ${bare.status}`);
     const bareNotice = bare.body as { id: string; notice_class: string | null };
     if (bareNotice.notice_class !== null)
@@ -760,7 +760,7 @@ async function main(): Promise<void> {
     // Classed create echoes the class back.
     const classed = await postA('/notices', {
       tenancy_id: tid,
-      notice_type: 'Written warning',
+      notice_label: 'Written warning',
       notice_class: 'written_warning',
     });
     if (classed.status !== 201) throw new Error(`classed create: ${classed.status}`);
@@ -780,17 +780,17 @@ async function main(): Promise<void> {
     // Free-floating corrections: the typo path for a string that renders
     // verbatim into the evidence PDF, and re-classing alongside it.
     const corrected = await patchA(`/notices/${bareNotice.id}`, {
-      notice_type: 'Cure or quit notice',
+      notice_label: 'Cure or quit notice',
       notice_class: 'cure_or_quit',
     });
     if (corrected.status !== 200)
       throw new Error(`correction: ${corrected.status} ${JSON.stringify(corrected.body)}`);
     const correctedNotice = corrected.body as {
-      notice_type: string;
+      notice_label: string;
       notice_class: string | null;
     };
-    if (correctedNotice.notice_type !== 'Cure or quit notice')
-      throw new Error(`notice_type should be corrected, got ${correctedNotice.notice_type}`);
+    if (correctedNotice.notice_label !== 'Cure or quit notice')
+      throw new Error(`notice_label should be corrected, got ${correctedNotice.notice_label}`);
     if (correctedNotice.notice_class !== 'cure_or_quit')
       throw new Error(`notice_class should be corrected, got ${correctedNotice.notice_class}`);
 
@@ -803,7 +803,7 @@ async function main(): Promise<void> {
     // A value outside the enum is a schema 400, not a DB 500.
     const garbage = await postA('/notices', {
       tenancy_id: tid,
-      notice_type: 'whatever',
+      notice_label: 'whatever',
       notice_class: 'eviction_vibes',
     });
     if (garbage.status !== 400)
@@ -812,7 +812,7 @@ async function main(): Promise<void> {
 
   // =========================================================================
   // (H3) The correction window closes at anchor time: once the notice anchors
-  // a live rent schedule, the new notice_type/notice_class correction path is
+  // a live rent schedule, the new notice_label/notice_class correction path is
   // refused 409 with everything else (extends F7 to the new fields).
   // =========================================================================
   await check('notice_class: anchored notice refuses type/class corrections', async () => {
@@ -820,7 +820,7 @@ async function main(): Promise<void> {
     await newSchedule(tid, { amount: 120000, dueDay: 1 });
     const nRes = await postA('/notices', {
       tenancy_id: tid,
-      notice_type: 'Rent increase notice',
+      notice_label: 'Rent increase notice',
       notice_class: 'rent_change',
       served_at: '2026-08-01T00:00:00Z',
     });
@@ -837,7 +837,7 @@ async function main(): Promise<void> {
     if (change.status !== 201)
       throw new Error(`rent change: ${change.status} ${JSON.stringify(change.body)}`);
 
-    const typePatch = await patchA(`/notices/${nid}`, { notice_type: 'Oops different words' });
+    const typePatch = await patchA(`/notices/${nid}`, { notice_label: 'Oops different words' });
     if (typePatch.status !== 409)
       throw new Error(`anchored type correction should 409, got ${typePatch.status}`);
     const classPatch = await patchA(`/notices/${nid}`, { notice_class: null });
@@ -996,7 +996,7 @@ async function main(): Promise<void> {
       throw new Error(`create bounded schedule: ${created.status} ${JSON.stringify(created.body)}`);
     const nRes = await postA('/notices', {
       tenancy_id: tid,
-      notice_type: 'rent_increase',
+      notice_label: 'rent_increase',
       served_at: '2026-09-01T12:00:00Z',
     });
     const notice = nRes.body as { id: string };
@@ -1022,7 +1022,7 @@ async function main(): Promise<void> {
   await check('unserved notice: anchoring to a notice without served_at -> 409', async () => {
     const tid = await newTenancy();
     await newSchedule(tid);
-    const nRes = await postA('/notices', { tenancy_id: tid, notice_type: 'rent_increase' });
+    const nRes = await postA('/notices', { tenancy_id: tid, notice_label: 'rent_increase' });
     if (nRes.status !== 201)
       throw new Error(`create notice: ${nRes.status} ${JSON.stringify(nRes.body)}`);
     const notice = nRes.body as { id: string; served_at: string | null };
@@ -1051,7 +1051,7 @@ async function main(): Promise<void> {
     await newSchedule(tid);
     const nRes = await postA('/notices', {
       tenancy_id: tid,
-      notice_type: 'rent_increase',
+      notice_label: 'rent_increase',
       served_at: '2026-08-01T12:00:00Z',
     });
     const notice = nRes.body as { id: string };
@@ -1232,7 +1232,7 @@ async function main(): Promise<void> {
     if (future.error) throw new Error(`seed future schedule: ${future.error.message}`);
     const nRes = await postA('/notices', {
       tenancy_id: tid,
-      notice_type: 'rent_increase',
+      notice_label: 'rent_increase',
       served_at: '2026-07-01T00:00:00Z',
     });
     const notice = nRes.body as { id: string };
@@ -1447,7 +1447,7 @@ async function main(): Promise<void> {
       // Case B precondition the rest of this suite deliberately avoids).
       const nRes = await postA('/notices', {
         tenancy_id: tid,
-        notice_type: 'rent_increase',
+        notice_label: 'rent_increase',
         served_at: '2026-07-01T00:00:00Z',
       });
       const notice = nRes.body as { id: string };
@@ -1538,7 +1538,7 @@ async function main(): Promise<void> {
       // And a later corrected change composes on top of the continuation.
       const n2 = await postA('/notices', {
         tenancy_id: tid,
-        notice_type: 'rent_increase',
+        notice_label: 'rent_increase',
         served_at: '2026-08-20T00:00:00Z',
       });
       const corrected = await rentChange(tid, {
@@ -1586,7 +1586,7 @@ async function main(): Promise<void> {
       // data entry ran late). Voids September's charge.
       const nRes = await postA('/notices', {
         tenancy_id: tid,
-        notice_type: 'rent_increase',
+        notice_label: 'rent_increase',
         served_at: '2026-07-01T00:00:00Z',
       });
       const change = await rentChange(tid, {
@@ -1645,7 +1645,7 @@ async function main(): Promise<void> {
     await newSchedule(tid);
     const nRes = await postA('/notices', {
       tenancy_id: tid,
-      notice_type: 'rent_increase',
+      notice_label: 'rent_increase',
       served_at: '2026-08-01T00:00:00Z',
     });
     const notice = nRes.body as { id: string };

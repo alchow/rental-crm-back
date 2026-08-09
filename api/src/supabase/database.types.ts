@@ -3047,7 +3047,7 @@ export type Database = {
           document: Json;
           id: string;
           notice_class: string | null;
-          notice_type: string;
+          notice_label: string;
           served_at: string | null;
           served_method: string | null;
           tenancy_id: string;
@@ -3061,7 +3061,7 @@ export type Database = {
           document?: Json;
           id?: string;
           notice_class?: string | null;
-          notice_type: string;
+          notice_label: string;
           served_at?: string | null;
           served_method?: string | null;
           tenancy_id: string;
@@ -3075,7 +3075,7 @@ export type Database = {
           document?: Json;
           id?: string;
           notice_class?: string | null;
-          notice_type?: string;
+          notice_label?: string;
           served_at?: string | null;
           served_method?: string | null;
           tenancy_id?: string;

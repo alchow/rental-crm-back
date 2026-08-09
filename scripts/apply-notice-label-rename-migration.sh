@@ -1,20 +1,28 @@
 #!/usr/bin/env bash
-# Apply and verify 20260801000005_notice_class. This interactive script is the
-# operator action; deploys do not apply migrations automatically.
+# Apply and verify 20260801000006_notice_label_rename. This interactive script
+# is the operator action; deploys do not apply migrations automatically.
 #
-#   bash scripts/apply-notice-class-migration.sh local        # local stack
-#   bash scripts/apply-notice-class-migration.sh prod         # PROD (pooler + confirm)
-#   bash scripts/apply-notice-class-migration.sh verify local # verify only
-#   bash scripts/apply-notice-class-migration.sh verify prod
+#   bash scripts/apply-notice-label-rename-migration.sh local        # local stack
+#   bash scripts/apply-notice-label-rename-migration.sh prod         # PROD (pooler + confirm)
+#   bash scripts/apply-notice-label-rename-migration.sh verify local # verify only
+#   bash scripts/apply-notice-label-rename-migration.sh verify prod
 #
-# SAFETY: Adds nullable notice_class plus an index and extends the anchored-row
-# freeze trigger; no data, default, or RLS change. Existing rows remain unclassed.
-# Apply before any client begins sending notice_class.
+# SAFETY: metadata-only rename (notice_type -> notice_label) on an effectively
+# empty table, plus the renames that must follow it: the length-check
+# constraint name and the anchored-row freeze trigger body (function text does
+# not follow a column rename). No data, RLS, or semantic change.
+#
+# ORDERING (BREAKING window, accepted at current usage): after backend main
+# deploys and until this applies, notices WRITES 500 (blocking rent changes
+# and incident warnings too) and READS break as well — incident case files
+# citing a notice 500, evidence exports fail on cited notices. APPLY
+# PROMPTLY, then merge the frontend rename (the old frontend 400s on creates
+# until it deploys).
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-MIGRATION="20260801000005_notice_class"
+MIGRATION="20260801000006_notice_label_rename"
 MIGRATION_FILE="db/supabase/migrations/${MIGRATION}.sql"
 
 bold() { printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -50,20 +58,18 @@ resolve_db_url() {
 }
 
 # --- Read-only snapshot -----------------------------------------------------
-# Pre-apply facts: the column must NOT exist yet, and the notices row count is
-# recorded so the "additive only, nulls stay null" claim is inspectable.
 snapshot() {
   bold "SNAPSHOT (read-only) — pre-apply state"
   read -r -d '' SNAP_SQL <<'SQL' || true
 select
   (select count(*) from information_schema.columns
      where table_schema = 'public' and table_name = 'notices'
-       and column_name = 'notice_class')::int
-    as notice_class_column_present,
-  (select count(*) from pg_indexes
-     where schemaname = 'public' and tablename = 'notices'
-       and indexname = 'notices_class_lookback_idx')::int
-    as lookback_index_present,
+       and column_name = 'notice_type')::int
+    as old_column_present,
+  (select count(*) from information_schema.columns
+     where table_schema = 'public' and table_name = 'notices'
+       and column_name = 'notice_label')::int
+    as new_column_present,
   (select count(*) from public.notices)::int
     as notices_rows;
 SQL
@@ -75,10 +81,10 @@ SQL
       .then((r) => {
         const v = r.rows[0];
         console.table(v);
-        if (Number(v.notice_class_column_present) > 0) {
-          console.warn("NOTE: notice_class already exists on this database — the push should list nothing pending for 20260801000005.");
+        if (Number(v.new_column_present) > 0) {
+          console.warn("NOTE: notice_label already exists — the push should list nothing pending for 20260801000006.");
         } else {
-          console.log("OK: no notice_class column yet; the apply is purely additive (every existing row will read null = unclassed).");
+          console.log("OK: notice_type present, notice_label absent — the rename is pending.");
         }
         return c.end();
       })
@@ -86,30 +92,28 @@ SQL
   '
 }
 
-# --- Verify the schema actually landed --------------------------------------
-# Asserts the invariants only this migration creates: nullable column, check
-# constraint, lookback index — and that no row was backfilled (all null).
+# --- Verify the rename actually landed --------------------------------------
 verify() {
-  bold "VERIFY — column, nullability, check constraint, index, no backfill"
+  bold "VERIFY — rename landed: column, constraint name, trigger body"
   read -r -d '' VERIFY_SQL <<'SQL' || true
 select
   (select count(*) from information_schema.columns
      where table_schema = 'public' and table_name = 'notices'
-       and column_name = 'notice_class' and is_nullable = 'YES')::int
-    as nullable_column_present,
+       and column_name = 'notice_label')::int
+    as new_column_present,
+  (select count(*) from information_schema.columns
+     where table_schema = 'public' and table_name = 'notices'
+       and column_name = 'notice_type')::int
+    as old_column_present,
   (select count(*) from pg_constraint
      where conrelid = 'public.notices'::regclass
-       and conname = 'notices_notice_class_check')::int
+       and conname = 'notices_notice_label_check')::int
     as check_constraint_present,
-  (select count(*) from pg_indexes
-     where schemaname = 'public' and tablename = 'notices'
-       and indexname = 'notices_class_lookback_idx')::int
-    as lookback_index_present,
-  (select count(*) from public.notices where notice_class is not null)::int
-    as classed_rows,
-  (select (prosrc like '%notice_class%')::int from pg_proc
-    where proname = '_reject_anchored_notice_mutation')::int
-    as freeze_covers_class;
+  (select ((prosrc like '%notice_label%') and (prosrc not like '%notice_type%'))::int
+     from pg_proc
+    where proname = '_reject_anchored_notice_mutation'
+      and pronamespace = 'public'::regnamespace)::int
+    as freeze_reads_label;
 SQL
   SQL="$VERIFY_SQL" DB_URL="$DB_URL" npx tsx -e '
     import pg from "pg";
@@ -120,16 +124,16 @@ SQL
         const v = r.rows[0];
         console.table(v);
         const ok =
-          Number(v.nullable_column_present) === 1 &&
+          Number(v.new_column_present) === 1 &&
+          Number(v.old_column_present) === 0 &&
           Number(v.check_constraint_present) === 1 &&
-          Number(v.lookback_index_present) === 1 &&
-          Number(v.freeze_covers_class) === 1;
+          Number(v.freeze_reads_label) === 1;
         return c.end().then(() => {
           if (!ok) {
-            console.error("VERIFY FAILED: expected 1 nullable column, 1 check constraint, 1 index, freeze trigger covering notice_class — see the table above for which invariant is off.");
+            console.error("VERIFY FAILED: expected notice_label present, notice_type gone, renamed check constraint, freeze trigger reading notice_label — see the table above.");
             process.exit(1);
           }
-          console.log("OK: notice_class is live. classed_rows is informational — it should be 0 immediately after apply (nothing backfills) and grows only as clients write classes.");
+          console.log("OK: the rename is live — notice_label everywhere, notice_type gone, freeze trigger updated.");
         });
       })
       .catch((e) => { console.error("VERIFY query failed:", e.message); process.exit(1); });
@@ -141,7 +145,7 @@ apply() {
   local target="$1"
   resolve_db_url "$target"
 
-  bold "APPLY notice_class migration -> ${target}"
+  bold "APPLY notice_label rename -> ${target}"
   echo "Migration: $MIGRATION"
   [[ "$target" == "prod" ]] && echo "Target:    PROD (pooler)"
 
@@ -163,24 +167,22 @@ EOF
   SUPABASE_DB_URL="$DB_URL" pnpm --filter ./db migrate:up
 
   verify
-  bold "DONE — notice_class is live on this database."
+  bold "DONE — the notice_label rename is live on this database."
   cat <<'EOF'
 
 Next steps after this succeeds:
-  1. Nothing to deploy: main already auto-deployed; the API starts accepting
-     notice_class the moment the column exists (PostgREST reloads via the
-     migration's own `notify pgrst`).
-  2. NOW the frontend PR that sends notice_class may merge — not before.
-  3. Optional live smoke test: POST a notice with notice_class on a test
-     account, GET it back, confirm the class echoes; then PATCH notice_type
-#     (renamed to notice_label by 20260801000006)
-     and confirm the correction lands.
+  1. Nothing to deploy: main already auto-deployed; notices routes recover
+     the moment the rename exists (PostgREST reloads via notify pgrst).
+  2. NOW the frontend rename PR may merge — not before (the old frontend
+     400s on notice creates until it deploys).
+  3. Optional live smoke test: POST a notice on a test account and confirm
+     notice_label echoes back.
 EOF
 }
 
 case "${1:-}" in
   local|prod) apply "$1" ;;
-  verify)     resolve_db_url "${2:?usage: bash scripts/apply-notice-class-migration.sh verify [local|prod]}"; verify ;;
-  snapshot)   resolve_db_url "${2:?usage: bash scripts/apply-notice-class-migration.sh snapshot [local|prod]}"; snapshot ;;
-  *) echo "usage: bash scripts/apply-notice-class-migration.sh [local|prod|verify <local|prod>|snapshot <local|prod>]"; exit 2 ;;
+  verify)     resolve_db_url "${2:?usage: bash scripts/apply-notice-label-rename-migration.sh verify [local|prod]}"; verify ;;
+  snapshot)   resolve_db_url "${2:?usage: bash scripts/apply-notice-label-rename-migration.sh snapshot [local|prod]}"; snapshot ;;
+  *) echo "usage: bash scripts/apply-notice-label-rename-migration.sh [local|prod|verify <local|prod>|snapshot <local|prod>]"; exit 2 ;;
 esac

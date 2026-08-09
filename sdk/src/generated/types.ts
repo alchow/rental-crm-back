@@ -17888,7 +17888,7 @@ export interface components {
             account_id: string;
             /** Format: uuid */
             tenancy_id: string;
-            notice_type: string;
+            notice_label: string;
             notice_class: components["schemas"]["NoticeClass"];
             served_at: string | null;
             served_method: string | null;
@@ -17907,7 +17907,7 @@ export interface components {
         CreateNoticeBody: {
             /** Format: uuid */
             tenancy_id: string;
-            notice_type: string;
+            notice_label: string;
             notice_class?: components["schemas"]["NoticeClass"];
             /**
              * Format: date-time
@@ -17921,7 +17921,7 @@ export interface components {
             };
         };
         PatchNoticeBody: {
-            notice_type?: string;
+            notice_label?: string;
             notice_class?: components["schemas"]["NoticeClass"];
             /**
              * Format: date-time
@@ -18055,7 +18055,7 @@ export interface components {
         IncidentCitedNotice: {
             /** Format: uuid */
             id: string;
-            notice_type: string;
+            notice_label: string;
             served_at: string | null;
             served_method: string | null;
             created_at: string;

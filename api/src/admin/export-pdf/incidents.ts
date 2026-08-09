@@ -148,7 +148,7 @@ async function loadCitedSummaries(
   for (const chunk of idChunks(ids((i) => i.notice_id))) {
     const { data, error } = await admin
       .from('notices')
-      .select('id, created_at, served_at, notice_type, served_method')
+      .select('id, created_at, served_at, notice_label, served_method')
       .eq('account_id', accountId)
       .in('id', chunk);
     if (error) throw new Error(`cited notice load failed: ${error.message}`);
@@ -156,8 +156,8 @@ async function loadCitedSummaries(
       summaries.set(`notice:${r.id}`, {
         event_at: r.served_at ?? r.created_at,
         excerpt: r.served_method
-          ? `${r.notice_type} served via ${r.served_method}`
-          : `${r.notice_type} (not served)`,
+          ? `${r.notice_label} served via ${r.served_method}`
+          : `${r.notice_label} (not served)`,
       });
     }
   }
