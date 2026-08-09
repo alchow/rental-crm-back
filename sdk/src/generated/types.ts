@@ -4193,6 +4193,7 @@ export interface paths {
                     cursor?: string;
                     limit?: number;
                     tenancy_id?: string;
+                    notice_class?: components["schemas"]["NoticeClass"] & string;
                 };
                 header?: never;
                 path: {
@@ -4489,7 +4490,7 @@ export interface paths {
         head?: never;
         /**
          * Update a notice (partial)
-         * @description A free-floating notice is fully editable (drafting is normal). A notice that anchors a live rent schedule is evidence of the increase and is write-blocked ENTIRELY: any PATCH is rejected 409 instrument_anchored — serve a new notice and change rent again, or delete the never-billed schedule to release it.
+         * @description A free-floating notice is fully editable (drafting is normal). A notice that anchors a live rent schedule is evidence of the increase and is write-blocked ENTIRELY: any PATCH is rejected 409 instrument_anchored — serve a new notice and change rent again, or delete the never-billed schedule to release it. Incident CITATION deliberately does not close the correction window: cited maintenance requests and inspections are equally live-hydrated, a typo fix on a cited warning is the correction path working as intended, and the audit chain keeps full before/after snapshots of every notice update.
          */
         patch: {
             parameters: {
@@ -17878,6 +17879,8 @@ export interface components {
             /** @enum {string} */
             status?: "draft" | "active" | "expired" | "superseded";
         };
+        /** @enum {string|null} */
+        NoticeClass: "rent_change" | "written_warning" | "cure_or_quit" | "other" | null;
         Notice: {
             /** Format: uuid */
             id: string;
@@ -17886,6 +17889,7 @@ export interface components {
             /** Format: uuid */
             tenancy_id: string;
             notice_type: string;
+            notice_class: components["schemas"]["NoticeClass"];
             served_at: string | null;
             served_method: string | null;
             body: string | null;
@@ -17904,6 +17908,7 @@ export interface components {
             /** Format: uuid */
             tenancy_id: string;
             notice_type: string;
+            notice_class?: components["schemas"]["NoticeClass"];
             /**
              * Format: date-time
              * @description When the notice was served. Date-only knowledge: send midnight UTC (YYYY-MM-DDT00:00:00Z) and render as a UTC calendar date. Send the real timestamp when the service moment is known.
@@ -17916,6 +17921,8 @@ export interface components {
             };
         };
         PatchNoticeBody: {
+            notice_type?: string;
+            notice_class?: components["schemas"]["NoticeClass"];
             /**
              * Format: date-time
              * @description When the notice was served. Date-only knowledge: send midnight UTC (YYYY-MM-DDT00:00:00Z) and render as a UTC calendar date. Send the real timestamp when the service moment is known.

@@ -2260,6 +2260,7 @@ begin
        or NEW.body          is distinct from OLD.body
        or NEW.document      is distinct from OLD.document
        or NEW.notice_type   is distinct from OLD.notice_type
+       or NEW.notice_class  is distinct from OLD.notice_class
     then
       raise exception 'notice % is anchored to a rent schedule and cannot be modified', OLD.id
         using errcode = 'check_violation';
@@ -10991,6 +10992,8 @@ CREATE TABLE IF NOT EXISTS "public"."notices" (
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "deleted_at" timestamp with time zone,
+    "notice_class" "text",
+    CONSTRAINT "notices_notice_class_check" CHECK (("notice_class" = ANY (ARRAY['rent_change'::"text", 'written_warning'::"text", 'cure_or_quit'::"text", 'other'::"text"]))),
     CONSTRAINT "notices_notice_type_check" CHECK ((("length"("notice_type") >= 1) AND ("length"("notice_type") <= 100)))
 );
 
@@ -10998,6 +11001,13 @@ ALTER TABLE ONLY "public"."notices" FORCE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."notices" OWNER TO "postgres";
+
+--
+-- Name: COLUMN "notices"."notice_class"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."notices"."notice_class" IS 'Machine-readable functional class beside the verbatim notice_type. Derived from the exact canonical label at create time; null for free text and out-of-app writers. Never displayed or exported in place of the words.';
+
 
 --
 -- Name: payment_allocations; Type: TABLE; Schema: public; Owner: postgres
@@ -13534,6 +13544,13 @@ CREATE INDEX "notices_account_id_idx" ON "public"."notices" USING "btree" ("acco
 --
 
 CREATE INDEX "notices_account_tenancy_created_id_live_idx" ON "public"."notices" USING "btree" ("account_id", "tenancy_id", "created_at", "id") WHERE ("deleted_at" IS NULL);
+
+
+--
+-- Name: notices_class_lookback_idx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "notices_class_lookback_idx" ON "public"."notices" USING "btree" ("account_id", "tenancy_id", "notice_class", "served_at") WHERE ("deleted_at" IS NULL);
 
 
 --

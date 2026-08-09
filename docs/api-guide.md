@@ -342,12 +342,14 @@ Contract **documents** attached to a tenancy. A tenancy never _requires_ a lease
 
 Served instruments attached to a tenancy — an entry notice, a rent-increase notice, a termination notice. A notice is a **record** of what was served and how (`served_at`/`served_method`/`body`/`document`). For a month-to-month tenancy it is the anchor a rent change hangs off (the fixed-term equivalent is a renewal lease). Once a notice (or a lease) anchors a rent schedule it is the **instrument of record** for that billing era — it becomes immutable and undeletable (PATCH/DELETE return 409); create a new one instead.
 
+Two fields describe what the instrument *is*, deliberately split. `notice_type` is the landlord's **verbatim words** (1–100 chars) — never rewritten, and rendered as typed into the evidence-export PDF. `notice_class` is the nullable machine-readable functional class beside it (`rent_change` \| `written_warning` \| `cure_or_quit` \| `other`) — the queryable half ("was a written warning served in the last 12 months?"), derived by the client from the exact canonical label the landlord committed; free text and out-of-app writers leave it null, and null is always legitimate. The class is never displayed or exported in place of the words.
+
 | Method   | Path            | Body                                                                                                                                                                                          |
 | -------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET`    | `/notices`      | Supports `?tenancy_id=` filter.                                                                                                                                                               |
-| `POST`   | `/notices`      | `tenancy_id` (required), `notice_type` (required, 1–100), `served_at` (optional ISO datetime), `served_method` (optional, 1–100), `body` (optional, max 10000), `document` (optional object). |
+| `GET`    | `/notices`      | Supports `?tenancy_id=` and `?notice_class=` filters (the class filter never matches unclassed rows).                                                                                          |
+| `POST`   | `/notices`      | `tenancy_id` (required), `notice_type` (required, 1–100), `notice_class` (optional, nullable enum), `served_at` (optional ISO datetime), `served_method` (optional, 1–100), `body` (optional, max 10000), `document` (optional object). |
 | `GET`    | `/notices/{id}` |                                                                                                                                                                                               |
-| `PATCH`  | `/notices/{id}` | Any subset of `served_at`, `served_method`, `body`, `document`.                                                                                                                               |
+| `PATCH`  | `/notices/{id}` | Any subset of `notice_type`, `notice_class`, `served_at`, `served_method`, `body`, `document` — the correction window closes when the notice anchors a schedule (409).                        |
 | `DELETE` | `/notices/{id}` | Soft-delete.                                                                                                                                                                                  |
 
 ### Incidents

@@ -22,6 +22,9 @@
 //       rent-change that reconciles them clears it.
 //   (G) RLS isolation: an account-B principal cannot drive an account-A change.
 //   (H) Notices CRUD smoke.
+//   (H2/H3) notice_class (20260801000005): null default, class filter,
+//       free-floating type/class corrections, 400 on a non-enum class, and
+//       the correction window closing at anchor time.
 //
 // Plus the PR #60 review-finding regressions (labelled by finding number):
 //   F1 advance-void  -- a change voids the old era's advance charge; the
@@ -736,6 +739,125 @@ async function main(): Promise<void> {
     const after = await getA(`/notices/${notice.id}`);
     if (after.status !== 404)
       throw new Error(`soft-deleted notice should 404, got ${after.status}`);
+  });
+
+  // =========================================================================
+  // (H2) notice_class (migration 20260801000005): the nullable functional
+  // class BESIDE the verbatim notice_type. Omitted -> null (never guessed);
+  // the list filter matches classed rows only; notice_type gained a
+  // correction path while free-floating; a garbage class -> 400.
+  // =========================================================================
+  await check('notice_class: null default, filter, corrections, validation', async () => {
+    const tid = await newTenancy();
+
+    // Omitted class stays null — an unclassed record never claims a class.
+    const bare = await postA('/notices', { tenancy_id: tid, notice_type: 'NTQ_2026_04' });
+    if (bare.status !== 201) throw new Error(`bare create: ${bare.status}`);
+    const bareNotice = bare.body as { id: string; notice_class: string | null };
+    if (bareNotice.notice_class !== null)
+      throw new Error(`omitted class should be null, got ${bareNotice.notice_class}`);
+
+    // Classed create echoes the class back.
+    const classed = await postA('/notices', {
+      tenancy_id: tid,
+      notice_type: 'Written warning',
+      notice_class: 'written_warning',
+    });
+    if (classed.status !== 201) throw new Error(`classed create: ${classed.status}`);
+    const classedNotice = classed.body as { id: string; notice_class: string | null };
+    if (classedNotice.notice_class !== 'written_warning')
+      throw new Error(`class should echo, got ${classedNotice.notice_class}`);
+
+    // The statutory-lookback filter: classed row matches, unclassed never does.
+    const filtered = await getA(`/notices?tenancy_id=${tid}&notice_class=written_warning`);
+    if (filtered.status !== 200) throw new Error(`filter: ${filtered.status}`);
+    const rows = (filtered.body as { data: Array<{ id: string }> }).data;
+    if (!rows.some((x) => x.id === classedNotice.id))
+      throw new Error('classed notice missing from class filter');
+    if (rows.some((x) => x.id === bareNotice.id))
+      throw new Error('unclassed notice must never satisfy a class filter');
+
+    // Free-floating corrections: the typo path for a string that renders
+    // verbatim into the evidence PDF, and re-classing alongside it.
+    const corrected = await patchA(`/notices/${bareNotice.id}`, {
+      notice_type: 'Cure or quit notice',
+      notice_class: 'cure_or_quit',
+    });
+    if (corrected.status !== 200)
+      throw new Error(`correction: ${corrected.status} ${JSON.stringify(corrected.body)}`);
+    const correctedNotice = corrected.body as {
+      notice_type: string;
+      notice_class: string | null;
+    };
+    if (correctedNotice.notice_type !== 'Cure or quit notice')
+      throw new Error(`notice_type should be corrected, got ${correctedNotice.notice_type}`);
+    if (correctedNotice.notice_class !== 'cure_or_quit')
+      throw new Error(`notice_class should be corrected, got ${correctedNotice.notice_class}`);
+
+    // Un-classing is legitimate (the class is metadata, never load-bearing).
+    const unclassed = await patchA(`/notices/${bareNotice.id}`, { notice_class: null });
+    if (unclassed.status !== 200) throw new Error(`unclass: ${unclassed.status}`);
+    if ((unclassed.body as { notice_class: string | null }).notice_class !== null)
+      throw new Error('notice_class should be null after un-classing');
+
+    // A value outside the enum is a schema 400, not a DB 500.
+    const garbage = await postA('/notices', {
+      tenancy_id: tid,
+      notice_type: 'whatever',
+      notice_class: 'eviction_vibes',
+    });
+    if (garbage.status !== 400)
+      throw new Error(`garbage class should 400, got ${garbage.status}`);
+  });
+
+  // =========================================================================
+  // (H3) The correction window closes at anchor time: once the notice anchors
+  // a live rent schedule, the new notice_type/notice_class correction path is
+  // refused 409 with everything else (extends F7 to the new fields).
+  // =========================================================================
+  await check('notice_class: anchored notice refuses type/class corrections', async () => {
+    const tid = await newTenancy();
+    await newSchedule(tid, { amount: 120000, dueDay: 1 });
+    const nRes = await postA('/notices', {
+      tenancy_id: tid,
+      notice_type: 'Rent increase notice',
+      notice_class: 'rent_change',
+      served_at: '2026-08-01T00:00:00Z',
+    });
+    if (nRes.status !== 201) throw new Error(`create: ${nRes.status}`);
+    const nid = (nRes.body as { id: string }).id;
+
+    const change = await rentChange(tid, {
+      amount_cents: 130000,
+      currency: 'USD',
+      effective_date: '2026-09-01',
+      due_day: 1,
+      source_notice_id: nid,
+    });
+    if (change.status !== 201)
+      throw new Error(`rent change: ${change.status} ${JSON.stringify(change.body)}`);
+
+    const typePatch = await patchA(`/notices/${nid}`, { notice_type: 'Oops different words' });
+    if (typePatch.status !== 409)
+      throw new Error(`anchored type correction should 409, got ${typePatch.status}`);
+    const classPatch = await patchA(`/notices/${nid}`, { notice_class: null });
+    if (classPatch.status !== 409)
+      throw new Error(`anchored class change should 409, got ${classPatch.status}`);
+
+    // The DB trigger backstop, not just the route pre-check: a DIRECT write
+    // (service role — bypasses RLS and the route entirely) re-classing an
+    // anchored notice must be rejected by _reject_anchored_notice_mutation.
+    // This is the review-proven gap 20260801000005 closes: the enumerating
+    // trigger predated notice_class and let this write through.
+    const direct = await admin
+      .from('notices')
+      .update({ notice_class: 'other' })
+      .eq('id', nid)
+      .select('id');
+    if (!direct.error)
+      throw new Error('direct service-role re-class of an anchored notice must be trigger-blocked');
+    if (!/anchor/i.test(direct.error.message))
+      throw new Error(`expected the anchored-notice trigger message, got: ${direct.error.message}`);
   });
 
   // =========================================================================
