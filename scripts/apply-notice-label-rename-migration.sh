@@ -13,8 +13,11 @@
 # not follow a column rename). No data, RLS, or semantic change.
 #
 # ORDERING (BREAKING window, accepted at current usage): after backend main
-# deploys, notices creates 500 until this applies — APPLY PROMPTLY, then merge
-# the frontend rename (the old frontend 400s on creates until it deploys).
+# deploys and until this applies, notices WRITES 500 (blocking rent changes
+# and incident warnings too) and READS break as well — incident case files
+# citing a notice 500, evidence exports fail on cited notices. APPLY
+# PROMPTLY, then merge the frontend rename (the old frontend 400s on creates
+# until it deploys).
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -106,8 +109,10 @@ select
      where conrelid = 'public.notices'::regclass
        and conname = 'notices_notice_label_check')::int
     as check_constraint_present,
-  (select (prosrc like '%notice_label%')::int from pg_proc
-    where proname = '_reject_anchored_notice_mutation')::int
+  (select ((prosrc like '%notice_label%') and (prosrc not like '%notice_type%'))::int
+     from pg_proc
+    where proname = '_reject_anchored_notice_mutation'
+      and pronamespace = 'public'::regnamespace)::int
     as freeze_reads_label;
 SQL
   SQL="$VERIFY_SQL" DB_URL="$DB_URL" npx tsx -e '

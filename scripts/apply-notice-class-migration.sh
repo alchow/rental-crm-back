@@ -172,7 +172,8 @@ Next steps after this succeeds:
      migration's own `notify pgrst`).
   2. NOW the frontend PR that sends notice_class may merge — not before.
   3. Optional live smoke test: POST a notice with notice_class on a test
-     account, GET it back, confirm the class echoes; then PATCH notice_label
+     account, GET it back, confirm the class echoes; then PATCH notice_type
+#     (renamed to notice_label by 20260801000006)
      and confirm the correction lands.
 EOF
 }

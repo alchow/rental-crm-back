@@ -14,12 +14,15 @@
 -- split. Renamed now because the table is effectively empty — the last moment
 -- this is a rename instead of a data migration.
 --
--- DEPLOY WINDOW (breaking, deliberately accepted at current usage): old API
--- code inserts notice_type -> 500 after this applies; new API code inserts
--- notice_label -> 500 until this applies. Merge-then-apply-promptly, the
--- incidents precedent. The old deployed frontend 400s on notice creates
--- against the new API until its own rename deploys; reads render blank
--- titles. Sequence: backend merge -> apply this -> frontend merge.
+-- DEPLOY WINDOW (breaking, deliberately accepted at current usage): between
+-- backend deploy and this apply, WRITES 500 (notice creates/patches — which
+-- also blocks month-to-month rent changes and incident warnings) and READS
+-- break too: the incidents citation projection selects notice_label, so an
+-- incident case file citing a notice 500s, and the evidence-export job fails
+-- on cited notices. notices list/get return off-contract rows (blank titles).
+-- Merge-then-apply-PROMPTLY, the incidents precedent. The old deployed
+-- frontend 400s on notice creates against the new API until its own rename
+-- deploys. Sequence: backend merge -> apply this -> frontend merge.
 
 alter table public.notices rename column notice_type to notice_label;
 
