@@ -4490,7 +4490,7 @@ export interface paths {
         head?: never;
         /**
          * Update a notice (partial)
-         * @description A free-floating notice is fully editable (drafting is normal). A notice that anchors a live rent schedule is evidence of the increase and is write-blocked ENTIRELY: any PATCH is rejected 409 instrument_anchored — serve a new notice and change rent again, or delete the never-billed schedule to release it.
+         * @description A free-floating notice is fully editable (drafting is normal). A notice that anchors a live rent schedule is evidence of the increase and is write-blocked ENTIRELY: any PATCH is rejected 409 instrument_anchored — serve a new notice and change rent again, or delete the never-billed schedule to release it. Incident CITATION deliberately does not close the correction window: cited maintenance requests and inspections are equally live-hydrated, a typo fix on a cited warning is the correction path working as intended, and the audit chain keeps full before/after snapshots of every notice update.
          */
         patch: {
             parameters: {

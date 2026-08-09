@@ -2260,6 +2260,7 @@ begin
        or NEW.body          is distinct from OLD.body
        or NEW.document      is distinct from OLD.document
        or NEW.notice_type   is distinct from OLD.notice_type
+       or NEW.notice_class  is distinct from OLD.notice_class
     then
       raise exception 'notice % is anchored to a rent schedule and cannot be modified', OLD.id
         using errcode = 'check_violation';
@@ -13549,7 +13550,7 @@ CREATE INDEX "notices_account_tenancy_created_id_live_idx" ON "public"."notices"
 -- Name: notices_class_lookback_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
-CREATE INDEX "notices_class_lookback_idx" ON "public"."notices" USING "btree" ("account_id", "tenancy_id", "notice_class", "served_at");
+CREATE INDEX "notices_class_lookback_idx" ON "public"."notices" USING "btree" ("account_id", "tenancy_id", "notice_class", "served_at") WHERE ("deleted_at" IS NULL);
 
 
 --

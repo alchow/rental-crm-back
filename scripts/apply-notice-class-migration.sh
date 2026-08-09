@@ -18,15 +18,22 @@
 #      machine-readable functional class beside the verbatim notice_type
 #      ('rent_change' | 'written_warning' | 'cure_or_quit' | 'other'),
 #      check-constrained, null for free text and out-of-app writers.
-#   2. One index, notices_class_lookback_idx (account_id, tenancy_id,
-#      notice_class, served_at) — serves the statutory lookback ("was a
-#      written warning served in the last 12 months?") and the new
-#      ?notice_class= list filter.
+#   2. One partial index, notices_class_lookback_idx (account_id, tenancy_id,
+#      notice_class, served_at) where deleted_at is null — serves the
+#      statutory lookback ("was a written warning served in the last 12
+#      months?") and the new ?notice_class= list filter.
+#   3. The anchored-notice freeze trigger (_reject_anchored_notice_mutation,
+#      from 20260706000001) is REPLACED with a body that also freezes
+#      notice_class — the enumerating trigger was fail-open to columns it
+#      predates, so without this a racing or direct write could re-class an
+#      anchored evidence record.
 #
 # WHY THE APPLY IS SAFE
-# Purely additive: no data change, no RLS change, no trigger change, no
-# default. Every existing row reads notice_class = null, which is the
-# designed meaning ("unclassed"). Nothing backfills; nulls stay null.
+# Additive plus one trigger-body replacement: no data change, no RLS change,
+# no default. Every existing row reads notice_class = null, which is the
+# designed meaning ("unclassed"). Nothing backfills; nulls stay null. The
+# replaced trigger only ever ADDS a blocked case (re-classing an anchored
+# notice), and no client writes notice_class before this applies.
 #
 # ORDERING: code-first is fine (the API only writes the column when a client
 # actually sends the field, and no deployed client sends it yet). Apply
@@ -129,7 +136,10 @@ select
        and indexname = 'notices_class_lookback_idx')::int
     as lookback_index_present,
   (select count(*) from public.notices where notice_class is not null)::int
-    as classed_rows;
+    as classed_rows,
+  (select (prosrc like '%notice_class%')::int from pg_proc
+    where proname = '_reject_anchored_notice_mutation')::int
+    as freeze_covers_class;
 SQL
   SQL="$VERIFY_SQL" DB_URL="$DB_URL" npx tsx -e '
     import pg from "pg";
@@ -142,10 +152,11 @@ SQL
         const ok =
           Number(v.nullable_column_present) === 1 &&
           Number(v.check_constraint_present) === 1 &&
-          Number(v.lookback_index_present) === 1;
+          Number(v.lookback_index_present) === 1 &&
+          Number(v.freeze_covers_class) === 1;
         return c.end().then(() => {
           if (!ok) {
-            console.error("VERIFY FAILED: expected 1 nullable column, 1 check constraint, 1 index — see the table above for which invariant is off.");
+            console.error("VERIFY FAILED: expected 1 nullable column, 1 check constraint, 1 index, freeze trigger covering notice_class — see the table above for which invariant is off.");
             process.exit(1);
           }
           console.log("OK: notice_class is live. classed_rows is informational — it should be 0 immediately after apply (nothing backfills) and grows only as clients write classes.");

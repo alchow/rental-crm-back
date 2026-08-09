@@ -1,8 +1,9 @@
 -- notice class
 -- Forward-only migration. Add scope, invariants, grants, and verification notes.
 --
--- SCOPE: one nullable column + one lookback index on public.notices. Purely
--- additive; no data change, no RLS change, no trigger change.
+-- SCOPE: one nullable column + one lookback index on public.notices, and the
+-- anchored-notice freeze trigger extended to cover the new column. No data
+-- change, no RLS change.
 --
 -- WHY (frontend BACKEND_ASKS #25): notice_type is the landlord's VERBATIM
 -- words (1-100 chars, rendered as typed into the evidence-export PDF) and
@@ -40,10 +41,48 @@ comment on column public.notices.notice_class is
   'and out-of-app writers. Never displayed or exported in place of the words.';
 
 -- Serves the statutory lookback ("class X served in the trailing window") and
--- the list filter. Mirrors incidents_recurrence_idx
--- (account_id, tenancy_id, category, occurred_at) from 20260801000002.
+-- the tenancy-scoped list filter. Columns mirror incidents_recurrence_idx
+-- (account_id, tenancy_id, category, occurred_at) from 20260801000002;
+-- partial on live rows like the notices list indexes (20260712000001), since
+-- every shipped read excludes deleted rows.
 create index notices_class_lookback_idx
-  on public.notices (account_id, tenancy_id, notice_class, served_at);
+  on public.notices (account_id, tenancy_id, notice_class, served_at)
+  where deleted_at is null;
+
+-- The anchored-notice freeze must cover the new column. The 20260706000001
+-- trigger enumerates frozen columns (fail-open to columns it predates —
+-- unlike the incidents freeze, which diffs jsonb minus an allowlist and is
+-- fail-closed), so without this a PATCH racing the route pre-check, or any
+-- direct writer, could re-class an anchored evidence record. Same function
+-- name and trigger; the body adds one line for notice_class.
+create or replace function public._reject_anchored_notice_mutation()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if exists (
+    select 1
+      from public.rent_schedules s
+     where s.account_id       = OLD.account_id
+       and s.source_notice_id = OLD.id
+       and s.deleted_at is null
+  ) then
+    if (OLD.deleted_at is null and NEW.deleted_at is not null)
+       or NEW.served_at     is distinct from OLD.served_at
+       or NEW.served_method is distinct from OLD.served_method
+       or NEW.body          is distinct from OLD.body
+       or NEW.document      is distinct from OLD.document
+       or NEW.notice_type   is distinct from OLD.notice_type
+       or NEW.notice_class  is distinct from OLD.notice_class
+    then
+      raise exception 'notice % is anchored to a rent schedule and cannot be modified', OLD.id
+        using errcode = 'check_violation';
+    end if;
+  end if;
+  return NEW;
+end;
+$$;
 
 -- PostgREST must see the new column without a manual restart.
 notify pgrst, 'reload schema';
@@ -58,3 +97,6 @@ notify pgrst, 'reload schema';
 --   select indexname from pg_indexes
 --     where tablename = 'notices'
 --       and indexname = 'notices_class_lookback_idx';                 -- 1 row
+--   freeze covers the new column:
+--   select prosrc like '%notice_class%' from pg_proc
+--     where proname = '_reject_anchored_notice_mutation';             -- true

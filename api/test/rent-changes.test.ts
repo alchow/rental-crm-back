@@ -843,6 +843,21 @@ async function main(): Promise<void> {
     const classPatch = await patchA(`/notices/${nid}`, { notice_class: null });
     if (classPatch.status !== 409)
       throw new Error(`anchored class change should 409, got ${classPatch.status}`);
+
+    // The DB trigger backstop, not just the route pre-check: a DIRECT write
+    // (service role — bypasses RLS and the route entirely) re-classing an
+    // anchored notice must be rejected by _reject_anchored_notice_mutation.
+    // This is the review-proven gap 20260801000005 closes: the enumerating
+    // trigger predated notice_class and let this write through.
+    const direct = await admin
+      .from('notices')
+      .update({ notice_class: 'other' })
+      .eq('id', nid)
+      .select('id');
+    if (!direct.error)
+      throw new Error('direct service-role re-class of an anchored notice must be trigger-blocked');
+    if (!/anchor/i.test(direct.error.message))
+      throw new Error(`expected the anchored-notice trigger message, got: ${direct.error.message}`);
   });
 
   // =========================================================================
