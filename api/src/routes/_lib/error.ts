@@ -98,7 +98,7 @@ export type ErrorCode =
   | 'service_unavailable'
   // profile: a submitted phone number cannot be normalised to E.164
   | 'invalid_phone'
-  // agent-principal firewall codes (Workstream D)
+  // Agent-principal authorization failures.
   | 'agent_forbidden' // agent attempted a forbidden operation (correction/retraction)
   | 'agent_entry_type_forbidden' // agent attempted a communication append without provenance
   | 'agent_only' // landlord attempted an agent-only field or kind

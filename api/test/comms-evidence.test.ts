@@ -1,34 +1,11 @@
 // ----------------------------------------------------------------------------
-// Comms evidence-hardening integration tests (work items EV-A / EV-B).
-//
-// Exercised against a real Supabase stack, alongside — and without regressing —
-// the sms 1:1 / group / email thread surfaces.
-//
-//   * participants cast + attestation (EV-A, reworked): every verified comms
-//     journal row is stamped attestation='provider_verified' and gets a frozen
-//     interaction_participants cast of THAT delivery — inbound {sender,
-//     platform-recipient, cc…} (sms 1:1, group MMS, email token), outbound
-//     {platform-sender, recipient…} (1:1 and group). The cast is member
-//     SELECT-only (INSERT/UPDATE/DELETE revoked → raw writes denied) and
-//     insert-only evidence — a BEFORE UPDATE/DELETE trigger denies EVERYONE,
-//     service-role admin included. attestation is immutable + forge-gated at
-//     the DB. Outbound recipient identities are snapshotted at INTENT time, so
-//     an identity edited between approval and completion never rewrites the
-//     journaled cast. Group sends also carry the joined display NAMES as
-//     interactions.party_label.
-//   * verbatim-webhook archive (EV-B): server-side sha256, audit-anchored
-//     inbound_provenance row (insert event carries the hash), bytes stored in
-//     the private comm-evidence bucket; idempotent by provider_msg_id, a
-//     conflicting body 409s (first archived claim wins), account-pinned
-//     (another account's replay of the same id 409s), transport-only
-//     (landlord/viewer 403), member SELECT scoped by RLS, ragged base64 400.
-//   * legal holds: manager set/release (audited), agent + viewer 403 at the
-//     API and RLS-denied at raw PostgREST, GET defaults for a never-held
-//     account.
-//   * retention janitor (runEvidenceRetention): hold gate (skipped, then
-//     purged after release), purge stamps purged_at + removes the blob while
-//     the provenance row survives, fresh rows untouched, shared-blob
-//     conservatism (a recent row referencing the same bytes blocks removal).
+// Comms evidence integration tests against a real Supabase stack.
+// DATA FLOW: provider delivery -> immutable participant cast + attestation.
+// DATA FLOW: raw webhook -> SHA-256 provenance row -> private evidence blob.
+// Outbound recipients freeze at intent; inbound addresses freeze at capture.
+// Raw participant writes are denied.
+// Webhook claims are idempotent, account-pinned, and transport-only.
+// Legal holds block retention; purge removes blobs but preserves provenance.
 // ----------------------------------------------------------------------------
 
 import { execSync } from 'node:child_process';
@@ -291,7 +268,7 @@ async function setup(platformNumber: string, tag: string): Promise<Fixture> {
 
 // --- shapes -----------------------------------------------------------------
 
-// One row of the interaction_participants cast (the reworked EV-A evidence).
+// One immutable interaction participant.
 interface Cast {
   id: string;
   role: 'sender' | 'recipient' | 'cc' | 'attendee';
@@ -394,7 +371,7 @@ async function main(): Promise<void> {
     api(method, `${base}${path}`, { token: fx.agentToken, body });
 
   // ==========================================================================
-  // EV-A: participants cast + attestation
+  // Participants cast + attestation
   // ==========================================================================
 
   let groupThreadId = '';
@@ -866,7 +843,7 @@ async function main(): Promise<void> {
   );
 
   // ==========================================================================
-  // EV-B: verbatim-webhook archive
+  // Verbatim-webhook archive
   // ==========================================================================
 
   const rawBody = JSON.stringify({

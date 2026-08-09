@@ -8,7 +8,8 @@
 #
 # PREREQUISITES: Create the R2 bucket/token and Supabase Storage S3 keys in
 # their dashboards. Secrets come from env/.env.local or hidden prompts; this
-# script never echoes, persists, or commits prompted values.
+# script never echoes or writes prompted values to local disk. The secrets
+# stage stores them in GitHub Actions.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

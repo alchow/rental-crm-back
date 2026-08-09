@@ -274,7 +274,7 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
             : '')
         : '';
       const sid = root.external_ref ? `  provider_ref=${root.external_ref as string}` : '';
-      // Trust tier (EV-A rework): how the record is known. provider_verified
+      // Trust tier: how the record is known. provider_verified
       // = carrier-confirmed transmission (DB-gated); attested = someone's
       // account of an off-platform event; imported = bulk import. Legacy
       // rows (null) render nothing rather than implying a tier.

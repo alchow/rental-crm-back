@@ -6,7 +6,7 @@ import { nullableRpcArg } from '../supabase/db-types';
 import { getAdminClient } from './supabase-admin';
 import { processAndStoreBytes, ALLOWED_MIME_TYPES, MAX_BYTES } from './storage';
 
-// Public token intake is the only unauthenticated RLS-bypass route.
+// Public token intake is an unauthenticated RLS-bypass surface.
 // SECURITY: Store only the token hash and derive account/property/tenancy from
 // the verified row; validate body.area_id against that property. The admin RPC
 // sets tenant audit attribution and atomically writes the request, interaction,
@@ -345,9 +345,8 @@ intakeApp.openapi(intake, async (c) => {
       file = maybeFile as File;
     }
   } else {
-    // A syntactically-broken JSON body must be its own clear 400 — swallowing
-    // it into {} used to cascade into per-field "Required" messages that told
-    // the submitter nothing (usability finding C2).
+    // Malformed JSON gets one clear 400 instead of misleading per-field
+    // "Required" errors produced from an empty-object fallback.
     try {
       candidate = (await c.req.json()) as Record<string, unknown>;
     } catch {

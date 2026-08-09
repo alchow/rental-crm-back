@@ -34,7 +34,7 @@ const PatchTenancyBody = z
   .object({
     end_date: CalendarDate.nullable().optional(),
     status: TenancyStatus.optional(),
-    // Correction path for a mis-entered move-in date (usability finding C3).
+    // Correction path for a mis-entered move-in date.
     // Guarded in the handler: refused with 409 tenancy_has_money once any
     // non-voided charge or payment exists, and a future start_date must be
     // accompanied by status='upcoming' (a future-dated active/holdover/ended

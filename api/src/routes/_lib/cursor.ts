@@ -53,9 +53,9 @@ export function decodeCursor(s: string): CursorPosition | null {
 }
 
 // ----------------------------------------------------------------------------
-// keysetPage: the one implementation of the list-endpoint pagination dance
+// keysetPage: the single implementation of list-endpoint pagination
 // (decode cursor -> 400 on garbage -> .or() keyset filter -> fetch limit+1 ->
-// slice -> encode next cursor). Previously copy-pasted across ~14 handlers.
+// slice -> encode next cursor).
 // ----------------------------------------------------------------------------
 
 // Structural slice of the supabase-js query builder: enough for the helper

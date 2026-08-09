@@ -383,9 +383,9 @@ export async function probeStoredHeicRendition(bytes: Uint8Array): Promise<void>
 
 /**
  * Validate, hash, and upload private bytes plus an optional HEIC-derived JPEG;
- * callers own attachment-row writes. Intake first commits its atomic domain
- * rows, then uploads these prepared paths. Failed uploads are retryable;
- * unreferenced objects are janitor candidates.
+ * callers then create attachment rows. Intake uploads first so committed rows
+ * always reference available blobs. An RPC failure may leave unreferenced
+ * objects for the storage janitor.
  */
 export async function processAndStoreBytes(
   accountId: string,

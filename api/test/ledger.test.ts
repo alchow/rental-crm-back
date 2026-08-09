@@ -1,14 +1,8 @@
 // ----------------------------------------------------------------------------
-// Ledger + pagination regression tests (architecture plan, Phase 0/1).
-//
-// (A) Ledger isolation across tenancies in ONE account: the allocations
-//     fetch was account-wide before Phase 0; this asserts tenancy A's
-//     totals and entries are unaffected by tenancy B's charges/payments/
-//     allocations, and that the numbers are exactly right.
-// (B) Voided-charge allocation: the payment shows as unapplied credit.
-// (C) keysetPage at the HTTP level: a garbage cursor is 400
-//     invalid_request (it used to silently restart at page 1); a valid
-//     pagination walk returns every row exactly once in stable order.
+// Ledger and pagination integration tests:
+// - One tenancy's money rows cannot affect another tenancy's totals.
+// - Allocations to voided charges appear as unapplied credit.
+// - Invalid cursors return 400; valid pagination returns every row once.
 //
 // Requires the local Supabase stack (`supabase start` in db/), same as the
 // other integration suites.

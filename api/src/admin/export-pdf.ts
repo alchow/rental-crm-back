@@ -325,7 +325,7 @@ export interface ExportData {
   deliveryByInteraction: Map<string, { status: string; delivered_at: string | null }>;
   /** Inbound proof handle: inbound_provenance.body_sha256 keyed by
    *  provider_msg_id (== the journal row's external_ref). The hash the
-   *  archived signed webhook can be re-verified against (EV-B). */
+   *  archived signed webhook can be re-verified against. */
   provenanceShaByMsgId: Map<string, string>;
 }
 

@@ -122,8 +122,9 @@ export const CapturePersonaInboundResponse = z
   .object({
     /** Transport action by disposition:
      *  matched -> relay; triaged/duplicate/opted_out/cc_journaled -> no relay;
-     *  cc_relayed -> deliver a relay leg to the returned counterparty;
-     *  journaled_unverified -> no relay or ack until a human confirms/retracts.
+     *  cc_relayed -> deliver a counterparty leg with
+     *  relay_of_interaction_id=interaction_id;
+     *  journaled_unverified -> no relay or ack; a human may confirm or retract.
      *  Forward compatibility: never relay an unrecognized disposition. */
     disposition: z.enum([
       'matched',
@@ -145,7 +146,8 @@ export const CapturePersonaInboundResponse = z
 export const CaptureInboundResponse = z
   .object({
     /** Transport action by disposition:
-     *  matched -> relay; matched_direct -> send the group echo;
+     *  matched -> relay; matched_direct -> send the group echo with
+     *  relay_of_interaction_id=interaction_id;
      *  orphan/opted_out/sender_mismatch/duplicate -> no relay.
      *  Forward compatibility: never relay an unrecognized disposition. */
     disposition: z.enum([
@@ -163,7 +165,7 @@ export const CaptureInboundResponse = z
   .openapi('CaptureCommInboundResponse');
 
 // ---------------------------------------------------------------------------
-// Evidence archive (EV-B) — the carrier-signed webhook original, archived
+// Evidence archive — the carrier-signed webhook original, archived
 // verbatim so inbound journal rows are verifiable independently of our own
 // software. The transport POSTs the raw body + signature headers BEFORE
 // parsing (archive-then-process; see docs/comms-evidence.md). The provenance

@@ -1,18 +1,9 @@
 // ----------------------------------------------------------------------------
-// Interactions participants-cast DoD checks — the manual capture path's
-// interaction_participants round-trip (work item EV-A, the API surface of the
-// 20260703000003 rework).
-//
-// The journal's single counterparty slot cannot describe a group meeting or a
-// witnessed exchange. POST /v1/accounts/{id}/interactions now accepts an
-// optional `participants` array (kind='communication' only, 1..20 rows). When
-// present, the row is created via the atomic journal_with_participants RPC:
-// the response is stamped attestation='attested' and carries the created cast
-// (source='capture'); GET (single + list) embed the same cast. Without
-// participants the legacy insert path is preserved, but the attestation
-// default-fill trigger still stamps 'attested' for a communication/note
-// (null now means strictly a pre-migration legacy row); participants [].
-//
+// Manual participant-cast integration tests.
+// DATA FLOW: POST participants -> journal_with_participants RPC -> attested
+// interaction + immutable source='capture' cast -> GET/list response.
+// Participants are valid only for communication entries and contain 1..20 rows.
+// A plain request with no participants or counterparty returns an empty cast.
 // Covers:
 //   (a) manual create with 3 attendees (in-person group) round-trips
 //       POST -> GET -> list; attestation='attested'; each cast row

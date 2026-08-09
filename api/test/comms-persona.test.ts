@@ -779,13 +779,9 @@ async function main(): Promise<void> {
       .eq('address', LL_GMAIL_PHONE);
     assert((phoneIdentityCount ?? 0) === 0, 'a triaged alias never teaches an identity');
 
-    // LL_GMAIL_CONFLICT carries an exact-address tenant claim (seeded above) as
-    // well as being an alias spelling of the landlord's Cc leg. That collision
-    // is now unreachable: _comm_choose_persona_route returns
-    // 'parent_sender_mismatch' at its FIRST check (zero parent-sender rows) and
-    // never reaches the conflicting-claim probe that used to answer
-    // 'identity_conflict'. Same triage door, more honest reason — the sender is
-    // not on the parent at all.
+    // LL_GMAIL_CONFLICT is both a tenant claim and an alias of the landlord's Cc
+    // leg. The first routing check returns parent_sender_mismatch because the
+    // sender is absent from the parent, before identity-conflict detection runs.
     const conflicted = await personaCapture({
       from_address: LL_GMAIL_CONFLICT,
       to_addresses: [PERSONA],

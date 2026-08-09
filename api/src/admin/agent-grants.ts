@@ -185,7 +185,7 @@ export async function revokeAgentGrant(
   if (!revoked) throw new ApiError(404, 'not_found', 'agent grant not found or already revoked');
 
   // Best-effort: revoke all of the agent sub-user's GoTrue refresh tokens so
-  // previously-minted sessions cannot be exchanged for new access tokens after
+  // existing sessions cannot be exchanged for new access tokens after
   // revoke. This is belt-and-suspenders on top of the membership soft-delete
   // (the RLS hard floor): even without this, the agent's next DB write will
   // be denied because the role='agent' membership is gone. We SHOULD also kill
