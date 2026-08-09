@@ -1962,6 +1962,19 @@
           }
         }
       },
+      "NoticeClass": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          "rent_change",
+          "written_warning",
+          "cure_or_quit",
+          "other",
+          null
+        ]
+      },
       "Notice": {
         "type": "object",
         "properties": {
@@ -1979,6 +1992,9 @@
           },
           "notice_type": {
             "type": "string"
+          },
+          "notice_class": {
+            "$ref": "#/components/schemas/NoticeClass"
           },
           "served_at": {
             "type": [
@@ -2020,6 +2036,7 @@
           "account_id",
           "tenancy_id",
           "notice_type",
+          "notice_class",
           "served_at",
           "served_method",
           "body",
@@ -2062,6 +2079,9 @@
             "minLength": 1,
             "maxLength": 100
           },
+          "notice_class": {
+            "$ref": "#/components/schemas/NoticeClass"
+          },
           "served_at": {
             "type": "string",
             "format": "date-time",
@@ -2089,6 +2109,14 @@
       "PatchNoticeBody": {
         "type": "object",
         "properties": {
+          "notice_type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "notice_class": {
+            "$ref": "#/components/schemas/NoticeClass"
+          },
           "served_at": {
             "type": [
               "string",
@@ -17324,6 +17352,21 @@
             },
             "required": false,
             "name": "tenancy_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/NoticeClass"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "required": false,
+            "name": "notice_class",
             "in": "query"
           }
         ],

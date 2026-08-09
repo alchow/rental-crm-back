@@ -27,12 +27,27 @@ function isRentInstrumentReject(msg: string): boolean {
   return /anchor(s|ed to) a (live )?rent[_ ]schedule/i.test(msg);
 }
 
+// The machine-readable functional class BESIDE the verbatim notice_type —
+// never a replacement for the landlord's words, never displayed or exported
+// in their place (the evidence PDF prints notice_type as typed). Members are
+// functional acts, not statutory names: the same instrument is a "notice to
+// vacate" in TX, a "notice to quit" in MA, and unnamed in FL, so a name enum
+// would mistranslate most states. Nullable by design — the client derives it
+// from the exact canonical label the landlord committed; free text and
+// out-of-app writers yield null, and null is always legitimate. 'other' is
+// reserved for a future surface that asks explicitly; nothing infers it.
+// (Migration 20260801000005.)
+const NoticeClass = z
+  .enum(['rent_change', 'written_warning', 'cure_or_quit', 'other'])
+  .openapi('NoticeClass');
+
 const Notice = z
   .object({
     id: z.string().uuid(),
     account_id: z.string().uuid(),
     tenancy_id: z.string().uuid(),
     notice_type: z.string(),
+    notice_class: NoticeClass.nullable(),
     served_at: z.string().nullable(),
     served_method: z.string().nullable(),
     body: z.string().nullable(),
@@ -63,6 +78,7 @@ const CreateNoticeBody = z
   .object({
     tenancy_id: z.string().uuid(),
     notice_type: z.string().min(1).max(100),
+    notice_class: NoticeClass.nullable().optional(),
     served_at: ServedAt.optional(),
     served_method: z.string().min(1).max(100).optional(),
     body: z.string().max(10000).optional(),
@@ -70,8 +86,16 @@ const CreateNoticeBody = z
   })
   .openapi('CreateNoticeBody');
 
+// notice_type joined the patchable set with notice_class (frontend
+// BACKEND_ASKS #25): a typo in a string that renders verbatim into a court
+// PDF needs a correction path WHILE the notice is free-floating. Once it
+// anchors a rent schedule the whole PATCH is refused 409 (pre-check below +
+// DB trigger backstop), so the correction window closes exactly when the
+// record becomes evidence.
 const PatchNoticeBody = z
   .object({
+    notice_type: z.string().min(1).max(100).optional(),
+    notice_class: NoticeClass.nullable().optional(),
     served_at: ServedAt.nullable().optional(),
     served_method: z.string().min(1).max(100).nullable().optional(),
     body: z.string().max(10000).nullable().optional(),
@@ -101,6 +125,11 @@ const ListQuery = z.object({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().positive().max(100).default(50),
   tenancy_id: z.string().uuid().optional(),
+  // The statutory-lookback filter ("written warnings on this tenancy"): only
+  // classed notices match — free-text rows are null and never satisfy an
+  // equality filter, which is honest (an unclassed row cannot claim to be a
+  // warning). Served by notices_class_lookback_idx.
+  notice_class: NoticeClass.optional(),
 });
 
 const ListResponse = z
@@ -183,10 +212,11 @@ export const noticesApp = newApiApp();
 
 noticesApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
-  const { cursor, limit, tenancy_id } = c.req.valid('query');
+  const { cursor, limit, tenancy_id, notice_class } = c.req.valid('query');
   const sb = getSb(c);
   let q = sb.from('notices').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (tenancy_id) q = q.eq('tenancy_id', tenancy_id);
+  if (notice_class) q = q.eq('notice_class', notice_class);
   const { items, next_cursor: nextCursor } = await keysetPage(q, { cursor, limit });
   return c.json({ data: items, next_cursor: nextCursor } as z.infer<typeof ListResponse>, 200);
 });
@@ -216,6 +246,11 @@ noticesApp.openapi(create, async (c) => {
       account_id: accountId,
       tenancy_id: body.tenancy_id,
       notice_type: body.notice_type,
+      // Key included only when SENT: on a DB where 20260801000005 has not
+      // applied yet, clients that don't send the field keep working through
+      // the deploy window (the anchored pre-checks above use the same
+      // code-first tolerance).
+      ...(body.notice_class !== undefined ? { notice_class: body.notice_class } : {}),
       served_at: body.served_at ?? null,
       served_method: body.served_method ?? null,
       body: body.body ?? null,
@@ -263,6 +298,8 @@ noticesApp.openapi(patch, async (c) => {
   }
 
   const update: DbTableUpdate<'notices'> = { updated_at: new Date().toISOString() };
+  if (body.notice_type !== undefined) update.notice_type = body.notice_type;
+  if (body.notice_class !== undefined) update.notice_class = body.notice_class;
   if (body.served_at !== undefined) update.served_at = body.served_at;
   if (body.served_method !== undefined) update.served_method = body.served_method;
   if (body.body !== undefined) update.body = body.body;

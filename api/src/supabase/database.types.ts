@@ -3046,6 +3046,7 @@ export type Database = {
           deleted_at: string | null;
           document: Json;
           id: string;
+          notice_class: string | null;
           notice_type: string;
           served_at: string | null;
           served_method: string | null;
@@ -3059,6 +3060,7 @@ export type Database = {
           deleted_at?: string | null;
           document?: Json;
           id?: string;
+          notice_class?: string | null;
           notice_type: string;
           served_at?: string | null;
           served_method?: string | null;
@@ -3072,6 +3074,7 @@ export type Database = {
           deleted_at?: string | null;
           document?: Json;
           id?: string;
+          notice_class?: string | null;
           notice_type?: string;
           served_at?: string | null;
           served_method?: string | null;
