@@ -650,7 +650,7 @@ async function main(): Promise<void> {
       const leaseId = (assertStatus(lease, 201, 'create lease') as { id: string }).id;
       const notice = await api('POST', `/v1/accounts/${A.accountId}/notices`, {
         token: A.accessToken,
-        body: { tenancy_id: A.tenancyId, notice_type: 'entry_notice' },
+        body: { tenancy_id: A.tenancyId, notice_label: 'entry_notice' },
       });
       const noticeId = (assertStatus(notice, 201, 'create notice') as { id: string }).id;
 

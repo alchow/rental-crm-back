@@ -144,7 +144,7 @@ in the completed-inspection idiom):
 
 - **Anchored notice:** PATCH (entirely) and soft-delete are rejected. The
   notice's own fields — `served_at`, `served_method`, `body`, `document`,
-  `notice_type` — ARE the record of what was served; there is nothing on a
+  `notice_label` — ARE the record of what was served; there is nothing on a
   notice that is legitimately editable after it authorises billing.
 - **Anchored lease:** only soft-delete is rejected. The lease's probative
   field for the _rent change_ — the rent terms — is already immutable on

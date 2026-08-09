@@ -1990,7 +1990,7 @@
             "type": "string",
             "format": "uuid"
           },
-          "notice_type": {
+          "notice_label": {
             "type": "string"
           },
           "notice_class": {
@@ -2035,7 +2035,7 @@
           "id",
           "account_id",
           "tenancy_id",
-          "notice_type",
+          "notice_label",
           "notice_class",
           "served_at",
           "served_method",
@@ -2074,7 +2074,7 @@
             "type": "string",
             "format": "uuid"
           },
-          "notice_type": {
+          "notice_label": {
             "type": "string",
             "minLength": 1,
             "maxLength": 100
@@ -2103,13 +2103,13 @@
         },
         "required": [
           "tenancy_id",
-          "notice_type"
+          "notice_label"
         ]
       },
       "PatchNoticeBody": {
         "type": "object",
         "properties": {
-          "notice_type": {
+          "notice_label": {
             "type": "string",
             "minLength": 1,
             "maxLength": 100
@@ -2577,7 +2577,7 @@
             "type": "string",
             "format": "uuid"
           },
-          "notice_type": {
+          "notice_label": {
             "type": "string"
           },
           "served_at": {
@@ -2598,7 +2598,7 @@
         },
         "required": [
           "id",
-          "notice_type",
+          "notice_label",
           "served_at",
           "served_method",
           "created_at"

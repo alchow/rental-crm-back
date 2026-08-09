@@ -394,7 +394,7 @@ async function main(): Promise<void> {
 
       const notice = await post<{ id: string }>(A.token, `/v1/accounts/${A.accountId}/notices`, {
         tenancy_id: noise.tenancyId,
-        notice_type: 'noise_warning',
+        notice_label: 'noise_warning',
         served_at: '2026-07-12T00:00:00.000Z',
         served_method: 'hand_delivered',
         body: 'Written warning re: repeated night-time noise.',
@@ -429,11 +429,11 @@ async function main(): Promise<void> {
         assert(citedInteraction[field] !== undefined, `cited interaction is missing ${field}`);
       }
       const citedNotice = page.data.find((r) => r.notice !== undefined)!.notice!;
-      for (const field of ['notice_type', 'served_at', 'served_method', 'created_at']) {
+      for (const field of ['notice_label', 'served_at', 'served_method', 'created_at']) {
         assert(citedNotice[field] !== undefined, `cited notice is missing ${field}`);
       }
       assert(
-        citedNotice.notice_type === 'noise_warning',
+        citedNotice.notice_label === 'noise_warning',
         'notice projection carries the wrong row',
       );
     },

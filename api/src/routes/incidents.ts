@@ -205,7 +205,7 @@ const CitedMaintenanceRequest = z
 const CitedNotice = z
   .object({
     id: z.string().uuid(),
-    notice_type: z.string(),
+    notice_label: z.string(),
     served_at: z.string().nullable(),
     served_method: z.string().nullable(),
     created_at: z.string(),
@@ -724,7 +724,7 @@ incidentsApp.openapi(listItems, async (c) => {
     noticeIds.length
       ? sb
           .from('notices')
-          .select('id, notice_type, served_at, served_method, created_at')
+          .select('id, notice_label, served_at, served_method, created_at')
           .eq('account_id', accountId)
           .in('id', noticeIds)
       : empty,

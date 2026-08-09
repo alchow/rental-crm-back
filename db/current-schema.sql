@@ -2259,7 +2259,7 @@ begin
        or NEW.served_method is distinct from OLD.served_method
        or NEW.body          is distinct from OLD.body
        or NEW.document      is distinct from OLD.document
-       or NEW.notice_type   is distinct from OLD.notice_type
+       or NEW.notice_label  is distinct from OLD.notice_label
        or NEW.notice_class  is distinct from OLD.notice_class
     then
       raise exception 'notice % is anchored to a rent schedule and cannot be modified', OLD.id
@@ -10984,7 +10984,7 @@ CREATE TABLE IF NOT EXISTS "public"."notices" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "account_id" "uuid" NOT NULL,
     "tenancy_id" "uuid" NOT NULL,
-    "notice_type" "text" NOT NULL,
+    "notice_label" "text" NOT NULL,
     "served_at" timestamp with time zone,
     "served_method" "text",
     "body" "text",
@@ -10994,7 +10994,7 @@ CREATE TABLE IF NOT EXISTS "public"."notices" (
     "deleted_at" timestamp with time zone,
     "notice_class" "text",
     CONSTRAINT "notices_notice_class_check" CHECK (("notice_class" = ANY (ARRAY['rent_change'::"text", 'written_warning'::"text", 'cure_or_quit'::"text", 'other'::"text"]))),
-    CONSTRAINT "notices_notice_type_check" CHECK ((("length"("notice_type") >= 1) AND ("length"("notice_type") <= 100)))
+    CONSTRAINT "notices_notice_label_check" CHECK ((("length"("notice_label") >= 1) AND ("length"("notice_label") <= 100)))
 );
 
 ALTER TABLE ONLY "public"."notices" FORCE ROW LEVEL SECURITY;
@@ -11003,10 +11003,17 @@ ALTER TABLE ONLY "public"."notices" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "public"."notices" OWNER TO "postgres";
 
 --
+-- Name: COLUMN "notices"."notice_label"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."notices"."notice_label" IS 'The landlord''s verbatim words for the instrument — display title, search text, and the evidence-export PDF line. Never rewritten, never branched on; the machine-readable type is notice_class.';
+
+
+--
 -- Name: COLUMN "notices"."notice_class"; Type: COMMENT; Schema: public; Owner: postgres
 --
 
-COMMENT ON COLUMN "public"."notices"."notice_class" IS 'Machine-readable functional class beside the verbatim notice_type. Derived from the exact canonical label at create time; null for free text and out-of-app writers. Never displayed or exported in place of the words.';
+COMMENT ON COLUMN "public"."notices"."notice_class" IS 'Machine-readable functional class beside the verbatim notice_label. Derived from the exact canonical label at create time; null for free text and out-of-app writers. Never displayed or exported in place of the words.';
 
 
 --

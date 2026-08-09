@@ -453,7 +453,7 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
       doc
         .fontSize(10)
         .text(
-          `• ${(n.served_at as string) ?? '(not served)'}  ${n.notice_type as string}` +
+          `• ${(n.served_at as string) ?? '(not served)'}  ${n.notice_label as string}` +
             (n.served_method ? `  via ${n.served_method as string}` : ''),
         );
     }

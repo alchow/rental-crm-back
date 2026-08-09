@@ -235,7 +235,7 @@ begin
   -- Notices & scheduled tasks
   v_notice_a := gen_random_uuid(); v_notice_b := gen_random_uuid();
   insert into public.notices (
-    id, account_id, tenancy_id, notice_type, served_at
+    id, account_id, tenancy_id, notice_label, served_at
   ) values
     (v_notice_a, v_acc_a, v_tenancy_a, 'entry_notice', '2026-02-10T12:00:00Z'),
     (v_notice_b, v_acc_b, v_tenancy_b, 'entry_notice', '2026-02-10T12:00:00Z');
