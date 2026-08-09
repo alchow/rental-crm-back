@@ -1,30 +1,14 @@
 #!/usr/bin/env bash
-# ============================================================================
-# One-time provisioning for the off-platform DB backup workflows
-# (.github/workflows/db-backup-15min.yml + db-backup-daily.yml).
-# Full context & the fully-manual path: docs/backup-recovery-runbook.md.
-#
-# RUN IN A REGULAR TERMINAL (Terminal.app / iTerm) — it asks questions and
-# reads secrets from stdin, which one-shot consoles can't answer.
-#
-# Stages are independent; run them when ready:
-#
+# Interactive provisioning for off-platform DB backups; see
+# docs/backup-recovery-runbook.md. Stages are independent:
 #   bash scripts/setup-backups.sh role      # create backup_reader + verify
 #   bash scripts/setup-backups.sh secrets   # push the 9 GitHub Actions secrets
 #   bash scripts/setup-backups.sh verify    # dispatch both workflows, tail them
 #   bash scripts/setup-backups.sh           # all of the above, in order
 #
-# TWO STEPS THIS SCRIPT CANNOT DO (dashboard-only) — do them FIRST:
-#   A. Cloudflare R2 -> create a bucket (e.g. rental-crm-backups) and an API
-#      token scoped to it with object read / write / DELETE (delete is needed
-#      for retention pruning). Note the S3 endpoint + access key id + secret.
-#   B. Supabase -> Project Settings -> Storage -> S3 access keys -> generate.
-#      Note the endpoint, region, access key id, and secret.
-#
-# Values are read from the environment / .env.local if present, otherwise the
-# script prompts for them (secrets are read with `read -rs` — never echoed,
-# never written to disk). Nothing here is committed.
-# ============================================================================
+# PREREQUISITES: Create the R2 bucket/token and Supabase Storage S3 keys in
+# their dashboards. Secrets come from env/.env.local or hidden prompts; this
+# script never echoes, persists, or commits prompted values.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

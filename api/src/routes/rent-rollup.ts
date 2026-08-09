@@ -5,22 +5,11 @@ import { ApiError, errorResponses } from './_lib/error';
 import { TenancyStatus } from '../schemas/importable';
 import { CalendarDate } from '../schemas/calendar-date';
 
-// GET /v1/accounts/{accountId}/rent-rollup
-//
-// One row per tenancy in the requested statuses (default active+holdover).
-// Ended tenancies with a remaining money signal are available by explicitly
-// including `ended`, preserving the original default contract. Replaces the
-// client-side one-GET-/ledger-per-tenancy fan-out (Field Log ask #4).
-//
-// The heavy lifting is the SECURITY INVOKER SQL function rent_rollup()
-// (migration 20260715000001), which mirrors the per-tenancy ledger's
-// aggregation rules EXACTLY — see the semantics contract in the migration
-// header and the parity test in api/test/rent-rollup.test.ts (rollup must
-// equal GET /ledger for every tenancy). Balances stay derived-on-read.
-//
-// No pagination: the response is bounded by the account's current-tenancy
-// count (a DIY-landlord portfolio — tens to low hundreds of rows). Revisit
-// with a cursor if an account ever approaches ~1k current tenancies.
+// One derived ledger row per requested tenancy; defaults to active+holdover and
+// includes ended only when requested. The SECURITY INVOKER rent_rollup() RPC
+// replaces per-tenancy fan-out and must remain numerically identical to
+// GET /ledger (migration 20260715000001; rent-rollup parity test). Unpaginated
+// while portfolios remain below roughly 1k current tenancies.
 
 const RentRollupRow = z
   .object({
@@ -123,8 +112,6 @@ rentRollupApp.openapi(get, async (c) => {
   const asOf = as_of ?? new Date().toISOString().slice(0, 10);
 
   // Comma-separated status list, validated against the tenancy vocabulary.
-  // (Same parse shape as search.ts's kinds param; PR 6's shared csv-enum
-  // helper should absorb this when it lands.)
   let statuses: string[] | undefined;
   if (status !== undefined) {
     const values = [

@@ -1,22 +1,7 @@
-// Server-only existence oracle for branded-subdomain suggestions.
-//
-// Wraps public._email_subdomains_taken(candidates) — the SECURITY DEFINER RPC
-// (migration 20260721000001) that returns which candidate labels are already
-// claimed by SOME account (across accounts; accounts is member-SELECT under
-// FORCE RLS). Two reasons this call lives behind the service-role admin client
-// (and thus in the admin quarantine, src/admin/):
-//
-//   1. CI guard: db/test/check_definer_grants.sql requires every
-//      non-allowlisted public SECURITY DEFINER function to be service_role-only.
-//      The RPC's grant is service_role-only, so it is only reachable through the
-//      admin client — hence this wrapper.
-//   2. Enumeration: a direct /rest/v1/rpc grant to authenticated would let a
-//      signed-in user of ANY account probe whether an arbitrary label is claimed.
-//      Keeping the call server-side (service_role-only) closes that hole.
-//
-// HTTP-surface gating lives at the ROUTE, not here: accounts.ts /email-branding/
-// suggestions is requireManager (owner|manager) — the same principals who would
-// learn "taken" from a PATCH 409 anyway.
+// Server-only branded-subdomain existence oracle (migration 20260721000001).
+// SECURITY: The service-role-only DEFINER RPC prevents arbitrary cross-account
+// label enumeration. The HTTP route separately limits this wrapper to managers,
+// who could already learn "taken" from the branding write conflict.
 
 import { getAdminClient } from './supabase-admin';
 

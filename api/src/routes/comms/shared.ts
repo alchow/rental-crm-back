@@ -83,8 +83,8 @@ export function normalizeAddress(channel: string, raw: string): string {
   return e164;
 }
 
-// One party can now hold several live claims for the same channel (persona
-// routing v2 PR 2: channel_identities is one row per claim, not per address).
+// One party can hold several live claims for the same channel because
+// channel_identities stores one row per claim, not per address.
 // When a route only needs ONE address to dial, pick deterministically instead
 // of trusting row order: a human-linked claim first, then a verified one
 // (verified_at, or a source that implies verification), then the newest.

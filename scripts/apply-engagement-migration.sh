@@ -1,24 +1,13 @@
 #!/usr/bin/env bash
-# ============================================================================
-# Apply the inspection-engagement migration (20260701000001_inspection_engagement)
-# and verify it landed. Modelled on scripts/deploy-agent-api.sh.
-#
-# RUN IN A REGULAR TERMINAL (Terminal.app / iTerm) — it asks confirmation
-# questions a one-shot console can't answer.
+# Apply and verify 20260701000001_inspection_engagement in an interactive terminal.
 #
 #   bash scripts/apply-engagement-migration.sh local        # local Supabase stack
 #   bash scripts/apply-engagement-migration.sh prod         # PROD (pooler URL + confirm)
 #   bash scripts/apply-engagement-migration.sh verify local # verify only, no apply
 #   bash scripts/apply-engagement-migration.sh verify prod
 #
-# The migration is ADDITIVE (nullable columns + a new table + new/replaced
-# DEFINER RPCs), so it is safe to apply to prod BEFORE the code deploy — the
-# live app never touches the new objects until the new code ships. Order is the
-# same as every migration here: schema first, code second.
-#
-# `supabase db push` applies EVERY pending migration in order, not just this
-# one — the script prints the pending set and makes you confirm it first.
-# ============================================================================
+# The additive schema must lead code. `db push` applies every pending migration,
+# so inspect the printed set before confirming.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

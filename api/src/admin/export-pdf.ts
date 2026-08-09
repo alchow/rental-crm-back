@@ -10,34 +10,11 @@ import {
   storeGeneratedArtifactBytes,
 } from './storage';
 
-// ============================================================================
-// Evidence export bundle renderer.
-// ============================================================================
-//
-// This is the product's reason to exist. A PDF that holds up in a dispute.
-// It must:
-//
-//   (1) Embed the audit-chain verification result prominently. If the chain
-//       is broken, say so. A clean-looking PDF over a tampered chain would
-//       be worse than no PDF -- it's a credibility trap.
-//   (2) Include EVERYTHING in scope: lease(s), full rent ledger
-//       (charges/payments/allocations/derived balances/unapplied credit),
-//       interactions (channels + occurred_at vs logged_at), maintenance
-//       requests + work orders + status history, inspections + reports,
-//       notices, photos, and the audit trail.
-//   (3) Per-photo chain of custody: original content_hash, server-set
-//       received_at, uploader actor (incl. tenant:<token_id> for intake).
-//       HEIC originals embed via the derived JPEG; identity stays the
-//       original's hash.
-//   (4) Work on ENDED / soft-deleted tenancies -- that's precisely WHEN
-//       disputes happen.
-//   (5) Stamp generated_at. Unlike the inspection report (pinned to
-//       completed_at, deterministic across rerenders), an export is a
-//       point-in-time snapshot; two exports of the same scope produce
-//       different bytes, and that's by design. The bundle's content hash
-//       identifies THIS generation.
-//   (6) Use a much higher size cap than user uploads; long tenancies with
-//       many photos can blow past 20 MiB easily.
+// Evidence export bundle. It must expose chain verification; include all
+// in-scope facts, including ended/deleted history; preserve each photo's
+// original hash and custody metadata; and identify this point-in-time
+// generation with generated_at plus its own content hash. HEIC renders through
+// its derivative while the original remains the evidence identity.
 
 // 200 MiB cap on generated artifacts. The user-upload cap stays at 20 MiB
 // (DOS protection on tenant intake + landlord uploads); generated bundles
@@ -65,7 +42,7 @@ export interface ChainStatus {
 // ---- top-level orchestrator -------------------------------------------------
 
 /**
- * Boot recovery (Phase 2.1): the in-process job queue does not survive a
+ * Boot recovery: the in-process job queue does not survive a
  * restart, so any export still queued/running at boot can never complete.
  * Mark them failed with an actionable message -- a truthful failed-state
  * beats a forever-pending row. Fire-and-forget from buildApp(); must never
@@ -101,7 +78,7 @@ export async function recoverOrphanedEvidenceExports(): Promise<void> {
 }
 
 /**
- * Runs ONE queued evidence export to completion (Phase 2.1 job body).
+ * Runs one queued evidence export to completion.
  * Loads the queued row, flips it to running, builds the bundle, and lands
  * the artifact atomically via the complete_evidence_export RPC (which pins
  * audit.actor to the exporter). On any failure the row is marked failed
@@ -176,7 +153,7 @@ async function renderAndComplete(args: {
   //    verification banner exists to surface.
   const chain = await verifyChain(scope.accountId);
 
-  // Out-of-band signal (Phase 11 flag A): a broken chain is a security
+  // SECURITY: A broken chain is an out-of-band security
   // incident (DB-owner-level tampering). The PDF banner is reactive --
   // someone has to export and look. Surface it to stderr in a structured
   // shape so log pipelines / on-call alerting catch it the moment it
@@ -219,8 +196,8 @@ async function renderAndComplete(args: {
   // 5. Land the artifact via complete_evidence_export: ONE txn that inserts
   //    the attachment row and flips the export row to done, with audit.actor
   //    pinned to 'user:<exporter>' inside the function so both audit events
-  //    carry the operator attribution. Same atomicity discipline as
-  //    submit_intake_with_attachment (Phase 9) applied here.
+  //    carry the operator attribution. This matches the atomicity discipline
+  //    used by submit_intake_with_attachment.
   const attachmentId = crypto.randomUUID();
   const rpcRes = await admin.rpc('complete_evidence_export', {
     p_evidence_export_id: evidenceExportId,
@@ -556,7 +533,7 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   // Tenancy-scoped rows.
   const tenancyId = scope.tenancyId ?? null;
 
-  // Date-range narrowing (Phase 11 flag B): the filter applies ONLY to
+  // INVARIANT: Date-range filtering applies ONLY to
   // activity sections. Standing context -- leases, occupants, rent
   // schedules -- always loads fully; balances depend on
   // pre-range history (charges + allocations) so we load those whole

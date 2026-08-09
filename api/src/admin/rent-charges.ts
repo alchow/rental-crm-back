@@ -2,41 +2,12 @@ import { getLogger } from '../log';
 import { getAdminClient } from './supabase-admin';
 import { ApiError } from '../routes/_lib/error';
 
-// ============================================================================
-// Automatic rent-charge generator (admin-side, service-role). Migration
-// 20260704000001 shipped generate_rent_charges() as an idempotent, opt-in
-// generator but deliberately did NOT schedule it (the "define, don't schedule"
-// pattern) — this module is the runner that the Render cron
-// `rent-charge-generator` invokes daily via `pnpm --filter ./api charges:generate`.
-//
-// Why admin-side / service-role: generate_rent_charges is SECURITY DEFINER and
-// its EXECUTE grant is service-role-only (RLS-bypassing; anon/authenticated are
-// revoked). No user JWT is present in a cron context, so the service-role
-// client is the only caller that can reach it — the exact same reasoning as the
-// evidence-retention janitor (admin/evidence.ts).
-//
-// Enumeration is FLAG-GATED: we bill just the accounts where
-// auto_charge_enabled = true. Since 2026-08-01 that flag DEFAULTS to true
-// (migration 20260801000001, ADR-0011 amendment), so the enumeration set is
-// "every account that has not opted OUT" rather than the old opt-in cohort.
-// The gate itself is unchanged and is still defence-in-depth with the
-// generator, which re-checks the SAME flag on every call and returns the empty
-// set for an opted-out (or missing) account — so even a loose enumeration here
-// (or a stray manual RPC elsewhere) can never bill an account that turned it
-// off. What protects an account that never thought about the flag is the
-// generator's other requirement: it mints a charge only where a LIVE rent
-// schedule covers the period, so an account with no schedules is billed
-// nothing.
-//
-// PER-ACCOUNT calls (not one fleet-wide RPC): each generate_rent_charges call
-// takes the migration's per-account advisory lock and runs in its own short
-// audit-chain transaction, so one account's work never blocks another's and
-// each account's hash chain stays contiguous. A single account's failure is
-// loud but NOT fatal (same "loud, not fatal" philosophy as evidence.ts's
-// per-blob remove): the generator is idempotent, so the next daily run — or a
-// manual re-run — heals a transient miss without double-billing. Advance timing
-// (the charge is created the day AFTER the current period's due date) gives the
-// slack that makes a one-day heal harmless.
+// Daily service-role runner for generate_rent_charges() (ADR-0011). It scans
+// auto-charge-enabled accounts; the RPC rechecks that flag and requires a live
+// schedule, preventing stray calls from billing opted-out or unscheduled
+// accounts. Each account runs under its own advisory lock and audit transaction.
+// Per-account failures are loud but do not stop others; idempotency lets the
+// next run heal a miss without double-billing.
 
 export interface RentChargeRunResult {
   /** Accounts with auto_charge_enabled = true, i.e. not opted out (the enumeration set). */

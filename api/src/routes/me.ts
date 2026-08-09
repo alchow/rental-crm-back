@@ -4,24 +4,10 @@ import { requireAuth } from '../middleware/auth';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 
-// GET /v1/me -- "who am I?" and "which accounts am I in?"
-//
-// Authenticated but NOT account-scoped: there is no accountId in the path
-// (a fresh login has no account context yet -- this is how the client
-// discovers it), and no Idempotency-Key (it's a read).
-//
-// Identity is read off the verified JWT (auth.uid()/auth.userId), never
-// from a body or header -- the actor-integrity rule applies here too. The
-// membership query runs through PostgREST under the caller's JWT, so RLS
-// (account_members_self_select / accounts_member_select) restricts the
-// result to the caller's own non-deleted rows; it is not possible for this
-// to return another user's membership or another account's name.
-//
-// Phase 12: registered as a typed OpenAPIHono route (was a plain Hono
-// route) so it actually lands in openapi.json and the generated SDK --
-// previously the integration guide documented it but the spec didn't carry
-// it, so clients had no typed way to call the only endpoint that resolves
-// "which account do I scope to" after login.
+// GET /v1/me resolves the authenticated caller's account scope after login.
+// SECURITY: Identity comes only from the verified JWT, and caller-scoped RLS
+// limits both memberships and account names to that user. Keep this route in
+// OpenAPI so clients can perform this bootstrap through the generated SDK.
 
 const Membership = z
   .object({

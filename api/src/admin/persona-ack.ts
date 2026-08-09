@@ -1,22 +1,7 @@
-// Persona auto-ack — the friendly front-door receipt for unknown senders.
-//
-// When a persona capture lands in triage (unknown sender), core may queue ONE
-// short acknowledgement email so the stranger isn't met with silence. This is
-// a core-originated transactional send: an outbox INTENT with
-// approval_ref='system:persona_ack' / author_type='system' (the
-// capture-renewal pattern — inspection-capture.ts); the transport makes the
-// provider call off the row. Core never dials.
-//
-// Guard rails, in order:
-//   * AUTH: the caller (the comms route) only invokes this on a DMARC pass —
-//     acking unauthenticated mail is backscatter/amplification.
-//   * RATE: at most 1 ack per account+sender per day and 20 per account per
-//     day, via the shared sliding-window bucket (service-role only, hence this
-//     module lives in the admin quarantine).
-//   * OPT-OUT: the comm_outbox BEFORE-INSERT trigger refuses opted-out
-//     destinations (P0004) — logged as compliant, never thrown.
-//
-// Fire-and-forget: capture latency and ack failures must never couple.
+// Queues one system-authored receipt for a DMARC-verified unknown sender.
+// Guards: one ack per account+sender/day, twenty per account/day, and DB opt-out
+// enforcement. Fire-and-forget: capture latency and success never depend on
+// acknowledgement delivery. Core writes the outbox intent; transport dials.
 
 import { createHash } from 'node:crypto';
 import { getAdminClient } from './supabase-admin';

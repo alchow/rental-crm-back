@@ -5,26 +5,12 @@ import { asJson, type DbTableInsert } from '../supabase/db-types';
 import { ApiError, errorResponses } from './_lib/error';
 import { softDeleteStamp } from './_lib/soft-delete';
 
-// Per-unit inspection layout: an INERT template-trim delta store.
-//
-// A landlord starts from a base inspection template and trims it per unit ("no
-// garage here; add a second balcony"). The frontend records that trim as a
-// delta DOCUMENT keyed (area_id x template_id) -- it does NOT fork the template.
-// This route is the document's home: one singleton sub-resource per
-// (area, template) pair.
-//
-// The backend is deliberately DUMB about the document's meaning. We pin its
-// SHAPE with zod (bounded arrays, typed added-item records) so the SDK gets
-// exact types, but we never validate a removed/added KEY against the template's
-// schema -- membership is the frontend's job, recomputed on every apply (a
-// removed key that no longer exists in a re-published base template is simply a
-// no-op there). Because of that, GET on a pair that was never written returns
-// 404 ("no memory -- render the standard form"), PUT is an idempotent
-// whole-document upsert, and DELETE resets the unit back to the standard form.
-//
-// Path shape mirrors unit-details (another singleton sub-resource on an area);
-// areaId is pre-validated by the requireImmediateParent middleware, and a
-// cross-account templateId is rejected by the composite FK (surfaced as 404).
+// Stores one inert template delta per (area, template), not a template fork.
+// Zod validates the bounded document shape; the frontend resolves item keys
+// against the current template, so removed stale keys are harmless no-ops.
+// GET missing -> 404/default layout; PUT -> whole-document upsert; DELETE ->
+// reset. Immediate-parent validation and the composite FK reject cross-account
+// area/template pairs.
 
 // The delta document. STRICT so an unexpected key is a 400 rather than silently
 // stored: the frontend owns this shape, so an unknown field is a client bug.

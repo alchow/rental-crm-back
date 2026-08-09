@@ -5,11 +5,11 @@
 // suggest a target that the executor knows how to coerce + insert, and the
 // executor never has to guess what a mapped field means.
 //
-// Phase 1 scope is structural + notes:
+// Supported scope is structural data plus notes:
 //   property -> area (unit or common space) -> unit_details -> tenant ->
 //   tenancy -> tenancy_member -> lease (optional) -> rent_schedule;
 //   plus interaction (imported notes/log entries, kind='note').
-// Money (charges/payments) is Phase 2 and deliberately ABSENT from this
+// Money (charges/payments) is deliberately ABSENT from this
 // catalog so it cannot be imported by accident.
 // ----------------------------------------------------------------------------
 

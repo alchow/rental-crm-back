@@ -1,42 +1,17 @@
 #!/usr/bin/env bash
-# ============================================================================
-# Apply the rent-schedule delete-guard migration
-# (20260706000002_rent_schedule_delete_guard, PR #68) and verify it landed.
-# Modelled on scripts/apply-rent-change-migration.sh: NON-INTERACTIVE gating —
-# `prod` alone is a DRY RUN that prints the pending set; applying requires an
-# explicit second argument. (`db push` itself still asks one y/N in a TTY.)
+# Apply and verify 20260706000002_rent_schedule_delete_guard. `prod` is a dry
+# run; production apply requires `prod confirm` and a final db-push prompt.
 #
 #   bash scripts/apply-delete-guard-migration.sh local          # local stack (applies)
 #   bash scripts/apply-delete-guard-migration.sh prod           # DRY RUN: list pending, apply nothing
 #   bash scripts/apply-delete-guard-migration.sh prod confirm   # PROD apply (pooler URL) + verify
 #   bash scripts/apply-delete-guard-migration.sh verify local   # verify only, no apply
-#   bash scripts/apply-delete-guard-migration.sh verify prod
 #
-# Prod credentials: SUPABASE_DB_URL_PROD from the environment, else read from
-# .env.local (gitignored). The URL is never PRINTED by this script (safe for a
-# logged console), though like every `supabase --db-url` invocation it is
-# briefly visible in the local process table (ps argv) — same as the sibling
-# scripts. This is the POOLER URL that survived the IPv6 incident — do NOT
-# swap in db.<ref>.supabase.co.
-#
-# ORDERING QUIRK (why this script does NOT reuse `pnpm --filter ./db
-# migrate:up`): this migration is stamped 20260706000002, which sorts BEFORE
-# the already-applied future-dated persona migrations (20260707000001 ..
-# 20260709000002). A plain `supabase db push` refuses to insert a migration
-# behind the remote head; `--include-all` is the documented escape hatch and
-# is exactly right here — the file is genuinely new everywhere. The dry run
-# prints the pending set so you can review it first: on prod it must show
-# EXACTLY this one migration as local-only. If anything else shows pending,
-# STOP — history has drifted; repair before pushing:
-#   supabase --workdir db migration repair --status applied <version> --db-url "$SUPABASE_DB_URL_PROD"
-#
-# The migration is ADDITIVE and safe ahead of the code deploy: one BEFORE
-# UPDATE trigger that rejects soft-deleting a rent_schedule while non-voided
-# charges reference it. Nothing in the deployed API soft-deletes schedules
-# today (the DELETE route ships with PR #68), so the only writes it can newly
-# reject are direct-PostgREST soft-deletes — which were the unguarded hole it
-# exists to close.
-# ============================================================================
+# SECURITY: Read the pooler URL from SUPABASE_DB_URL_PROD or .env.local and
+# never print it. ORDERING: This version may sit behind the remote head, so the
+# script uses --include-all. Production must show exactly this local-only row;
+# stop on any other pending migration and repair history before continuing.
+# The additive trigger rejects only schedule deletion with live charges.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

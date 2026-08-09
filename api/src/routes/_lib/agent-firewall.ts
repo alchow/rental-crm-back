@@ -1,21 +1,8 @@
-// Journal firewall for the agent principal (agent-api plan Workstream D;
-// ADR-0006). Called from the interactions create handler before any DB write.
-//
-// Invariants this enforces (in addition to the DB constraints that back-stop
-// them):
-//   - The agent cannot correct or retract any journal entry (only landlords
-//     supersede history).
-//   - Agent communications require authorization provenance: approval_ref plus
-//     either approved_by (a human approved this exact message —
-//     approval_ref='proposal:<id>') or a 'grant:'-prefixed approval_ref (sent
-//     under a standing landlord-approved policy; no human read this specific
-//     message). Free-text without provenance stays forbidden: a direct append
-//     could fabricate a contact that never happened. (Rationale:
-//     landlord-agent/docs/agent-sends-core-records.md in the sibling repo.)
-//   - Agent notes require explicit landlord approval (approved_by + approval_ref).
-//   - agent_events carry structured metadata and are vocabulary-constrained.
-//   - Landlord users cannot supply agent-only fields (entry_type, approval_ref,
-//     approved_by) or create agent_event entries.
+// Journal firewall (ADR-0006), applied before writes. The agent cannot
+// supersede history. Communications require either per-message approval or a
+// `grant:` authorization; notes require explicit human approval. Agent events
+// require structured, vocabulary-constrained metadata. Landlords cannot set
+// agent-only provenance fields or create agent events.
 
 import type { Principal } from '../../middleware/principal';
 import { ApiError } from './error';

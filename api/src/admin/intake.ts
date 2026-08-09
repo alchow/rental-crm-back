@@ -6,50 +6,12 @@ import { nullableRpcArg } from '../supabase/db-types';
 import { getAdminClient } from './supabase-admin';
 import { processAndStoreBytes, ALLOWED_MIME_TYPES, MAX_BYTES } from './storage';
 
-// ============================================================================
-// Tenant intake -- the single public, unauthenticated, RLS-bypassing route.
-// ============================================================================
-//
-// Threat model (this is the highest-risk surface in the build, so the design
-// is conservative):
-//
-//   * The URL is the secret. The DB stores ONLY sha256(secret); a DB read
-//     can never recover a live link. The handler hashes incoming tokens
-//     before lookup.
-//
-//   * Scope is derived STRICTLY from the verified token row:
-//       account_id, property_id, tenancy_id <- intake_tokens
-//     The submitter's body cannot override any of them. The area_id IS
-//     submitter-supplied but is validated to belong to the TOKEN's property
-//     (not just the account); a token scoped to property P never lands a
-//     write in another property's area.
-//
-//   * The handler runs with the admin (service-role) client because there
-//     is no authenticated user; RLS would otherwise refuse the write to
-//     account_members-gated tables. The route lives in src/admin/ so the
-//     ESLint quarantine still passes (the only place that imports
-//     supabase-admin.ts).
-//
-//   * audit.actor is set inside the RPC BEFORE the writes, so the audit
-//     trigger captures actor='tenant:<token_id>'. This works because the
-//     Phase 4 actor-integrity fix says: when auth.uid() is NULL (no JWT --
-//     our case), audit.actor wins. When auth.uid() IS set (user-facing
-//     path), audit.actor is IGNORED. Intake therefore can't impersonate a
-//     real user, and a user can't impersonate an intake.
-//
-//   * Phase 9: the attachment INSERT is folded into the RPC, so a single
-//     transaction lands maintenance_request + interaction + attachment
-//     (+ optional HEIC-derived JPEG). Three failure modes are eliminated
-//     by construction: "request without its photo", "photo without its
-//     request", and "photo audited as 'system' instead of the tenant".
-//
-//   * Phase 9: per-IP rate limit moved to the DB (bump_ip_rate_bucket).
-//     The Phase 7 in-memory bucket reset on every restart and was useless
-//     across instances; the DB sliding window survives both.
-//
-//   * Tokens are reusable until revoked. Auto-revoke triggers when the
-//     bound tenancy.status moves to 'ended' or the tenancy is soft-deleted.
-//     A landlord can also revoke explicitly via the authenticated route.
+// Public token intake is the only unauthenticated RLS-bypass route.
+// SECURITY: Store only the token hash and derive account/property/tenancy from
+// the verified row; validate body.area_id against that property. The admin RPC
+// sets tenant audit attribution and atomically writes the request, interaction,
+// and optional attachment/derivative. DB rate limits work across instances.
+// Tokens remain reusable until explicit revoke or tenancy end/deletion.
 
 // ----- token helpers ---------------------------------------------------------
 
@@ -210,7 +172,7 @@ const IntakeResponse = z
   .object({
     maintenance_request_id: z.string().uuid(),
     interaction_id: z.string().uuid(),
-    // Phase 9: when the submitter included a file, attachment_id is the
+    // For file submissions, attachment_id is the
     // INSERTed attachments row. For HEIC uploads, derivative_id is the
     // server-derived JPEG row whose derived_from = attachment_id.
     attachment_id: z.string().uuid().nullable(),

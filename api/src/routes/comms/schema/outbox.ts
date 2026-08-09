@@ -87,15 +87,9 @@ export const CommOutbox = z
           /** 'cc' on copied-party entries (landlord CC arm); absent on primary
            *  recipients and on rows frozen before the CC arm existed. */
           role: z.enum(['cc']).optional(),
-          /** WHICH tier resolved this entry (persona routing v2):
-           *  caller_intent (the caller stated the party via to_party/cc_parties
-           *  and core re-verified it — PR 3), then thread_participant |
-           *  tenancy_member | account_member (authoritative context), then the
-           *  claims resolver's winning tier (human_link | authoritative_record |
-           *  verified_claim | provider_learned | legacy — PR 2), then unknown.
-           *  'learned_identity' appears on rows frozen by the PR 1 stamp.
-           *  Absent on rows frozen before the stamp existed and on group-MMS
-           *  snapshots. */
+          /** Resolution tier, ordered from caller intent and authoritative
+           *  context through identity claims to unknown. `learned_identity`
+           *  appears only on older snapshots; absent on pre-stamp and group rows. */
           resolution_source: z
             .enum([
               'caller_intent',
@@ -210,7 +204,7 @@ export const CreateOutboxBody = z
      *  comm_outbox.cc_addresses. */
     cc_addresses: z.array(z.string().min(3).max(320)).min(1).max(5).optional(),
     /** Explicit PRIMARY-recipient party for a BARE (thread-less) email intent
-     *  — the caller states what it already knows (persona routing v2 PR 3) so
+     *  — the caller states what it already knows so
      *  core need not re-derive the party from the To address. Bare email only
      *  (400 otherwise) and requires to_address. Core re-verifies independently
      *  before freezing: the party must belong to the account, a tenant must be

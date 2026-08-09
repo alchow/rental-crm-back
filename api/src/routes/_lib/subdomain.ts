@@ -1,28 +1,8 @@
-// Per-account email-branding validation — pure, DB-free, no env. The API layer
-// (routes/accounts.ts) is the sole place branding input is validated; the DB
-// enforces only the RFC-1035 FORMAT and global uniqueness (migration
-// 20260704000001). Everything policy-shaped lives here so the reserved-word
-// list can evolve without a migration.
-//
-// A branded subdomain becomes a public DNS label under the platform parent
-// domain (`<subdomain>.<parent>`), so it must be a single lowercase RFC-1035
-// label AND must not collide with an operational or reserved name. This module
-// is a pure validator: it RETURNS a result and never throws — the caller
-// (routes/accounts.ts) maps a failure to a 422 with field errors.
-//
-// The RFC-1035 label rule (LABEL_RE), the operational reserved list
-// (RESERVED_SUBDOMAINS), and the ops list (OPS_SUBDOMAINS) are OWNED by the
-// premium-subdomains loader (./premium-subdomains) — see that file for WHY
-// (an import-cycle break). They are imported and RE-EXPORTED here so importers
-// that resolved them from subdomain.ts are unaffected.
-//
-// The PREMIUM property-category names are no longer hardcoded here: they live
-// in api/src/config/premium-subdomains.json, loaded + validated by
-// ./premium-subdomains. Removing a name there RELEASES it for the next
-// owner/manager to claim (the sale flow); adding one reserves it — both take
-// effect at the next deploy. The DB backstop (public.reserved_subdomain_labels)
-// is reconciled to that file's premium rows on every API boot
-// (admin/sync-premium-subdomains.ts), so the list evolves without a migration.
+// Pure email-branding validation. A candidate must be one lowercase RFC-1035
+// label and must not collide with reserved, operational, or premium names.
+// Callers map failures to 422; this module never throws. The DB independently
+// enforces format and uniqueness (migration 20260704000001), while boot sync
+// mirrors deployment-time premium policy into reserved_subdomain_labels.
 import {
   LABEL_RE,
   OPS_SUBDOMAINS,
@@ -111,22 +91,14 @@ const SUGGEST_DOMAINY_WORDS: readonly string[] = [
 ];
 
 /**
- * Suggest up to 8 candidate email subdomains derived from an account name, in
- * priority order (shortest/brandiest first). Pure — no DB, no env. Every
- * candidate is run through validateEmailSubdomain, so reserved/premium/format
- * failures are dropped here rather than surfacing to the caller; the caller
- * (the suggestions endpoint) additionally filters already-taken labels and
- * caps the surfaced list. Note compounds like 'acme-properties' are LEGAL
- * (only the exact 'properties' label is reserved), so hyphenated fallbacks that
- * embed a domainy word survive.
+ * Suggest up to eight validated candidates, shortest/brandiest first. The
+ * endpoint later removes already-taken labels. Exact reserved labels fail;
+ * compounds such as `acme-properties` remain legal.
  *
  * Data flow for 'Acme Ridge Property Management LLC':
  *   normalize → 'acme ridge property management llc'
- *   tokens    → [acme, ridge, property, management, llc]
- *   core      → [acme, ridge]                (minus STOP 'llc', minus DOMAINY)
- *   bases     → 'acmeridge', 'acme-ridge',
- *               'acmeridgepropertymanagement', 'acme-ridge-property-management'
- *   base(1st surviving) = 'acmeridge' → +'-hq','-team','-office','-pm'
+ *   tokens -> [acme, ridge, property, management, llc]
+ *   core -> [acme, ridge] -> acmeridge -> suffix fallbacks
  */
 export function suggestEmailSubdomains(accountName: string): string[] {
   // Normalize: strip diacritics (NFD then drop combining marks), lowercase,

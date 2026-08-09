@@ -3,7 +3,7 @@ import type { ExportData } from '../export-pdf';
 // ---- ledger derivation ------------------------------------------------------
 
 export interface DerivedLedger {
-  // Standing context (Phase 11 flag B): opening_balance is what's owed
+  // Standing context: opening_balance is what's owed
   // entering the date range. With no from_date, opening_balance is 0
   // and rent_charges_in_range / rent_payments_in_range are the totals.
   opening_balance_cents: number;

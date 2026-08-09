@@ -8,24 +8,11 @@ import { paginated } from './_lib/list-response';
 import { softDeleteStamp } from './_lib/soft-delete';
 import { requireManager } from './_lib/guards';
 
-// An incident is an evidence-grade case record: the landlord's contemporaneous
-// testimony that something happened on a tenancy (noise, unauthorized
-// occupant, damage, ...) plus citations to the journal rows it rests on.
-// Three rules shape every handler below (migration 20260801000002 is the
-// enforcement layer for all of them):
-//
-// 1. Writes are HUMAN-ONLY. requireManager denies the agent principal
-//    (role='agent') and viewers; reads stay member-wide so the agent can
-//    reference incidents without ever authoring testimony.
-// 2. Testimony is written in pen. description / occurred_at / tenancy_id are
-//    DB-frozen after capture, so PATCH exposes only classification and
-//    outcome (category, resolved_at, resolution_note). Corrections are
-//    appended as journal notes, never edits; dismissal is an audited soft
-//    delete.
-// 3. Citations (incident_items) are insert + soft-unlink only: a citation is
-//    a fact about what the record-keeper relied on, so it is never re-pointed
-//    or erased. A live citation also freezes the cited journal entry's
-//    probative fields (DB trigger on interactions).
+// Evidence-grade tenancy testimony plus citations (migration 20260801000002).
+// INVARIANTS: Only managers author incidents; all members may read. Testimony
+// fields freeze at capture, while corrections append journal notes and dismissal
+// soft-deletes. Citations are insert/soft-unlink only, and a live citation locks
+// the referenced journal evidence.
 
 // Canonical slot list: interaction | maintenance_request | notice |
 // inspection. Adding a slot type = 4 sites: the migration CHECK, this list

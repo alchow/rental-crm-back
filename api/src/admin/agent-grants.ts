@@ -4,26 +4,11 @@ import { getAdminClient } from './supabase-admin';
 import { getLogger } from '../log';
 import { GRANT_COLS, ensurePrincipalByName, mintSessionForUser } from './agent-shared';
 
-// ============================================================================
-// Agent grant provisioning (ADR-0009 Phase 2).
-// ============================================================================
-//
-// Enabling/revoking the agent for an account is a PRIVILEGED flow: it creates
-// (or reuses) the per-account agent service-account user, manages its
-// role='agent' membership, and writes the agent_grants registry row. All of
-// that bypasses RLS, so it lives here in src/admin/ behind the service-role
-// quarantine -- the route handler only verifies the caller is an owner/manager
-// of the account (from the cached account_members role on c.get('account'),
-// NOT a live RLS query) before delegating here, exactly like the intake-token
-// mint pattern. The DB-level guard on agent_grants is the absence of any
-// authenticated INSERT/UPDATE policy (writes are service-role only).
-//
-// Identity reuse: the agent's journal actor must be STABLE per account across
-// revoke/re-enable cycles, so we reuse the existing role='agent' member of the
-// account (even a soft-deleted one) instead of minting a fresh auth user each
-// time. A new auth user is created only on the first-ever enable for an
-// account. The credential-less identity is fine: the Phase 3 mint path issues
-// sessions via a GoTrue magic link, never a password.
+// Agent grant provisioning (ADR-0009) is service-role-only. It creates or
+// reuses the per-account agent identity, synchronizes membership, and records
+// the grant. No authenticated DB write policy exists for agent_grants.
+// INVARIANT: Re-enable reuses the same identity so journal authorship remains
+// stable across revoke cycles; sessions are passwordless and short-lived.
 
 export interface AgentGrant {
   id: string;
@@ -161,21 +146,10 @@ export async function enableAgentForAccount(
 }
 
 /**
- * Revoke an active grant: mark it revoked. The agent's role='agent' membership
- * is soft-deleted as a DERIVED side effect by the agent_grants trigger
- * (trg_sync_agent_membership_from_grant, migration 20260625000001) in the SAME
- * statement -- so the RLS kill and the revocation are atomic and can never
- * diverge (the bug behind the 2026-06-25 incident, where the membership was
- * dead but the grant stayed active, leaving the agent in a permanent 404 loop).
- * The agent identity is preserved (soft-delete, not removed) so a later
- * re-enable reuses the same journal actor.
- *
- * Best-effort session kill: after marking the grant revoked, we mint a
- * throwaway session for the agent sub-user and call signOut('global') to
- * revoke ALL of its GoTrue refresh tokens. This is belt-and-suspenders on top
- * of the membership kill (ADR-0009 SHOULD). The membership removal (RLS kill,
- * now trigger-driven) is the hard floor -- a sign-out failure must never abort
- * the revoke response.
+ * Revocation atomically soft-deletes agent membership through
+ * trg_sync_agent_membership_from_grant, making RLS denial the hard floor while
+ * preserving the identity for re-enable. Global session revocation is
+ * best-effort and must never roll back the grant/membership change.
  */
 export async function revokeAgentGrant(
   accountId: string,

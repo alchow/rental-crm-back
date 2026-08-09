@@ -1,33 +1,14 @@
 #!/usr/bin/env bash
-# ============================================================================
-# Apply the automatic-rent-charging migration (20260704000002_auto_rent_charging)
-# and verify it landed. Modelled on scripts/apply-engagement-migration.sh.
-#
-# RUN IN A REGULAR TERMINAL (Terminal.app / iTerm) — it asks confirmation
-# questions a one-shot console can't answer.
+# Apply and verify 20260704000002_auto_rent_charging in an interactive terminal.
 #
 #   bash scripts/apply-auto-charge-migration.sh local        # local Supabase stack
 #   bash scripts/apply-auto-charge-migration.sh prod         # PROD (pooler URL + confirm)
 #   bash scripts/apply-auto-charge-migration.sh verify local # verify only, no apply
 #   bash scripts/apply-auto-charge-migration.sh verify prod
 #
-# The migration is ADDITIVE (a new nullable-defaulted column + a column grant +
-# a replaced DEFINER RPC + a new trigger), so it is safe to apply to prod BEFORE
-# the code deploy — the live app never touches the new objects until the new
-# code ships, and no account is billed until its owner flips auto_charge_enabled
-# (default false). Order is the same as every migration here: schema first,
-# code second.
-#
-# HISTORICAL NOTE (2026-08-01): auto_charge_enabled no longer defaults to false.
-# Migration 20260801000001_auto_charge_default_on flipped the default to TRUE
-# and backfilled the existing fleet (ADR-0011 amendment) — automatic charging is
-# opt-OUT now. This script still describes the state as of 20260704000002 and is
-# kept as the record of that apply; use
-# scripts/apply-auto-charge-default-on-migration.sh for the newer one.
-#
-# `supabase db push` applies EVERY pending migration in order, not just this
-# one — the script prints the pending set and makes you confirm it first.
-# ============================================================================
+# This additive migration precedes code. Current behavior is opt-out after
+# 20260801000001_auto_charge_default_on (ADR-0011); use that script for the
+# default/backfill migration. Review all pending rows before confirming db push.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

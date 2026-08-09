@@ -3,29 +3,12 @@ import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 
-// GET /v1/accounts/{accountId}/events — lossless, polling-safe event feed.
-//
-// Cursor contract (the guarantee the agent service builds on):
-//   events.account_seq is a per-account, gap-free, strictly-increasing
-//   ordinal, assigned under the per-account advisory lock and committed in
-//   that same transaction (ADR-0001). A poller that requests
-//   after_seq = <last seen> can provably never miss or double-see a
-//   committed event. The cursor is a plain integer — no opaque encoding —
-//   because the semantic meaning (an ordinal in the chain's own ordering) is
-//   the entire value and wrapping it would only obscure it.
-//
-// Snapshot mapping:
-//   payload['after'] when present (inserted / updated / deleted / restored),
-//   payload['before'] on hard_deleted, else null.
-//   The raw payload envelope and hash columns are NOT exposed — they are
-//   chain-internal values whose meaning is the chain itself, not the row
-//   state a poller consumes.
-//
-// Index: the existing (account_id, account_seq) index serves the scan.
-// Deliberately NO new composite (account_id, entity_type, account_seq) index:
-// such an index taxes EVERY audited write in the system to speed one poller.
-// Revisit trigger: feed p95 > 200 ms or > 20k events/account (§7 of the
-// architecture plan).
+// Lossless polling feed (ADR-0001). account_seq is assigned and committed under
+// a per-account lock, so `after_seq=<last seen>` neither skips nor repeats a
+// committed event. Snapshot = payload.after, or payload.before for hard deletes;
+// chain-internal payload/hash fields stay private. The existing
+// (account_id, account_seq) index avoids taxing every audited write with an
+// entity-filter index; revisit if feed p95 exceeds 200 ms or 20k events/account.
 
 const AccountParam = z.object({
   accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),

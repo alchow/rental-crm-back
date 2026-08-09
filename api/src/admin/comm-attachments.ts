@@ -1,4 +1,4 @@
-// Comm attachment store (admin-side, service-role) — persona plan, phase 7.
+// Comm attachment store (admin-side, service-role).
 //
 // Durable blobs for attachments on comm-captured journal rows. Same posture
 // as the evidence archive (evidence.ts): the private 'comm-attachments'

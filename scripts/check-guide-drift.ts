@@ -1,20 +1,7 @@
 #!/usr/bin/env -S npx tsx
-// Guide-vs-spec drift gate.
-//
-// docs/api-guide.md documents endpoints in markdown tables of the form
-// `| `METHOD` | `path` | ... |`. The spec (openapi/openapi.json) is the
-// source of truth for what's actually built -- a row in the guide with no
-// matching spec entry means the guide describes something that was never
-// implemented (or was implemented as a plain Hono route that never made it
-// into the typed/`.openapi()` surface, e.g. the original /v1/me bug).
-//
-// This only checks guide -> spec (every documented row must exist in the
-// spec). It does NOT check spec -> guide: several endpoints (binary
-// downloads, multipart uploads) are deliberately documented as prose/code
-// blocks rather than table rows, and a reverse check would flag those as
-// false positives.
-//
-// Usage: pnpm check:guide-drift  (wired into the root `check` chain)
+// Guide -> OpenAPI drift gate. Every markdown endpoint-table row must exist in
+// the generated spec. The reverse is intentionally unchecked because binary
+// and multipart endpoints may be documented outside tables.
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

@@ -149,7 +149,7 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
   section(doc, 'Rent ledger');
   doc.fontSize(11);
   if (fromDate) {
-    // Phase 11 flag B: the opening balance is the carried-in debt at the
+    // INVARIANT: Opening balance is the carried-in debt at the
     // start of the date range. Without it, a narrowed-range bundle would
     // misstate the actual obligation.
     doc.text(
@@ -285,9 +285,7 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
       const deliveryStr = delivery
         ? `  delivery=${delivery.status}${delivery.delivered_at ? ` @ ${delivery.delivered_at}` : ''}`
         : '';
-      // Counterparty (PR 2): communications now name who they were with --
-      // resolved tenant/vendor name, else party_label, else party_type
-      // ('unspecified' for a role-unknown capture). Notes/agent_events: none.
+      // Prefer the resolved counterparty name, then label, then party type.
       const party = interactionPartyDisplay(root, data.partyNames);
       doc.text(
         `• ${root.occurred_at as string}  ${what}${party ? `  with ${party}` : ''}  ` +
@@ -349,7 +347,6 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
           .fillColor('#555')
           .text(`    ${String(mr.description).slice(0, 400)}`)
           .fillColor('#000');
-      // Status history derived from the events table.
       const hist = data.events.filter(
         (e) => e.entity_type === 'maintenance_requests' && e.entity_id === mr.id,
       );
@@ -362,7 +359,6 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
           )
           .fillColor('#000');
       }
-      // Work orders for this request.
       const wos = data.workOrders.filter((w) => w.maintenance_request_id === mr.id);
       for (const w of wos) {
         doc

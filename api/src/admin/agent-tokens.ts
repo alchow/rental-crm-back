@@ -6,28 +6,11 @@ import { ApiError, errorResponses } from '../routes/_lib/error';
 import { getAdminClient } from './supabase-admin';
 import { hashSecret, ensurePrincipalByName, mintSessionForUser } from './agent-shared';
 
-// ============================================================================
-// Agent token exchange (ADR-0009 Phase 3).
-// ============================================================================
-//
-// The root agent principal authenticates here with a bearer SECRET (hashed in
-// agent_principals.secret_hash) and exchanges it for a short-lived Supabase
-// session scoped to ONE account it has been granted. Two endpoints, both
-// root-authed via the `X-Agent-Secret` header and mounted OUTSIDE the v1
-// user-JWT stack (there is no user JWT here):
-//
-//   GET  /v1/agent/accounts   discovery: the accounts this principal may serve
-//   POST /v1/agent/tokens     mint a per-account session { account_id }
-//
-// The session is minted WITHOUT a password via the GoTrue admin magic-link ->
-// verifyOtp flow (validated to return a real access+refresh session that
-// resolves to the sub-user's identity). All of this is service-role work, so
-// it lives in src/admin/ behind the quarantine, exactly like the intake mint.
-//
-// Why a hashed bearer secret and not an asymmetric client assertion: the agent
-// is a first-party service talking only to core over TLS; a high-entropy
-// secret stored hash-only matches the intake-token precedent. Client-assertion
-// is the upgrade path if the agent ever becomes third-party (ADR-0009).
+// Agent token exchange (ADR-0009). A hash-only X-Agent-Secret discovers granted
+// accounts and mints a short-lived, single-account Supabase session through the
+// passwordless GoTrue admin flow. This service-role work stays outside the user
+// JWT stack and inside the admin quarantine. The shared secret is appropriate
+// only while the agent remains a first-party TLS client.
 
 // ----- root-secret provisioning ----------------------------------------------
 

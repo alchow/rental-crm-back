@@ -1,44 +1,15 @@
 #!/usr/bin/env bash
-# ============================================================================
-# Apply the incidents migration (20260801000002_incidents) and verify it
-# landed. Modelled on scripts/apply-auto-charge-default-on-migration.sh.
-#
-# NOTHING IN THIS REPO RUNS THIS FOR YOU. Migrations are not auto-applied on
-# deploy; an operator runs this deliberately, in a regular terminal
-# (Terminal.app / iTerm), because it asks confirmation questions a one-shot
-# console cannot answer.
+# Apply and verify 20260801000002_incidents. This interactive script is the
+# operator action; deploys do not apply migrations automatically.
 #
 #   bash scripts/apply-incidents-migration.sh local        # local stack
 #   bash scripts/apply-incidents-migration.sh prod         # PROD (pooler + confirm)
 #   bash scripts/apply-incidents-migration.sh verify local # verify only
 #   bash scripts/apply-incidents-migration.sh verify prod
 #
-# WHAT IT CHANGES (incidents feature, PRs #119/#120/#121, 2026-08-01)
-#   1. New table public.incidents  — evidence-grade tenant case records.
-#      description/occurred_at are trigger-frozen; write RLS is owner/manager.
-#   2. New table public.incident_items — typed evidence citations
-#      (interaction | maintenance_request | notice | inspection), insert +
-#      soft-unlink only, hard delete trigger-rejected.
-#   3. New trigger ON public.interactions
-#      (interactions_reject_linked_evidence_mutation): a journal entry cited
-#      by a LIVE incident item freezes its probative fields and cannot be
-#      deleted until the citation is unlinked.
-#
-# WHY THE APPLY IS SAFE
-# Everything is additive. The one change to an EXISTING table is the
-# interactions trigger, and it only ever blocks an UPDATE/DELETE of a row
-# that a live incident_items citation points at — and no citations can exist
-# before these tables do, so nothing changes for any current flow at apply
-# time. The snapshot below confirms zero incidents tables pre-apply and
-# prints the interactions row count for the record.
-#
-# ORDERING: code-first happened (main auto-deployed with the API surface).
-# The /incidents routes 500 until this applies; every other route is
-# unaffected. Apply promptly.
-#
-# `supabase db push` applies EVERY pending migration in order, not just this
-# one — the script prints the pending set and makes you confirm it first.
-# ============================================================================
+# SAFETY: The migration is additive; its interaction trigger only locks rows
+# cited after the new tables exist. `db push` applies every pending migration,
+# so inspect the printed set before confirming.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

@@ -203,7 +203,7 @@ export async function uploadAttachment(input: UploadInput): Promise<UploadResult
     if (insErr?.code === '23503') {
       throw new ApiError(404, 'not_found', 'referenced entity not found in this account');
     }
-    // Post-completion attachment lock (Phase 27): the parent inspection/item is
+    // A completed parent inspection/item is
     // frozen, so a new photo is rejected by the BEFORE INSERT trigger.
     if (insErr?.code === '23514' && /completed/i.test(insErr.message)) {
       throw new ApiError(
@@ -282,8 +282,8 @@ export async function downloadAttachment(
 
 /**
  * Soft-deletes an attachment. INVARIANT: storage bytes stay; only the row
- * flips `deleted_at`. This invariant is REQUIRED for safety under the
- * Phase 9 content-addressed path scheme (`<account>/<hash>.<ext>`): two
+ * flips `deleted_at`. This is required by the content-addressed path scheme
+ * (`<account>/<hash>.<ext>`): two
  * logically-distinct attachment rows can reference the same storage
  * object if their bytes happen to match. Removing bytes on soft-delete
  * would orphan another attachment's storage. If a future garbage-collection

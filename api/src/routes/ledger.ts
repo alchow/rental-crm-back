@@ -3,33 +3,10 @@ import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 
-// GET /v1/accounts/{accountId}/tenancies/{tenancyId}/ledger
-//
-// Derived ledger for a tenancy. BALANCE IS NEVER STORED -- the response
-// recomputes it from charges + payments + allocations every time. That's
-// the rule the brief calls out: a stored balance is a lie waiting to drift
-// from the source rows.
-//
-// Computation rules:
-//   - Voided charges and voided payments are IGNORED in totals (their
-//     allocations are too).
-//   - DEPOSITS (charges with type = 'deposit') are tracked separately and
-//     do NOT count against the rent balance. A deposit payment goes
-//     specifically into the deposit subledger via the operator allocating
-//     it to the deposit charge.
-//   - Money is integer minor units throughout. The currency is read off the
-//     rows (we don't model multi-currency arithmetic; tenancies are
-//     expected to be single-currency in practice).
-//
-// Response shape (per response below):
-//   {
-//     tenancy_id, currency,
-//     entries: [ {kind: 'charge'|'payment', id, occurred_at, ...row, derived: {...}} ],
-//     totals: {
-//       rent_charges_cents, rent_payments_cents, rent_balance_cents,
-//       deposit_charges_cents, deposit_payments_cents, deposit_balance_cents,
-//     },
-//   }
+// Derived tenancy ledger; balances are never stored. Reads recompute charges,
+// payments, and allocations in integer minor units. Voided facts and their
+// allocations do not affect totals. Deposit charges/payments remain in a
+// separate subledger and never affect rent balance.
 
 const LedgerCharge = z.object({
   kind: z.literal('charge'),
@@ -242,8 +219,7 @@ ledgerApp.openapi(get, async (c) => {
   let chargeRows = (charges.data ?? []) as ChargeRow[];
   let paymentRows = (payments.data ?? []) as PaymentRow[];
 
-  // Point-in-time filter. Applied BEFORE aggregation so no logic is duplicated.
-  // as_of semantics (see route description and §7 of the architecture plan):
+  // Point-in-time filter, applied before aggregation:
   //   - Charges included when due_date <= as_of.
   //   - Payments included when received_at (date part) <= as_of.
   //   - A void is respected only when voided_at (date part) <= as_of —

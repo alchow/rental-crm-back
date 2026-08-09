@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# ============================================================================
-# Apply the four inspection-asks migrations (PRs #86-#89) and verify each
-# landed. Modelled on scripts/apply-note-party-migration.sh: NON-INTERACTIVE,
-# `prod` alone is a DRY RUN that prints the pending set, and applying requires
-# an explicit second argument.
+# Apply and verify the four inspection-layout migrations. `prod` is a dry run;
+# production apply requires `prod confirm`.
 #
 #   bash scripts/apply-inspection-asks-migrations.sh local          # local stack (applies)
 #   bash scripts/apply-inspection-asks-migrations.sh prod           # DRY RUN: list pending, verify nothing
@@ -11,31 +8,10 @@
 #   bash scripts/apply-inspection-asks-migrations.sh verify local   # verify only, no apply
 #   bash scripts/apply-inspection-asks-migrations.sh verify prod
 #
-# Prod credentials: SUPABASE_DB_URL_PROD from the environment, else read from
-# .env.local (gitignored). The URL is NEVER echoed — safe for a logged console.
-# This is the POOLER URL that survived the IPv6 incident — do NOT swap in
-# db.<ref>.supabase.co.
-#
-# The set (sequential, sorts after everything on main — no out-of-order risk):
-#   20260719000001_inspection_checks_presence_merge  — rewrites both check
-#     upsert RPCs (presence-merge + honest answered stamps) + draft-only heal.
-#   20260719000002_inspection_checks_input_kind      — input_kind column,
-#     carried through seed / checkout-copy / both upserts.
-#   20260719000003_inspection_templates_provenance   — catalog_id (+backfill
-#     from schema->>'form_code') and the GENERATED schema_hash.
-#   20260719000004_area_inspection_layouts           — the per-unit layout
-#     delta table (RLS + explicit grants + audit trigger).
-#
-# ORDERING vs deploys: all four are ADDITIVE and safe against the currently
-# deployed code, so apply the whole set FIRST (schema leads code). #86 is
-# already on main (its code never reads the new schema); #87-#89 must NOT be
-# merged until this script's verify passes — #87's tenant capture form
-# selects input_kind and would 500 on the missing column.
-#
-# `supabase db push` applies EVERY pending migration in order, not just
-# these — the dry run prints the pending set so you can review it BEFORE
-# re-running with `confirm`.
-# ============================================================================
+# SECURITY: Use the pooler URL from SUPABASE_DB_URL_PROD/.env.local; never echo
+# it. The sequential migrations are additive and must lead code that reads
+# input_kind or layout objects. `db push` applies every pending migration, so
+# inspect the printed set before confirming.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -76,22 +52,9 @@ resolve_db_url() {
   esac
 }
 
-# --- Verify all four landed --------------------------------------------------
-# node-pg via tsx (no psql dependency), SQL through an env var to dodge
-# quoting hell, exactly like the sibling apply scripts. Probes DEFINITIONS and
-# PRIVILEGES, not just existence — which is also how we catch a `db push`
-# that silently no-ops:
-#   0001: both upsert RPCs are the presence-merge form (jsonb_typeof marker);
-#         the tenant DEFINER fn keeps _tenant_stamp_form_started AND is locked
-#         to service_role; zero mislabeled draft rows remain (the heal ran).
-#   0002: input_kind column + CHECK constraint; the seed AND checkout-copy
-#         fns both mention input_kind (the checkout copy is the line that,
-#         if lost, silently regresses move-outs to Yes/No).
-#   0003: catalog_id column; schema_hash is a STORED GENERATED column
-#         (attgenerated='s'); backfill left no cloned row without provenance.
-#   0004: table exists with RLS enabled+forced, the member policy, the audit
-#         trigger, the TOTAL unique constraint, and the explicit grants
-#         (authenticated: select/insert/update, NO delete; anon: nothing).
+# Verify definitions and privileges, not only existence: presence-merge RPCs
+# and service-role lockdown; input_kind propagation; generated schema hashes
+# and provenance backfill; and layout-table RLS, audit, uniqueness, and grants.
 verify() {
   bold "VERIFY — inspection-asks migrations 20260719000001..4"
   read -r -d '' VERIFY_SQL <<'SQL' || true

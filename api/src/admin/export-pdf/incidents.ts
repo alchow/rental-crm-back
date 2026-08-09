@@ -2,23 +2,10 @@ import { idChunks } from './chunks';
 import type { ExportData } from '../export-pdf';
 import type { AppSupabaseClient, DbTableRow } from '../../supabase/db-types';
 
-// ---- Incidents section (tenancy-scoped exports only) ------------------------
-//
-// An incident is the record-keeper's contemporaneous account of something that
-// happened, written in pen: `description` and `occurred_at` are DB-frozen
-// (20260801000002_incidents.sql), and the citations under it are insert +
-// soft-unlink only. The export renders that shape faithfully:
-//
-//   - DISMISSED (soft-deleted) incidents ARE included. Disputes happen after
-//     a landlord decides to drop something, and a bundle that silently omits
-//     the dropped record looks like curation. Same policy as ended/soft-
-//     deleted tenancies and retracted journal rows: present, marked, never
-//     hidden.
-//   - The citation manifest CROSS-REFERENCES; it does not duplicate. The full
-//     interaction / maintenance request / notice / inspection renders in its
-//     own section (when it is in this bundle's scope), so each line here is
-//     an identifying stub: type, the cited record's own event time, a short
-//     excerpt, and when the citation was made or withdrawn.
+// Incidents preserve DB-frozen testimony and insert/soft-unlink citations.
+// INVARIANT: Include dismissed incidents, visibly marked, so exports cannot
+// curate away disputed history. Citation lines identify and cross-reference
+// evidence rendered in its own section; they do not duplicate it.
 
 type IncidentRow = DbTableRow<'incidents'>;
 type IncidentItemRow = DbTableRow<'incident_items'>;

@@ -20,37 +20,12 @@ declare module 'hono' {
   }
 }
 
-// Generic Idempotency-Key middleware. Mounted on every mutating endpoint
-// under /v1/accounts/:accountId/* so the contract is uniform: a client
-// retrying a POST / PATCH / PUT / DELETE with the same Idempotency-Key
-// gets back the SAME response and the resource is created / modified
-// EXACTLY ONCE.
-//
-// Design (single-DB-row claim):
-//   1. Read the Idempotency-Key header (8-200 chars). Missing -> 400.
-//   2. sha256(method + '\n' + path + '\n' + body) is the request
-//      fingerprint. Saved on the row so a retry with the same key but a
-//      DIFFERENT body returns 409 instead of silently overwriting a real
-//      operation with a cached one.
-//   3. INSERT a placeholder row into idempotency_keys to "claim" the key.
-//      The (account_id, key) primary key is the lock.
-//   4. If the INSERT conflicts (race), fetch the existing row:
-//        - fingerprint mismatch -> 409 conflict
-//        - completed_at is null -> 409 (request in flight; client retries)
-//        - otherwise -> return the cached (status, body) verbatim
-//   5. If we WON the claim, run the handler, then UPDATE the row with
-//      the actual response status + body so future replays hit the cache.
-//
-// Things this DOES NOT do (intentionally):
-//   - It does NOT cache 5xx responses. A 5xx is most often transient; the
-//     client should be able to retry. We DELETE the placeholder so the
-//     next try with the same key is a fresh attempt rather than a wedged
-//     409-in-flight.
-//   - By default it does NOT span multiple write tables transactionally with
-//     the handler's own writes. The handler does its work in its own
-//     transaction; we record the outcome after. A narrow, explicitly designed
-//     RPC may consume `idempotencyClaim` and complete that row in its domain
-//     transaction, closing the commit/completion crash gap for that operation.
+// Uniform Idempotency-Key contract for account mutations. A DB row claims
+// (account_id, key) and stores a principal-bound request fingerprint. Conflict
+// outcomes: different request -> 409; in flight -> retryable 409; completed ->
+// replay status/body. Never cache 5xx; delete that claim for a fresh retry.
+// Default completion follows handler writes, but selected RPCs may complete the
+// claim atomically with their domain transaction.
 
 const KEY_RE = /^[A-Za-z0-9_-]{8,200}$/;
 const MUTATING = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
@@ -106,7 +81,7 @@ export function requireIdempotency(): MiddlewareHandler {
       .update(bodyText)
       .digest('hex');
 
-    // Claim+inspect in ONE round trip (Phase 2.4): the SECURITY INVOKER RPC
+    // Claim+inspect in ONE round trip: the SECURITY INVOKER RPC
     // does the placeholder INSERT and, on conflict, returns the winner's
     // state; RLS applies unchanged. The behavior matrix is frozen and lives
     // verbatim in the RPC migration (20260614000002).
@@ -118,8 +93,7 @@ export function requireIdempotency(): MiddlewareHandler {
     // The claim RPC is SECURITY INVOKER, so this INSERT is the FIRST
     // RLS-gated write on any mutating request -- a just-revoked agent (still
     // inside the membership-cache TTL, so it passed requireAccountMembership)
-    // is denied HERE with 42501. Map it to a clean 403 rather than 500
-    // (ADR-0009 Phase 4).
+    // is denied HERE with 42501. Map it to a clean 403 rather than 500.
     if (claimErr) throw dbError(claimErr);
     const claim = (Array.isArray(claimData) ? claimData[0] : claimData) as {
       claimed: boolean;

@@ -12,10 +12,8 @@ export const CommInboundMedia = z
   })
   .openapi('CommInboundMedia');
 
-/** Provider-evaluated email authentication verdicts (RFC 7601 vocabulary),
- *  passed through by the transport from the receiving provider's headers.
- *  Core stores them with the raw capture; later phases gate attribution and
- *  auto-replies on them. */
+/** Provider-evaluated RFC 7601 verdicts. Core stores them with the raw capture
+ *  and uses them to gate attribution and automatic replies. */
 export const CommAuthResults = z
   .object({
     spf: z.enum(['pass', 'fail', 'neutral', 'none', 'softfail', 'temperror', 'permerror']),
@@ -98,8 +96,7 @@ export const CapturePersonaInboundBody = z
     persona_address: z.string().min(5).max(320),
     /** The sender — the routing input. */
     from_address: z.string().min(3).max(320),
-    /** The sender's From display name, if any (cast label fallback + the
-     *  phase-6 triage suggestion input). */
+    /** Sender display name used for cast-label fallback and triage suggestions. */
     from_display_name: z.string().min(1).max(200).optional(),
     /** The mail's other To recipients (persona excluded or not — core
      *  filters). */
@@ -123,39 +120,11 @@ export const CapturePersonaInboundBody = z
 
 export const CapturePersonaInboundResponse = z
   .object({
-    /** matched: the sender resolved to a known tenant/vendor (DMARC pass) and
-     *  the message journaled into their active email thread — created
-     *  atomically (tokens minted) when none existed. Relay it onward like any
-     *  thread inbound.
-     *  triaged: unknown sender, or a claimed-known sender that failed DMARC —
-     *  raw-tier captured; nothing journaled; relay nothing. (Phase 6 adds the
-     *  visible triage queue.)
-     *  duplicate: this email's Message-ID already journaled into the resolved
-     *  thread (the token door landed first) — ids point at the ORIGINAL row;
-     *  success-no-op, relay nothing.
-     *  opted_out: matched AND journaled, but the sender is on the opt-out
-     *  register — relay nothing.
-     *  cc_journaled: the landlord CC arm, counterparty already on the mail's
-     *  To/Cc (canonical compare) — journal-only; relay nothing (they received
-     *  the mail directly).
-     *  cc_relayed: the landlord CC arm, counterparty NOT on the mail's To/Cc
-     *  — the reply is journaled identically (landlord-authored outbound into
-     *  the counterparty's thread) AND the transport must DELIVER it to the
-     *  counterparty: create an email relay leg (relay_of_interaction_id =
-     *  interaction_id) addressed to the returned thread's counterparty
-     *  participant. The system completes the landlord's reply-all; a repeat
-     *  beats a black hole. Core freezes the delivery shape server-side at
-     *  leg creation — the row carries the landlord's authoritative email as
-     *  a visible Cc (opt-out scrubbed, snapshot-frozen) and the outbox read
-     *  derives relay_source_sender_label for the "«landlord» via «persona»"
-     *  From display — so nothing extra rides this response.
-     *  journaled_unverified: the mail failed DMARC but its From named exactly
-     *  one KNOWN tenant/vendor — the receipt is journaled into that party's
-     *  conversation with attestation='unverified' (claimed, never asserted).
-     *  Nothing is learned, no ack is sent, and the transport must relay
-     *  nothing. Owner/manager can later retract it (with a reason) or confirm
-     *  the sender via the interactions retract / confirm-sender endpoints.
-     *  Forward-compat rule: relay nothing on any unrecognized disposition. */
+    /** Transport action by disposition:
+     *  matched -> relay; triaged/duplicate/opted_out/cc_journaled -> no relay;
+     *  cc_relayed -> deliver a relay leg to the returned counterparty;
+     *  journaled_unverified -> no relay or ack until a human confirms/retracts.
+     *  Forward compatibility: never relay an unrecognized disposition. */
     disposition: z.enum([
       'matched',
       'triaged',
@@ -168,34 +137,17 @@ export const CapturePersonaInboundResponse = z
     interaction_id: z.string().uuid().nullable(),
     thread_id: z.string().uuid().nullable(),
     participant: CommThreadParticipant.nullable(),
-    /** The triage row id once phase 6 lands; null until then. */
+    /** Triage row ID for `triaged` captures; stable across replays, otherwise null. */
     unmatched_id: z.string().uuid().nullable(),
   })
   .openapi('CapturePersonaInboundResponse');
 
 export const CaptureInboundResponse = z
   .object({
-    /** matched: bound thread+participant resolved and the message journaled.
-     *  orphan: no active binding for (to_number, from_address) — captured in
-     *  the raw tier only; nothing journaled (no account to attribute to).
-     *  opted_out: matched AND journaled, but the counterparty address is on
-     *  the opt-out register — the transport must not relay further replies
-     *  and should run its keyword handling.
-     *  sender_mismatch: the email reply token resolved but the from-address is
-     *  NOT the bound participant's — the message IS journaled into the thread
-     *  (party 'unspecified', actual sender as the label) but the transport must
-     *  NOT auto-relay it as verified.
-     *  duplicate: the token resolved AND this email's own Message-ID already
-     *  journaled into the same thread (a second delivery door of one send) —
-     *  nothing new was written; interaction_id/thread_id/participant point at
-     *  the ORIGINAL row. Treat as success-no-op; relay nothing.
-     *  matched_direct: a 1:1 sms from a recognized member of an exact-2 group
-     *  thread on this number — journaled INTO that group thread, but the
-     *  carrier did NOT fan it out: the transport must send the echo (a group
-     *  relay leg referencing interaction_id; see the outbox group-relay
-     *  rules). Opt-out wins over this disposition, so an opted-out sender's
-     *  direct text journals without ever echoing.
-     *  Forward-compat rule: relay nothing on any unrecognized disposition. */
+    /** Transport action by disposition:
+     *  matched -> relay; matched_direct -> send the group echo;
+     *  orphan/opted_out/sender_mismatch/duplicate -> no relay.
+     *  Forward compatibility: never relay an unrecognized disposition. */
     disposition: z.enum([
       'matched',
       'matched_direct',

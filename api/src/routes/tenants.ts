@@ -131,24 +131,10 @@ const remove = createRoute({
   },
 });
 
-// ----------------------------------------------------------------------------
-// Per-account tenant-email uniqueness (migration 20260721000002).
-//
-// Two enforcement layers back this route:
-//   * assertEmailsWritable() — the friendly, pre-insert path. It rejects
-//     intra-array dupes with a 422 (blanks/padded input never reach it — the
-//     body schema's z.string().email() 400s those first), then asks the
-//     service-role oracle who else holds the addresses and raises a 409 that
-//     SHOWS the holder(s). It hard-blocks BOTH collision classes — another
-//     tenant, and an owner/manager login email (the comms layer maps those to
-//     landlord_user, so a shared address mis-attributes message direction).
-//   * mapEmailUniqueViolation() — the race-window backstop. The DB trigger
-//     raises 23505 if a concurrent write slipped a duplicate in between the
-//     oracle check and the insert; map that to the same 409 with a generic
-//     message. (The trigger blocks only the tenant-holder class; the API blocks
-//     both, so the DB permits an account_user write the API refuses — documented
-//     asymmetry.)
-// ----------------------------------------------------------------------------
+// Per-account tenant-email uniqueness (migration 20260721000002). The pre-write
+// oracle rejects duplicate inputs and collisions with tenants or manager login
+// emails, preventing comms misattribution. A DB 23505 maps concurrent tenant
+// races to the same 409; only the API can detect the auth-user collision class.
 
 /**
  * Canonicalize submitted phones to E.164 (the format the landlord profile,

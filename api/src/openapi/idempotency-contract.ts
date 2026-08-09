@@ -1,19 +1,7 @@
-// The OpenAPI document config + the app-level Idempotency-Key contract
-// injection, shared by BOTH the build-time emitter (openapi/emit.ts, which
-// writes openapi/openapi.json) AND the runtime `/openapi.json` handler
-// (api/src/app.ts). Keeping them in one module is the whole point: the
-// committed spec the SDK is generated from and the spec the server serves at
-// runtime are produced by the same code, so they cannot drift from each other
-// -- or from the middleware.
-//
-// `Idempotency-Key` is enforced at the app level by requireIdempotency()
-// (api/src/middleware/idempotency.ts), mounted once on
-// /v1/accounts/:accountId/*. Because the OpenAPI document is generated from the
-// per-route createRoute definitions, that app-level middleware is invisible to
-// it -- which is why a route-derived spec doesn't declare the header. Rather
-// than repeat the declaration in every route file (and have to remember it on
-// every new one), we inject it here, keyed off the SAME rule the middleware
-// uses: every mutating method under an account-scoped path.
+// Shared build-time/runtime OpenAPI transforms prevent the committed SDK spec
+// from drifting from `/openapi.json`. App-level idempotency middleware is
+// invisible to route-derived OpenAPI, so inject Idempotency-Key centrally for
+// every mutating account-scoped operation using the middleware's same rule.
 
 import type { OpenAPIHono } from '@hono/zod-openapi';
 
@@ -137,23 +125,9 @@ export function injectServiceUnavailable<T extends { paths?: unknown }>(doc: T):
   return doc;
 }
 
-// Mutates `doc` in place to repair three zod-to-openapi emission artifacts
-// that break strict downstream consumers (found by the agent transport's
-// strict validation and the frontend's openapi-typescript generation):
-//
-//   1. Nullable enums: `.nullable()` on a z.enum emits `type: [..., "null"]`
-//      but leaves `enum` without null. JSON Schema treats enum as
-//      authoritative, so real null values fail strict validation. Fix: add
-//      null to the enum.
-//   2. Junk allOf wrappers: a registered ($ref) schema wrapped by a zod
-//      modifier can emit `allOf: [$ref, {type:"object"}]` -- the bare
-//      `{type:"object"}` member makes openapi-typescript intersect with
-//      `Record<string, never>` (unsatisfiable). Fix: collapse to the $ref
-//      (or `anyOf: [$ref, null]` when the junk member declared nullability).
-//   3. Duplicate `{type:"null"}` members inside anyOf (a union-with-null
-//      dedupe miss). Fix: keep one.
-//
-// Purely generator hygiene: runtime behavior is unchanged. Idempotent.
+// Idempotent generator hygiene for strict consumers: add null to nullable-enum
+// enum lists; collapse unsatisfiable `$ref & Record<string, never>` allOf
+// wrappers; and dedupe null-only anyOf members. Runtime behavior is unchanged.
 export function injectSchemaHygiene<T>(doc: T): T {
   const isNullType = (v: unknown): boolean =>
     typeof v === 'object' && v !== null &&

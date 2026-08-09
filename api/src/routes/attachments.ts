@@ -14,23 +14,10 @@ import {
   MAX_BYTES,
 } from '../admin/storage';
 
-// ============================================================================
-// Attachments: upload, metadata, download (proxied), delete.
-// ============================================================================
-//
-// Reads are PROXIED through the API rather than served via long-lived
-// signed URLs. The proxy:
-//   * sets Content-Disposition: attachment; filename="..." -- forces a
-//     download instead of inline rendering (no stored-XSS via HTML/SVG);
-//   * forces a safe Content-Type (the value the API decided at upload time,
-//     not anything a client might tamper into the URL);
-//   * runs the membership check on every request, so a leaked URL means
-//     "leaked to one HTTPS request once," not "permanent file access."
-//
-// The trade-off (API streams every byte) is worth it for tamper evidence:
-// short-lived signed URLs from storage skip the API's response-header
-// control unless we negotiate response-content-disposition support across
-// providers, which we don't yet need.
+// Attachment downloads stay behind the API. Each request rechecks membership,
+// forces the server-approved Content-Type, and sets Content-Disposition to
+// attachment, preventing stored HTML/SVG execution. The API intentionally
+// streams the bytes rather than granting durable access through signed URLs.
 
 const Attachment = z
   .object({
@@ -43,9 +30,8 @@ const Attachment = z
     mime_type: z.string().nullable(),
     size_bytes: z.number().int().nullable(),
     uploaded_by: z.string().uuid().nullable(),
-    // Phase 9: when this row is a server-derived rendering of another
-    // attachment (HEIC -> JPEG), derived_from points at the original.
-    // Provenance is explicit: the JPEG isn't tenant-supplied bytes.
+    // PROVENANCE: A server-derived rendering points at its original; for
+    // example, a JPEG derived from a tenant-supplied HEIC.
     derived_from: z.string().uuid().nullable(),
     received_at: z.string(),
     created_at: z.string(),
@@ -228,9 +214,7 @@ attachmentsApp.openapi(upload, async (c) => {
   if (hitErr) throw new ApiError(500, 'database_error', hitErr.message);
   if (!hit) throw new ApiError(404, 'not_found', 'target entity not found in this account');
 
-  // Slurp bytes (capped by Hono's request body limit + our MAX_BYTES check
-  // above). For Phase 8 this is fine; very large uploads would want
-  // streaming, but those aren't in scope.
+  // The request-body and MAX_BYTES guards bound this in-memory read.
   const bytes = new Uint8Array(await (file as File).arrayBuffer());
   const result = await uploadAttachment({
     accountId,

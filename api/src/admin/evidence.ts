@@ -4,31 +4,11 @@ import { getAdminClient } from './supabase-admin';
 import { ApiError } from '../routes/_lib/error';
 import { loadEnv } from '../env';
 
-// ============================================================================
-// Comms evidence archive (admin-side, service-role). Work item EV-B.
-// ============================================================================
-//
-// The journal's inbound rows rest on the transport honestly restating what a
-// provider delivered. This module keeps the artifact that makes that claim
-// independently checkable: the VERBATIM signed webhook body, archived
-// byte-for-byte in the private 'comm-evidence' bucket, anchored to the audit
-// hash chain by the sha256 stored on its inbound_provenance row (see
-// migration 20260703000004).
-//
-// Why admin-side (same reasoning as storage.ts):
-//   (1) the hash is computed SERVER-SIDE from the bytes we actually store;
-//   (2) the path is server-constructed and content-addressed
-//       (<account>/<sha256>.bin) — callers never choose where bytes land,
-//       and identical bodies dedupe onto one object;
-//   (3) the bucket has NO authenticated storage policies at all — reads and
-//       writes exist only through this module.
-//
-// Ordering contract with the DB (enforced by the route handler): the
-// provenance ROW is recorded first (record_inbound_provenance is idempotent,
-// first-hash-wins); bytes are uploaded only after the row exists and agrees
-// on the hash. A retry after a crashed upload therefore heals the blob; a
-// conflicting body for an already-archived provider_msg_id is refused at the
-// row and never touches storage.
+// Archives provider-signed webhook bytes so inbound journal claims are
+// independently verifiable. Server-computed hashes and paths anchor private,
+// content-addressed blobs to inbound_provenance. DATA FLOW: Record the
+// first-hash-wins provenance row, then upload matching bytes; retries heal a
+// missing blob, while a conflicting provider message never reaches storage.
 
 const BUCKET = 'comm-evidence';
 
@@ -103,20 +83,10 @@ export interface RetentionResult {
 }
 
 /**
- * Retention janitor: removes evidence BLOBS past the configured horizon and
- * stamps purged_at on their (never-deleted) provenance rows — an AUDITED
- * destruction, via the table's _emit_event trigger, unlike the deliberately
- * silent inbound_raw prune. Accounts under an active legal hold are skipped
- * entirely (FRCP 37(e): routine destruction stops when litigation is
- * anticipated). Scheduled operationally (see docs/comms-evidence.md);
- * `pnpm --filter ./api retention:evidence` is the entry point.
- *
- * Idempotent and crash-safe: purged_at is stamped only AFTER the blob remove
- * succeeds, so a crash between the two re-selects the row next run (the
- * re-remove of a missing object is treated as success). A blob shared by
- * multiple provenance rows (identical bodies dedupe onto one object) is only
- * removed once every referencing row is past the horizon; earlier rows just
- * stamp purged_at.
+ * Audited evidence retention. Skip legal-hold accounts; remove a shared blob
+ * only after every reference ages out; stamp purged_at only after deletion.
+ * This ordering is idempotent and crash-safe because the next run retries any
+ * unstamped row. See docs/comms-evidence.md.
  */
 export async function runEvidenceRetention(now: Date = new Date()): Promise<RetentionResult> {
   const log = getLogger();

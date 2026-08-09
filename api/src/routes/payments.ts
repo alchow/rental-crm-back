@@ -5,21 +5,11 @@ import { asJson, nullableRpcArg } from '../supabase/db-types';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 
-// Payments are MONEY RECEIVED. As with charges, there is no PATCH / DELETE:
-// a bounced check or mis-entered cash is VOIDED via POST .../void. A
-// reversal that involves a fee (NSF) is a SEPARATE new charge row plus an
-// optional negative-account-balance carryover; the original payment stays
-// visible.
-//
-// Allocations: a payment can be created with allocations[] inline (atomic;
-// the DB trigger _assert_allocation_integrity guards against cross-tenancy
-// / cross-account / over-allocation). Additional allocations land via
-// POST .../payments/{id}/allocations. Allocations are immutable once
-// created -- correcting a misallocation is itself a reversal (we'd add a
-// new charge or apply against the right one). Phase 6 ships create-only.
-//
-// Voiding a payment leaves its allocations in place; the ledger view
-// filters them out via the payment.voided_at check.
+// Payments and allocations are immutable evidence. Corrections append facts:
+// void a payment, then create the replacement charge/allocation. Inline
+// allocations are atomic, and _assert_allocation_integrity rejects cross-scope
+// or excessive allocations. Voiding preserves allocations; ledger reads ignore
+// them through payment.voided_at.
 
 const PaymentMethod = z.enum([
   'cash',
