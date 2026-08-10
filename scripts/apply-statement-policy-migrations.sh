@@ -5,16 +5,24 @@
 # This interactive script is the operator action; deploys do not apply
 # migrations automatically.
 #
-#   bash scripts/apply-statement-policy-migrations.sh local        # local stack
-#   bash scripts/apply-statement-policy-migrations.sh prod         # PROD (pooler + confirm)
-#   bash scripts/apply-statement-policy-migrations.sh verify local # verify only
-#   bash scripts/apply-statement-policy-migrations.sh verify prod
+#   bash scripts/apply-statement-policy-migrations.sh local          # local stack
+#   bash scripts/apply-statement-policy-migrations.sh prod           # PROD (pooler + confirm)
+#   bash scripts/apply-statement-policy-migrations.sh snapshot prod  # pre-apply state (read-only)
+#   bash scripts/apply-statement-policy-migrations.sh verify prod    # POST-apply only — its
+#                                    where-clauses name the new columns, so on a
+#                                    pre-apply DB it reports "not applied yet";
+#                                    use `snapshot` to inspect a pre-apply DB.
 #
-# SAFETY: both migrations are additive and re-runnable (guards in-file). No
-# data change, no default, no RLS change, nothing mints charges. Until this
-# apply runs, the deployed API answers 503 for requests naming the policy
-# columns and 400 for a nonpayment_demand write — loud, not corrupting.
-# Apply before any frontend that sends the new fields merges.
+# SAFETY: both migrations are additive — no data change, no default, no RLS
+# change, nothing mints charges. 0007 is fully re-runnable (if-not-exists /
+# drop-if-exists guards in-file). 0008 is drop-then-add on the notice_class
+# constraint: idempotent in effect on any DB that has 0005 (prod does), but a
+# re-run against a DB missing that constraint hard-errors (42704) rather than
+# guessing. NOTE `db push` applies EVERY pending migration, not just these two
+# — inspect the pending list before confirming. Until this apply runs, the
+# deployed API answers 503 for requests naming the policy columns and 400 for
+# a nonpayment_demand write — loud, not corrupting — and the deployed frontend
+# hero feature-detects, so the policy UI stays hidden; this apply reveals it.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -40,12 +48,14 @@ done
 resolve_db_url() {
   case "$1" in
     local)
-      DB_URL="$(supabase status --output env --workdir db 2>/dev/null | grep '^DB_URL=' | cut -d= -f2- | tr -d '"')"
+      # `|| true` inside the substitution: with pipefail, a down stack would
+      # otherwise exit on the failed grep BEFORE the friendly die below fires.
+      DB_URL="$(supabase status --output env --workdir db 2>/dev/null | grep '^DB_URL=' | cut -d= -f2- | tr -d '"' || true)"
       [[ -n "$DB_URL" ]] || die "could not read DB_URL from 'supabase status' — is the local stack up? (supabase start --workdir db)"
       ;;
     prod)
       if [[ -z "${SUPABASE_DB_URL_PROD:-}" && -f .env.local ]]; then
-        SUPABASE_DB_URL_PROD="$(grep '^SUPABASE_DB_URL_PROD=' .env.local | cut -d= -f2- || true)"
+        SUPABASE_DB_URL_PROD="$(grep '^SUPABASE_DB_URL_PROD=' .env.local | cut -d= -f2- | tr -d '"' || true)"
       fi
       [[ -n "${SUPABASE_DB_URL_PROD:-}" ]] || die "SUPABASE_DB_URL_PROD not set and not found in .env.local"
       DB_URL="$SUPABASE_DB_URL_PROD"
@@ -124,10 +134,25 @@ select
        and indexname = 'charges_one_live_late_fee_per_parent')::int
     as live_fee_unique_index,            -- expect 1
   (select count(*) from pg_proc
-     where proname = 'change_tenancy_rent' and pronargs = 12)::int
+     where proname = 'change_tenancy_rent'
+       and pronamespace = 'public'::regnamespace and pronargs = 12)::int
     as twelve_arg_function,              -- expect 1 (and exactly one overload)
-  (select count(*) from pg_proc where proname = 'change_tenancy_rent')::int
+  (select count(*) from pg_proc
+     where proname = 'change_tenancy_rent'
+       and pronamespace = 'public'::regnamespace)::int
     as function_overloads,               -- expect 1
+  (select (prosrc like '%v_inherit_grace%')::int from pg_proc
+     where proname = 'change_tenancy_rent'
+       and pronamespace = 'public'::regnamespace and pronargs = 12)
+    as policy_inheritance_in_body,       -- expect 1: era fork carries grace/fee
+  (select has_function_privilege('authenticated',
+     'public.change_tenancy_rent(uuid, uuid, bigint, text, date, int, uuid, uuid, text, text, int, bigint)'::regprocedure,
+     'execute')::int)
+    as authenticated_can_execute,        -- expect 1: the ACL does not survive
+  (select has_function_privilege('anon',
+     'public.change_tenancy_rent(uuid, uuid, bigint, text, date, int, uuid, uuid, text, text, int, bigint)'::regprocedure,
+     'execute')::int)
+    as anon_can_execute,                 -- expect 0: DROP, so prove the re-grant
   (select count(*) from pg_constraint
      where conrelid = 'public.notices'::regclass
        and conname = 'notices_notice_class_check'
@@ -157,16 +182,31 @@ SQL
           Number(v.live_fee_unique_index) === 1 &&
           Number(v.twelve_arg_function) === 1 &&
           Number(v.function_overloads) === 1 &&
+          Number(v.policy_inheritance_in_body) === 1 &&
+          Number(v.authenticated_can_execute) === 1 &&
+          Number(v.anon_can_execute) === 0 &&
           Number(v.class_has_nonpayment_member) === 1;
         return c.end().then(() => {
           if (!ok) {
-            console.error("VERIFY FAILED: see the table above for which invariant is off. Both migrations are re-runnable — fix the cause and re-run the apply.");
+            console.error(
+              "VERIFY FAILED: see the table above for which invariant is off.\n" +
+              "If the version is NOT in supabase_migrations.schema_migrations, fix the cause and re-run the apply (both files tolerate re-application on the prod state).\n" +
+              "If the version IS recorded but the schema is off, a re-run is a NO-OP — db push skips recorded versions. Un-record it first, then re-apply:\n" +
+              "  supabase --workdir db migration repair --status reverted <version> --db-url \"$DB_URL\"");
             process.exit(1);
           }
           console.log("OK: statement policy + nonpayment_demand are live. The three *_rows counters are informational — all 0 immediately after apply (nothing backfills); they grow only as landlords set policy, assert fees, and serve notices.");
         });
       })
-      .catch((e) => { console.error("VERIFY query failed:", e.message); process.exit(1); });
+      .catch((e) => {
+        if (/does not exist/.test(e.message)) {
+          console.error("VERIFY query failed:", e.message);
+          console.error("This usually means the migrations are NOT applied yet — verify only works post-apply. Run the `snapshot` subcommand to inspect a pre-apply database.");
+        } else {
+          console.error("VERIFY query failed:", e.message);
+        }
+        process.exit(1);
+      });
   '
 }
 
@@ -202,15 +242,14 @@ EOF
   cat <<'EOF'
 
 Next steps after this succeeds:
-  1. Nothing to deploy: main already auto-deployed; the API stops answering
-     503/400 for the new surfaces the moment the schema exists.
-  2. NOW the frontend work that sends the new fields may merge — the hero PR
-     feature-detects (grace_days on a schedule response is its capability
-     signal), so it is safe in either order, but the policy UI only appears
-     once this apply has run.
-  3. In the frontend repo, run `bun run api:types` and commit the regenerated
-     schema.d.ts so the local extension types can retire.
-  4. Optional live smoke test on a test account: PATCH a rent schedule with
+  1. Nothing to deploy anywhere: backend main already auto-deployed (the API
+     stops answering 503/400 for the new surfaces the moment the schema
+     exists), and the frontend hero is ALREADY live — it feature-detects
+     (grace_days on a schedule response is its capability signal), so this
+     apply is what reveals the late-policy UI and fee proposals. schema.d.ts
+     was already regenerated from the live spec in frontend PR #226; there is
+     nothing to run in the frontend repo.
+  2. Optional live smoke test on a test account: PATCH a rent schedule with
      {"grace_days": 5, "late_fee_cents": 8500}, GET it back; POST a late_fee
      charge with parent_charge_id and confirm a second one 409s.
 EOF
