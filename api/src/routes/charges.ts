@@ -1,7 +1,8 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
-import { ApiError, errorResponses, conflictResponse } from './_lib/error';
+import type { DbTableInsert } from '../supabase/db-types';
+import { ApiError, errorResponses, conflictResponse, schemaCacheMiss } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 
 // Charges are AMOUNTS OWED. There is no PATCH / DELETE: a mis-entered or
@@ -40,6 +41,12 @@ const Charge = z
     period_end: z.string().nullable(),
     description: z.string().nullable(),
     source_schedule_id: z.string().uuid().nullable(),
+    // The charge this one derives from -- today, the rent charge a late_fee was
+    // asserted against (migration 20260801000007). Optional as well as nullable
+    // because a build running against a database that predates the migration
+    // simply has no such column, and an absent field is a truer answer than a
+    // fabricated null.
+    parent_charge_id: z.string().uuid().nullable().optional(),
     voided_at: z.string().nullable(),
     void_reason: z.string().nullable(),
     created_at: z.string(),
@@ -65,6 +72,25 @@ const CreateChargeBody = z
       .optional(),
     description: z.string().optional(),
     source_schedule_id: z.string().uuid().optional(),
+    parent_charge_id: z
+      .string()
+      .uuid()
+      .optional()
+      .openapi({
+        description:
+          'The charge this one derives from — the rent charge a late_fee is being ' +
+          'asserted against. Must be in the same account (404 otherwise), the same ' +
+          'tenancy (400 otherwise), and NOT voided (409 parent_charge_voided — a ' +
+          'cancelled bill cannot acquire new derived charges). At most one LIVE ' +
+          'late_fee may name a given parent: a second attempt is 409 late_fee_exists, ' +
+          'and voiding the fee frees the slot so a corrected one can be asserted. ' +
+          'Voiding the parent BY HAND does not cascade: an already-asserted fee stays ' +
+          'live and must be voided on its own. A rent change is the exception — it ' +
+          'voids the charges derived from the advance rent charges it supersedes, and ' +
+          'returns their ids in voided_charge_ids. Re-asserting a fee after a void ' +
+          'needs a FRESH Idempotency-Key: 4xx outcomes are cached, so replaying the ' +
+          'key that earned the 409 replays the 409.',
+      }),
   })
   .superRefine((body, ctx) => {
     const hasStart = body.period_start !== undefined;
@@ -144,7 +170,11 @@ const create = createRoute({
     'One charge per (source_schedule_id, period_start) — voided rows included. A ' +
     'create naming a schedule+period that already has a row (even a voided one) is ' +
     'rejected 409; re-billing a voided period manually means omitting ' +
-    'source_schedule_id (or period_start).',
+    'source_schedule_id (or period_start). Optional parent_charge_id links a ' +
+    'derived charge to the bill it came from (the late fee asserted against a rent ' +
+    'charge): 404 when the parent is not in this account, 400 when it is in a ' +
+    'different tenancy, 409 parent_charge_voided when the parent has been voided, ' +
+    '409 late_fee_exists when a live late fee already names it.',
   request: {
     params: AccountParam,
     body: { content: { 'application/json': { schema: CreateChargeBody } }, required: true },
@@ -202,31 +232,114 @@ chargesApp.openapi(create, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
-  const { data, error } = await sb
-    .from('charges')
-    .insert({
-      account_id: accountId,
-      tenancy_id: body.tenancy_id,
-      type: body.type,
-      amount_cents: body.amount_cents,
-      currency: body.currency,
-      due_date: body.due_date,
-      period_start: body.period_start ?? null,
-      period_end: body.period_end ?? null,
-      description: body.description ?? null,
-      source_schedule_id: body.source_schedule_id ?? null,
-    })
-    .select('*')
-    .single();
+
+  // A parent must be a LIVE charge of THIS tenancy. The composite FK
+  // (account_id, parent_charge_id) already makes a cross-account parent
+  // impossible at the database; the tenancy half has no key that can express it
+  // (both rows sit inside one account), so it is checked here. A member writing
+  // charges directly through PostgREST bypasses this check, which is acceptable:
+  // the reach is their own account, and they can already write arbitrary charges.
+  if (body.parent_charge_id !== undefined) {
+    const parent = await sb
+      .from('charges')
+      .select('id, tenancy_id, voided_at')
+      .eq('account_id', accountId)
+      .eq('id', body.parent_charge_id)
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (parent.error) throw new ApiError(500, 'database_error', parent.error.message);
+    if (!parent.data) {
+      throw new ApiError(404, 'not_found', 'parent_charge_id does not belong to this account');
+    }
+    const parentRow = parent.data as { tenancy_id: string; voided_at: string | null };
+    if (parentRow.tenancy_id !== body.tenancy_id) {
+      // WHICH id is wrong decides the status. A tenancy_id this account cannot
+      // see earns the same 404 the insert's FK would have produced had there
+      // been no parent to check first; without this, naming a parent silently
+      // turns that 404 into a 400 and the endpoint contradicts itself about
+      // whether a foreign tenancy exists.
+      const tenancy = await sb
+        .from('tenancies')
+        .select('id')
+        .eq('account_id', accountId)
+        .eq('id', body.tenancy_id)
+        .is('deleted_at', null)
+        .maybeSingle();
+      if (tenancy.error) throw new ApiError(500, 'database_error', tenancy.error.message);
+      if (!tenancy.data) {
+        throw new ApiError(404, 'not_found', 'tenancy_id does not belong to this account');
+      }
+      throw new ApiError(
+        400,
+        'invalid_request',
+        'parent_charge_id belongs to a different tenancy than this charge',
+      );
+    }
+    // A voided parent is a CANCELLED bill, and a live charge derived from one is
+    // a debt hanging off nothing. Propose-confirm is exactly where this happens:
+    // the rent charge can be voided between the proposal being rendered and the
+    // landlord tapping confirm, and without this the fee would still be minted
+    // and counted in totals.by_type.late_fee.
+    //
+    // A LANDLORD voiding a parent deliberately does NOT cascade: an
+    // already-asserted fee stays live, because withdrawing a fee they asserted
+    // is their decision, not a side effect of ours. A RENT CHANGE is the one
+    // exception, and only because it is the system unwinding its own generated
+    // charge -- change_tenancy_rent voids the fees derived from the advance rent
+    // charges it supersedes, and returns their ids in voided_charge_ids.
+    if (parentRow.voided_at !== null) {
+      throw new ApiError(
+        409,
+        'parent_charge_voided',
+        'parent_charge_id names a voided charge; the bill this would derive from was cancelled',
+      );
+    }
+  }
+
+  // parent_charge_id is spread in only when the caller supplied it, so a plain
+  // create never names a column a not-yet-migrated database lacks (PostgREST
+  // 500s on an unknown column even for a null value) — the same conditional
+  // insert rent-schedules uses for its provenance columns.
+  const insert: DbTableInsert<'charges'> = {
+    account_id: accountId,
+    tenancy_id: body.tenancy_id,
+    type: body.type,
+    amount_cents: body.amount_cents,
+    currency: body.currency,
+    due_date: body.due_date,
+    period_start: body.period_start ?? null,
+    period_end: body.period_end ?? null,
+    description: body.description ?? null,
+    source_schedule_id: body.source_schedule_id ?? null,
+  };
+  if (body.parent_charge_id !== undefined) insert.parent_charge_id = body.parent_charge_id;
+
+  const { data, error } = await sb.from('charges').insert(insert).select('*').single();
   if (error) {
+    // Code deployed ahead of the manual production apply: "not yet available",
+    // not "server fault".
+    const pending = schemaCacheMiss(error);
+    if (pending) throw pending;
     if (error.code === '23503') {
       throw new ApiError(
         404,
         'not_found',
-        'tenancy_id or source_schedule_id does not belong to this account',
+        'tenancy_id, source_schedule_id, or parent_charge_id does not belong to this account',
       );
     }
     if (error.code === '23514') throw new ApiError(400, 'invalid_request', error.message);
+    // The propose-confirm idempotency key (charges_one_live_late_fee_per_parent):
+    // one LIVE late fee per parent charge. A double tap, a retry, or a second
+    // device lands here instead of double-billing the tenant. Its own code
+    // because the client's next action is the opposite of the schedule-period
+    // conflict's: show the fee that already exists, do not re-post anything.
+    if (error.code === '23505' && /charges_one_live_late_fee_per_parent/.test(error.message)) {
+      throw new ApiError(
+        409,
+        'late_fee_exists',
+        'a live late fee already exists for this charge; void it first to assert a different one',
+      );
+    }
     // 23505 = charges_one_per_schedule_period: one row per (schedule, period),
     // VOIDED ROWS INCLUDED — the cron-idempotency key. Surfacing it as a 409
     // (was an opaque 500) matters for the manual re-bill path: re-charging a

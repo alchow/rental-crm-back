@@ -95,7 +95,11 @@
     { "script": "test:phase11", "description": "Chain sweep, pruning, and CLI checks." },
     { "script": "test:phase12", "description": "Guide/spec and generated SDK reachability." },
     { "script": "test:auto-charge", "description": "Automatic rent charging." },
-    { "script": "test:rent-changes", "description": "Instrument-anchored rent changes." }
+    { "script": "test:rent-changes", "description": "Instrument-anchored rent changes." },
+    {
+      "script": "test:statement-policy",
+      "description": "Statement late-fee policy: schedule policy fields, charge parenting, and era carry-forward."
+    }
   ],
   "manual": [
     {

@@ -6016,7 +6016,89 @@ export interface paths {
         };
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Edit this era’s late-fee policy (grace_days / late_fee_cents only)
+         * @description Records or corrects the lease’s late-fee terms on an existing schedule. This is the ONLY editable part of a rent schedule: amount_cents, currency, due_day, kind, start_date and end_date stay immutable because charges were billed off them — a rent change owns the amount (POST /tenancies/{tenancyId}/rent-changes), POST /rent-schedules/{id}/end owns the bound. Any other field in the body is rejected 400 rather than silently ignored. Send a field as null to CLEAR it (back to "not set", so the client proposes nothing); omit a field to leave it alone. Authorised like every other schedule mutation: any member of the account. Nothing about this call creates, changes, or schedules a charge.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["PatchRentSchedulePolicyBody"];
+                };
+            };
+            responses: {
+                /** @description updated */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RentSchedule"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
         trace?: never;
     };
     "/v1/accounts/{accountId}/rent-schedules/{id}/end": {
@@ -6128,7 +6210,7 @@ export interface paths {
         put?: never;
         /**
          * Apply an instrument-anchored rent change (renewal lease or served notice)
-         * @description Ends the open same-kind schedule at effective_date−1 and opens the successor anchored to the renewal lease and/or served notice. Any charges the generator had already advance-created off the old era for periods on/after effective_date are voided automatically (returned in voided_charge_ids). Re-billing is NOT synchronous, and only reaches periods whose due day is still ahead: for auto_charge_enabled accounts the next daily generator run (08:00 UTC) re-emits those voided periods at the new amount. A BACKDATED change — applied after a voided period’s due day — leaves that period with no live charge and the generator never revisits it (no backfill, by design): re-create it manually via POST /charges at the new amount with source_schedule_id = the successor (rent_schedule.id in this response). Manually-billing accounts re-create charges themselves in all cases. 409 codes: tenancy_ended, notice_not_served, instrument_not_current (expired/superseded anchor lease), schedule_conflict (a same-kind schedule starts on/after effective_date — delete it via DELETE /rent-schedules/{id} if mistaken, or change on a later date).
+         * @description Ends the open same-kind schedule at effective_date−1 and opens the successor anchored to the renewal lease and/or served notice. Any charges the generator had already advance-created off the old era for periods on/after effective_date are voided automatically (returned in voided_charge_ids). Re-billing is NOT synchronous, and only reaches periods whose due day is still ahead: for auto_charge_enabled accounts the next daily generator run (08:00 UTC) re-emits those voided periods at the new amount. A BACKDATED change — applied after a voided period’s due day — leaves that period with no live charge and the generator never revisits it (no backfill, by design): re-create it manually via POST /charges at the new amount with source_schedule_id = the successor (rent_schedule.id in this response). Manually-billing accounts re-create charges themselves in all cases. 409 codes: tenancy_ended, notice_not_served, instrument_not_current (expired/superseded anchor lease), schedule_conflict (a same-kind schedule starts on/after effective_date — delete it via DELETE /rent-schedules/{id} if mistaken, or change on a later date). The successor also INHERITS the ended schedule’s late-fee policy (grace_days, late_fee_cents) — pass either field to set a different value for the new era; a rent increase never silently drops the lease’s fee terms. voided_charge_ids additionally covers charges DERIVED from the voided advance charges (a late_fee asserted against one), so a backdated change cannot leave a live fee pointing at a bill that no longer exists.
          */
         post: {
             parameters: {
@@ -6288,7 +6370,7 @@ export interface paths {
             };
         };
         put?: never;
-        /** @description One charge per (source_schedule_id, period_start) — voided rows included. A create naming a schedule+period that already has a row (even a voided one) is rejected 409; re-billing a voided period manually means omitting source_schedule_id (or period_start). */
+        /** @description One charge per (source_schedule_id, period_start) — voided rows included. A create naming a schedule+period that already has a row (even a voided one) is rejected 409; re-billing a voided period manually means omitting source_schedule_id (or period_start). Optional parent_charge_id links a derived charge to the bill it came from (the late fee asserted against a rent charge): 404 when the parent is not in this account, 400 when it is in a different tenancy, 409 parent_charge_voided when the parent has been voided, 409 late_fee_exists when a live late fee already names it. */
         post: {
             parameters: {
                 query?: never;
@@ -18153,6 +18235,8 @@ export interface components {
             /** Format: uuid */
             source_notice_id: string | null;
             change_reason: string | null;
+            grace_days?: number | null;
+            late_fee_cents?: number | null;
             created_at: string;
             updated_at: string;
             deleted_at: string | null;
@@ -18175,10 +18259,20 @@ export interface components {
             /** Format: uuid */
             source_notice_id?: string;
             change_reason?: string;
+            /** @description Days after the due date before rent counts late under the lease (0–30; 0 means late the next day). null = not set — no default is assumed, and the client proposes no fee. */
+            grace_days?: number | null;
+            /** @description Late fee from the lease in minor units of the schedule currency. null = not set. Only ever proposed to a human, never charged automatically. */
+            late_fee_cents?: number | null;
         };
         EndRentScheduleBody: {
             /** @description End date (inclusive). null clears an existing end_date, re-opening the schedule. Only re-open when the ended state was not produced by a rent change that voided charges (voided_charge_ids non-empty) — a voided (schedule, period) pair never re-bills under the same schedule id, so a re-opened schedule silently skips those periods. Undo such a change with a fresh continuation schedule (POST /rent-schedules) instead. */
             end_date: string | null;
+        };
+        PatchRentSchedulePolicyBody: {
+            /** @description Days after the due date before rent counts late under the lease (0–30; 0 means late the next day). null = not set — no default is assumed, and the client proposes no fee. */
+            grace_days?: number | null;
+            /** @description Late fee from the lease in minor units of the schedule currency. null = not set. Only ever proposed to a human, never charged automatically. */
+            late_fee_cents?: number | null;
         };
         RentChangeResult: {
             rent_schedule: components["schemas"]["RentSchedule"];
@@ -18204,6 +18298,10 @@ export interface components {
             source_notice_id?: string;
             change_reason?: string;
             kind?: string;
+            /** @description Grace days for the SUCCESSOR era (0–30). Omit to carry the ended schedule’s value forward. Cannot clear a policy — PATCH the successor with null for that. */
+            grace_days?: number;
+            /** @description Late fee for the SUCCESSOR era, in minor units. Omit to carry the ended schedule’s value forward. Cannot clear a policy — PATCH the successor with null for that. */
+            late_fee_cents?: number;
         };
         Charge: {
             /** Format: uuid */
@@ -18222,6 +18320,8 @@ export interface components {
             description: string | null;
             /** Format: uuid */
             source_schedule_id: string | null;
+            /** Format: uuid */
+            parent_charge_id?: string | null;
             voided_at: string | null;
             void_reason: string | null;
             created_at: string;
@@ -18245,6 +18345,11 @@ export interface components {
             description?: string;
             /** Format: uuid */
             source_schedule_id?: string;
+            /**
+             * Format: uuid
+             * @description The charge this one derives from — the rent charge a late_fee is being asserted against. Must be in the same account (404 otherwise), the same tenancy (400 otherwise), and NOT voided (409 parent_charge_voided — a cancelled bill cannot acquire new derived charges). At most one LIVE late_fee may name a given parent: a second attempt is 409 late_fee_exists, and voiding the fee frees the slot so a corrected one can be asserted. Voiding the parent BY HAND does not cascade: an already-asserted fee stays live and must be voided on its own. A rent change is the exception — it voids the charges derived from the advance rent charges it supersedes, and returns their ids in voided_charge_ids. Re-asserting a fee after a void needs a FRESH Idempotency-Key: 4xx outcomes are cached, so replaying the key that earned the 409 replays the 409.
+             */
+            parent_charge_id?: string;
         };
         VoidChargeBody: {
             void_reason: string;
@@ -18374,6 +18479,8 @@ export interface components {
                 period_end: string | null;
                 /** Format: uuid */
                 source_schedule_id: string | null;
+                /** Format: uuid */
+                parent_charge_id?: string | null;
                 /** @enum {string} */
                 source: "manual" | "rent_schedule";
                 type: string;
@@ -18388,7 +18495,10 @@ export interface components {
                 kind: "payment";
                 /** Format: uuid */
                 id: string;
+                /** @description received_at — when the money arrived. */
                 occurred_at: string;
+                /** @description When this payment was RECORDED, which is later than occurred_at whenever rent is logged after the fact. Never render it as the payment date. */
+                created_at: string;
                 amount_cents: number;
                 method: string;
                 reference: string | null;
@@ -18398,6 +18508,8 @@ export interface components {
                     /** Format: uuid */
                     charge_id: string;
                     amount_cents: number;
+                    /** @description When this money was APPLIED to that charge — which can be well after the payment itself (a credit re-applied once a replacement charge exists). */
+                    created_at: string;
                 }[];
             })[];
             totals: {

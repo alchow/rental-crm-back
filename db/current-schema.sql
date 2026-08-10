@@ -4334,25 +4334,28 @@ $$;
 ALTER FUNCTION "public"."capture_persona_inbound"("p_account_id" "uuid", "p_provider" "text", "p_provider_msg_id" "text", "p_persona_address" "text", "p_from_address" "text", "p_from_display_name" "text", "p_to_addresses" "text"[], "p_cc_addresses" "text"[], "p_subject" "text", "p_body" "text", "p_media" "jsonb", "p_rfc822_message_id" "text", "p_in_reply_to" "text", "p_references" "text"[], "p_spf" "text", "p_dkim" "text", "p_dmarc" "text", "p_received_at" timestamp with time zone, "p_reply_domain" "text") OWNER TO "postgres";
 
 --
--- Name: change_tenancy_rent("uuid", "uuid", bigint, "text", "date", integer, "uuid", "uuid", "text", "text"); Type: FUNCTION; Schema: public; Owner: postgres
+-- Name: change_tenancy_rent("uuid", "uuid", bigint, "text", "date", integer, "uuid", "uuid", "text", "text", integer, bigint); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
-CREATE OR REPLACE FUNCTION "public"."change_tenancy_rent"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_amount_cents" bigint, "p_currency" "text", "p_effective_date" "date", "p_due_day" integer DEFAULT NULL::integer, "p_source_lease_id" "uuid" DEFAULT NULL::"uuid", "p_source_notice_id" "uuid" DEFAULT NULL::"uuid", "p_change_reason" "text" DEFAULT NULL::"text", "p_kind" "text" DEFAULT 'rent'::"text") RETURNS TABLE("o_schedule_id" "uuid", "o_ended_schedule_ids" "uuid"[], "o_superseded_lease_ids" "uuid"[], "o_voided_charge_ids" "uuid"[])
+CREATE OR REPLACE FUNCTION "public"."change_tenancy_rent"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_amount_cents" bigint, "p_currency" "text", "p_effective_date" "date", "p_due_day" integer DEFAULT NULL::integer, "p_source_lease_id" "uuid" DEFAULT NULL::"uuid", "p_source_notice_id" "uuid" DEFAULT NULL::"uuid", "p_change_reason" "text" DEFAULT NULL::"text", "p_kind" "text" DEFAULT 'rent'::"text", "p_grace_days" integer DEFAULT NULL::integer, "p_late_fee_cents" bigint DEFAULT NULL::bigint) RETURNS TABLE("o_schedule_id" "uuid", "o_ended_schedule_ids" "uuid"[], "o_superseded_lease_ids" "uuid"[], "o_voided_charge_ids" "uuid"[])
     LANGUAGE "plpgsql"
     SET "search_path" TO 'public'
     AS $$
 declare
-  v_tenancy     record;
-  v_lease       record;
-  v_notice      record;
-  v_rec         record;
-  v_ended       uuid[] := '{}';
-  v_superseded  uuid[] := '{}';
-  v_voided      uuid[] := '{}';
-  v_inherit_due int;
-  v_inherit_end date;
-  v_due_day     int;
-  v_schedule_id uuid;
+  v_tenancy       record;
+  v_lease         record;
+  v_notice        record;
+  v_rec           record;
+  v_ended         uuid[] := '{}';
+  v_superseded    uuid[] := '{}';
+  v_voided        uuid[] := '{}';
+  v_cascaded      uuid[] := '{}';
+  v_inherit_due   int;
+  v_inherit_end   date;
+  v_inherit_grace int;
+  v_inherit_fee   bigint;
+  v_due_day       int;
+  v_schedule_id   uuid;
 begin
   -- 1. Serialize concurrent rent changes for this tenancy. Two racing changes
   --    would otherwise both read the same "open" schedule set and each end it /
@@ -4371,6 +4374,15 @@ begin
   end if;
   if p_effective_date is null then
     raise exception 'invalid: effective_date is required';
+  end if;
+  -- Policy bounds are checked here as well as by the column CHECKs so the
+  -- caller gets the stable `invalid:` prefix (-> 400) instead of a raw
+  -- constraint violation surfacing as a 500 through the RPC error mapping.
+  if p_grace_days is not null and (p_grace_days < 0 or p_grace_days > 30) then
+    raise exception 'invalid: grace_days must be between 0 and 30';
+  end if;
+  if p_late_fee_cents is not null and p_late_fee_cents <= 0 then
+    raise exception 'invalid: late_fee_cents must be greater than 0';
   end if;
 
   -- 3. Tenancy must exist (account match, not soft-deleted) and not be ended.
@@ -4449,7 +4461,7 @@ begin
   --    effective_date-1 (that would invert its date range); it signals an
   --    already-planned future change that must be resolved by a human first.
   for v_rec in
-    select id, start_date, due_day, end_date
+    select id, start_date, due_day, end_date, grace_days, late_fee_cents
       from public.rent_schedules
      where account_id = p_account_id
        and tenancy_id = p_tenancy_id
@@ -4469,15 +4481,20 @@ begin
        and id         = v_rec.id;
     v_ended := v_ended || v_rec.id;
     if v_inherit_due is null then
-      -- Inherit both due_day AND the (possibly bounded) end_date from the SAME
-      -- most-recently-started ended schedule -- captured from v_rec here BEFORE
-      -- the update above overwrites the row's end_date. Inheriting end_date
-      -- keeps a bounded predecessor's planned end (e.g. a fixed-term move-out)
-      -- from silently becoming open-ended on the successor. The open-set filter
-      -- above guarantees v_inherit_end is null or >= p_effective_date, so the
-      -- successor's [effective_date, v_inherit_end] range is always valid.
-      v_inherit_due := v_rec.due_day;
-      v_inherit_end := v_rec.end_date;
+      -- Inherit due_day, the (possibly bounded) end_date AND the late-fee
+      -- policy from the SAME most-recently-started ended schedule -- captured
+      -- from v_rec here BEFORE the update above overwrites the row's end_date.
+      -- Inheriting end_date keeps a bounded predecessor's planned end (e.g. a
+      -- fixed-term move-out) from silently becoming open-ended on the
+      -- successor. The open-set filter above guarantees v_inherit_end is null
+      -- or >= p_effective_date, so the successor's
+      -- [effective_date, v_inherit_end] range is always valid. The two policy
+      -- fields ride the same "one predecessor, one era" rule so a schedule can
+      -- never inherit its terms from two different eras.
+      v_inherit_due   := v_rec.due_day;
+      v_inherit_end   := v_rec.end_date;
+      v_inherit_grace := v_rec.grace_days;
+      v_inherit_fee   := v_rec.late_fee_cents;
     end if;
   end loop;
 
@@ -4493,16 +4510,20 @@ begin
   --    else null (open-ended) for a fresh era with an explicit due_day.
   --    currency is stored EXACTLY as passed -- the table only length-checks it
   --    and existing rows come from the API un-folded, so we do not case-fold.
+  --    The policy fields follow the due_day rule: explicit value wins, else the
+  --    predecessor's, else null (a first era with no policy stays unset).
   insert into public.rent_schedules
     (account_id, tenancy_id, kind, amount_cents, currency, due_day,
-     start_date, end_date, source_lease_id, source_notice_id, change_reason)
+     start_date, end_date, source_lease_id, source_notice_id, change_reason,
+     grace_days, late_fee_cents)
   values
     (p_account_id, p_tenancy_id, p_kind, p_amount_cents, p_currency, v_due_day,
-     p_effective_date, v_inherit_end, p_source_lease_id, p_source_notice_id, p_change_reason)
+     p_effective_date, v_inherit_end, p_source_lease_id, p_source_notice_id, p_change_reason,
+     coalesce(p_grace_days, v_inherit_grace), coalesce(p_late_fee_cents, v_inherit_fee))
   returning id into v_schedule_id;
 
   -- 9b. Close the advance-generation double-bill hole across the era seam (see
-  --     the GENERATOR COMPATIBILITY note in the header). generate_rent_charges
+  --     the GENERATOR COMPATIBILITY note in 20260706000001). generate_rent_charges
   --     bills IN ADVANCE, so periods on/after effective_date may already have a
   --     charge under one of the just-ended schedules' ids. Those charges belong
   --     to the OLD amount for a period the successor now owns, and ON CONFLICT
@@ -4524,6 +4545,57 @@ begin
     returning id
   )
   select coalesce(array_agg(id), '{}') into v_voided from voided;
+
+  -- 9c. CASCADE to charges DERIVED from the bills 9b just voided.
+  --
+  --     A late fee has no source_schedule_id -- it hangs off parent_charge_id --
+  --     so 9b cannot see it, and without this a backdated rent change strands a
+  --     LIVE fee pointing at a voided parent. That is not merely untidy: the
+  --     landlord re-creates the rent charge manually (the documented backdated
+  --     recipe), the statement offers the fee again against the NEW parent, and
+  --     the one-live-fee-per-parent index cannot object because the parent
+  --     differs. One late month, two live fees, both counted in totals.
+  --
+  --     THIS CASCADE IS NOT A REVERSAL OF THE HUMAN-VOID DOCTRINE. When a
+  --     LANDLORD voids a rent charge, an asserted fee deliberately stays live:
+  --     withdrawing a fee they asserted is their call. Here the SYSTEM is
+  --     unwinding its OWN act -- the generator's advance charge for a period the
+  --     successor era now owns -- so leaving behind a fee derived from a bill
+  --     that no longer exists would be the system asserting a debt nobody stands
+  --     behind. Both ids come back in o_voided_charge_ids so the caller can
+  --     reconcile every row it had emitted.
+  --
+  --     Recursive because the link is general (any charge may name a parent):
+  --     fixing only the first level would leave the identical bug one level
+  --     down. UNION (not UNION ALL) dedupes, so even a cyclic chain terminates.
+  if array_length(v_voided, 1) is not null then
+    with recursive orphaned as (
+      select c.id
+        from public.charges c
+       where c.account_id       = p_account_id
+         and c.parent_charge_id = any(v_voided)
+         and c.voided_at is null
+         and c.deleted_at is null
+      union
+      select c.id
+        from public.charges c
+        join orphaned o on c.parent_charge_id = o.id
+       where c.account_id = p_account_id
+         and c.voided_at is null
+         and c.deleted_at is null
+    ),
+    cascaded as (
+      update public.charges
+         set voided_at   = now(),
+             void_reason = 'parent charge superseded by rent change',
+             updated_at  = now()
+       where account_id = p_account_id
+         and id in (select id from orphaned)
+      returning id
+    )
+    select coalesce(array_agg(id), '{}') into v_cascaded from cascaded;
+    v_voided := v_voided || v_cascaded;
+  end if;
 
   -- 10. Lease-anchored change supersedes the OTHER active leases of this
   --     tenancy (the one we anchored to is the new contract of record).
@@ -4555,7 +4627,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."change_tenancy_rent"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_amount_cents" bigint, "p_currency" "text", "p_effective_date" "date", "p_due_day" integer, "p_source_lease_id" "uuid", "p_source_notice_id" "uuid", "p_change_reason" "text", "p_kind" "text") OWNER TO "postgres";
+ALTER FUNCTION "public"."change_tenancy_rent"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_amount_cents" bigint, "p_currency" "text", "p_effective_date" "date", "p_due_day" integer, "p_source_lease_id" "uuid", "p_source_notice_id" "uuid", "p_change_reason" "text", "p_kind" "text", "p_grace_days" integer, "p_late_fee_cents" bigint) OWNER TO "postgres";
 
 --
 -- Name: check_outbox_party_intent("uuid", "uuid", "text", "uuid", "text", "jsonb"); Type: FUNCTION; Schema: public; Owner: postgres
@@ -10277,9 +10349,11 @@ CREATE TABLE IF NOT EXISTS "public"."charges" (
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "deleted_at" timestamp with time zone,
+    "parent_charge_id" "uuid",
     CONSTRAINT "charges_amount_cents_positive" CHECK (("amount_cents" > 0)),
     CONSTRAINT "charges_check" CHECK ((("period_start" IS NULL) OR ("period_end" IS NULL) OR ("period_end" >= "period_start"))),
     CONSTRAINT "charges_currency_check" CHECK (("length"("currency") = 3)),
+    CONSTRAINT "charges_parent_not_self" CHECK ((("parent_charge_id" IS NULL) OR ("parent_charge_id" <> "id"))),
     CONSTRAINT "charges_type_check" CHECK (("type" = ANY (ARRAY['rent'::"text", 'late_fee'::"text", 'deposit'::"text", 'utility'::"text", 'parking'::"text", 'repair_chargeback'::"text", 'nsf_fee'::"text", 'other'::"text"])))
 );
 
@@ -10287,6 +10361,13 @@ ALTER TABLE ONLY "public"."charges" FORCE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."charges" OWNER TO "postgres";
+
+--
+-- Name: COLUMN "charges"."parent_charge_id"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."charges"."parent_charge_id" IS 'The charge this one derives from -- today, the rent charge a late_fee was asserted against. Null for a standalone charge. Same account (FK) and, by route validation, the same tenancy.';
+
 
 --
 -- Name: comm_policies; Type: TABLE; Schema: public; Owner: postgres
@@ -11109,11 +11190,15 @@ CREATE TABLE IF NOT EXISTS "public"."rent_schedules" (
     "source_lease_id" "uuid",
     "source_notice_id" "uuid",
     "change_reason" "text",
+    "grace_days" integer,
+    "late_fee_cents" bigint,
     CONSTRAINT "rent_schedules_amount_cents_check" CHECK (("amount_cents" >= 0)),
     CONSTRAINT "rent_schedules_check" CHECK ((("end_date" IS NULL) OR ("end_date" >= "start_date"))),
     CONSTRAINT "rent_schedules_currency_check" CHECK (("length"("currency") = 3)),
     CONSTRAINT "rent_schedules_due_day_check" CHECK ((("due_day" >= 1) AND ("due_day" <= 28))),
-    CONSTRAINT "rent_schedules_kind_check" CHECK ((("length"("kind") >= 1) AND ("length"("kind") <= 50)))
+    CONSTRAINT "rent_schedules_grace_days_check" CHECK ((("grace_days" >= 0) AND ("grace_days" <= 30))),
+    CONSTRAINT "rent_schedules_kind_check" CHECK ((("length"("kind") >= 1) AND ("length"("kind") <= 50))),
+    CONSTRAINT "rent_schedules_late_fee_cents_check" CHECK (("late_fee_cents" > 0))
 );
 
 ALTER TABLE ONLY "public"."rent_schedules" FORCE ROW LEVEL SECURITY;
@@ -11140,6 +11225,20 @@ COMMENT ON COLUMN "public"."rent_schedules"."source_notice_id" IS 'Provenance: t
 --
 
 COMMENT ON COLUMN "public"."rent_schedules"."change_reason" IS 'Free-text reason for this rent change (API-bounded; no DB length CHECK, per the void_reason idiom).';
+
+
+--
+-- Name: COLUMN "rent_schedules"."grace_days"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."rent_schedules"."grace_days" IS 'Days after due_date before rent counts late under the lease. Null = not set (no default is invented). Read by the client to render the status hero and to offer the late-fee proposal; nothing server-side acts on it.';
+
+
+--
+-- Name: COLUMN "rent_schedules"."late_fee_cents"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."rent_schedules"."late_fee_cents" IS 'Late fee from the lease, in minor units of the schedule currency. Null = not set. Only ever proposed to a human, never auto-charged.';
 
 
 --
@@ -12746,6 +12845,13 @@ CREATE INDEX "charges_account_id_idx" ON "public"."charges" USING "btree" ("acco
 --
 
 CREATE INDEX "charges_due_date_idx" ON "public"."charges" USING "btree" ("due_date");
+
+
+--
+-- Name: charges_one_live_late_fee_per_parent; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE UNIQUE INDEX "charges_one_live_late_fee_per_parent" ON "public"."charges" USING "btree" ("parent_charge_id") WHERE (("type" = 'late_fee'::"text") AND ("voided_at" IS NULL) AND ("deleted_at" IS NULL));
 
 
 --
@@ -14740,6 +14846,14 @@ ALTER TABLE ONLY "public"."charges"
 
 ALTER TABLE ONLY "public"."charges"
     ADD CONSTRAINT "charges_account_id_tenancy_id_fkey" FOREIGN KEY ("account_id", "tenancy_id") REFERENCES "public"."tenancies"("account_id", "id") ON DELETE RESTRICT;
+
+
+--
+-- Name: charges charges_parent_charge_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."charges"
+    ADD CONSTRAINT "charges_parent_charge_fk" FOREIGN KEY ("account_id", "parent_charge_id") REFERENCES "public"."charges"("account_id", "id") ON DELETE RESTRICT;
 
 
 --
@@ -17352,12 +17466,12 @@ GRANT ALL ON FUNCTION "public"."capture_persona_inbound"("p_account_id" "uuid", 
 
 
 --
--- Name: FUNCTION "change_tenancy_rent"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_amount_cents" bigint, "p_currency" "text", "p_effective_date" "date", "p_due_day" integer, "p_source_lease_id" "uuid", "p_source_notice_id" "uuid", "p_change_reason" "text", "p_kind" "text"); Type: ACL; Schema: public; Owner: postgres
+-- Name: FUNCTION "change_tenancy_rent"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_amount_cents" bigint, "p_currency" "text", "p_effective_date" "date", "p_due_day" integer, "p_source_lease_id" "uuid", "p_source_notice_id" "uuid", "p_change_reason" "text", "p_kind" "text", "p_grace_days" integer, "p_late_fee_cents" bigint); Type: ACL; Schema: public; Owner: postgres
 --
 
-REVOKE ALL ON FUNCTION "public"."change_tenancy_rent"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_amount_cents" bigint, "p_currency" "text", "p_effective_date" "date", "p_due_day" integer, "p_source_lease_id" "uuid", "p_source_notice_id" "uuid", "p_change_reason" "text", "p_kind" "text") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."change_tenancy_rent"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_amount_cents" bigint, "p_currency" "text", "p_effective_date" "date", "p_due_day" integer, "p_source_lease_id" "uuid", "p_source_notice_id" "uuid", "p_change_reason" "text", "p_kind" "text") TO "authenticated";
-GRANT ALL ON FUNCTION "public"."change_tenancy_rent"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_amount_cents" bigint, "p_currency" "text", "p_effective_date" "date", "p_due_day" integer, "p_source_lease_id" "uuid", "p_source_notice_id" "uuid", "p_change_reason" "text", "p_kind" "text") TO "service_role";
+REVOKE ALL ON FUNCTION "public"."change_tenancy_rent"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_amount_cents" bigint, "p_currency" "text", "p_effective_date" "date", "p_due_day" integer, "p_source_lease_id" "uuid", "p_source_notice_id" "uuid", "p_change_reason" "text", "p_kind" "text", "p_grace_days" integer, "p_late_fee_cents" bigint) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."change_tenancy_rent"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_amount_cents" bigint, "p_currency" "text", "p_effective_date" "date", "p_due_day" integer, "p_source_lease_id" "uuid", "p_source_notice_id" "uuid", "p_change_reason" "text", "p_kind" "text", "p_grace_days" integer, "p_late_fee_cents" bigint) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."change_tenancy_rent"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_amount_cents" bigint, "p_currency" "text", "p_effective_date" "date", "p_due_day" integer, "p_source_lease_id" "uuid", "p_source_notice_id" "uuid", "p_change_reason" "text", "p_kind" "text", "p_grace_days" integer, "p_late_fee_cents" bigint) TO "service_role";
 
 
 --

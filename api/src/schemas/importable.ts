@@ -111,6 +111,35 @@ export const CreateLeaseBody = z
 
 export const ScheduleKind = z.string().min(1).max(50);
 
+// The landlord's own late-fee terms, recorded per rent era (migration
+// 20260801000007). NOTHING SERVER-SIDE ACTS ON THEM: they let the client say
+// "rent is late as of today — add the $85 fee from the lease?", and a real
+// late_fee charge exists only once a human confirms. Omit or send null when the
+// lease does not say; a guessed grace period or fee would be read back as the
+// lease's terms and could end up in a demand letter.
+export const GraceDays = z
+  .number()
+  .int()
+  .min(0)
+  .max(30)
+  .nullable()
+  .openapi({
+    description:
+      'Days after the due date before rent counts late under the lease (0–30; 0 means ' +
+      'late the next day). null = not set — no default is assumed, and the client ' +
+      'proposes no fee.',
+  });
+export const LateFeeCents = z
+  .number()
+  .int()
+  .positive()
+  .nullable()
+  .openapi({
+    description:
+      'Late fee from the lease in minor units of the schedule currency. null = not set. ' +
+      'Only ever proposed to a human, never charged automatically.',
+  });
+
 export const CreateRentScheduleBody = z
   .object({
     tenancy_id: z.string().uuid(),
@@ -127,6 +156,8 @@ export const CreateRentScheduleBody = z
     source_lease_id: z.string().uuid().optional(),
     source_notice_id: z.string().uuid().optional(),
     change_reason: z.string().min(1).max(2000).optional(),
+    grace_days: GraceDays.optional(),
+    late_fee_cents: LateFeeCents.optional(),
   })
   .openapi('CreateRentScheduleBody');
 

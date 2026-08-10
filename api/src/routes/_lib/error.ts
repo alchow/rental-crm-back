@@ -132,6 +132,11 @@ export type ErrorCode =
   | 'tenancy_has_money' // PATCH start_date once non-voided charges/payments exist:
   // the money rows anchor the timeline — void them first
   // (ADR-0012 recipes) or leave start_date alone
+  | 'late_fee_exists' // a live late fee already names this parent charge: show
+  // the existing fee, do not re-post; voiding it frees the slot
+  | 'parent_charge_voided' // parent_charge_id names a VOIDED charge: the bill the
+  // fee would hang off was cancelled, so drop the
+  // proposal — do not retry against the same parent
   // Incidents conflicts (same fine-grained convention: each code implies a
   // distinct next action).
   | 'unclassified' // recurrence on an unclassified incident: PATCH category first
@@ -201,6 +206,30 @@ export function classifyTransient(e: unknown): ApiError | null {
     if (c && (TRANSIENT_PG_CODES.has(c) || TRANSIENT_NET_CODES.has(c))) {
       return new ApiError(503, 'service_unavailable', 'a dependency is temporarily unavailable');
     }
+  }
+  return null;
+}
+
+/**
+ * The deploy-window signature: code naming a column or function the database
+ * does not have yet. PostgREST answers PGRST204 (column missing from the schema
+ * cache) or PGRST202 (no such function). Schema-first is the deploy policy, but
+ * applying a production migration is a MANUAL step, so between merge and apply
+ * this is expected and temporary -- a retryable 503 is the honest answer, where
+ * a 500 database_error reads as "the server is broken" and sends an operator
+ * hunting a fault that does not exist.
+ *
+ * Deliberately narrow: these two codes only, and called only from the write
+ * paths that name columns a pending migration adds. Applied blanket it would
+ * dress a genuine "this column will never exist" bug up as a transient blip.
+ */
+export function schemaCacheMiss(error: { code?: string }): ApiError | null {
+  if (error.code === 'PGRST202' || error.code === 'PGRST204') {
+    return new ApiError(
+      503,
+      'service_unavailable',
+      'that field is not available yet; its database migration has not been applied',
+    );
   }
   return null;
 }

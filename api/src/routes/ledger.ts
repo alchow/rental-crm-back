@@ -18,6 +18,11 @@ const LedgerCharge = z.object({
   period_start: z.string().nullable(),
   period_end: z.string().nullable(),
   source_schedule_id: z.string().uuid().nullable(),
+  // The bill this entry derives from — the rent charge a late_fee was asserted
+  // against (migration 20260801000007). Optional as well as nullable: the row
+  // fetch is select('*'), so against a database that predates the migration the
+  // field is simply absent rather than a fabricated null, and no read 500s.
+  parent_charge_id: z.string().uuid().nullable().optional(),
   source: z.enum(['manual', 'rent_schedule']),
   type: z.string(),
   amount_cents: z.number().int(),
@@ -30,7 +35,18 @@ const LedgerCharge = z.object({
 const LedgerPayment = z.object({
   kind: z.literal('payment'),
   id: z.string().uuid(),
-  occurred_at: z.string(),
+  // occurred_at is received_at: WHEN THE MONEY ARRIVED, the fact the landlord
+  // asserts. created_at is when the row was written. They differ whenever rent
+  // is recorded after the fact ("the cheque came Friday, I logged it Monday"),
+  // and a statement that shows one as the other misstates either the payment
+  // history or the record's provenance. Both columns are NOT NULL and predate
+  // this response, so both are always present.
+  occurred_at: z.string().openapi({ description: 'received_at — when the money arrived.' }),
+  created_at: z.string().openapi({
+    description:
+      'When this payment was RECORDED, which is later than occurred_at whenever rent ' +
+      'is logged after the fact. Never render it as the payment date.',
+  }),
   amount_cents: z.number().int(),
   method: z.string(),
   reference: z.string().nullable(),
@@ -40,6 +56,11 @@ const LedgerPayment = z.object({
     z.object({
       charge_id: z.string().uuid(),
       amount_cents: z.number().int(),
+      created_at: z.string().openapi({
+        description:
+          'When this money was APPLIED to that charge — which can be well after the ' +
+          'payment itself (a credit re-applied once a replacement charge exists).',
+      }),
     }),
   ),
 });
@@ -168,6 +189,10 @@ interface ChargeRow {
   period_start: string | null;
   period_end: string | null;
   source_schedule_id: string | null;
+  // Absent (not null) when read from a database that predates migration
+  // 20260801000007; select('*') tolerates that, an explicit column list
+  // would not.
+  parent_charge_id?: string | null;
   description: string | null;
   voided_at: string | null;
   void_reason: string | null;
@@ -184,6 +209,7 @@ interface PaymentRow {
   reference: string | null;
   voided_at: string | null;
   void_reason: string | null;
+  created_at: string;
 }
 interface AllocationRow {
   id: string;
@@ -191,6 +217,7 @@ interface AllocationRow {
   payment_id: string;
   charge_id: string;
   amount_cents: number;
+  created_at: string;
 }
 
 ledgerApp.openapi(get, async (c) => {
@@ -351,6 +378,7 @@ ledgerApp.openapi(get, async (c) => {
       period_start: cr.period_start,
       period_end: cr.period_end,
       source_schedule_id: cr.source_schedule_id,
+      parent_charge_id: cr.parent_charge_id,
       source: cr.source_schedule_id === null ? 'manual' : 'rent_schedule',
       type: cr.type,
       amount_cents: cr.amount_cents,
@@ -366,6 +394,7 @@ ledgerApp.openapi(get, async (c) => {
       kind: 'payment',
       id: pr.id,
       occurred_at: pr.received_at,
+      created_at: pr.created_at,
       amount_cents: pr.amount_cents,
       method: pr.method,
       reference: pr.reference,
@@ -374,6 +403,7 @@ ledgerApp.openapi(get, async (c) => {
       allocations: (allocByPayment.get(pr.id) ?? []).map((a) => ({
         charge_id: a.charge_id,
         amount_cents: a.amount_cents,
+        created_at: a.created_at,
       })),
     });
   }

@@ -99,6 +99,36 @@ lock on every write and validates that any supplied anchor belongs to the
 row's own tenancy — closing both the racing-create overlap and cross-tenancy
 provenance corruption at the layer that catches every path.
 
+_Amendment, 2026-08-01 (migration `20260801000007_statement_late_fee_policy`,
+current):_ the forward fork also carries the era's **late-fee policy**
+(`rent_schedules.grace_days`, `late_fee_cents`) to the successor, on the same
+"one predecessor, one era" rule that already inherits `due_day` and the
+`end_date` bound — a rent increase must not silently erase what the lease says
+about lateness. `p_grace_days` / `p_late_fee_cents` override the inherited
+value exactly as `p_due_day` does and, like `p_due_day`, cannot express "clear
+it"; clearing is `PATCH /rent-schedules/{id}`, the one narrow exception to this
+ADR's no-PATCH-on-a-schedule rule, admitted because the policy describes the
+lease rather than what was billed and nothing is _generated_ from it. A fee
+already asserted under an earlier policy is unaffected — it is its own charge
+row carrying its own recorded amount, so editing the policy neither re-prices
+nor voids it, and the editor deliberately stays open once fees exist rather than
+locking the lease's terms behind the first fee ever asserted. Nothing reads
+these columns server-side: they let a client _propose_ a late fee that a human
+confirms through an ordinary `POST /charges` linked back with
+`parent_charge_id`, which keeps the fee an asserted act rather than a generated
+one.
+
+The advance-charge sweep in item 2 extends to those derived charges: a rent
+change voids the old era's advance rent charges, and now also the live charges
+whose `parent_charge_id` names one of them (`void_reason` `'parent charge
+superseded by rent change'`, ids returned in `voided_charge_ids`). Without it a
+**backdated** change strands a live late fee pointing at a voided bill, and the
+manual re-creation of that period's rent charge lets a second fee be asserted
+against the new parent — the one-live-fee-per-parent index cannot object,
+because the parent differs. This cascade does not contradict the rule that
+voiding a parent by hand leaves an asserted fee alone: there the landlord is
+acting, here the system is unwinding **its own** generated charge.
+
 **3. Drift is detected, never blocked.** `detect_rent_drift(account_id)`
 reports tenancies whose active-lease rent ≠ the sum of open `kind='rent'`
 schedules (or whose currencies mismatch). The cron runner (ADR-0011) sweeps

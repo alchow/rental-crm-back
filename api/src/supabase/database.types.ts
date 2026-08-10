@@ -583,6 +583,7 @@ export type Database = {
           description: string | null;
           due_date: string;
           id: string;
+          parent_charge_id: string | null;
           period_end: string | null;
           period_start: string | null;
           source_schedule_id: string | null;
@@ -601,6 +602,7 @@ export type Database = {
           description?: string | null;
           due_date: string;
           id?: string;
+          parent_charge_id?: string | null;
           period_end?: string | null;
           period_start?: string | null;
           source_schedule_id?: string | null;
@@ -619,6 +621,7 @@ export type Database = {
           description?: string | null;
           due_date?: string;
           id?: string;
+          parent_charge_id?: string | null;
           period_end?: string | null;
           period_start?: string | null;
           source_schedule_id?: string | null;
@@ -641,6 +644,13 @@ export type Database = {
             columns: ['account_id', 'tenancy_id'];
             isOneToOne: false;
             referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'charges_parent_charge_fk';
+            columns: ['account_id', 'parent_charge_id'];
+            isOneToOne: false;
+            referencedRelation: 'charges';
             referencedColumns: ['account_id', 'id'];
           },
         ];
@@ -3303,8 +3313,10 @@ export type Database = {
           deleted_at: string | null;
           due_day: number;
           end_date: string | null;
+          grace_days: number | null;
           id: string;
           kind: string;
+          late_fee_cents: number | null;
           source_lease_id: string | null;
           source_notice_id: string | null;
           start_date: string;
@@ -3320,8 +3332,10 @@ export type Database = {
           deleted_at?: string | null;
           due_day: number;
           end_date?: string | null;
+          grace_days?: number | null;
           id?: string;
           kind: string;
+          late_fee_cents?: number | null;
           source_lease_id?: string | null;
           source_notice_id?: string | null;
           start_date: string;
@@ -3337,8 +3351,10 @@ export type Database = {
           deleted_at?: string | null;
           due_day?: number;
           end_date?: string | null;
+          grace_days?: number | null;
           id?: string;
           kind?: string;
+          late_fee_cents?: number | null;
           source_lease_id?: string | null;
           source_notice_id?: string | null;
           start_date?: string;
@@ -4389,7 +4405,9 @@ export type Database = {
           p_currency: string;
           p_due_day?: number;
           p_effective_date: string;
+          p_grace_days?: number;
           p_kind?: string;
+          p_late_fee_cents?: number;
           p_source_lease_id?: string;
           p_source_notice_id?: string;
           p_tenancy_id: string;
