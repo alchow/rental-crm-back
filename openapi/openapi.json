@@ -1971,6 +1971,7 @@
           "rent_change",
           "written_warning",
           "cure_or_quit",
+          "nonpayment_demand",
           "other",
           null
         ]

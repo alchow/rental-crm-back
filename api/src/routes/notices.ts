@@ -36,9 +36,13 @@ function isRentInstrumentReject(msg: string): boolean {
 // from the exact canonical label the landlord committed; free text and
 // out-of-app writers yield null, and null is always legitimate. 'other' is
 // reserved for a future surface that asks explicitly; nothing infers it.
-// (Migration 20260801000005.)
+// 'nonpayment_demand' is the demand for overdue rent — one act under two
+// landlord names ("Late rent notice", "Pay or quit notice"), named for the act
+// rather than the ground ('nonpayment') or one state's wording of it
+// ('pay_or_quit'). Members mirror notices_notice_class_check
+// (migrations 20260801000005, 20260801000008).
 const NoticeClass = z
-  .enum(['rent_change', 'written_warning', 'cure_or_quit', 'other'])
+  .enum(['rent_change', 'written_warning', 'cure_or_quit', 'nonpayment_demand', 'other'])
   .openapi('NoticeClass');
 
 const Notice = z

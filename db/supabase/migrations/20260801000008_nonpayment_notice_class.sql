@@ -1,0 +1,56 @@
+-- nonpayment notice class
+-- Forward-only migration. Add scope, invariants, grants, and verification notes.
+--
+-- SCOPE: one member added to the notices.notice_class check constraint. No
+-- column, no default, no index, no data, no RLS, and no trigger change.
+--
+-- DOCTRINE (20260801000005): members are FUNCTIONAL ACTS -- what the paper
+-- does -- never statutory names and never per-state grounds. The same demand
+-- is a "3-day notice" in FL, a "3-day notice to pay rent or quit" in CA, and
+-- a "14-day notice to quit" in MA, so a name enum would mistranslate most
+-- states. 'other' stays reserved for a future surface that asks the landlord
+-- explicitly and is never minted by inference.
+--
+-- WHY 'nonpayment_demand': the late-rent flow records ONE act -- a demand for
+-- overdue rent -- under two landlord names ("Late rent notice", "Pay or quit
+-- notice"), the same one-act-two-names shape as 'rent_change' covering both
+-- "Rent change notice" and "Rent increase notice". The act noun is the head,
+-- as in 'written_warning' and 'cure_or_quit'. A bare 'nonpayment' would name
+-- the GROUND (the tenant's failure) rather than the act the landlord took,
+-- and 'pay_or_quit' would name only the harshest wording of that act and
+-- exclude the plain late-rent letter that is the same instrument.
+--
+-- FREEZE TRIGGER UNCHANGED: _reject_anchored_notice_mutation enumerates
+-- COLUMNS, and notice_class has been one of them since 20260801000005 (see
+-- the notice_label rename in 20260801000006 for the current body). Its known
+-- fail-open is to columns it predates, not to values, so an anchored notice
+-- cannot be re-classed to the new member either.
+--
+-- SEQUENCING: vocabulary ships with the flow. The frontend PR that mints this
+-- member from a canonical label is queued behind this migration; until it
+-- merges no writer sends 'nonpayment_demand' and the constraint simply admits
+-- one more value nothing yet uses. Existing rows are untouched -- a constraint
+-- swap writes no rows (ADR-0008), so there is no chain churn.
+--
+-- Validated normally rather than NOT VALID: notices is small, the swap widens
+-- the admissible set so every existing row already satisfies the new
+-- constraint, and a NOT VALID constraint dumps as a separate ALTER statement
+-- instead of inline in CREATE TABLE, churning db/current-schema.sql.
+
+alter table public.notices drop constraint notices_notice_class_check;
+alter table public.notices add constraint notices_notice_class_check
+  check (notice_class in ('rent_change', 'written_warning', 'cure_or_quit', 'nonpayment_demand', 'other'));
+
+-- No `notify pgrst`: PostgREST's schema cache holds columns and relationships,
+-- not check-constraint bodies. Postgres enforces the constraint on every write
+-- regardless of the cache, so nothing needs reloading.
+
+-- VERIFICATION:
+--   select pg_get_constraintdef(oid) from pg_constraint
+--     where conrelid = 'public.notices'::regclass
+--       and conname  = 'notices_notice_class_check';   -- lists 5 members
+--   select convalidated from pg_constraint
+--     where conrelid = 'public.notices'::regclass
+--       and conname  = 'notices_notice_class_check';   -- true
+--   an insert with notice_class = 'nonpayment_demand' succeeds;
+--   an insert with an unlisted class still raises SQLSTATE 23514.

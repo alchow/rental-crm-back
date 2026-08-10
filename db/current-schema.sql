@@ -11074,7 +11074,7 @@ CREATE TABLE IF NOT EXISTS "public"."notices" (
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "deleted_at" timestamp with time zone,
     "notice_class" "text",
-    CONSTRAINT "notices_notice_class_check" CHECK (("notice_class" = ANY (ARRAY['rent_change'::"text", 'written_warning'::"text", 'cure_or_quit'::"text", 'other'::"text"]))),
+    CONSTRAINT "notices_notice_class_check" CHECK (("notice_class" = ANY (ARRAY['rent_change'::"text", 'written_warning'::"text", 'cure_or_quit'::"text", 'nonpayment_demand'::"text", 'other'::"text"]))),
     CONSTRAINT "notices_notice_label_check" CHECK ((("length"("notice_label") >= 1) AND ("length"("notice_label") <= 100)))
 );
 

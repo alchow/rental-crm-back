@@ -25,6 +25,8 @@
 //   (H2/H3) notice_class (20260801000005): null default, class filter,
 //       free-floating type/class corrections, 400 on a non-enum class, and
 //       the correction window closing at anchor time.
+//   (H4) 'nonpayment_demand' (20260801000008): accepted by the route enum AND
+//       by the check constraint underneath it.
 //
 // Plus the PR #60 review-finding regressions (labelled by finding number):
 //   F1 advance-void  -- a change voids the old era's advance charge; the
@@ -800,14 +802,20 @@ async function main(): Promise<void> {
     if ((unclassed.body as { notice_class: string | null }).notice_class !== null)
       throw new Error('notice_class should be null after un-classing');
 
-    // A value outside the enum is a schema 400, not a DB 500.
-    const garbage = await postA('/notices', {
-      tenancy_id: tid,
-      notice_label: 'whatever',
-      notice_class: 'eviction_vibes',
-    });
-    if (garbage.status !== 400)
-      throw new Error(`garbage class should 400, got ${garbage.status}`);
+    // A value outside the enum is a schema 400, not a DB 500. The list is
+    // pinned by NEAR MISSES, not just nonsense: 'nonpayment' names the ground
+    // instead of the act and 'pay_or_quit' names one state's wording of it --
+    // both were rejected in favour of 'nonpayment_demand' (20260801000008), so
+    // a silent re-spelling of that member fails here.
+    for (const cls of ['eviction_vibes', 'nonpayment', 'pay_or_quit', 'late_rent']) {
+      const rejected = await postA('/notices', {
+        tenancy_id: tid,
+        notice_label: 'whatever',
+        notice_class: cls,
+      });
+      if (rejected.status !== 400)
+        throw new Error(`off-enum class ${cls} should 400, got ${rejected.status}`);
+    }
   });
 
   // =========================================================================
@@ -858,6 +866,77 @@ async function main(): Promise<void> {
       throw new Error('direct service-role re-class of an anchored notice must be trigger-blocked');
     if (!/anchor/i.test(direct.error.message))
       throw new Error(`expected the anchored-notice trigger message, got: ${direct.error.message}`);
+  });
+
+  // =========================================================================
+  // (H4) 'nonpayment_demand' (migration 20260801000008): the demand for overdue
+  // rent -- the class the late-rent flow mints from "Late rent notice" / "Pay
+  // or quit notice". Asserted at BOTH layers, the route's zod enum and the
+  // notices_notice_class_check constraint underneath it, because a member only
+  // the API knows about is a 500 waiting for the first out-of-app writer.
+  // =========================================================================
+  await check('notice_class: nonpayment_demand accepted by the route and the DB', async () => {
+    const tid = await newTenancy();
+
+    const created = await postA('/notices', {
+      tenancy_id: tid,
+      notice_label: 'Late rent notice',
+      notice_class: 'nonpayment_demand',
+      served_at: '2026-08-05T00:00:00Z',
+    });
+    if (created.status !== 201)
+      throw new Error(`create: ${created.status} ${JSON.stringify(created.body)}`);
+    const createdNotice = created.body as { id: string; notice_class: string | null };
+    if (createdNotice.notice_class !== 'nonpayment_demand')
+      throw new Error(`class should echo, got ${createdNotice.notice_class}`);
+
+    // The lookback filter ("was a demand for rent served on this tenancy?")
+    // reaches the new member like any other.
+    const filtered = await getA(`/notices?tenancy_id=${tid}&notice_class=nonpayment_demand`);
+    if (filtered.status !== 200) throw new Error(`filter: ${filtered.status}`);
+    const rows = (filtered.body as { data: Array<{ id: string }> }).data;
+    if (!rows.some((x) => x.id === createdNotice.id))
+      throw new Error('nonpayment_demand notice missing from its own class filter');
+
+    // Free-floating correction: the second landlord name for the same act
+    // lands on the same member.
+    const patched = await patchA(`/notices/${createdNotice.id}`, {
+      notice_label: 'Pay or quit notice',
+      notice_class: 'nonpayment_demand',
+    });
+    if (patched.status !== 200)
+      throw new Error(`patch: ${patched.status} ${JSON.stringify(patched.body)}`);
+    if ((patched.body as { notice_class: string | null }).notice_class !== 'nonpayment_demand')
+      throw new Error('class should survive the label correction');
+
+    // Constraint level: a DIRECT service-role insert (no zod in the path)
+    // proves the CHECK constraint admits the member, and still rejects an
+    // unlisted one with 23514 instead of storing it.
+    const directOk = await admin
+      .from('notices')
+      .insert({
+        account_id: A.accountId,
+        tenancy_id: tid,
+        notice_label: '3-day notice to pay rent',
+        notice_class: 'nonpayment_demand',
+      })
+      .select('id');
+    if (directOk.error)
+      throw new Error(`constraint must admit nonpayment_demand: ${directOk.error.message}`);
+
+    const directBad = await admin
+      .from('notices')
+      .insert({
+        account_id: A.accountId,
+        tenancy_id: tid,
+        notice_label: '3-day notice to pay rent',
+        notice_class: 'nonpayment',
+      })
+      .select('id');
+    if (!directBad.error)
+      throw new Error('constraint must still reject a class outside the vocabulary');
+    if (directBad.error.code !== '23514')
+      throw new Error(`expected check-constraint 23514, got ${directBad.error.code}`);
   });
 
   // =========================================================================
