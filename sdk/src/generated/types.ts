@@ -8447,7 +8447,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Dispatch scan (transport): list outbox rows, filterable by status and dispatch eligibility (not_before <= eligible_at or unset). */
+        /**
+         * List outbox rows — the transport dispatch scan AND the landlord send-state read. Transport + landlord (owner/manager). Filterable by status, channel, and dispatch eligibility (not_before <= eligible_at or unset).
+         * @description Both principals get the identical page shape, filters, and cursor pagination, scoped to the path account by the membership guard and RLS. Two landlord surfaces read the LIST rather than the single-row read because they resolve send state across many rows at once: the inspection email send-state chips (matching template_id-tagged rows) and the statement rent-nudge trail. Owner/manager read it under the same principal rule as GET /comms/outbox/{id} — a landlord who may read one of their outbox rows may page all of them. Viewers are denied, and the dispatch/reconcile MUTATIONS are transport-only.
+         */
         get: {
             parameters: {
                 query?: {

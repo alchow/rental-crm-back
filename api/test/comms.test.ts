@@ -62,6 +62,7 @@ async function createAuthUser(label: string): Promise<{ id: string; email: strin
 
 const agentAuth = await createAuthUser('agent');
 const viewerAuth = await createAuthUser('viewer');
+const managerAuth = await createAuthUser('manager');
 
 const { _resetEnvCacheForTests } = await import('../src/env');
 _resetEnvCacheForTests();
@@ -168,6 +169,7 @@ interface Fixture {
   landlordId: string;
   agentToken: string;
   viewerToken: string;
+  managerToken: string;
   tenantId: string;
   tenancyId: string;
 }
@@ -199,8 +201,11 @@ async function setup(): Promise<Fixture> {
     full_name: 'Tessa Tenant',
   });
 
-  // Memberships: the agent transport and a read-only viewer.
-  for (const [userId, role] of [[agentAuth.id, 'agent'], [viewerAuth.id, 'viewer']] as const) {
+  // Memberships: the agent transport, a read-only viewer, and a manager (the
+  // second landlord-tier role — the outbox reads must treat it like the owner).
+  for (const [userId, role] of [
+    [agentAuth.id, 'agent'], [viewerAuth.id, 'viewer'], [managerAuth.id, 'manager'],
+  ] as const) {
     const { error } = await admin.from('account_members').insert({
       account_id: accountId, user_id: userId, role,
     });
@@ -229,6 +234,7 @@ async function setup(): Promise<Fixture> {
     landlordId: b.user.id,
     agentToken: await login(agentAuth.email, agentAuth.password),
     viewerToken: await login(viewerAuth.email, viewerAuth.password),
+    managerToken: await login(managerAuth.email, managerAuth.password),
     tenantId: tenant.id,
     tenancyId: tenancy.id,
   };
@@ -457,16 +463,20 @@ async function main(): Promise<void> {
   // =========================================================================
   // Dispatch scan, claim, complete (ADR-0007 atomicity), delivery
   // =========================================================================
-  await check('dispatch scan is transport-only and filters eligibility', async () => {
-    const rl = await api('GET', `${base}/outbox?status=queued`, { token: fx.landlordToken });
-    assertStatus(rl, 403, 'landlord scan');
+  // The outbox LIST carries two jobs: the transport's dispatch scan and the
+  // landlord's send-state read (inspection email chips, statement rent-nudge
+  // trail). Its principal rule is deliberately GET /outbox/{id}'s — agent OR
+  // owner/manager, viewers denied — so a landlord who may read one row may page
+  // all of them. Only the dispatch MUTATIONS stay transport-only.
+  let notYetId = '';
+  await check('dispatch scan filters eligibility (transport)', async () => {
     // A future-dated intent must not be eligible now.
     const future = new Date(Date.now() + 3_600_000).toISOString();
     const notYet = await A({
       channel: 'sms', to_address: TENANT_ADDR, body: 'later',
       approval_ref: `grant:${policyId}`, not_before: future,
     }, '/outbox');
-    const notYetId = (assertStatus(notYet, 201, 'future intent') as { id: string }).id;
+    notYetId = (assertStatus(notYet, 201, 'future intent') as { id: string }).id;
     const now = new Date().toISOString();
     const r = await api('GET', `${base}/outbox?status=queued&eligible_at=${encodeURIComponent(now)}`, {
       token: fx.agentToken,
@@ -474,6 +484,86 @@ async function main(): Promise<void> {
     const page = assertStatus(r, 200, 'scan') as { data: { id: string }[] };
     assert(page.data.some((x) => x.id === msgOutboxId), 'landlord msg intent in scan');
     assert(!page.data.some((x) => x.id === notYetId), 'future intent excluded');
+  });
+
+  await check('outbox list: owner + manager read it, viewer 403, unauthenticated 401', async () => {
+    for (const [who, token] of [
+      ['owner', fx.landlordToken], ['manager', fx.managerToken],
+    ] as const) {
+      const r = await api('GET', `${base}/outbox?status=queued`, { token });
+      const page = assertStatus(r, 200, `${who} list`) as {
+        data: { id: string }[]; next_cursor: string | null;
+      };
+      assert(page.data.some((x) => x.id === msgOutboxId), `${who} sees the account's intent`);
+      assert('next_cursor' in page, `${who} gets the paged shape`);
+    }
+    assertStatus(await api('GET', `${base}/outbox`, { token: fx.viewerToken }), 403, 'viewer list');
+    assertStatus(await api('GET', `${base}/outbox`), 401, 'unauthenticated list');
+  });
+
+  await check('outbox list: landlord and transport get the identical page', async () => {
+    const q = `${base}/outbox?status=queued&channel=sms&limit=100`;
+    type Page = { data: Record<string, unknown>[]; next_cursor: string | null };
+    const asAgent = assertStatus(
+      await api('GET', q, { token: fx.agentToken }), 200, 'agent page',
+    ) as Page;
+    const asOwner = assertStatus(
+      await api('GET', q, { token: fx.landlordToken }), 200, 'owner page',
+    ) as Page;
+    // Same filters, same rows, same columns, same keyset: the landlord read is
+    // not a constrained projection, because GET /outbox/{id} already hands an
+    // owner/manager the whole row.
+    assert(asAgent.data.length === asOwner.data.length, 'agent and owner row counts differ');
+    assert(
+      JSON.stringify(asAgent.data) === JSON.stringify(asOwner.data),
+      'agent and owner pages differ',
+    );
+    assert(
+      asAgent.next_cursor === asOwner.next_cursor,
+      `agent and owner next_cursor differ: ${asAgent.next_cursor} vs ${asOwner.next_cursor}`,
+    );
+    // Nothing new is exposed either: a listed row is exactly the row the
+    // landlord could already GET by id, field for field.
+    const stable = (o: Record<string, unknown>): string =>
+      JSON.stringify(Object.entries(o).sort(([a], [b]) => a.localeCompare(b)));
+    const listed = asOwner.data.find((x) => x.id === msgOutboxId);
+    assert(listed !== undefined, 'the intent is on the owner page');
+    const single = assertStatus(
+      await api('GET', `${base}/outbox/${msgOutboxId}`, { token: fx.landlordToken }),
+      200, 'owner single-row read',
+    ) as Record<string, unknown>;
+    assert(stable(listed!) === stable(single), 'listed row differs from the single-row read');
+    // Eligibility is a filter, not a principal-scoped view.
+    const now = encodeURIComponent(new Date().toISOString());
+    const eligible = assertStatus(
+      await api('GET', `${base}/outbox?status=queued&eligible_at=${now}`, {
+        token: fx.landlordToken,
+      }),
+      200, 'owner eligibility filter',
+    ) as { data: { id: string }[] };
+    assert(!eligible.data.some((x) => x.id === notYetId), 'future intent excluded for owner too');
+  });
+
+  await check('dispatch MUTATIONS stay transport-only after the list opened up', async () => {
+    const cases = [
+      ['delivery', { status: 'sending', provider_ts: new Date().toISOString() }],
+      ['complete', { provider: 'test', provider_sid: `SM-${rnd()}` }],
+      ['fail', { error_code: 'landlord_should_not_reach_this' }],
+    ] as const;
+    for (const [verb, body] of cases) {
+      for (const [who, token] of [
+        ['owner', fx.landlordToken], ['manager', fx.managerToken],
+      ] as const) {
+        assertStatus(
+          await api('POST', `${base}/outbox/${msgOutboxId}/${verb}`, { token, body }),
+          403, `${who} ${verb}`,
+        );
+      }
+    }
+    // Control: the row is untouched — the 403 fires before any RPC.
+    const { data } = await admin.from('comm_outbox')
+      .select('status').eq('id', msgOutboxId).single();
+    assert(data?.status === 'queued', `status after refused mutations: ${data?.status}`);
   });
 
   await check("claim: delivery {status:'sending'} moves queued → sending", async () => {
@@ -837,7 +927,13 @@ async function main(): Promise<void> {
     const scan = await api('GET', `${base}/reconcile?ttl_seconds=3600`, { token: fx.agentToken });
     const page = assertStatus(scan, 200, 'scan') as { data: { id: string }[] };
     assert(page.data.some((x) => x.id === id), 'stale row surfaced');
-    assertStatus(await api('GET', `${base}/reconcile`, { token: fx.landlordToken }), 403, 'landlord scan');
+    // Transport-only for BOTH landlord roles: opening the outbox LIST to
+    // owner/manager did not travel to the reconcile scan.
+    for (const [who, token] of [
+      ['owner', fx.landlordToken], ['manager', fx.managerToken],
+    ] as const) {
+      assertStatus(await api('GET', `${base}/reconcile`, { token }), 403, `${who} scan`);
+    }
   });
 
   // =========================================================================
@@ -866,6 +962,24 @@ async function main(): Promise<void> {
       token: other.token,
     });
     assertStatus(t, 404, 'foreign thread');
+    // The list is landlord-readable now, so its account scoping is a boundary:
+    // B's owner is refused at A's URL (membership 404) and, at their own URL,
+    // sees none of A's rows (path account_id filter + RLS).
+    assertStatus(
+      await api('GET', `/v1/accounts/${fx.accountId}/comms/outbox`, { token: other.token }),
+      404, "foreign outbox list at A's URL",
+    );
+    const own = assertStatus(
+      await api('GET', `/v1/accounts/${other.accountId}/comms/outbox?limit=100`, {
+        token: other.token,
+      }),
+      200, "B's own outbox list",
+    ) as { data: { id: string; account_id: string }[] };
+    assert(
+      own.data.every((x) => x.account_id === other.accountId),
+      "B's list leaked a row from another account",
+    );
+    assert(!own.data.some((x) => x.id === msgOutboxId), "A's intent absent from B's list");
   });
 
   // =========================================================================
