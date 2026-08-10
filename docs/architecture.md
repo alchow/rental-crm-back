@@ -120,7 +120,15 @@ Heavy PDF, image, storage, and import implementations live under
 Charges, payments, allocations, schedules, and rent changes form a subledger.
 Balances are derived from immutable/reversible facts rather than mutable total
 columns. Rent changes are anchored to lease/notice instruments and execute
-through database transactions that preserve schedule and charge integrity.
+through database transactions that preserve schedule and charge integrity, and
+the successor era inherits the predecessor's billing day, end bound, and
+late-fee policy.
+
+A schedule's late-fee policy (`grace_days`, `late_fee_cents`) is recorded, not
+enforced: no server process reads it. It lets a client propose a fee that a
+human confirms as an ordinary charge, linked to the bill it derives from by
+`charges.parent_charge_id`, where a partial unique index allows at most one
+live late fee per parent.
 
 ## Imports and Background Work
 

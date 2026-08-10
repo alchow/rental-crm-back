@@ -132,6 +132,8 @@ export type ErrorCode =
   | 'tenancy_has_money' // PATCH start_date once non-voided charges/payments exist:
   // the money rows anchor the timeline — void them first
   // (ADR-0012 recipes) or leave start_date alone
+  | 'late_fee_exists' // a live late fee already names this parent charge: show
+  // the existing fee, do not re-post; voiding it frees the slot
   // Incidents conflicts (same fine-grained convention: each code implies a
   // distinct next action).
   | 'unclassified' // recurrence on an unclassified incident: PATCH category first

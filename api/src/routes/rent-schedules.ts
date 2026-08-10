@@ -1,17 +1,27 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
-import type { DbFunctionArgs, DbTableInsert } from '../supabase/db-types';
+import type { DbFunctionArgs, DbTableInsert, DbTableUpdate } from '../supabase/db-types';
 import { ApiError, errorResponses, conflictResponse, type ErrorCode } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { softDeleteStamp } from './_lib/soft-delete';
-import { CreateRentScheduleBody, CurrencyCode, ScheduleKind } from '../schemas/importable';
+import {
+  CreateRentScheduleBody,
+  CurrencyCode,
+  GraceDays,
+  LateFeeCents,
+  ScheduleKind,
+} from '../schemas/importable';
 
 // A rent schedule is the recurring rule that EMITS periodic charges. It
 // lives on a tenancy (not on a lease) so lease-less tenancies still bill.
-// There is no PATCH: "the rent changed mid-tenancy" is recorded by ending
-// the current schedule (set end_date) and creating a new one. That keeps
-// the history honest -- nobody can edit "what the rent was" retroactively.
+// The BILLING TERMS have no PATCH: "the rent changed mid-tenancy" is recorded
+// by ending the current schedule (set end_date) and creating a new one. That
+// keeps the history honest -- nobody can edit "what the rent was"
+// retroactively. PATCH exists for the LATE-FEE POLICY alone (grace_days,
+// late_fee_cents): those describe the lease's terms rather than what was
+// billed, no charge derives from them, and a landlord recording them a month
+// late is correcting a record, not rewriting one.
 //
 // DELETE exists for exactly one purpose (ADR-0012 corrections policy): a
 // NEVER-BILLED mistaken schedule -- the typo'd rent change, the future era
@@ -41,6 +51,12 @@ const RentSchedule = z
     source_lease_id: z.string().uuid().nullable(),
     source_notice_id: z.string().uuid().nullable(),
     change_reason: z.string().nullable(),
+    // Late-fee policy for this era (migration 20260801000007). Optional as well
+    // as nullable because a build running against a database that predates the
+    // migration has no such column, and an absent field is a truer answer than
+    // a fabricated null. Null means the lease terms were never recorded.
+    grace_days: z.number().int().nullable().optional(),
+    late_fee_cents: z.number().int().nullable().optional(),
     created_at: z.string(),
     updated_at: z.string(),
     deleted_at: z.string().nullable(),
@@ -77,6 +93,27 @@ const EndRentScheduleBody = z
       }),
   })
   .openapi('EndRentScheduleBody');
+
+// POLICY ONLY. The module comment above explains why a rent schedule has no
+// general PATCH: amount, dates, kind and due_day are what the tenancy was
+// BILLED on, and editing them would rewrite history that charges already
+// reference. grace_days and late_fee_cents are a different kind of fact — the
+// lease's own terms, recorded late or corrected, with no charge derived from
+// them — so they get a narrow editor and nothing else does.
+//
+// .strict() rather than the usual silent key-stripping: a landlord who PATCHes
+// { amount_cents } here must be told no. Stripping it would answer 200 to a
+// request that changed nothing, and they would believe the rent had moved.
+const PatchRentSchedulePolicyBody = z
+  .object({
+    grace_days: GraceDays.optional(),
+    late_fee_cents: LateFeeCents.optional(),
+  })
+  .strict()
+  .refine((b) => Object.keys(b).length > 0, {
+    message: 'at least one of grace_days, late_fee_cents is required',
+  })
+  .openapi('PatchRentSchedulePolicyBody');
 
 // Instrument-anchored rent change (migration 20260706000001). A rent change is
 // never a free-floating amount edit: it must be anchored to the instrument that
@@ -133,6 +170,35 @@ const RentChangeBody = z
       }),
     change_reason: z.string().min(1).max(2000).optional(),
     kind: z.string().min(1).max(50).optional(),
+    // Late-fee policy for the successor era. Omitted means INHERIT from the
+    // schedule being ended (the same rule due_day follows), because a rent
+    // increase should not silently erase the lease's late-fee terms. Like
+    // due_day, this cannot express "clear it": null is the omitted-parameter
+    // signal all the way down to the RPC. Clear a policy with
+    // PATCH /rent-schedules/{id} after the change.
+    grace_days: z
+      .number()
+      .int()
+      .min(0)
+      .max(30)
+      .optional()
+      .openapi({
+        description:
+          'Grace days for the SUCCESSOR era (0–30). Omit to carry the ended ' +
+          'schedule’s value forward. Cannot clear a policy — PATCH the successor ' +
+          'with null for that.',
+      }),
+    late_fee_cents: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .openapi({
+        description:
+          'Late fee for the SUCCESSOR era, in minor units. Omit to carry the ended ' +
+          'schedule’s value forward. Cannot clear a policy — PATCH the successor ' +
+          'with null for that.',
+      }),
   })
   .refine((b) => b.source_lease_id !== undefined || b.source_notice_id !== undefined, {
     message:
@@ -248,6 +314,33 @@ const end = createRoute({
     ...errorResponses,
   },
 });
+const patchPolicy = createRoute({
+  method: 'patch',
+  path: '/accounts/{accountId}/rent-schedules/{id}',
+  tags: ['rent_schedules'],
+  summary: 'Edit this era’s late-fee policy (grace_days / late_fee_cents only)',
+  description:
+    'Records or corrects the lease’s late-fee terms on an existing schedule. This ' +
+    'is the ONLY editable part of a rent schedule: amount_cents, currency, due_day, ' +
+    'kind, start_date and end_date stay immutable because charges were billed off ' +
+    'them — a rent change owns the amount (POST /tenancies/{tenancyId}/rent-changes), ' +
+    'POST /rent-schedules/{id}/end owns the bound. Any other field in the body is ' +
+    'rejected 400 rather than silently ignored. Send a field as null to CLEAR it ' +
+    '(back to "not set", so the client proposes nothing); omit a field to leave it ' +
+    'alone. Authorised like every other schedule mutation: any member of the ' +
+    'account. Nothing about this call creates, changes, or schedules a charge.',
+  request: {
+    params: AccountAndIdParam,
+    body: {
+      content: { 'application/json': { schema: PatchRentSchedulePolicyBody } },
+      required: true,
+    },
+  },
+  responses: {
+    200: { description: 'updated', content: { 'application/json': { schema: RentSchedule } } },
+    ...errorResponses,
+  },
+});
 const remove = createRoute({
   method: 'delete',
   path: '/accounts/{accountId}/rent-schedules/{id}',
@@ -289,7 +382,9 @@ const rentChange = createRoute({
     'notice_not_served, instrument_not_current (expired/superseded anchor lease), ' +
     'schedule_conflict (a same-kind schedule starts on/after effective_date — ' +
     'delete it via DELETE /rent-schedules/{id} if mistaken, or change on a later ' +
-    'date).',
+    'date). The successor also INHERITS the ended schedule’s late-fee policy ' +
+    '(grace_days, late_fee_cents) — pass either field to set a different value for ' +
+    'the new era; a rent increase never silently drops the lease’s fee terms.',
   request: {
     params: AccountAndTenancyParam,
     body: { content: { 'application/json': { schema: RentChangeBody } }, required: true },
@@ -352,6 +447,10 @@ rentSchedulesApp.openapi(create, async (c) => {
   if (body.source_lease_id !== undefined) insert.source_lease_id = body.source_lease_id;
   if (body.source_notice_id !== undefined) insert.source_notice_id = body.source_notice_id;
   if (body.change_reason !== undefined) insert.change_reason = body.change_reason;
+  // Same conditional spread for the policy columns (migration 20260801000007):
+  // a create that does not mention them never names them.
+  if (body.grace_days !== undefined) insert.grace_days = body.grace_days;
+  if (body.late_fee_cents !== undefined) insert.late_fee_cents = body.late_fee_cents;
   const { data, error } = await sb.from('rent_schedules').insert(insert).select('*').single();
   if (error) {
     if (error.code === '23503') {
@@ -372,6 +471,32 @@ rentSchedulesApp.openapi(end, async (c) => {
   const { data, error } = await sb
     .from('rent_schedules')
     .update({ end_date: body.end_date, updated_at: new Date().toISOString() })
+    .eq('account_id', accountId)
+    .eq('id', id)
+    .is('deleted_at', null)
+    .select('*')
+    .maybeSingle();
+  if (error) {
+    if (error.code === '23514') throw new ApiError(400, 'invalid_request', error.message);
+    throw new ApiError(500, 'database_error', error.message);
+  }
+  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  return c.json(data as z.infer<typeof RentSchedule>, 200);
+});
+
+rentSchedulesApp.openapi(patchPolicy, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  // Only the keys the caller actually sent are written, so PATCHing one field
+  // never resets the other to null. `null` IS a supplied value here — it clears
+  // the field — which is why the test is `!== undefined`.
+  const update: DbTableUpdate<'rent_schedules'> = { updated_at: new Date().toISOString() };
+  if (body.grace_days !== undefined) update.grace_days = body.grace_days;
+  if (body.late_fee_cents !== undefined) update.late_fee_cents = body.late_fee_cents;
+  const { data, error } = await sb
+    .from('rent_schedules')
+    .update(update)
     .eq('account_id', accountId)
     .eq('id', id)
     .is('deleted_at', null)
@@ -455,6 +580,12 @@ rentSchedulesApp.openapi(rentChange, async (c) => {
   if (body.source_notice_id !== undefined) params.p_source_notice_id = body.source_notice_id;
   if (body.change_reason !== undefined) params.p_change_reason = body.change_reason;
   if (body.kind !== undefined) params.p_kind = body.kind;
+  // Omitted => the RPC inherits the ended schedule's policy (migration
+  // 20260801000007). Omitting them also keeps this call resolvable against a
+  // database that predates the migration, where the function still takes ten
+  // arguments.
+  if (body.grace_days !== undefined) params.p_grace_days = body.grace_days;
+  if (body.late_fee_cents !== undefined) params.p_late_fee_cents = body.late_fee_cents;
 
   const { data, error } = await sb.rpc('change_tenancy_rent', params);
   if (error) {

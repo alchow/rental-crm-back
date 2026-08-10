@@ -1,6 +1,7 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
+import type { DbTableInsert } from '../supabase/db-types';
 import { ApiError, errorResponses, conflictResponse } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 
@@ -40,6 +41,12 @@ const Charge = z
     period_end: z.string().nullable(),
     description: z.string().nullable(),
     source_schedule_id: z.string().uuid().nullable(),
+    // The charge this one derives from -- today, the rent charge a late_fee was
+    // asserted against (migration 20260801000007). Optional as well as nullable
+    // because a build running against a database that predates the migration
+    // simply has no such column, and an absent field is a truer answer than a
+    // fabricated null.
+    parent_charge_id: z.string().uuid().nullable().optional(),
     voided_at: z.string().nullable(),
     void_reason: z.string().nullable(),
     created_at: z.string(),
@@ -65,6 +72,18 @@ const CreateChargeBody = z
       .optional(),
     description: z.string().optional(),
     source_schedule_id: z.string().uuid().optional(),
+    parent_charge_id: z
+      .string()
+      .uuid()
+      .optional()
+      .openapi({
+        description:
+          'The charge this one derives from — the rent charge a late_fee is being ' +
+          'asserted against. Must be in the same account (404 otherwise) and the same ' +
+          'tenancy (400 otherwise). At most one LIVE late_fee may name a given parent: ' +
+          'a second attempt is 409 late_fee_exists, and voiding the fee frees the slot ' +
+          'so a corrected one can be asserted.',
+      }),
   })
   .superRefine((body, ctx) => {
     const hasStart = body.period_start !== undefined;
@@ -144,7 +163,10 @@ const create = createRoute({
     'One charge per (source_schedule_id, period_start) — voided rows included. A ' +
     'create naming a schedule+period that already has a row (even a voided one) is ' +
     'rejected 409; re-billing a voided period manually means omitting ' +
-    'source_schedule_id (or period_start).',
+    'source_schedule_id (or period_start). Optional parent_charge_id links a ' +
+    'derived charge to the bill it came from (the late fee asserted against a rent ' +
+    'charge): 404 when the parent is not in this account, 400 when it is in a ' +
+    'different tenancy, 409 late_fee_exists when a live late fee already names it.',
   request: {
     params: AccountParam,
     body: { content: { 'application/json': { schema: CreateChargeBody } }, required: true },
@@ -202,22 +224,53 @@ chargesApp.openapi(create, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
-  const { data, error } = await sb
-    .from('charges')
-    .insert({
-      account_id: accountId,
-      tenancy_id: body.tenancy_id,
-      type: body.type,
-      amount_cents: body.amount_cents,
-      currency: body.currency,
-      due_date: body.due_date,
-      period_start: body.period_start ?? null,
-      period_end: body.period_end ?? null,
-      description: body.description ?? null,
-      source_schedule_id: body.source_schedule_id ?? null,
-    })
-    .select('*')
-    .single();
+
+  // A parent must be a charge of THIS tenancy. The composite FK
+  // (account_id, parent_charge_id) already makes a cross-account parent
+  // impossible at the database; the tenancy half has no key that can express it
+  // (both rows sit inside one account), so it is checked here. A member writing
+  // charges directly through PostgREST bypasses this check, which is acceptable:
+  // the reach is their own account, and they can already write arbitrary charges.
+  if (body.parent_charge_id !== undefined) {
+    const parent = await sb
+      .from('charges')
+      .select('id, tenancy_id')
+      .eq('account_id', accountId)
+      .eq('id', body.parent_charge_id)
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (parent.error) throw new ApiError(500, 'database_error', parent.error.message);
+    if (!parent.data) {
+      throw new ApiError(404, 'not_found', 'parent_charge_id does not belong to this account');
+    }
+    if ((parent.data as { tenancy_id: string }).tenancy_id !== body.tenancy_id) {
+      throw new ApiError(
+        400,
+        'invalid_request',
+        'parent_charge_id belongs to a different tenancy than this charge',
+      );
+    }
+  }
+
+  // parent_charge_id is spread in only when the caller supplied it, so a plain
+  // create never names a column a not-yet-migrated database lacks (PostgREST
+  // 500s on an unknown column even for a null value) — the same conditional
+  // insert rent-schedules uses for its provenance columns.
+  const insert: DbTableInsert<'charges'> = {
+    account_id: accountId,
+    tenancy_id: body.tenancy_id,
+    type: body.type,
+    amount_cents: body.amount_cents,
+    currency: body.currency,
+    due_date: body.due_date,
+    period_start: body.period_start ?? null,
+    period_end: body.period_end ?? null,
+    description: body.description ?? null,
+    source_schedule_id: body.source_schedule_id ?? null,
+  };
+  if (body.parent_charge_id !== undefined) insert.parent_charge_id = body.parent_charge_id;
+
+  const { data, error } = await sb.from('charges').insert(insert).select('*').single();
   if (error) {
     if (error.code === '23503') {
       throw new ApiError(
@@ -227,6 +280,18 @@ chargesApp.openapi(create, async (c) => {
       );
     }
     if (error.code === '23514') throw new ApiError(400, 'invalid_request', error.message);
+    // The propose-confirm idempotency key (charges_one_live_late_fee_per_parent):
+    // one LIVE late fee per parent charge. A double tap, a retry, or a second
+    // device lands here instead of double-billing the tenant. Its own code
+    // because the client's next action is the opposite of the schedule-period
+    // conflict's: show the fee that already exists, do not re-post anything.
+    if (error.code === '23505' && /charges_one_live_late_fee_per_parent/.test(error.message)) {
+      throw new ApiError(
+        409,
+        'late_fee_exists',
+        'a live late fee already exists for this charge; void it first to assert a different one',
+      );
+    }
     // 23505 = charges_one_per_schedule_period: one row per (schedule, period),
     // VOIDED ROWS INCLUDED — the cron-idempotency key. Surfacing it as a 409
     // (was an opaque 500) matters for the manual re-bill path: re-charging a

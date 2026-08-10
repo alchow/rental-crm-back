@@ -99,6 +99,21 @@ lock on every write and validates that any supplied anchor belongs to the
 row's own tenancy — closing both the racing-create overlap and cross-tenancy
 provenance corruption at the layer that catches every path.
 
+_Amendment, 2026-08-01 (migration `20260801000007_statement_late_fee_policy`,
+current):_ the forward fork also carries the era's **late-fee policy**
+(`rent_schedules.grace_days`, `late_fee_cents`) to the successor, on the same
+"one predecessor, one era" rule that already inherits `due_day` and the
+`end_date` bound — a rent increase must not silently erase what the lease says
+about lateness. `p_grace_days` / `p_late_fee_cents` override the inherited
+value exactly as `p_due_day` does and, like `p_due_day`, cannot express "clear
+it"; clearing is `PATCH /rent-schedules/{id}`, the one narrow exception to this
+ADR's no-PATCH-on-a-schedule rule, admitted because the policy describes the
+lease rather than what was billed and no charge derives from it. Nothing reads
+these columns server-side: they let a client _propose_ a late fee that a human
+confirms through an ordinary `POST /charges` linked back with
+`parent_charge_id`, which keeps the fee an asserted act rather than a generated
+one.
+
 **3. Drift is detected, never blocked.** `detect_rent_drift(account_id)`
 reports tenancies whose active-lease rent ≠ the sum of open `kind='rent'`
 schedules (or whose currencies mismatch). The cron runner (ADR-0011) sweeps
