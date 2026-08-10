@@ -17962,7 +17962,7 @@ export interface components {
             status?: "draft" | "active" | "expired" | "superseded";
         };
         /** @enum {string|null} */
-        NoticeClass: "rent_change" | "written_warning" | "cure_or_quit" | "other" | null;
+        NoticeClass: "rent_change" | "written_warning" | "cure_or_quit" | "nonpayment_demand" | "other" | null;
         Notice: {
             /** Format: uuid */
             id: string;
