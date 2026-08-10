@@ -276,7 +276,7 @@ chargesApp.openapi(create, async (c) => {
       throw new ApiError(
         404,
         'not_found',
-        'tenancy_id or source_schedule_id does not belong to this account',
+        'tenancy_id, source_schedule_id, or parent_charge_id does not belong to this account',
       );
     }
     if (error.code === '23514') throw new ApiError(400, 'invalid_request', error.message);
