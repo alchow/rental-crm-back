@@ -4349,6 +4349,7 @@ declare
   v_ended         uuid[] := '{}';
   v_superseded    uuid[] := '{}';
   v_voided        uuid[] := '{}';
+  v_cascaded      uuid[] := '{}';
   v_inherit_due   int;
   v_inherit_end   date;
   v_inherit_grace int;
@@ -4544,6 +4545,57 @@ begin
     returning id
   )
   select coalesce(array_agg(id), '{}') into v_voided from voided;
+
+  -- 9c. CASCADE to charges DERIVED from the bills 9b just voided.
+  --
+  --     A late fee has no source_schedule_id -- it hangs off parent_charge_id --
+  --     so 9b cannot see it, and without this a backdated rent change strands a
+  --     LIVE fee pointing at a voided parent. That is not merely untidy: the
+  --     landlord re-creates the rent charge manually (the documented backdated
+  --     recipe), the statement offers the fee again against the NEW parent, and
+  --     the one-live-fee-per-parent index cannot object because the parent
+  --     differs. One late month, two live fees, both counted in totals.
+  --
+  --     THIS CASCADE IS NOT A REVERSAL OF THE HUMAN-VOID DOCTRINE. When a
+  --     LANDLORD voids a rent charge, an asserted fee deliberately stays live:
+  --     withdrawing a fee they asserted is their call. Here the SYSTEM is
+  --     unwinding its OWN act -- the generator's advance charge for a period the
+  --     successor era now owns -- so leaving behind a fee derived from a bill
+  --     that no longer exists would be the system asserting a debt nobody stands
+  --     behind. Both ids come back in o_voided_charge_ids so the caller can
+  --     reconcile every row it had emitted.
+  --
+  --     Recursive because the link is general (any charge may name a parent):
+  --     fixing only the first level would leave the identical bug one level
+  --     down. UNION (not UNION ALL) dedupes, so even a cyclic chain terminates.
+  if array_length(v_voided, 1) is not null then
+    with recursive orphaned as (
+      select c.id
+        from public.charges c
+       where c.account_id       = p_account_id
+         and c.parent_charge_id = any(v_voided)
+         and c.voided_at is null
+         and c.deleted_at is null
+      union
+      select c.id
+        from public.charges c
+        join orphaned o on c.parent_charge_id = o.id
+       where c.account_id = p_account_id
+         and c.voided_at is null
+         and c.deleted_at is null
+    ),
+    cascaded as (
+      update public.charges
+         set voided_at   = now(),
+             void_reason = 'parent charge superseded by rent change',
+             updated_at  = now()
+       where account_id = p_account_id
+         and id in (select id from orphaned)
+      returning id
+    )
+    select coalesce(array_agg(id), '{}') into v_cascaded from cascaded;
+    v_voided := v_voided || v_cascaded;
+  end if;
 
   -- 10. Lease-anchored change supersedes the OTHER active leases of this
   --     tenancy (the one we anchored to is the new contract of record).

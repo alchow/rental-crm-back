@@ -2,7 +2,13 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import type { DbFunctionArgs, DbTableInsert, DbTableUpdate } from '../supabase/db-types';
-import { ApiError, errorResponses, conflictResponse, type ErrorCode } from './_lib/error';
+import {
+  ApiError,
+  errorResponses,
+  conflictResponse,
+  schemaCacheMiss,
+  type ErrorCode,
+} from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { softDeleteStamp } from './_lib/soft-delete';
 import {
@@ -20,8 +26,11 @@ import {
 // keeps the history honest -- nobody can edit "what the rent was"
 // retroactively. PATCH exists for the LATE-FEE POLICY alone (grace_days,
 // late_fee_cents): those describe the lease's terms rather than what was
-// billed, no charge derives from them, and a landlord recording them a month
-// late is correcting a record, not rewriting one.
+// billed, nothing is GENERATED from them, and a landlord recording them a
+// month late is correcting a record, not rewriting one. Editing the policy
+// cannot rewrite money that already exists either: a fee already asserted is
+// its own charge row carrying its own recorded amount, so it stands unchanged
+// whatever the policy later says.
 //
 // DELETE exists for exactly one purpose (ADR-0012 corrections policy): a
 // NEVER-BILLED mistaken schedule -- the typo'd rent change, the future era
@@ -98,8 +107,13 @@ const EndRentScheduleBody = z
 // general PATCH: amount, dates, kind and due_day are what the tenancy was
 // BILLED on, and editing them would rewrite history that charges already
 // reference. grace_days and late_fee_cents are a different kind of fact — the
-// lease's own terms, recorded late or corrected, with no charge derived from
-// them — so they get a narrow editor and nothing else does.
+// lease's own terms, recorded late or corrected, from which nothing is
+// GENERATED — so they get a narrow editor and nothing else does. A fee already
+// asserted under an earlier policy is unaffected: it is its own charge row with
+// its own recorded amount, and editing the policy neither re-prices nor voids
+// it. That is why the editor stays open even once fees exist — the alternative,
+// locking the lease's terms behind the first fee ever asserted, would leave a
+// landlord unable to correct a typo'd $850.
 //
 // .strict() rather than the usual silent key-stripping: a landlord who PATCHes
 // { amount_cents } here must be told no. Stripping it would answer 200 to a
@@ -384,7 +398,10 @@ const rentChange = createRoute({
     'delete it via DELETE /rent-schedules/{id} if mistaken, or change on a later ' +
     'date). The successor also INHERITS the ended schedule’s late-fee policy ' +
     '(grace_days, late_fee_cents) — pass either field to set a different value for ' +
-    'the new era; a rent increase never silently drops the lease’s fee terms.',
+    'the new era; a rent increase never silently drops the lease’s fee terms. ' +
+    'voided_charge_ids additionally covers charges DERIVED from the voided advance ' +
+    'charges (a late_fee asserted against one), so a backdated change cannot leave a ' +
+    'live fee pointing at a bill that no longer exists.',
   request: {
     params: AccountAndTenancyParam,
     body: { content: { 'application/json': { schema: RentChangeBody } }, required: true },
@@ -453,6 +470,10 @@ rentSchedulesApp.openapi(create, async (c) => {
   if (body.late_fee_cents !== undefined) insert.late_fee_cents = body.late_fee_cents;
   const { data, error } = await sb.from('rent_schedules').insert(insert).select('*').single();
   if (error) {
+    // Code deployed ahead of the manual production apply: "not yet available",
+    // not "server fault".
+    const pending = schemaCacheMiss(error);
+    if (pending) throw pending;
     if (error.code === '23503') {
       // Any of tenancy_id / source_lease_id / source_notice_id can trip the FK
       // (all are account-scoped composite FKs). The constraint name pins which.
@@ -503,6 +524,11 @@ rentSchedulesApp.openapi(patchPolicy, async (c) => {
     .select('*')
     .maybeSingle();
   if (error) {
+    // This whole route is new surface, so before the production apply every
+    // call lands here. 503 tells the client to come back after the migration
+    // instead of reporting a broken server.
+    const pending = schemaCacheMiss(error);
+    if (pending) throw pending;
     if (error.code === '23514') throw new ApiError(400, 'invalid_request', error.message);
     throw new ApiError(500, 'database_error', error.message);
   }
@@ -589,6 +615,10 @@ rentSchedulesApp.openapi(rentChange, async (c) => {
 
   const { data, error } = await sb.rpc('change_tenancy_rent', params);
   if (error) {
+    // A policy override against the pre-migration 10-argument overload resolves
+    // to no function at all (PGRST202): "not yet available", not "server fault".
+    const pending = schemaCacheMiss(error);
+    if (pending) throw pending;
     // change_tenancy_rent RAISEs with a stable prefix on the message
     // (not_found:/conflict:/invalid:); everything else is a genuine DB error.
     // The prefix is stripped so the client sees a clean message.

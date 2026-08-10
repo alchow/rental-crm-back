@@ -13,6 +13,12 @@
 -- fee belongs to, so a fee can be shown under its bill, counted once, and
 -- undone.
 --
+-- One thing here DOES void charges: a rent change already voids the advance rent
+-- charges the successor era takes over, and step (4) extends that sweep to the
+-- charges DERIVED from them, so a backdated change cannot strand a live late fee
+-- pointing at a bill that no longer exists. That is the system unwinding its own
+-- act, never the system second-guessing a landlord's -- see step (4).
+--
 -- NOTHING HERE MINTS A CHARGE. The grace window makes the UI able to PROPOSE
 -- ("add the $85 late fee from the lease?"); a real late_fee charge appears only
 -- when a human taps confirm, through the ordinary POST /charges. There is no
@@ -47,9 +53,28 @@
 -- Bounds: grace_days 0-30 (0 is meaningful -- "late the day after it is due");
 -- late_fee_cents strictly > 0, mirroring charges_amount_cents_positive, since a
 -- zero fee is the absence of a fee and is spelled null.
+--
+-- Every statement in this file is written to survive re-application (the
+-- precedent is 20260723000007 for constraints, 20260629000002 for indexes). A
+-- production apply is a manual step that can be interrupted part-way; a bare
+-- ADD COLUMN would then abort the retry on the half it already did, leaving an
+-- operator to hand-edit around a migration. Constraints get an explicit name
+-- plus drop-if-exists rather than the inline form, because ADD CONSTRAINT has
+-- no IF NOT EXISTS -- the names are the ones Postgres would have generated, so
+-- the schema snapshot is byte-identical either way.
 alter table public.rent_schedules
-  add column grace_days     int    check (grace_days >= 0 and grace_days <= 30),
-  add column late_fee_cents bigint check (late_fee_cents > 0);
+  add column if not exists grace_days     int,
+  add column if not exists late_fee_cents bigint;
+
+alter table public.rent_schedules
+  drop constraint if exists rent_schedules_grace_days_check,
+  drop constraint if exists rent_schedules_late_fee_cents_check;
+
+alter table public.rent_schedules
+  add constraint rent_schedules_grace_days_check
+    check (grace_days >= 0 and grace_days <= 30),
+  add constraint rent_schedules_late_fee_cents_check
+    check (late_fee_cents > 0);
 
 comment on column public.rent_schedules.grace_days is
   'Days after due_date before rent counts late under the lease. Null = not set '
@@ -75,7 +100,13 @@ comment on column public.rent_schedules.late_fee_cents is
 -- that silently orphaned a fee from the bill it justifies would be destroying
 -- evidence rather than tidying a pointer.
 alter table public.charges
-  add column parent_charge_id uuid,
+  add column if not exists parent_charge_id uuid;
+
+alter table public.charges
+  drop constraint if exists charges_parent_charge_fk,
+  drop constraint if exists charges_parent_not_self;
+
+alter table public.charges
   add constraint charges_parent_charge_fk
     foreign key (account_id, parent_charge_id)
     references public.charges (account_id, id) on delete restrict,
@@ -97,7 +128,7 @@ comment on column public.charges.parent_charge_id is
 -- other charge type, and every charge with no parent, is outside the index --
 -- null parent_charge_id values are distinct to a unique index anyway, so an
 -- ordinary charge can never collide here.
-create unique index charges_one_live_late_fee_per_parent
+create unique index if not exists charges_one_live_late_fee_per_parent
   on public.charges (parent_charge_id)
   where type = 'late_fee' and voided_at is null and deleted_at is null;
 
@@ -161,6 +192,7 @@ declare
   v_ended         uuid[] := '{}';
   v_superseded    uuid[] := '{}';
   v_voided        uuid[] := '{}';
+  v_cascaded      uuid[] := '{}';
   v_inherit_due   int;
   v_inherit_end   date;
   v_inherit_grace int;
@@ -356,6 +388,57 @@ begin
     returning id
   )
   select coalesce(array_agg(id), '{}') into v_voided from voided;
+
+  -- 9c. CASCADE to charges DERIVED from the bills 9b just voided.
+  --
+  --     A late fee has no source_schedule_id -- it hangs off parent_charge_id --
+  --     so 9b cannot see it, and without this a backdated rent change strands a
+  --     LIVE fee pointing at a voided parent. That is not merely untidy: the
+  --     landlord re-creates the rent charge manually (the documented backdated
+  --     recipe), the statement offers the fee again against the NEW parent, and
+  --     the one-live-fee-per-parent index cannot object because the parent
+  --     differs. One late month, two live fees, both counted in totals.
+  --
+  --     THIS CASCADE IS NOT A REVERSAL OF THE HUMAN-VOID DOCTRINE. When a
+  --     LANDLORD voids a rent charge, an asserted fee deliberately stays live:
+  --     withdrawing a fee they asserted is their call. Here the SYSTEM is
+  --     unwinding its OWN act -- the generator's advance charge for a period the
+  --     successor era now owns -- so leaving behind a fee derived from a bill
+  --     that no longer exists would be the system asserting a debt nobody stands
+  --     behind. Both ids come back in o_voided_charge_ids so the caller can
+  --     reconcile every row it had emitted.
+  --
+  --     Recursive because the link is general (any charge may name a parent):
+  --     fixing only the first level would leave the identical bug one level
+  --     down. UNION (not UNION ALL) dedupes, so even a cyclic chain terminates.
+  if array_length(v_voided, 1) is not null then
+    with recursive orphaned as (
+      select c.id
+        from public.charges c
+       where c.account_id       = p_account_id
+         and c.parent_charge_id = any(v_voided)
+         and c.voided_at is null
+         and c.deleted_at is null
+      union
+      select c.id
+        from public.charges c
+        join orphaned o on c.parent_charge_id = o.id
+       where c.account_id = p_account_id
+         and c.voided_at is null
+         and c.deleted_at is null
+    ),
+    cascaded as (
+      update public.charges
+         set voided_at   = now(),
+             void_reason = 'parent charge superseded by rent change',
+             updated_at  = now()
+       where account_id = p_account_id
+         and id in (select id from orphaned)
+      returning id
+    )
+    select coalesce(array_agg(id), '{}') into v_cascaded from cascaded;
+    v_voided := v_voided || v_cascaded;
+  end if;
 
   -- 10. Lease-anchored change supersedes the OTHER active leases of this
   --     tenancy (the one we anchored to is the new contract of record).

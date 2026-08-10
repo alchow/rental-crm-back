@@ -2,7 +2,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import type { DbTableInsert } from '../supabase/db-types';
-import { ApiError, errorResponses, conflictResponse } from './_lib/error';
+import { ApiError, errorResponses, conflictResponse, schemaCacheMiss } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 
 // Charges are AMOUNTS OWED. There is no PATCH / DELETE: a mis-entered or
@@ -84,8 +84,12 @@ const CreateChargeBody = z
           'cancelled bill cannot acquire new derived charges). At most one LIVE ' +
           'late_fee may name a given parent: a second attempt is 409 late_fee_exists, ' +
           'and voiding the fee frees the slot so a corrected one can be asserted. ' +
-          'Voiding the PARENT does not cascade: an already-asserted fee stays live ' +
-          'and must be voided on its own.',
+          'Voiding the parent BY HAND does not cascade: an already-asserted fee stays ' +
+          'live and must be voided on its own. A rent change is the exception — it ' +
+          'voids the charges derived from the advance rent charges it supersedes, and ' +
+          'returns their ids in voided_charge_ids. Re-asserting a fee after a void ' +
+          'needs a FRESH Idempotency-Key: 4xx outcomes are cached, so replaying the ' +
+          'key that earned the 409 replays the 409.',
       }),
   })
   .superRefine((body, ctx) => {
@@ -249,6 +253,22 @@ chargesApp.openapi(create, async (c) => {
     }
     const parentRow = parent.data as { tenancy_id: string; voided_at: string | null };
     if (parentRow.tenancy_id !== body.tenancy_id) {
+      // WHICH id is wrong decides the status. A tenancy_id this account cannot
+      // see earns the same 404 the insert's FK would have produced had there
+      // been no parent to check first; without this, naming a parent silently
+      // turns that 404 into a 400 and the endpoint contradicts itself about
+      // whether a foreign tenancy exists.
+      const tenancy = await sb
+        .from('tenancies')
+        .select('id')
+        .eq('account_id', accountId)
+        .eq('id', body.tenancy_id)
+        .is('deleted_at', null)
+        .maybeSingle();
+      if (tenancy.error) throw new ApiError(500, 'database_error', tenancy.error.message);
+      if (!tenancy.data) {
+        throw new ApiError(404, 'not_found', 'tenancy_id does not belong to this account');
+      }
       throw new ApiError(
         400,
         'invalid_request',
@@ -257,14 +277,16 @@ chargesApp.openapi(create, async (c) => {
     }
     // A voided parent is a CANCELLED bill, and a live charge derived from one is
     // a debt hanging off nothing. Propose-confirm is exactly where this happens:
-    // the rent charge can be voided -- by hand, or by a rent change's
-    // advance-charge sweep -- between the proposal being rendered and the
+    // the rent charge can be voided between the proposal being rendered and the
     // landlord tapping confirm, and without this the fee would still be minted
     // and counted in totals.by_type.late_fee.
     //
-    // The reverse direction deliberately does NOT cascade: voiding a parent
-    // leaves an already-asserted fee live, because withdrawing a fee the
-    // landlord asserted is their decision, not a side effect of ours.
+    // A LANDLORD voiding a parent deliberately does NOT cascade: an
+    // already-asserted fee stays live, because withdrawing a fee they asserted
+    // is their decision, not a side effect of ours. A RENT CHANGE is the one
+    // exception, and only because it is the system unwinding its own generated
+    // charge -- change_tenancy_rent voids the fees derived from the advance rent
+    // charges it supersedes, and returns their ids in voided_charge_ids.
     if (parentRow.voided_at !== null) {
       throw new ApiError(
         409,
@@ -294,6 +316,10 @@ chargesApp.openapi(create, async (c) => {
 
   const { data, error } = await sb.from('charges').insert(insert).select('*').single();
   if (error) {
+    // Code deployed ahead of the manual production apply: "not yet available",
+    // not "server fault".
+    const pending = schemaCacheMiss(error);
+    if (pending) throw pending;
     if (error.code === '23503') {
       throw new ApiError(
         404,

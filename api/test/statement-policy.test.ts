@@ -9,17 +9,22 @@
 // POST /charges.
 //
 // Covers:
-//   (A) parent_charge_id: same-tenancy accepted; different tenancy -> 400;
-//       another account's charge -> 404; a charge that does not exist -> 404.
+//   (A) parent_charge_id scoping: same-tenancy accepted; different tenancy ->
+//       400; another account's charge, a nonexistent one, and a soft-deleted
+//       one -> 404; a VOIDED parent -> 409 parent_charge_voided.
 //   (B) One LIVE late fee per parent: the second is 409 late_fee_exists;
-//       voiding the first frees the slot and the fee can be re-asserted.
+//       voiding the first frees the slot and the fee can be re-asserted. A
+//       landlord voiding the PARENT does not cascade to an asserted fee.
 //   (C) PATCH /rent-schedules/{id}: sets policy, clears it with null, leaves an
 //       omitted field alone, and REFUSES any other field (400) rather than
 //       silently ignoring it. Empty body -> 400. Unknown id -> 404.
 //   (D) Bounds: grace_days outside 0-30 and late_fee_cents <= 0 are rejected on
 //       create, on PATCH, and on a rent change.
-//   (E) Rent change carries the policy across the era fork, and an explicit
-//       value on the call overrides the inherited one.
+//   (E) Rent change carries the policy across the era fork; an explicit value
+//       overrides it (including the falsy-but-real grace_days: 0); a policy
+//       cleared on one era is not resurrected from an earlier one; and the
+//       advance-charge sweep CASCADES to charges derived from what it voids, so
+//       a backdated change cannot leave two live fees for one late month.
 //   (F) Ledger exposes parent_charge_id on charge entries and created_at on
 //       payment entries and their allocations, with created_at distinct from
 //       the back-dated occurred_at.
@@ -70,7 +75,7 @@ const { _resetEnvCacheForTests } = await import('../src/env');
 _resetEnvCacheForTests();
 const { _resetJwksCacheForTests } = await import('../src/middleware/auth');
 _resetJwksCacheForTests();
-const { _resetAdminClientForTests } = await import('../src/admin/supabase-admin');
+const { _resetAdminClientForTests, getAdminClient } = await import('../src/admin/supabase-admin');
 _resetAdminClientForTests();
 const { buildApp } = await import('../src/app');
 
@@ -298,6 +303,22 @@ async function main(): Promise<void> {
   await check('parent that does not exist -> 404', async () => {
     const t = await newTenancy();
     const fee = await newLateFee(t, crypto.randomUUID());
+    if (fee.status !== 404 || codeOf(fee) !== 'not_found')
+      throw new Error(`expected 404 not_found, got ${fee.status} ${codeOf(fee)}`);
+  });
+
+  await check('a SOFT-DELETED parent -> 404', async () => {
+    const t = await newTenancy();
+    const rent = await newRentCharge(t);
+    // No API soft-deletes a charge, so reach past it: the point is that the
+    // pre-check's deleted_at filter is load-bearing, not how the row got there.
+    const admin = getAdminClient();
+    const del = await admin
+      .from('charges')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('id', rent.id);
+    if (del.error) throw new Error(`soft-delete: ${del.error.message}`);
+    const fee = await newLateFee(t, rent.id);
     if (fee.status !== 404 || codeOf(fee) !== 'not_found')
       throw new Error(`expected 404 not_found, got ${fee.status} ${codeOf(fee)}`);
   });
@@ -623,6 +644,100 @@ async function main(): Promise<void> {
     const readA = (await getA(`/rent-schedules/${eraA.id}`)).body as Schedule;
     if (readA.late_fee_cents !== 8500)
       throw new Error(`the historical era was rewritten: ${JSON.stringify(readA)}`);
+  });
+
+  await check('grace_days: 0 on a rent change beats the inherited 5', async () => {
+    // 0 is a real policy ("late the next day"), not "unset". This pins both the
+    // SQL coalesce and the route's `!== undefined` spread against a refactor to
+    // a falsy test, which would silently restore the inherited 5.
+    const t = await newTenancy();
+    await newSchedule(t, { grace_days: 5, late_fee_cents: 8500 });
+    const r = await postA(`/tenancies/${t}/rent-changes`, {
+      amount_cents: 210000,
+      currency: 'USD',
+      effective_date: '2026-04-01',
+      source_notice_id: await servedNotice(t),
+      grace_days: 0,
+    });
+    if (r.status !== 201) throw new Error(`rent-change: ${r.status} ${JSON.stringify(r.body)}`);
+    const successor = (r.body as { rent_schedule: Schedule }).rent_schedule;
+    if (successor.grace_days !== 0)
+      throw new Error(`0 was treated as unset: ${JSON.stringify(successor)}`);
+    if (successor.late_fee_cents !== 8500)
+      throw new Error(`the unspecified field should still inherit: ${JSON.stringify(successor)}`);
+  });
+
+  await check('a backdated rent change voids fees derived from the charges it sweeps', async () => {
+    const t = await newTenancy();
+    const sched = (await newSchedule(t, { grace_days: 5, late_fee_cents: 8500 })).body as Schedule;
+
+    // The generator's advance charge for a period the successor era will own.
+    const advance = await postA('/charges', {
+      tenancy_id: t,
+      type: 'rent',
+      amount_cents: 200000,
+      currency: 'USD',
+      due_date: '2026-05-01',
+      period_start: '2026-05-01',
+      period_end: '2026-05-31',
+      source_schedule_id: sched.id,
+    });
+    if (advance.status !== 201)
+      throw new Error(`advance charge: ${advance.status} ${JSON.stringify(advance.body)}`);
+    const advanceId = (advance.body as Charge).id;
+
+    const fee = await newLateFee(t, advanceId);
+    if (fee.status !== 201) throw new Error(`fee: ${fee.status} ${JSON.stringify(fee.body)}`);
+    const feeId = (fee.body as Charge).id;
+
+    const change = await postA(`/tenancies/${t}/rent-changes`, {
+      amount_cents: 210000,
+      currency: 'USD',
+      effective_date: '2026-05-01',
+      source_notice_id: await servedNotice(t),
+    });
+    if (change.status !== 201)
+      throw new Error(`rent-change: ${change.status} ${JSON.stringify(change.body)}`);
+    const voidedIds = (change.body as { voided_charge_ids: string[] }).voided_charge_ids;
+    if (!voidedIds.includes(advanceId))
+      throw new Error(`the advance charge was not voided: ${JSON.stringify(voidedIds)}`);
+    if (!voidedIds.includes(feeId))
+      throw new Error(`the DERIVED fee was stranded live: ${JSON.stringify(voidedIds)}`);
+
+    const readFee = (await getA(`/charges/${feeId}`)).body as Charge;
+    if (readFee.voided_at === null)
+      throw new Error(`fee still live after the sweep: ${JSON.stringify(readFee)}`);
+
+    // The documented backdated recipe: re-create the period's rent charge at the
+    // new amount. A fee may now be asserted against the NEW parent -- and there
+    // must be exactly ONE live fee on the tenancy, not two.
+    const successor = (change.body as { rent_schedule: Schedule }).rent_schedule;
+    const rebilled = await postA('/charges', {
+      tenancy_id: t,
+      type: 'rent',
+      amount_cents: 210000,
+      currency: 'USD',
+      due_date: '2026-05-01',
+      period_start: '2026-05-01',
+      period_end: '2026-05-31',
+      source_schedule_id: successor.id,
+    });
+    if (rebilled.status !== 201)
+      throw new Error(`re-bill: ${rebilled.status} ${JSON.stringify(rebilled.body)}`);
+    const freshFee = await newLateFee(t, (rebilled.body as Charge).id);
+    if (freshFee.status !== 201)
+      throw new Error(`fresh fee: ${freshFee.status} ${JSON.stringify(freshFee.body)}`);
+
+    const led = await getA(`/tenancies/${t}/ledger`);
+    const liveFees = (
+      led.body as { entries: (LedgerEntry & { type?: string; voided_at?: string | null })[] }
+    ).entries.filter((e) => e.kind === 'charge' && e.type === 'late_fee' && e.voided_at === null);
+    if (liveFees.length !== 1)
+      throw new Error(`expected exactly one live late fee, got ${liveFees.length}`);
+    const totals = (led.body as { totals: { by_type: { late_fee: { charges_cents: number } } } })
+      .totals;
+    if (totals.by_type.late_fee.charges_cents !== 8500)
+      throw new Error(`double-billed in totals: ${JSON.stringify(totals.by_type.late_fee)}`);
   });
 
   await check('out-of-range policy on a rent change -> 400', async () => {

@@ -211,6 +211,30 @@ export function classifyTransient(e: unknown): ApiError | null {
 }
 
 /**
+ * The deploy-window signature: code naming a column or function the database
+ * does not have yet. PostgREST answers PGRST204 (column missing from the schema
+ * cache) or PGRST202 (no such function). Schema-first is the deploy policy, but
+ * applying a production migration is a MANUAL step, so between merge and apply
+ * this is expected and temporary -- a retryable 503 is the honest answer, where
+ * a 500 database_error reads as "the server is broken" and sends an operator
+ * hunting a fault that does not exist.
+ *
+ * Deliberately narrow: these two codes only, and called only from the write
+ * paths that name columns a pending migration adds. Applied blanket it would
+ * dress a genuine "this column will never exist" bug up as a transient blip.
+ */
+export function schemaCacheMiss(error: { code?: string }): ApiError | null {
+  if (error.code === 'PGRST202' || error.code === 'PGRST204') {
+    return new ApiError(
+      503,
+      'service_unavailable',
+      'that field is not available yet; its database migration has not been applied',
+    );
+  }
+  return null;
+}
+
+/**
  * Map a PostgREST/Postgres write error to an ApiError. Use on user-scoped
  * write paths where a blanket 500 would mask an authorization outcome: a row
  * RLS refuses surfaces as Postgres 42501 (insufficient_privilege) -- map it to
