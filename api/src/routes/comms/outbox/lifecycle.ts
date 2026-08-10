@@ -18,6 +18,7 @@ import {
 import {
   assertOutboxInAccount,
   commDbError,
+  requireAgentOrManager,
   requireTransport,
   type CommsApp,
   type OutboxRow,
@@ -29,8 +30,21 @@ export function registerOutboxLifecycleRoutes(app: CommsApp): void {
     path: '/accounts/{accountId}/comms/outbox',
     tags: ['comms'],
     summary:
-      'Dispatch scan (transport): list outbox rows, filterable by status and ' +
-      'dispatch eligibility (not_before <= eligible_at or unset).',
+      'List outbox rows — the transport dispatch scan AND the landlord ' +
+      'send-state read. Transport + landlord (owner/manager). Filterable by ' +
+      'status, channel, and dispatch eligibility (not_before <= eligible_at ' +
+      'or unset).',
+    description:
+      'Both principals get the identical page shape, filters, and cursor ' +
+      'pagination, scoped to the path account by the membership guard and RLS. ' +
+      'Two landlord surfaces need the LIST rather than the single-row read ' +
+      'because they resolve send state across many rows at once: the ' +
+      'inspection email send-state chips (matching template_id-tagged rows) ' +
+      'and the statement rent-nudge trail. This endpoint refused every ' +
+      'non-agent principal until now, so those landlord reads returned 403 ' +
+      'and rendered as "never sent" in production. Owner/manager read it ' +
+      'under the same principal rule as GET /comms/outbox/{id}; viewers stay ' +
+      'denied, and the dispatch/reconcile MUTATIONS remain transport-only.',
     request: {
       params: AccountParam,
       query: z.object({
@@ -154,7 +168,7 @@ export function registerOutboxLifecycleRoutes(app: CommsApp): void {
   });
 
   // ---------------------------------------------------------------------------
-  // GET /comms/outbox — dispatch scan (transport)
+  // GET /comms/outbox — dispatch scan (transport) + send-state read (landlord)
   // ---------------------------------------------------------------------------
 
   // Attach the derived relay-source fields to email relay legs, at most two
@@ -228,7 +242,12 @@ export function registerOutboxLifecycleRoutes(app: CommsApp): void {
   }
 
   app.openapi(listOutbox, async (c) => {
-    requireTransport(c);
+    // SECURITY: same principal rule as the single-row read — a landlord who may
+    // read one of their outbox rows may page all of them. accountId comes from
+    // the path (membership-guarded) and every query below filters on it under
+    // the caller's JWT, so RLS stays the floor; the filters only narrow and
+    // expose no extra column to either principal.
+    requireAgentOrManager(c);
     const { accountId } = c.req.valid('param');
     const { cursor, limit, status, channel, eligible_at } = c.req.valid('query');
     const sb = getSb(c);
@@ -248,16 +267,10 @@ export function registerOutboxLifecycleRoutes(app: CommsApp): void {
   // ---------------------------------------------------------------------------
 
   app.openapi(getOutbox, async (c) => {
+    // One lever for both outbox reads: the list shares this guard deliberately,
+    // so the row read and the page read cannot diverge.
+    requireAgentOrManager(c);
     const { accountId, id } = c.req.valid('param');
-    const principal = c.get('principal');
-    const role = c.get('account').role;
-    if (principal.type !== 'agent' && role !== 'owner' && role !== 'manager') {
-      throw new ApiError(
-        403,
-        'forbidden',
-        'only the agent transport or an owner/manager may read outbox rows',
-      );
-    }
     const sb = getSb(c);
     const { data, error } = await sb
       .from('comm_outbox')
