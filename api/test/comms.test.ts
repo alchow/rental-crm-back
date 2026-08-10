@@ -503,19 +503,24 @@ async function main(): Promise<void> {
 
   await check('outbox list: landlord and transport get the identical page', async () => {
     const q = `${base}/outbox?status=queued&channel=sms&limit=100`;
+    type Page = { data: Record<string, unknown>[]; next_cursor: string | null };
     const asAgent = assertStatus(
       await api('GET', q, { token: fx.agentToken }), 200, 'agent page',
-    ) as { data: Record<string, unknown>[] };
+    ) as Page;
     const asOwner = assertStatus(
       await api('GET', q, { token: fx.landlordToken }), 200, 'owner page',
-    ) as { data: Record<string, unknown>[] };
-    // Same filters, same rows, same columns: the landlord read is not a
-    // constrained projection, because GET /outbox/{id} already hands an
+    ) as Page;
+    // Same filters, same rows, same columns, same keyset: the landlord read is
+    // not a constrained projection, because GET /outbox/{id} already hands an
     // owner/manager the whole row.
-    assert(asAgent.data.length === asOwner.data.length, 'same row count');
+    assert(asAgent.data.length === asOwner.data.length, 'agent and owner row counts differ');
     assert(
       JSON.stringify(asAgent.data) === JSON.stringify(asOwner.data),
-      'agent and owner pages are byte-identical',
+      'agent and owner pages differ',
+    );
+    assert(
+      asAgent.next_cursor === asOwner.next_cursor,
+      `agent and owner next_cursor differ: ${asAgent.next_cursor} vs ${asOwner.next_cursor}`,
     );
     // Nothing new is exposed either: a listed row is exactly the row the
     // landlord could already GET by id, field for field.
@@ -922,7 +927,13 @@ async function main(): Promise<void> {
     const scan = await api('GET', `${base}/reconcile?ttl_seconds=3600`, { token: fx.agentToken });
     const page = assertStatus(scan, 200, 'scan') as { data: { id: string }[] };
     assert(page.data.some((x) => x.id === id), 'stale row surfaced');
-    assertStatus(await api('GET', `${base}/reconcile`, { token: fx.landlordToken }), 403, 'landlord scan');
+    // Transport-only for BOTH landlord roles: opening the outbox LIST to
+    // owner/manager did not travel to the reconcile scan.
+    for (const [who, token] of [
+      ['owner', fx.landlordToken], ['manager', fx.managerToken],
+    ] as const) {
+      assertStatus(await api('GET', `${base}/reconcile`, { token }), 403, `${who} scan`);
+    }
   });
 
   // =========================================================================
