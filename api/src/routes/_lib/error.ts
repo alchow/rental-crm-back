@@ -134,6 +134,9 @@ export type ErrorCode =
   // (ADR-0012 recipes) or leave start_date alone
   | 'late_fee_exists' // a live late fee already names this parent charge: show
   // the existing fee, do not re-post; voiding it frees the slot
+  | 'parent_charge_voided' // parent_charge_id names a VOIDED charge: the bill the
+  // fee would hang off was cancelled, so drop the
+  // proposal — do not retry against the same parent
   // Incidents conflicts (same fine-grained convention: each code implies a
   // distinct next action).
   | 'unclassified' // recurrence on an unclassified incident: PATCH category first

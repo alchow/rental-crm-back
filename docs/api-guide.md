@@ -407,7 +407,9 @@ Amounts owed. No mutation — corrections use `void` plus a new reversing entry 
 
 `type` values: `rent` / `late_fee` / `deposit` / `utility` / `parking` / `repair_chargeback` / `nsf_fee` / `other`.
 
-`parent_charge_id` links a **derived** charge to the bill it came from — today, the `late_fee` a landlord asserted against a rent charge. The parent must be in the same account (`404` otherwise) and the same tenancy (`400` otherwise). At most **one live `late_fee` per parent**: a second attempt is `409 late_fee_exists`, so a double tap or a retry cannot double-bill. Voiding the fee frees the slot, and a corrected fee can be asserted against the same rent charge. The field is echoed on every `Charge` response and on ledger charge entries.
+`parent_charge_id` links a **derived** charge to the bill it came from — today, the `late_fee` a landlord asserted against a rent charge. The parent must be in the same account (`404` otherwise), the same tenancy (`400` otherwise), and **not voided** (`409 parent_charge_voided`) — a cancelled bill cannot acquire new derived charges, which matters precisely because the rent charge can be voided (by hand, or by a rent change's advance-charge sweep) between a fee being proposed on screen and the landlord confirming it. At most **one live `late_fee` per parent**: a second attempt is `409 late_fee_exists`, so a double tap or a retry cannot double-bill. Voiding the fee frees the slot, and a corrected fee can be asserted against the same rent charge. The field is echoed on every `Charge` response and on ledger charge entries.
+
+Voiding a **parent** deliberately does **not** cascade: a late fee already asserted against it stays live and must be voided on its own (`POST /charges/{id}/void`). Withdrawing a fee the landlord asserted is their decision, not a side effect of ours — both rows stay visible in the ledger with their own void reasons.
 
 ### Payments
 

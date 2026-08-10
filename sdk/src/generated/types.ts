@@ -6370,7 +6370,7 @@ export interface paths {
             };
         };
         put?: never;
-        /** @description One charge per (source_schedule_id, period_start) — voided rows included. A create naming a schedule+period that already has a row (even a voided one) is rejected 409; re-billing a voided period manually means omitting source_schedule_id (or period_start). Optional parent_charge_id links a derived charge to the bill it came from (the late fee asserted against a rent charge): 404 when the parent is not in this account, 400 when it is in a different tenancy, 409 late_fee_exists when a live late fee already names it. */
+        /** @description One charge per (source_schedule_id, period_start) — voided rows included. A create naming a schedule+period that already has a row (even a voided one) is rejected 409; re-billing a voided period manually means omitting source_schedule_id (or period_start). Optional parent_charge_id links a derived charge to the bill it came from (the late fee asserted against a rent charge): 404 when the parent is not in this account, 400 when it is in a different tenancy, 409 parent_charge_voided when the parent has been voided, 409 late_fee_exists when a live late fee already names it. */
         post: {
             parameters: {
                 query?: never;
@@ -18347,7 +18347,7 @@ export interface components {
             source_schedule_id?: string;
             /**
              * Format: uuid
-             * @description The charge this one derives from — the rent charge a late_fee is being asserted against. Must be in the same account (404 otherwise) and the same tenancy (400 otherwise). At most one LIVE late_fee may name a given parent: a second attempt is 409 late_fee_exists, and voiding the fee frees the slot so a corrected one can be asserted.
+             * @description The charge this one derives from — the rent charge a late_fee is being asserted against. Must be in the same account (404 otherwise), the same tenancy (400 otherwise), and NOT voided (409 parent_charge_voided — a cancelled bill cannot acquire new derived charges). At most one LIVE late_fee may name a given parent: a second attempt is 409 late_fee_exists, and voiding the fee frees the slot so a corrected one can be asserted. Voiding the PARENT does not cascade: an already-asserted fee stays live and must be voided on its own.
              */
             parent_charge_id?: string;
         };

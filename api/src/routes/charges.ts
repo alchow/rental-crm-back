@@ -79,10 +79,13 @@ const CreateChargeBody = z
       .openapi({
         description:
           'The charge this one derives from — the rent charge a late_fee is being ' +
-          'asserted against. Must be in the same account (404 otherwise) and the same ' +
-          'tenancy (400 otherwise). At most one LIVE late_fee may name a given parent: ' +
-          'a second attempt is 409 late_fee_exists, and voiding the fee frees the slot ' +
-          'so a corrected one can be asserted.',
+          'asserted against. Must be in the same account (404 otherwise), the same ' +
+          'tenancy (400 otherwise), and NOT voided (409 parent_charge_voided — a ' +
+          'cancelled bill cannot acquire new derived charges). At most one LIVE ' +
+          'late_fee may name a given parent: a second attempt is 409 late_fee_exists, ' +
+          'and voiding the fee frees the slot so a corrected one can be asserted. ' +
+          'Voiding the PARENT does not cascade: an already-asserted fee stays live ' +
+          'and must be voided on its own.',
       }),
   })
   .superRefine((body, ctx) => {
@@ -166,7 +169,8 @@ const create = createRoute({
     'source_schedule_id (or period_start). Optional parent_charge_id links a ' +
     'derived charge to the bill it came from (the late fee asserted against a rent ' +
     'charge): 404 when the parent is not in this account, 400 when it is in a ' +
-    'different tenancy, 409 late_fee_exists when a live late fee already names it.',
+    'different tenancy, 409 parent_charge_voided when the parent has been voided, ' +
+    '409 late_fee_exists when a live late fee already names it.',
   request: {
     params: AccountParam,
     body: { content: { 'application/json': { schema: CreateChargeBody } }, required: true },
@@ -225,7 +229,7 @@ chargesApp.openapi(create, async (c) => {
   const body = c.req.valid('json');
   const sb = getSb(c);
 
-  // A parent must be a charge of THIS tenancy. The composite FK
+  // A parent must be a LIVE charge of THIS tenancy. The composite FK
   // (account_id, parent_charge_id) already makes a cross-account parent
   // impossible at the database; the tenancy half has no key that can express it
   // (both rows sit inside one account), so it is checked here. A member writing
@@ -234,7 +238,7 @@ chargesApp.openapi(create, async (c) => {
   if (body.parent_charge_id !== undefined) {
     const parent = await sb
       .from('charges')
-      .select('id, tenancy_id')
+      .select('id, tenancy_id, voided_at')
       .eq('account_id', accountId)
       .eq('id', body.parent_charge_id)
       .is('deleted_at', null)
@@ -243,11 +247,29 @@ chargesApp.openapi(create, async (c) => {
     if (!parent.data) {
       throw new ApiError(404, 'not_found', 'parent_charge_id does not belong to this account');
     }
-    if ((parent.data as { tenancy_id: string }).tenancy_id !== body.tenancy_id) {
+    const parentRow = parent.data as { tenancy_id: string; voided_at: string | null };
+    if (parentRow.tenancy_id !== body.tenancy_id) {
       throw new ApiError(
         400,
         'invalid_request',
         'parent_charge_id belongs to a different tenancy than this charge',
+      );
+    }
+    // A voided parent is a CANCELLED bill, and a live charge derived from one is
+    // a debt hanging off nothing. Propose-confirm is exactly where this happens:
+    // the rent charge can be voided -- by hand, or by a rent change's
+    // advance-charge sweep -- between the proposal being rendered and the
+    // landlord tapping confirm, and without this the fee would still be minted
+    // and counted in totals.by_type.late_fee.
+    //
+    // The reverse direction deliberately does NOT cascade: voiding a parent
+    // leaves an already-asserted fee live, because withdrawing a fee the
+    // landlord asserted is their decision, not a side effect of ours.
+    if (parentRow.voided_at !== null) {
+      throw new ApiError(
+        409,
+        'parent_charge_voided',
+        'parent_charge_id names a voided charge; the bill this would derive from was cancelled',
       );
     }
   }

@@ -302,6 +302,39 @@ async function main(): Promise<void> {
       throw new Error(`expected 404 not_found, got ${fee.status} ${codeOf(fee)}`);
   });
 
+  await check('a fee against a VOIDED parent -> 409 parent_charge_voided', async () => {
+    const t = await newTenancy();
+    const rent = await newRentCharge(t);
+    // The propose-confirm race: the bill is cancelled between the proposal being
+    // rendered on screen and the landlord tapping confirm.
+    const voided = await postA(`/charges/${rent.id}/void`, { void_reason: 'billed in error' });
+    if (voided.status !== 200) throw new Error(`void parent: ${voided.status}`);
+    const fee = await newLateFee(t, rent.id);
+    if (fee.status !== 409 || codeOf(fee) !== 'parent_charge_voided')
+      throw new Error(
+        `expected 409 parent_charge_voided, got ${fee.status} ${codeOf(fee)} ${JSON.stringify(fee.body)}`,
+      );
+    // Nothing was minted: no late_fee exists on this tenancy at all.
+    const led = await getA(`/tenancies/${t}/ledger`);
+    const feeEntries = (
+      led.body as { entries: (LedgerEntry & { type?: string })[] }
+    ).entries.filter((e) => e.kind === 'charge' && e.type === 'late_fee');
+    if (feeEntries.length !== 0)
+      throw new Error(`a fee was minted against a cancelled bill: ${JSON.stringify(feeEntries)}`);
+  });
+
+  await check('voiding the PARENT does not cascade: an asserted fee stays live', async () => {
+    const t = await newTenancy();
+    const rent = await newRentCharge(t);
+    const fee = await newLateFee(t, rent.id);
+    if (fee.status !== 201) throw new Error(`fee: ${fee.status}`);
+    const voided = await postA(`/charges/${rent.id}/void`, { void_reason: 'billed in error' });
+    if (voided.status !== 200) throw new Error(`void parent: ${voided.status}`);
+    const read = await getA(`/charges/${(fee.body as Charge).id}`);
+    if ((read.body as Charge).voided_at !== null)
+      throw new Error(`the fee was silently voided with its parent: ${JSON.stringify(read.body)}`);
+  });
+
   // =========================================================================
   // (B) One LIVE late fee per parent -- the propose-confirm idempotency key
   // =========================================================================
@@ -548,6 +581,48 @@ async function main(): Promise<void> {
     const successor = (r.body as { rent_schedule: Schedule }).rent_schedule;
     if (successor.grace_days !== null || successor.late_fee_cents !== null)
       throw new Error(`a default was invented: ${JSON.stringify(successor)}`);
+  });
+
+  await check('a cleared policy stays cleared across the NEXT fork (no resurrection)', async () => {
+    // A -> B inherits -> B's fee is cleared -> C must inherit B's null, never
+    // reach back past its own predecessor to A's 8500. Inheritance reads exactly
+    // one era: the schedule it supersedes.
+    const t = await newTenancy();
+    const eraA = (await newSchedule(t, { grace_days: 5, late_fee_cents: 8500 })).body as Schedule;
+
+    const toB = await postA(`/tenancies/${t}/rent-changes`, {
+      amount_cents: 210000,
+      currency: 'USD',
+      effective_date: '2026-04-01',
+      source_notice_id: await servedNotice(t),
+    });
+    if (toB.status !== 201) throw new Error(`A->B: ${toB.status} ${JSON.stringify(toB.body)}`);
+    const eraB = (toB.body as { rent_schedule: Schedule }).rent_schedule;
+    if (eraB.late_fee_cents !== 8500)
+      throw new Error(`B should have inherited A's fee: ${JSON.stringify(eraB)}`);
+
+    const cleared = await patchA(`/rent-schedules/${eraB.id}`, { late_fee_cents: null });
+    if (cleared.status !== 200) throw new Error(`clear B: ${cleared.status}`);
+
+    const toC = await postA(`/tenancies/${t}/rent-changes`, {
+      amount_cents: 220000,
+      currency: 'USD',
+      effective_date: '2026-07-01',
+      source_notice_id: await servedNotice(t),
+    });
+    if (toC.status !== 201) throw new Error(`B->C: ${toC.status} ${JSON.stringify(toC.body)}`);
+    const eraC = (toC.body as { rent_schedule: Schedule }).rent_schedule;
+    if (eraC.late_fee_cents !== null)
+      throw new Error(
+        `era A's fee was resurrected past the cleared era B: ${JSON.stringify(eraC)}`,
+      );
+    // grace_days was never cleared, so it still rides the chain A -> B -> C.
+    if (eraC.grace_days !== 5)
+      throw new Error(`grace_days should still have carried: ${JSON.stringify(eraC)}`);
+    // And era A itself is untouched by any of this.
+    const readA = (await getA(`/rent-schedules/${eraA.id}`)).body as Schedule;
+    if (readA.late_fee_cents !== 8500)
+      throw new Error(`the historical era was rewritten: ${JSON.stringify(readA)}`);
   });
 
   await check('out-of-range policy on a rent change -> 400', async () => {
