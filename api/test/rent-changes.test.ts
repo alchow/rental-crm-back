@@ -871,9 +871,9 @@ async function main(): Promise<void> {
   // =========================================================================
   // (H4) 'nonpayment_demand' (migration 20260801000008): the demand for overdue
   // rent -- the class the late-rent flow mints from "Late rent notice" / "Pay
-  // or quit notice". Asserted at BOTH layers, the route's zod enum and the
-  // notices_notice_class_check constraint underneath it, because a member only
-  // the API knows about is a 500 waiting for the first out-of-app writer.
+  // or quit notice". Asserted through the route (zod enum, then the constraint
+  // underneath it) and again on a direct write, so the vocabulary is the same
+  // one whether the row arrives through the API or from an out-of-app writer.
   // =========================================================================
   await check('notice_class: nonpayment_demand accepted by the route and the DB', async () => {
     const tid = await newTenancy();
@@ -909,9 +909,10 @@ async function main(): Promise<void> {
     if ((patched.body as { notice_class: string | null }).notice_class !== 'nonpayment_demand')
       throw new Error('class should survive the label correction');
 
-    // Constraint level: a DIRECT service-role insert (no zod in the path)
-    // proves the CHECK constraint admits the member, and still rejects an
-    // unlisted one with 23514 instead of storing it.
+    // The create above already reached the constraint through PostgREST, so
+    // this is not extra coverage of the member -- it is SYMMETRY: an importer,
+    // agent, or backfill writing outside the route gets the same vocabulary,
+    // admitting the member and still refusing an unlisted one with 23514.
     const directOk = await admin
       .from('notices')
       .insert({

@@ -20,6 +20,11 @@
 -- and 'pay_or_quit' would name only the harshest wording of that act and
 -- exclude the plain late-rent letter that is the same instrument.
 --
+-- BOUNDARY with 'cure_or_quit': the LABEL decides, always. A nonpayment breach
+-- served under the "Cure or quit notice" label stays cure_or_quit, so an
+-- arrears lookback keyed on nonpayment_demand will not see those rows -- the
+-- serve flow must offer "Pay or quit notice" as the arrears chip.
+--
 -- FREEZE TRIGGER UNCHANGED: _reject_anchored_notice_mutation enumerates
 -- COLUMNS, and notice_class has been one of them since 20260801000005 (see
 -- the notice_label rename in 20260801000006 for the current body). Its known
