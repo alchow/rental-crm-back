@@ -7131,6 +7131,104 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/adoption": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adopt an existing tenancy: atomic historical backfill or opening balance
+         * @description One transaction creates the rent schedule, backfilled rent charges, payments with caller-proposed allocations, an optional held deposit, and the adoption record. Requires a virgin money timeline (no live schedule, no non-voided charge/payment, no prior adoption) and owner/manager membership. The generator never backfills; this endpoint is how a past-start tenancy gets its history. See ADR-0013.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    tenancyId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AdoptionBody"];
+                };
+            };
+            responses: {
+                /** @description adopted */
+                201: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AdoptionResult"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/accounts/{accountId}/rent-rollup": {
         parameters: {
             query?: never;
@@ -18425,6 +18523,16 @@ export interface components {
         VoidPaymentBody: {
             void_reason: string;
         };
+        LedgerAdoption: {
+            /** @description The day tracking began — everything before it is landlord testimony, and the statement's tracking-since divider sits here. */
+            adoption_date: string;
+            /** @description Signed: > 0 the tenant owed at adoption, < 0 the tenant held a credit. */
+            opening_balance_cents: number;
+            currency: string;
+            balance_basis: string | null;
+            needs_review: boolean;
+            created_at: string;
+        } | null;
         LedgerTotalsByType: {
             rent: {
                 charges_cents: number;
@@ -18471,6 +18579,7 @@ export interface components {
             /** Format: uuid */
             tenancy_id: string;
             currency: string | null;
+            adoption: components["schemas"]["LedgerAdoption"];
             entries: ({
                 /** @enum {string} */
                 kind: "charge";
@@ -18486,6 +18595,7 @@ export interface components {
                 parent_charge_id?: string | null;
                 /** @enum {string} */
                 source: "manual" | "rent_schedule";
+                created_at: string;
                 type: string;
                 amount_cents: number;
                 voided_at: string | null;
@@ -18530,6 +18640,69 @@ export interface components {
                 unapplied_credit_cents: number;
                 by_type: components["schemas"]["LedgerTotalsByType"];
             };
+        };
+        AdoptionResult: {
+            /** Format: uuid */
+            adoption_id: string;
+            /** Format: uuid */
+            schedule_id: string;
+            charge_ids: string[];
+            payment_ids: string[];
+            /** Format: uuid */
+            deposit_charge_id: string | null;
+        };
+        AdoptionBody: {
+            /** @description The day tracking begins. Every backfilled date must be on or before it; it drives the statement's tracking-since divider. */
+            adoption_date: string;
+            currency: string;
+            rent: {
+                amount_cents: number;
+                due_day: number;
+                start_date: string;
+                /** @description Days after the due date before rent counts late under the lease (0–30; 0 means late the next day). null = not set — no default is assumed, and the client proposes no fee. */
+                grace_days?: number | null;
+                /** @description Late fee from the lease in minor units of the schedule currency. null = not set. Only ever proposed to a human, never charged automatically. */
+                late_fee_cents?: number | null;
+            };
+            /** @default [] */
+            charges: {
+                amount_cents: number;
+                due_date: string;
+                period_start?: string;
+                period_end?: string;
+                description?: string;
+            }[];
+            /** @default [] */
+            payments: {
+                amount_cents: number;
+                received_at: string;
+                /** @enum {string} */
+                method: "cash" | "check" | "ach" | "card" | "zelle_venmo" | "money_order" | "other";
+                reference?: string;
+                notes?: string;
+                /** @default [] */
+                allocations: {
+                    charge_index: number;
+                    amount_cents: number;
+                }[];
+            }[];
+            deposit?: {
+                amount_cents: number;
+                received_on: string;
+                /**
+                 * @description Defaults to 'other'.
+                 * @enum {string}
+                 */
+                method?: "cash" | "check" | "ach" | "card" | "zelle_venmo" | "money_order" | "other";
+            };
+            /**
+             * @description Signed: > 0 the tenant owed money at adoption, < 0 the tenant held a credit. A recorded fact, not a charge — it can never take a late fee and is never part of payment-dated income exports. Mutually exclusive with itemized charges/payments.
+             * @default 0
+             */
+            opening_balance_cents: number;
+            balance_basis?: string;
+            /** @default false */
+            needs_review: boolean;
         };
         RentRollupRow: {
             /** Format: uuid */

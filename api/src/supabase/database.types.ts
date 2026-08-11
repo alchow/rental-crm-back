@@ -3545,6 +3545,56 @@ export type Database = {
           },
         ];
       };
+      tenancy_adoptions: {
+        Row: {
+          account_id: string;
+          adoption_date: string;
+          balance_basis: string | null;
+          created_at: string;
+          currency: string;
+          deleted_at: string | null;
+          id: string;
+          needs_review: boolean;
+          opening_balance_cents: number;
+          tenancy_id: string;
+          updated_at: string;
+        };
+        Insert: {
+          account_id: string;
+          adoption_date: string;
+          balance_basis?: string | null;
+          created_at?: string;
+          currency: string;
+          deleted_at?: string | null;
+          id?: string;
+          needs_review?: boolean;
+          opening_balance_cents?: number;
+          tenancy_id: string;
+          updated_at?: string;
+        };
+        Update: {
+          account_id?: string;
+          adoption_date?: string;
+          balance_basis?: string | null;
+          created_at?: string;
+          currency?: string;
+          deleted_at?: string | null;
+          id?: string;
+          needs_review?: boolean;
+          opening_balance_cents?: number;
+          tenancy_id?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'tenancy_adoptions_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
       tenancy_endings: {
         Row: {
           account_id: string;
@@ -4329,6 +4379,32 @@ export type Database = {
       _tenant_stamp_form_started: {
         Args: { p_account_id: string; p_inspection_id: string };
         Returns: undefined;
+      };
+      adopt_tenancy_history: {
+        Args: {
+          p_account_id: string;
+          p_adoption_date: string;
+          p_balance_basis?: string;
+          p_charges?: Json;
+          p_currency: string;
+          p_deposit?: Json;
+          p_due_day: number;
+          p_grace_days?: number;
+          p_late_fee_cents?: number;
+          p_needs_review?: boolean;
+          p_opening_balance_cents?: number;
+          p_payments?: Json;
+          p_rent_amount_cents: number;
+          p_schedule_start_date: string;
+          p_tenancy_id: string;
+        };
+        Returns: {
+          o_adoption_id: string;
+          o_charge_ids: string[];
+          o_deposit_charge_id: string;
+          o_payment_ids: string[];
+          o_schedule_id: string;
+        }[];
       };
       advance_tenancy_statuses: {
         Args: { p_as_of?: string };

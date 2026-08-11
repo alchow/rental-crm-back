@@ -281,6 +281,16 @@ begin
     (v_acc_a, v_pay_a, v_charge_a, 70000),
     (v_acc_b, v_pay_b, v_charge_b, 50000);
 
+  -- Tenancy adoption (20260810000001): one row per account so the isolation
+  -- suite gets its own>0 / cross==0 check on tenancy_adoptions. Seeded
+  -- directly (superuser); the RPC path requires the virgin ledger these
+  -- tenancies deliberately don't have.
+  insert into public.tenancy_adoptions (
+    account_id, tenancy_id, adoption_date, opening_balance_cents, currency
+  ) values
+    (v_acc_a, v_tenancy_a, '2026-01-01', 0, 'USD'),
+    (v_acc_b, v_tenancy_b, '2026-01-01', 0, 'USD');
+
   -- Comms ledger (20260701000002): one row of every account-scoped comms
   -- table per account. (comm_opt_outs / inbound_raw are service-tier — no
   -- account_id — and are covered by their own deny-all assertions instead.)

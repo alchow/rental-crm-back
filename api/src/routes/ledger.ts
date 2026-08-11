@@ -24,6 +24,11 @@ const LedgerCharge = z.object({
   // field is simply absent rather than a fabricated null, and no read 500s.
   parent_charge_id: z.string().uuid().nullable().optional(),
   source: z.enum(['manual', 'rent_schedule']),
+  // When the charge row was RECORDED — the payment entry always had this
+  // pair. A backfilled charge (created_at far after due_date, e.g. tenancy
+  // adoption) is thereby distinguishable from one billed as it fell due.
+  // Never render it as the due date.
+  created_at: z.string(),
   type: z.string(),
   amount_cents: z.number().int(),
   voided_at: z.string().nullable(),
@@ -65,6 +70,28 @@ const LedgerPayment = z.object({
   ),
 });
 const LedgerEntry = z.union([LedgerCharge, LedgerPayment]);
+
+// The tenancy's adoption record (ADR-0013), when one exists. A recorded fact,
+// not a ledger row: opening_balance_cents is NOT included in any totals field
+// — clients that display it add it themselves, and it can never take a late
+// fee or appear in payment-dated income exports because it is neither a
+// charge nor a payment.
+const LedgerAdoption = z
+  .object({
+    adoption_date: z.string().openapi({
+      description:
+        "The day tracking began — everything before it is landlord testimony, and the " +
+        "statement's tracking-since divider sits here.",
+    }),
+    opening_balance_cents: z.number().int().openapi({
+      description: 'Signed: > 0 the tenant owed at adoption, < 0 the tenant held a credit.',
+    }),
+    currency: z.string(),
+    balance_basis: z.string().nullable(),
+    needs_review: z.boolean(),
+    created_at: z.string(),
+  })
+  .openapi('LedgerAdoption');
 
 // Per-charge-type slice of the totals. `allocated_cents` is the sum of
 // ACTIVE allocations against charges of that type (payment and charge both
@@ -110,6 +137,7 @@ const LedgerResponse = z
   .object({
     tenancy_id: z.string().uuid(),
     currency: z.string().nullable(),
+    adoption: LedgerAdoption.nullable(),
     entries: z.array(LedgerEntry),
     totals: z.object({
       rent_charges_cents: z.number().int().openapi({ description: LEGACY_NON_DEPOSIT_NOTE }),
@@ -225,7 +253,7 @@ ledgerApp.openapi(get, async (c) => {
   const { as_of } = c.req.valid('query');
   const sb = getSb(c);
 
-  const [charges, payments] = await Promise.all([
+  const [charges, payments, adoptions] = await Promise.all([
     sb
       .from('charges')
       .select('*')
@@ -238,10 +266,18 @@ ledgerApp.openapi(get, async (c) => {
       .eq('account_id', accountId)
       .eq('tenancy_id', tenancyId)
       .is('deleted_at', null),
+    sb
+      .from('tenancy_adoptions')
+      .select('*')
+      .eq('account_id', accountId)
+      .eq('tenancy_id', tenancyId)
+      .is('deleted_at', null)
+      .limit(1),
   ]);
 
   if (charges.error) throw new ApiError(500, 'database_error', charges.error.message);
   if (payments.error) throw new ApiError(500, 'database_error', payments.error.message);
+  if (adoptions.error) throw new ApiError(500, 'database_error', adoptions.error.message);
 
   let chargeRows = (charges.data ?? []) as ChargeRow[];
   let paymentRows = (payments.data ?? []) as PaymentRow[];
@@ -311,9 +347,35 @@ ledgerApp.openapi(get, async (c) => {
     allocByPayment.set(a.payment_id, arr);
   }
 
+  // Adoption record: at most one live row (partial unique index). Honored by
+  // as_of with the same financial-date rule as charges: an adoption dated
+  // after as_of did not exist at that point in time.
+  interface AdoptionRow {
+    adoption_date: string;
+    opening_balance_cents: number;
+    currency: string;
+    balance_basis: string | null;
+    needs_review: boolean;
+    created_at: string;
+  }
+  const adoptionRow = ((adoptions.data ?? []) as AdoptionRow[])[0] ?? null;
+  const adoption =
+    adoptionRow === null || (as_of !== undefined && adoptionRow.adoption_date > as_of)
+      ? null
+      : {
+          adoption_date: adoptionRow.adoption_date,
+          opening_balance_cents: adoptionRow.opening_balance_cents,
+          currency: adoptionRow.currency,
+          balance_basis: adoptionRow.balance_basis,
+          needs_review: adoptionRow.needs_review,
+          created_at: adoptionRow.created_at,
+        };
+
   let currency: string | null = null;
   if (chargeRows.length > 0) currency = chargeRows[0]!.currency;
   else if (paymentRows.length > 0) currency = paymentRows[0]!.currency;
+  // A Branch-C adoption (opening balance, no rows) still states its currency.
+  else if (adoption !== null) currency = adoption.currency;
 
   // Aggregates. Voided rows excluded. Deposits split out, and every type
   // additionally tracked in by_type (same pass, same rules).
@@ -380,6 +442,7 @@ ledgerApp.openapi(get, async (c) => {
       source_schedule_id: cr.source_schedule_id,
       parent_charge_id: cr.parent_charge_id,
       source: cr.source_schedule_id === null ? 'manual' : 'rent_schedule',
+      created_at: cr.created_at,
       type: cr.type,
       amount_cents: cr.amount_cents,
       voided_at: cr.voided_at,
@@ -413,6 +476,7 @@ ledgerApp.openapi(get, async (c) => {
     {
       tenancy_id: tenancyId,
       currency,
+      adoption,
       entries,
       totals: {
         rent_charges_cents: rentChargesC,

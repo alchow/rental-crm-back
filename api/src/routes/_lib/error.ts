@@ -141,7 +141,11 @@ export type ErrorCode =
   // distinct next action).
   | 'unclassified' // recurrence on an unclassified incident: PATCH category first
   | 'already_cited' // duplicate live citation of the same evidence row: nothing to do
-  | 'already_unlinked'; // repeat unlink of a citation: nothing to do, do not retry
+  | 'already_unlinked' // repeat unlink of a citation: nothing to do, do not retry
+  // Tenancy-adoption conflicts (ADR-0013, same fine-grained convention).
+  | 'already_adopted' // a live adoption already exists: nothing to do, do not retry
+  | 'schedule_exists'; // adoption requires a virgin billing setup and a live rent
+// schedule exists: record history through the ordinary flows instead
 
 export class ApiError extends Error {
   constructor(

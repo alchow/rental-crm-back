@@ -437,9 +437,23 @@ A lossless, per-account event feed ordered by `account_seq`. The cursor is a pla
 
 Response: `{ data: [{account_seq, entity_type, entity_id, event_type, occurred_at, actor, snapshot}], next_seq }`. `snapshot` is `payload.after` when present, `payload.before` on `hard_deleted`, else `null`. `next_seq` equals the last item's `account_seq`, or the request's `after_seq` on an empty page — pass it back verbatim on the next poll.
 
+### Tenancy adoption — atomic historical backfill (ADR-0013)
+
+For a landlord who starts tracking months into a live tenancy. One request commits the whole reconstruction in a single transaction — never half the charges without the payments:
+
+| Method | Path                                | Notes                                                                    |
+| ------ | ----------------------------------- | ------------------------------------------------------------------------ |
+| `POST` | `/tenancies/{tenancyId}/adoption`   | Owner/manager only. Requires a virgin money timeline; see codes below.   |
+
+Body: `adoption_date`, `currency`, `rent` (`amount_cents`, `due_day` 1–28, `start_date`, optional `grace_days`/`late_fee_cents`), then **either** itemized history — `charges[]` (`amount_cents`, `due_date`, optional `period_start`/`period_end` pair, ≤120) and `payments[]` (`amount_cents`, `received_at`, `method`, optional `allocations[]` naming charges by `charge_index`, ≤200) — **or** a signed `opening_balance_cents` (> 0 owed, < 0 credit; optional `balance_basis`, `needs_review`). The two are mutually exclusive; an optional held `deposit` (`amount_cents`, `received_on`) is allowed with both. Every backfilled date must be on or before `adoption_date`. Returns `{adoption_id, schedule_id, charge_ids[], payment_ids[], deposit_charge_id}` with ids in request order.
+
+Conflicts carry fine-grained codes: `already_adopted` (a live adoption exists — nothing to do), `schedule_exists` (billing is already set up — use the ordinary flows), `tenancy_has_money` (non-voided charges/payments exist), `tenancy_ended`. The generator is unaffected: it still bills one advance window and never backfills — after adoption, the next not-yet-due period appears on the next daily run, and backfilled periods are never re-emitted (both sides dedupe on `(source_schedule_id, period_start)`).
+
+An **opening balance is a recorded fact, not a charge**: the ledger returns it in a separate `adoption` block, it is excluded from every totals field, it can never take a late fee, and it never appears in payment-dated income exports. If legal action is ever needed on that balance, reconstruct the itemized charges first.
+
 ### Ledger (read-only)
 
-The derived financial view of a tenancy. Balances are computed from charges minus allocations — never stored. Optional `?as_of=YYYY-MM-DD` gives a point-in-time balance as of end of that date: charges included when `due_date <= as_of`; payments when `received_at` date-part `<= as_of`; voids respected only when `voided_at` date-part `<= as_of` (a charge voided after `as_of` counts as live at that date); allocations count when both sides qualify.
+The derived financial view of a tenancy. Balances are computed from charges minus allocations — never stored. Optional `?as_of=YYYY-MM-DD` gives a point-in-time balance as of end of that date: charges included when `due_date <= as_of`; payments when `received_at` date-part `<= as_of`; voids respected only when `voided_at` date-part `<= as_of` (a charge voided after `as_of` counts as live at that date); allocations count when both sides qualify. Charge entries carry `created_at` (when the row was **recorded** — far after `due_date` marks a backfilled charge; never render it as the due date), and the response's `adoption` block (null unless the tenancy was adopted, or when `adoption_date > as_of`) carries `adoption_date`, the signed `opening_balance_cents`, `balance_basis`, and `needs_review`.
 
 | Method | Path                                                    | Notes                                                |
 | ------ | ------------------------------------------------------- | ---------------------------------------------------- |
