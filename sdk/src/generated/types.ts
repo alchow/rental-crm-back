@@ -18652,12 +18652,16 @@ export interface components {
             deposit_charge_id: string | null;
         };
         AdoptionBody: {
-            /** @description The day tracking begins. Every backfilled date must be on or before it; it drives the statement's tracking-since divider. */
+            /**
+             * Format: date
+             * @description The day tracking begins. Every backfilled date must be on or before it; it drives the statement's tracking-since divider.
+             */
             adoption_date: string;
             currency: string;
             rent: {
                 amount_cents: number;
                 due_day: number;
+                /** Format: date */
                 start_date: string;
                 /** @description Days after the due date before rent counts late under the lease (0–30; 0 means late the next day). null = not set — no default is assumed, and the client proposes no fee. */
                 grace_days?: number | null;
@@ -18667,14 +18671,14 @@ export interface components {
             /** @default [] */
             charges: {
                 amount_cents: number;
+                /** Format: date */
                 due_date: string;
-                period_start?: string;
-                period_end?: string;
                 description?: string;
             }[];
             /** @default [] */
             payments: {
                 amount_cents: number;
+                /** Format: date-time */
                 received_at: string;
                 /** @enum {string} */
                 method: "cash" | "check" | "ach" | "card" | "zelle_venmo" | "money_order" | "other";
@@ -18688,6 +18692,7 @@ export interface components {
             }[];
             deposit?: {
                 amount_cents: number;
+                /** Format: date */
                 received_on: string;
                 /**
                  * @description Defaults to 'other'.

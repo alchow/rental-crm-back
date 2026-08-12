@@ -9,9 +9,17 @@ export interface DerivedLedger {
   opening_balance_cents: number;
   rent_charges_in_range_cents: number;
   rent_payments_in_range_cents: number;
-  // Closing balance = opening + in-range charges - in-range payments.
-  // This is the "balance you'd see if you looked just at the slice."
+  // Closing balance = adoption opening + opening + in-range charges
+  // - in-range payments. This is the "balance you'd see if you looked just
+  // at the slice", carrying the pre-tracking balance the slice can't show.
   closing_balance_cents: number;
+  // The landlord-stated balance at adoption (signed: > 0 owed, < 0 credit),
+  // 0 when the tenancy was never adopted. Like deposits and unapplied credit
+  // it predates every row and doesn't care about the date slice -- omitting
+  // it would misstate the obligation the export exists to prove. Kept OUT of
+  // opening_balance_cents, which means "row-derived debt entering the range".
+  adoption_opening_balance_cents: number;
+  adoption_date: string | null;
   // Whole-history (deposits + unapplied credit don't care about the slice
   // -- a deposit was either taken or wasn't; an unapplied credit is real
   // money regardless of when it landed).
@@ -121,11 +129,17 @@ export function deriveLedger(
     if (!inRangeISO(pay.received_at as string, from, to)) continue;
     inRangePaymentsC += a.amount_cents as number;
   }
-  const closingBalanceC = openingBalanceC + inRangeChargesC - inRangePaymentsC;
+  // ---- adoption opening balance (whole-history, like the deposit) --------
+  const adoptionOpeningC = (data.adoption?.opening_balance_cents as number | undefined) ?? 0;
+  const adoptionDate = (data.adoption?.adoption_date as string | undefined) ?? null;
 
+  const closingBalanceC = adoptionOpeningC + openingBalanceC + inRangeChargesC - inRangePaymentsC;
+
+  // A Branch-C adoption (opening balance, no rows) still states its currency.
   const currency =
     (data.charges[0]?.currency as string | undefined) ??
     (data.payments[0]?.currency as string | undefined) ??
+    (data.adoption?.currency as string | undefined) ??
     null;
 
   return {
@@ -133,6 +147,8 @@ export function deriveLedger(
     rent_charges_in_range_cents: inRangeChargesC,
     rent_payments_in_range_cents: inRangePaymentsC,
     closing_balance_cents: closingBalanceC,
+    adoption_opening_balance_cents: adoptionOpeningC,
+    adoption_date: adoptionDate,
     deposit_charges_cents: depositChargesC,
     deposit_payments_cents: depositPaymentsC,
     unapplied_credit_cents: unappliedCredit,

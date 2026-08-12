@@ -256,3 +256,52 @@ export function dbError(error: { code?: string; message: string }): ApiError {
   }
   return new ApiError(500, 'database_error', error.message);
 }
+
+/**
+ * The one home for the RPC error ladder. Domain RPCs RAISE with a stable
+ * prefix on the message -- `not_found:` / `conflict:` / `invalid:` -- and this
+ * maps prefix -> status, strips the prefix, and resolves fine-grained 409
+ * codes from the caller's regex table (branch-on-code-never-message, per the
+ * FE contract; the route's integration suite pins each pairing so a reworded
+ * RAISE fails loudly there).
+ *
+ * DATA FLOW: RPC RAISE -> prefix map -> conflict-code table -> SQLSTATE
+ * fallbacks (CHECK/cast violations that slipped past pre-validation are still
+ * the CALLER's malformed input -> 400; duplicate key -> 409; then dbError for
+ * 42501/transient/500). Before this helper each RPC route carried its own
+ * diverging copy, so the same DB condition could be a clean 4xx on one money
+ * route and a 500 on its sibling.
+ */
+export function mapPrefixedRpcError(
+  error: { code?: string; message?: string },
+  conflictCodes: ReadonlyArray<readonly [RegExp, ErrorCode]> = [],
+): ApiError {
+  const pending = schemaCacheMiss(error);
+  if (pending) return pending;
+  const msg = error.message ?? '';
+  if (msg.startsWith('not_found:')) {
+    return new ApiError(404, 'not_found', msg.slice('not_found:'.length).trim());
+  }
+  if (msg.startsWith('conflict:')) {
+    const detail = msg.slice('conflict:'.length).trim();
+    for (const [pattern, code] of conflictCodes) {
+      if (pattern.test(detail)) return new ApiError(409, code, detail);
+    }
+    return new ApiError(409, 'conflict', detail);
+  }
+  if (msg.startsWith('invalid:')) {
+    return new ApiError(400, 'invalid_request', msg.slice('invalid:'.length).trim());
+  }
+  // 23514 CHECK violation; 22007/22008/22P02 bad date/timestamp/literal casts
+  // from jsonb payload fields the RPC casts server-side.
+  if (
+    error.code === '23514' ||
+    error.code === '22007' ||
+    error.code === '22008' ||
+    error.code === '22P02'
+  ) {
+    return new ApiError(400, 'invalid_request', msg);
+  }
+  if (error.code === '23505') return new ApiError(409, 'conflict', msg);
+  return dbError({ code: error.code, message: msg });
+}

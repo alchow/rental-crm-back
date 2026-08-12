@@ -43,12 +43,23 @@ write runs under the caller's RLS, so the owner/manager insert policy on
 `tenancy_adoptions` gates the whole commit. Errors use the stable
 `invalid:` / `conflict:` / `not_found:` prefixes (ADR-0012 idiom).
 
-Guards, in order: per-tenancy advisory lock; the tenancy must exist and not be
+Guards, in order: the same `rent_change:` per-tenancy advisory lock every
+other schedule writer takes (so the virgin checks cannot race a concurrent
+schedule creation into two billing eras); the tenancy must exist and not be
 ended; the money timeline must be virgin (no live schedule, no non-voided
 charge or payment, no live adoption); an opening balance and itemized history
-are mutually exclusive; every backfilled date must be on or before
-`adoption_date`. Allocation sums are pre-validated for clean 400s, with
-`_assert_allocation_integrity` as the unchanged backstop.
+are mutually exclusive; `adoption_date` cannot be in the future and every
+backfilled date must be on or before it (payment timestamps get a one-day UTC
+slack so a same-day receipt in a western timezone is not rejected).
+Allocation sums, counts, and duplicates are pre-validated for clean 400s,
+with `_assert_allocation_integrity` as the unchanged backstop.
+
+Backfilled charge periods are **derived, never accepted**: `period_start =
+due_date`, `period_end = due_date + 1 month − 1 day` — the same grid the
+generator bills on. A caller-supplied period could either escape the
+`(source_schedule_id, period_start)` dedupe (NULL or off-grid → double bill)
+or pre-claim a future window the cron still owes (→ silently missing bill);
+deriving it makes the collision-safety claim structural.
 
 **Opening balance is a recorded fact, not a ledger row.** It is returned by
 the ledger endpoint in a separate `adoption` block, never mixed into

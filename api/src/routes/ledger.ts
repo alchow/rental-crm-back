@@ -277,7 +277,18 @@ ledgerApp.openapi(get, async (c) => {
 
   if (charges.error) throw new ApiError(500, 'database_error', charges.error.message);
   if (payments.error) throw new ApiError(500, 'database_error', payments.error.message);
-  if (adoptions.error) throw new ApiError(500, 'database_error', adoptions.error.message);
+  // COMPAT: tolerate a database that predates migration 20260810000001 —
+  // prod deploys code on merge while a human applies migrations later, and a
+  // pre-existing read endpoint must not 500 for every tenancy in that window
+  // (same posture as the parent_charge_id tolerance above). PGRST205 = table
+  // missing from the schema cache.
+  const adoptionTableMissing =
+    adoptions.error !== null &&
+    (adoptions.error.code === 'PGRST205' ||
+      /could not find the table/i.test(adoptions.error.message ?? ''));
+  if (adoptions.error && !adoptionTableMissing) {
+    throw new ApiError(500, 'database_error', adoptions.error.message);
+  }
 
   let chargeRows = (charges.data ?? []) as ChargeRow[];
   let paymentRows = (payments.data ?? []) as PaymentRow[];

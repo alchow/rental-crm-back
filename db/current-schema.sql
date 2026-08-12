@@ -3075,17 +3075,37 @@ declare
   v_method          text;
   v_idx             int;
   v_pay_total       bigint;
+  v_pay_allocs      int;
+  v_pay_seen_idx    int[];
+  v_seen_due        date[] := '{}';
   v_id              uuid;
   v_methods constant text[] :=
     array['cash', 'check', 'ach', 'card', 'zelle_venmo', 'money_order', 'other'];
 begin
-  -- 1. Serialize concurrent adoptions of the same tenancy: two racing commits
-  --    would both pass the virgin-ledger checks and each write a full history.
-  perform pg_advisory_xact_lock(hashtextextended('tenancy_adoption:' || p_tenancy_id::text, 0));
+  -- 1. Take the SAME per-tenancy lock every other rent_schedules writer takes
+  --    ('rent_change:' — change_tenancy_rent and the schedule-write guard), so
+  --    the step-4 virgin checks cannot race a concurrent schedule creation
+  --    into two live schedules that both bill. Concurrent plain charge/payment
+  --    inserts take no tenancy-level lock anywhere in the schema, so that
+  --    narrower race remains (same exposure the tenancies.start_date guard
+  --    accepts); the schedule race is the double-billing one.
+  perform pg_advisory_xact_lock(hashtextextended('rent_change:' || p_tenancy_id::text, 0));
 
   -- 2. Input validation (stable `invalid:` prefix -> 400 at the route).
   if p_adoption_date is null then
     raise exception 'invalid: adoption_date is required';
+  end if;
+  -- +1 day: a client whose local calendar is ahead of UTC (up to UTC+14) may
+  -- legitimately name "today" one day past current_date. Anything further is
+  -- a future-dated history — the fat-fingered-year case — and must not commit.
+  if p_adoption_date > current_date + 1 then
+    raise exception 'invalid: adoption_date cannot be in the future';
+  end if;
+  if p_opening_balance_cents is null then
+    raise exception 'invalid: opening_balance_cents must not be null (0 = no opening balance)';
+  end if;
+  if p_needs_review is null then
+    raise exception 'invalid: needs_review must not be null';
   end if;
   if p_currency is null or length(p_currency) <> 3 then
     raise exception 'invalid: currency must be a 3-letter code';
@@ -3180,23 +3200,28 @@ begin
 
   -- 6. Backfilled rent charges, in input order. due_date bounds make the
   --    backfill incapable of asserting bills the adoption never witnessed:
-  --    nothing before the schedule started, nothing after adoption day.
+  --    nothing before the schedule started, nothing after adoption day. The
+  --    period is DERIVED from due_date exactly the way the generator derives
+  --    its window (period_start = due_date, period_end = +1 month - 1 day),
+  --    so the (source_schedule_id, period_start) dedupe holds structurally in
+  --    both directions — no NULL-period escape, no future-window pre-claim.
   for v_elem in
     select value from jsonb_array_elements(coalesce(p_charges, '[]'::jsonb))
   loop
     v_amount := (v_elem->>'amount_cents')::bigint;
     v_due    := (v_elem->>'due_date')::date;
-    v_pstart := (v_elem->>'period_start')::date;
-    v_pend   := (v_elem->>'period_end')::date;
     if v_amount is null or v_amount <= 0 then
       raise exception 'invalid: every charge amount_cents must be greater than 0';
     end if;
     if v_due is null or v_due > p_adoption_date or v_due < p_schedule_start_date then
       raise exception 'invalid: every charge due_date must fall between the schedule start and adoption_date';
     end if;
-    if (v_pstart is null) <> (v_pend is null) then
-      raise exception 'invalid: period_start and period_end must be provided together';
+    if v_due = any (v_seen_due) then
+      raise exception 'invalid: duplicate charge due_date %', v_due;
     end if;
+    v_seen_due := v_seen_due || v_due;
+    v_pstart := v_due;
+    v_pend   := (v_due + interval '1 month' - interval '1 day')::date;
     insert into public.charges
       (account_id, tenancy_id, type, amount_cents, currency, due_date,
        period_start, period_end, source_schedule_id, description)
@@ -3222,8 +3247,11 @@ begin
     if v_amount is null or v_amount <= 0 then
       raise exception 'invalid: every payment amount_cents must be greater than 0';
     end if;
+    -- +1 day: the comparison date is UTC, but a payment received the evening
+    -- of adoption day in a western timezone lands on the NEXT UTC date; a
+    -- strict bound would reject the landlord's accurate same-day receipt.
     if v_received is null
-       or (v_received at time zone 'utc')::date > p_adoption_date then
+       or (v_received at time zone 'utc')::date > p_adoption_date + 1 then
       raise exception 'invalid: every payment received_at must be on or before adoption_date';
     end if;
     if v_method is null or v_method <> all (v_methods) then
@@ -3238,15 +3266,31 @@ begin
     returning id into v_id;
     v_payment_ids := v_payment_ids || v_id;
 
-    v_pay_total := 0;
+    v_pay_total    := 0;
+    v_pay_allocs   := 0;
+    v_pay_seen_idx := '{}';
     for v_alloc in
       select value from jsonb_array_elements(coalesce(v_elem->'allocations', '[]'::jsonb))
     loop
+      -- The route caps allocations at 24 per payment, but the RPC is
+      -- EXECUTE-granted to authenticated PostgREST callers, so the RPC is the
+      -- real contract boundary — re-assert the cap here.
+      v_pay_allocs := v_pay_allocs + 1;
+      if v_pay_allocs > 24 then
+        raise exception 'invalid: at most 24 allocations per payment';
+      end if;
       v_idx    := (v_alloc->>'charge_index')::int;
       v_amount := (v_alloc->>'amount_cents')::bigint;
       if v_idx is null or v_idx < 0 or v_idx >= v_n_charges then
         raise exception 'invalid: allocation charge_index % is out of range', v_idx;
       end if;
+      -- One allocation row per (payment, charge) — the UNIQUE constraint
+      -- would reject a duplicate anyway, but as a raw 23505; catch it here
+      -- as a stable `invalid:` instead.
+      if v_idx = any (v_pay_seen_idx) then
+        raise exception 'invalid: duplicate allocation charge_index % within one payment (merge the amounts)', v_idx;
+      end if;
+      v_pay_seen_idx := v_pay_seen_idx || v_idx;
       if v_amount is null or v_amount <= 0 then
         raise exception 'invalid: every allocation amount_cents must be greater than 0';
       end if;
@@ -3287,11 +3331,14 @@ begin
       (p_account_id, p_tenancy_id, 'deposit', v_amount, p_currency, v_due,
        'Security deposit')
     returning id into v_deposit_charge;
+    -- Noon UTC, not midnight: midnight UTC renders as the PREVIOUS day in
+    -- every western timezone, making the deposit payment visibly contradict
+    -- its own charge date. Noon renders as the entered day across UTC-11..+11.
     insert into public.payments
       (account_id, tenancy_id, amount_cents, currency, received_at, method)
     values
       (p_account_id, p_tenancy_id, v_amount, p_currency,
-       (v_due::timestamp at time zone 'utc'), v_method)
+       ((v_due::timestamp + interval '12 hours') at time zone 'utc'), v_method)
     returning id into v_id;
     insert into public.payment_allocations
       (account_id, payment_id, charge_id, amount_cents)

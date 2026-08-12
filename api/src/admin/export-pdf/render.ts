@@ -157,6 +157,16 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
         (ledger.opening_balance_cents > 0 ? '  (carried in)' : ''),
     );
   }
+  if (ledger.adoption_opening_balance_cents !== 0) {
+    // The pre-tracking balance is a landlord assertion, not a transaction the
+    // system can evidence -- label it as such wherever it is read.
+    doc.text(
+      `Opening balance at adoption (${ledger.adoption_date ?? 'date unrecorded'}):  ` +
+        fmtMoney(ledger.adoption_opening_balance_cents, ledger.currency) +
+        (ledger.adoption_opening_balance_cents > 0 ? '  (carried in)' : '') +
+        '  (from landlord statement; no itemized transactions)',
+    );
+  }
   doc.text(
     `Rent charged${fromDate || toDate ? ' (in range)' : ''}:  ${fmtMoney(ledger.rent_charges_in_range_cents, ledger.currency)}`,
   );

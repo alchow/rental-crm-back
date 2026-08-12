@@ -16,59 +16,39 @@
 //   (C) Conflicts, each with its fine-grained 409 code: re-adoption
 //       (already_adopted), live schedule (schedule_exists), existing money
 //       (tenancy_has_money).
-//   (D) Validation: branch exclusivity, out-of-range charge_index, and
-//       over-allocation are 400s at the route; a due_date after adoption_date
-//       is the RPC's stable `invalid:` -> 400.
+//   (D) Validation: branch exclusivity, out-of-range charge_index,
+//       over-allocation, two charges claiming the same due_date, two
+//       allocations claiming the same charge_index, a non-ISO received_at,
+//       an impossible calendar date, a far-future adoption_date, and a
+//       due_date after adoption_date. Every one is a 400 the wizard can
+//       show inline; none may reach the ledger.
 //   (E) Branch-C opening balance: no ledger rows, adoption block carries the
 //       signed balance, totals stay zero, currency falls back to the
 //       adoption's; ?as_of before adoption_date hides the block.
 //   (F) Atomicity via the RLS veto: a viewer's adoption 403s on the LAST
 //       insert and every earlier write rolls back with it.
 //   (G) Cross-account RLS: account B cannot adopt account A's tenancy (404).
-//   (H) Generator interplay: after adoption the next run emits exactly the
-//       one advance window and never re-emits backfilled periods.
+//   (H) Generator interplay, BOTH directions: a run landing inside an
+//       already-backfilled period writes nothing (the ON CONFLICT arm), and
+//       a run past the due day emits exactly the one advance window.
+//   (I) Date handling the money domain is judged on: a same-day payment
+//       entered from a western timezone is accepted, the deposit payment is
+//       stamped noon UTC so it renders on its own date, and a backfilled
+//       charge derives its period window from its due_date.
 //
-// Mirrors rent-changes.test.ts exactly (same env bootstrap, getAdminClient,
-// check()). Needs the live local Supabase stack with 20260810000001 applied.
+// Bootstraps through test/helpers/integration.ts (env, api client, check
+// harness). Needs the live local Supabase stack with 20260810000001 applied.
 // ----------------------------------------------------------------------------
 
-import { execSync } from 'node:child_process';
+import {
+  assert,
+  configureIntegrationEnv,
+  createApiClient,
+  createCheckHarness,
+  randomToken,
+} from './helpers/integration';
 
-interface SupabaseStatus {
-  API_URL: string;
-  DB_URL: string;
-  ANON_KEY: string;
-  SERVICE_ROLE_KEY: string;
-}
-
-function readSupabaseStatus(): SupabaseStatus {
-  const out = execSync('supabase status --output env --workdir db', {
-    cwd: process.cwd().endsWith('/api') ? '..' : '.',
-    encoding: 'utf8',
-  });
-  const lines = out.split('\n');
-  const get = (k: string) => {
-    const line = lines.find((l) => l.startsWith(k + '='));
-    if (!line) throw new Error(`supabase status missing: ${k}`);
-    return line.slice(k.length + 1).replace(/^"|"$/g, '');
-  };
-  return {
-    API_URL: get('API_URL'),
-    DB_URL: get('DB_URL'),
-    ANON_KEY: get('ANON_KEY'),
-    SERVICE_ROLE_KEY: get('SERVICE_ROLE_KEY'),
-  };
-}
-
-const status = readSupabaseStatus();
-process.env.NODE_ENV = 'test';
-process.env.PORT = '8794';
-process.env.SUPABASE_URL = status.API_URL;
-process.env.SUPABASE_ANON_KEY = status.ANON_KEY;
-process.env.SUPABASE_SERVICE_ROLE_KEY = status.SERVICE_ROLE_KEY;
-process.env.SUPABASE_JWKS_URL = `${status.API_URL}/auth/v1/.well-known/jwks.json`;
-process.env.SUPABASE_JWT_ISSUER = `${status.API_URL}/auth/v1`;
-process.env.SUPABASE_JWT_AUDIENCE = 'authenticated';
+configureIntegrationEnv('8794');
 
 const { _resetEnvCacheForTests } = await import('../src/env');
 _resetEnvCacheForTests();
@@ -79,47 +59,11 @@ _resetAdminClientForTests();
 const { buildApp } = await import('../src/app');
 
 const app = buildApp();
+const admin = getAdminClient();
+const api = createApiClient(app);
+const { failures, check } = createCheckHarness();
 
 // --- helpers ----------------------------------------------------------------
-
-interface ApiResp {
-  status: number;
-  body: unknown;
-  headers: Record<string, string>;
-}
-
-async function api(
-  method: string,
-  path: string,
-  opts: { token?: string; body?: unknown; idempotencyKey?: string } = {},
-): Promise<ApiResp> {
-  const headers: Record<string, string> = { accept: 'application/json' };
-  if (opts.token) headers.authorization = `Bearer ${opts.token}`;
-  const mutating = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase());
-  if (mutating && path.startsWith('/v1/accounts/')) {
-    headers['idempotency-key'] = opts.idempotencyKey ?? `t-${crypto.randomUUID()}`;
-  }
-  let init: RequestInit = { method, headers };
-  if (opts.body !== undefined) {
-    headers['content-type'] = 'application/json';
-    init = { ...init, body: JSON.stringify(opts.body) };
-  }
-  const res = await app.fetch(new Request(`http://test${path}`, init));
-  const responseHeaders: Record<string, string> = {};
-  res.headers.forEach((v, k) => {
-    responseHeaders[k] = v;
-  });
-  const text = await res.text();
-  return {
-    status: res.status,
-    body: text ? JSON.parse(text) : null,
-    headers: responseHeaders,
-  };
-}
-
-function rnd(): string {
-  return Math.random().toString(36).slice(2, 10);
-}
 
 interface UserFixture {
   userId: string;
@@ -129,8 +73,8 @@ interface UserFixture {
 }
 
 async function setupUser(label: string): Promise<UserFixture> {
-  const email = `adoption-${label}-${rnd()}@example.test`;
-  const password = `correct-horse-battery-${rnd()}`;
+  const email = `adoption-${label}-${randomToken()}@example.test`;
+  const password = `correct-horse-battery-${randomToken()}`;
   const su = await api('POST', '/v1/auth/signup', {
     body: { email, password, account_name: `Acct ${label}` },
   });
@@ -171,24 +115,16 @@ async function createTenancy(u: UserFixture, startDate: string): Promise<string>
   return (r.body as { id: string }).id;
 }
 
-function assert(cond: unknown, msg: string): asserts cond {
-  if (!cond) throw new Error(msg);
+function adopt(u: UserFixture, tenancyId: string, body: unknown, idempotencyKey?: string) {
+  return api('POST', `/v1/accounts/${u.accountId}/tenancies/${tenancyId}/adoption`, {
+    token: u.accessToken,
+    body,
+    ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+  });
 }
 
-interface Failure {
-  name: string;
-  detail: string;
-}
-const failures: Failure[] = [];
-async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try {
-    await fn();
-    console.info(`  PASS  ${name}`);
-  } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
-    failures.push({ name, detail });
-    console.error(`  FAIL  ${name}: ${detail}`);
-  }
+function errorCode(body: unknown): string {
+  return (body as { error?: { code?: string } })?.error?.code ?? '<none>';
 }
 
 // --- shared shapes -----------------------------------------------------------
@@ -236,6 +172,11 @@ interface LedgerBody {
 // May + June paid in full, July paid 500.00 of 1500.00, August unpaid,
 // deposit 1500.00 held since the start. Plus a 100.00 overpay on the June
 // payment left deliberately unapplied.
+//
+// Charges carry no period: the RPC derives period_start = due_date and
+// period_end = due_date + 1 month - 1 day, so a caller cannot hand-place a
+// window that the generator's (source_schedule_id, period_start) dedupe would
+// then miss.
 const ADOPT_DATE = '2026-08-10';
 function branchABody() {
   return {
@@ -249,10 +190,10 @@ function branchABody() {
       late_fee_cents: 8500,
     },
     charges: [
-      { amount_cents: 150000, due_date: '2026-05-01', period_start: '2026-05-01', period_end: '2026-05-31' },
-      { amount_cents: 150000, due_date: '2026-06-01', period_start: '2026-06-01', period_end: '2026-06-30' },
-      { amount_cents: 150000, due_date: '2026-07-01', period_start: '2026-07-01', period_end: '2026-07-31' },
-      { amount_cents: 150000, due_date: '2026-08-01', period_start: '2026-08-01', period_end: '2026-08-31' },
+      { amount_cents: 150000, due_date: '2026-05-01' },
+      { amount_cents: 150000, due_date: '2026-06-01' },
+      { amount_cents: 150000, due_date: '2026-07-01' },
+      { amount_cents: 150000, due_date: '2026-08-01' },
     ],
     payments: [
       {
@@ -282,7 +223,6 @@ function branchABody() {
 // --- tests ------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  const admin = getAdminClient();
   const alice = await setupUser('a');
   const bob = await setupUser('b');
 
@@ -291,16 +231,18 @@ async function main(): Promise<void> {
   let adoptedA: AdoptionResult | null = null;
   const keyA = `t-${crypto.randomUUID()}`;
   await check('A1: adoption commits and returns ids in request order', async () => {
-    const r = await api('POST', `/v1/accounts/${alice.accountId}/tenancies/${tenancyA}/adoption`, {
-      token: alice.accessToken,
-      body: branchABody(),
-      idempotencyKey: keyA,
-    });
+    const r = await adopt(alice, tenancyA, branchABody(), keyA);
     assert(r.status === 201, `expected 201, got ${r.status}: ${JSON.stringify(r.body)}`);
     adoptedA = r.body as AdoptionResult;
-    assert(adoptedA.charge_ids.length === 4, `expected 4 charge ids, got ${adoptedA.charge_ids.length}`);
+    assert(
+      adoptedA.charge_ids.length === 4,
+      `expected 4 charge ids, got ${adoptedA.charge_ids.length}`,
+    );
     // 3 rent payments + 1 deposit payment, deposit last.
-    assert(adoptedA.payment_ids.length === 4, `expected 4 payment ids, got ${adoptedA.payment_ids.length}`);
+    assert(
+      adoptedA.payment_ids.length === 4,
+      `expected 4 payment ids, got ${adoptedA.payment_ids.length}`,
+    );
     assert(adoptedA.deposit_charge_id !== null, 'expected a deposit charge id');
   });
 
@@ -315,7 +257,9 @@ async function main(): Promise<void> {
     assert(body.adoption.opening_balance_cents === 0, 'branch A opening balance must be 0');
     assert(body.adoption.needs_review === false, 'needs_review should default false');
 
-    const charges = body.entries.filter((e): e is LedgerCharge & Record<string, unknown> => e.kind === 'charge');
+    const charges = body.entries.filter(
+      (e): e is LedgerCharge & Record<string, unknown> => e.kind === 'charge',
+    );
     assert(charges.length === 5, `expected 5 charges (4 rent + deposit), got ${charges.length}`);
     for (const ch of charges) {
       assert(typeof ch.created_at === 'string' && ch.created_at.length > 0, 'charge created_at missing');
@@ -355,11 +299,7 @@ async function main(): Promise<void> {
 
   console.info('\n(B) Idempotency');
   await check('B1: same key + body replays the original 201 without re-writing', async () => {
-    const r = await api('POST', `/v1/accounts/${alice.accountId}/tenancies/${tenancyA}/adoption`, {
-      token: alice.accessToken,
-      body: branchABody(),
-      idempotencyKey: keyA,
-    });
+    const r = await adopt(alice, tenancyA, branchABody(), keyA);
     assert(r.status === 201, `replay expected 201, got ${r.status}: ${JSON.stringify(r.body)}`);
     const replay = r.body as AdoptionResult;
     assert(adoptedA !== null, 'A1 did not run');
@@ -373,12 +313,9 @@ async function main(): Promise<void> {
 
   console.info('\n(C) Conflicts');
   await check('C1: re-adoption with a fresh key -> 409 already_adopted', async () => {
-    const r = await api('POST', `/v1/accounts/${alice.accountId}/tenancies/${tenancyA}/adoption`, {
-      token: alice.accessToken,
-      body: branchABody(),
-    });
+    const r = await adopt(alice, tenancyA, branchABody());
     assert(r.status === 409, `expected 409, got ${r.status}`);
-    assert((r.body as { error: { code: string } }).error.code === 'already_adopted', JSON.stringify(r.body));
+    assert(errorCode(r.body) === 'already_adopted', JSON.stringify(r.body));
   });
 
   await check('C2: live schedule -> 409 schedule_exists', async () => {
@@ -388,12 +325,9 @@ async function main(): Promise<void> {
       body: { tenancy_id: t, kind: 'rent', amount_cents: 100000, currency: 'USD', due_day: 1, start_date: '2026-06-01' },
     });
     assert(rs.status === 201, `schedule create ${rs.status}: ${JSON.stringify(rs.body)}`);
-    const r = await api('POST', `/v1/accounts/${alice.accountId}/tenancies/${t}/adoption`, {
-      token: alice.accessToken,
-      body: { ...branchABody(), charges: [], payments: [], deposit: undefined },
-    });
+    const r = await adopt(alice, t, { ...branchABody(), charges: [], payments: [], deposit: undefined });
     assert(r.status === 409, `expected 409, got ${r.status}: ${JSON.stringify(r.body)}`);
-    assert((r.body as { error: { code: string } }).error.code === 'schedule_exists', JSON.stringify(r.body));
+    assert(errorCode(r.body) === 'schedule_exists', JSON.stringify(r.body));
   });
 
   await check('C3: existing money -> 409 tenancy_has_money', async () => {
@@ -403,71 +337,92 @@ async function main(): Promise<void> {
       body: { tenancy_id: t, type: 'rent', amount_cents: 100000, currency: 'USD', due_date: '2026-07-01' },
     });
     assert(ch.status === 201, `charge create ${ch.status}: ${JSON.stringify(ch.body)}`);
-    const r = await api('POST', `/v1/accounts/${alice.accountId}/tenancies/${t}/adoption`, {
-      token: alice.accessToken,
-      body: { ...branchABody(), charges: [], payments: [], deposit: undefined },
-    });
+    const r = await adopt(alice, t, { ...branchABody(), charges: [], payments: [], deposit: undefined });
     assert(r.status === 409, `expected 409, got ${r.status}`);
-    assert((r.body as { error: { code: string } }).error.code === 'tenancy_has_money', JSON.stringify(r.body));
+    assert(errorCode(r.body) === 'tenancy_has_money', JSON.stringify(r.body));
   });
 
   console.info('\n(D) Validation');
+  // Every (D) case is refused, so tenancyD stays a virgin money timeline and
+  // one tenancy serves the whole series.
   const tenancyD = await createTenancy(alice, '2026-05-01');
   await check('D1: opening balance + itemized rows -> 400 (branch exclusivity)', async () => {
-    const r = await api('POST', `/v1/accounts/${alice.accountId}/tenancies/${tenancyD}/adoption`, {
-      token: alice.accessToken,
-      body: { ...branchABody(), opening_balance_cents: 50000 },
-    });
+    const r = await adopt(alice, tenancyD, { ...branchABody(), opening_balance_cents: 50000 });
     assert(r.status === 400, `expected 400, got ${r.status}: ${JSON.stringify(r.body)}`);
   });
   await check('D2: charge_index out of range -> 400', async () => {
     const body = branchABody();
     body.payments[0]!.allocations[0]!.charge_index = 99;
-    const r = await api('POST', `/v1/accounts/${alice.accountId}/tenancies/${tenancyD}/adoption`, {
-      token: alice.accessToken,
-      body,
-    });
+    const r = await adopt(alice, tenancyD, body);
     assert(r.status === 400, `expected 400, got ${r.status}`);
   });
   await check('D3: allocations exceeding their payment -> 400', async () => {
     const body = branchABody();
     body.payments[2]!.allocations = [{ charge_index: 2, amount_cents: 150000 }];
-    const r = await api('POST', `/v1/accounts/${alice.accountId}/tenancies/${tenancyD}/adoption`, {
-      token: alice.accessToken,
-      body,
-    });
+    const r = await adopt(alice, tenancyD, body);
     assert(r.status === 400, `expected 400, got ${r.status}`);
   });
-  await check('D4: a due_date after adoption_date -> RPC invalid -> 400', async () => {
+  await check('D4: a due_date after adoption_date -> 400', async () => {
     const body = branchABody();
     body.charges[3]!.due_date = '2026-09-01';
-    body.charges[3]!.period_start = '2026-09-01';
-    body.charges[3]!.period_end = '2026-09-30';
-    const r = await api('POST', `/v1/accounts/${alice.accountId}/tenancies/${tenancyD}/adoption`, {
-      token: alice.accessToken,
-      body,
-    });
+    const r = await adopt(alice, tenancyD, body);
+    assert(r.status === 400, `expected 400, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert(errorCode(r.body) === 'invalid_request', JSON.stringify(r.body));
+  });
+  await check('D5: two charges claiming the same due_date -> 400', async () => {
+    // Two rent charges for one month would collide on the generator's
+    // (schedule, period) key mid-transaction; the refusal names the clash so
+    // the wizard can point at the offending row.
+    const body = branchABody();
+    body.charges[1]!.due_date = body.charges[0]!.due_date;
+    const r = await adopt(alice, tenancyD, body);
     assert(r.status === 400, `expected 400, got ${r.status}: ${JSON.stringify(r.body)}`);
     assert(
-      (r.body as { error: { code: string } }).error.code === 'invalid_request',
-      JSON.stringify(r.body),
+      /duplicate/i.test(JSON.stringify(r.body)),
+      `refusal should name the duplicate: ${JSON.stringify(r.body)}`,
     );
+  });
+  await check('D6: one payment allocating twice to the same charge -> 400', async () => {
+    // 500.00 + 500.00 against charge 0 is under the payment total, so only the
+    // repeated charge_index makes it invalid — the caller must merge the rows.
+    const body = branchABody();
+    body.payments[0]!.allocations = [
+      { charge_index: 0, amount_cents: 50000 },
+      { charge_index: 0, amount_cents: 50000 },
+    ];
+    const r = await adopt(alice, tenancyD, body);
+    assert(r.status === 400, `expected 400, got ${r.status}: ${JSON.stringify(r.body)}`);
+  });
+  await check('D7: unparseable dates are refused at the boundary, not by Postgres', async () => {
+    // A US-format receipt date must not be silently reinterpreted...
+    const nonIso = branchABody();
+    nonIso.payments[0]!.received_at = '08/10/2026';
+    const r1 = await adopt(alice, tenancyD, nonIso);
+    assert(r1.status === 400, `non-ISO received_at: expected 400, got ${r1.status}: ${JSON.stringify(r1.body)}`);
+    // ...and a date that never existed must fail as a 400, not a cast 500.
+    const impossible = branchABody();
+    impossible.charges[0]!.due_date = '2026-02-30';
+    const r2 = await adopt(alice, tenancyD, impossible);
+    assert(r2.status === 400, `2026-02-30: expected 400, got ${r2.status}: ${JSON.stringify(r2.body)}`);
+  });
+  await check('D8: a far-future adoption_date -> 400 invalid_request', async () => {
+    // The fat-fingered year. Tracking cannot begin after today.
+    const r = await adopt(alice, tenancyD, { ...branchABody(), adoption_date: '2027-08-10' });
+    assert(r.status === 400, `expected 400, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert(errorCode(r.body) === 'invalid_request', JSON.stringify(r.body));
   });
 
   console.info('\n(E) Branch-C opening balance');
   const tenancyE = await createTenancy(alice, '2025-10-15');
   await check('E1: opening balance commits with no ledger rows', async () => {
-    const r = await api('POST', `/v1/accounts/${alice.accountId}/tenancies/${tenancyE}/adoption`, {
-      token: alice.accessToken,
-      body: {
-        adoption_date: ADOPT_DATE,
-        currency: 'USD',
-        rent: { amount_cents: 150000, due_day: 15, start_date: '2025-10-15' },
-        opening_balance_cents: 120000,
-        balance_basis: 'Rent',
-        needs_review: true,
-        deposit: { amount_cents: 150000, received_on: '2025-10-15' },
-      },
+    const r = await adopt(alice, tenancyE, {
+      adoption_date: ADOPT_DATE,
+      currency: 'USD',
+      rent: { amount_cents: 150000, due_day: 15, start_date: '2025-10-15' },
+      opening_balance_cents: 120000,
+      balance_basis: 'Rent',
+      needs_review: true,
+      deposit: { amount_cents: 150000, received_on: '2025-10-15' },
     });
     assert(r.status === 201, `expected 201, got ${r.status}: ${JSON.stringify(r.body)}`);
     const res = r.body as AdoptionResult;
@@ -508,10 +463,9 @@ async function main(): Promise<void> {
     });
     assert(!memberErr, `viewer membership insert failed: ${memberErr?.message}`);
     const t = await createTenancy(alice, '2026-05-01');
-    const r = await api('POST', `/v1/accounts/${alice.accountId}/tenancies/${t}/adoption`, {
-      token: viewer.accessToken,
-      body: branchABody(),
-    });
+    // Alice's ACCOUNT with the viewer's TOKEN: the point is the viewer's role
+    // inside this account, not a cross-account probe (that's G1).
+    const r = await adopt({ ...viewer, accountId: alice.accountId }, t, branchABody());
     assert(r.status === 403, `expected 403, got ${r.status}: ${JSON.stringify(r.body)}`);
     // The adoption row is inserted LAST, so its veto must roll back the
     // schedule and every charge/payment written before it.
@@ -538,57 +492,153 @@ async function main(): Promise<void> {
   });
 
   console.info('\n(H) Generator interplay');
-  await check('H1: next run emits one advance window and re-emits nothing', async () => {
-    // Adoption backfilled through 2026-08-01 with due_day 1; a run dated
-    // 2026-08-10 (day > due_day) must emit exactly 2026-09-01.
-    const before = await admin
-      .from('charges')
-      .select('id', { count: 'exact', head: true })
-      .eq('tenancy_id', tenancyA);
-    const { error } = await admin.rpc('generate_rent_charges', {
-      p_account_id: alice.accountId,
-      p_as_of: '2026-08-10',
+  await check(
+    'H1: the generator re-emits no backfilled period and still emits the one advance window',
+    async () => {
+      // The generator only bills opted-in accounts.
+      const enabled = await admin
+        .from('accounts')
+        .update({ auto_charge_enabled: true })
+        .eq('id', alice.accountId);
+      assert(!enabled.error, `enable auto_charge failed: ${enabled.error?.message}`);
+
+      const before = await admin
+        .from('charges')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenancy_id', tenancyA);
+      const baseline = before.count ?? 0;
+
+      // Direction 1 — the ON CONFLICT arm firing against a BACKFILLED period.
+      // Day 1 is not > due_day 1, so this run targets 2026-08-01, the last
+      // month the adoption itself wrote. It must add nothing: the backfilled
+      // charge carries the schedule and the period, so it occupies the
+      // (source_schedule_id, period_start) slot the generator would insert.
+      const conflictRun = await admin.rpc('generate_rent_charges', {
+        p_account_id: alice.accountId,
+        p_as_of: '2026-08-01',
+      });
+      assert(!conflictRun.error, `generator (as_of 2026-08-01) failed: ${conflictRun.error?.message}`);
+      const afterConflict = await admin
+        .from('charges')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenancy_id', tenancyA);
+      assert(
+        afterConflict.count === baseline,
+        `a run inside the backfilled 2026-08-01 period double-billed: ${baseline} -> ${afterConflict.count}`,
+      );
+
+      // Direction 2 — the advance window. Day 10 IS > due_day 1, so the next
+      // unbackfilled period (2026-09-01) is emitted, exactly once.
+      const advanceRun = await admin.rpc('generate_rent_charges', {
+        p_account_id: alice.accountId,
+        p_as_of: '2026-08-10',
+      });
+      assert(!advanceRun.error, `generator (as_of 2026-08-10) failed: ${advanceRun.error?.message}`);
+      const after = await admin
+        .from('charges')
+        .select('id, period_start, source_schedule_id')
+        .eq('tenancy_id', tenancyA)
+        .order('period_start', { ascending: true });
+      assert(!after.error, `charges read failed: ${after.error?.message}`);
+      const rows = after.data ?? [];
+      assert(
+        rows.length === baseline + 1,
+        `expected exactly one new charge, had ${baseline}, now ${rows.length}`,
+      );
+      // The deposit charge has no period; the emitted advance window is the
+      // latest period_start among schedule-sourced rows.
+      const periods = rows
+        .filter((r2) => r2.source_schedule_id !== null && r2.period_start !== null)
+        .map((r2) => r2.period_start as string)
+        .sort();
+      const emitted = periods[periods.length - 1];
+      assert(emitted === '2026-09-01', `advance window ${emitted}`);
+      // A second identical run is a no-op: the (schedule, period) dedupe holds
+      // for the generated period too, not just the backfilled ones.
+      await admin.rpc('generate_rent_charges', { p_account_id: alice.accountId, p_as_of: '2026-08-10' });
+      const again = await admin
+        .from('charges')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenancy_id', tenancyA);
+      assert(again.count === rows.length, `second run wrote ${again.count} vs ${rows.length}`);
+    },
+  );
+
+  console.info('\n(I) Dates as the landlord entered them');
+  const tenancyI = await createTenancy(alice, '2026-08-01');
+  await check('I1: a same-day payment entered from a western timezone is accepted', async () => {
+    const r = await adopt(alice, tenancyI, {
+      adoption_date: ADOPT_DATE,
+      currency: 'USD',
+      rent: { amount_cents: 150000, due_day: 1, start_date: '2026-08-01' },
+      charges: [{ amount_cents: 150000, due_date: '2026-08-01' }],
+      payments: [
+        {
+          amount_cents: 150000,
+          // 22:00 on adoption day in Alaska is 2026-08-11T06:00Z — one UTC day
+          // PAST adoption_date. Without the RPC's +1-day slack an honest
+          // same-evening receipt would be rejected as future-dated.
+          received_at: '2026-08-10T22:00:00-08:00',
+          method: 'zelle_venmo',
+          allocations: [{ charge_index: 0, amount_cents: 150000 }],
+        },
+      ],
     });
-    assert(!error, `generator failed: ${error?.message}`);
-    const after = await admin
-      .from('charges')
-      .select('id, period_start, source_schedule_id')
-      .eq('tenancy_id', tenancyA)
-      .order('period_start', { ascending: true });
-    assert(!after.error, `charges read failed: ${after.error?.message}`);
-    const rows = after.data ?? [];
-    assert(
-      rows.length === (before.count ?? 0) + 1,
-      `expected exactly one new charge, had ${before.count}, now ${rows.length}`,
-    );
-    // The deposit charge has no period; the emitted advance window is the
-    // latest period_start among schedule-sourced rows.
-    const periods = rows
-      .filter((r2) => r2.source_schedule_id !== null && r2.period_start !== null)
-      .map((r2) => r2.period_start as string)
-      .sort();
-    const emitted = periods[periods.length - 1];
-    assert(emitted === '2026-09-01', `advance window ${emitted}`);
-    // A second run is a no-op: the (schedule, period) dedupe holds for both
-    // the backfilled and the generated periods.
-    await admin.rpc('generate_rent_charges', { p_account_id: alice.accountId, p_as_of: '2026-08-10' });
-    const again = await admin
-      .from('charges')
-      .select('id', { count: 'exact', head: true })
-      .eq('tenancy_id', tenancyA);
-    assert(again.count === rows.length, `second run wrote ${again.count} vs ${rows.length}`);
+    assert(r.status === 201, `expected 201, got ${r.status}: ${JSON.stringify(r.body)}`);
+    const res = r.body as AdoptionResult;
+    assert(res.charge_ids.length === 1, `expected 1 charge id, got ${res.charge_ids.length}`);
+    assert(res.payment_ids.length === 1, `expected 1 payment id, got ${res.payment_ids.length}`);
   });
 
-  // --- summary ---
-  if (failures.length > 0) {
-    console.error(`\n${failures.length} adoption failure(s):`);
-    for (const f of failures) console.error(`  ${f.name}: ${f.detail}`);
-    process.exit(1);
-  }
-  console.info('\nOK: tenancy-adoption checks all green');
+  const tenancyI2 = await createTenancy(alice, '2026-05-01');
+  await check('I2: the deposit payment is stamped noon UTC, so it renders on its own date', async () => {
+    const r = await adopt(alice, tenancyI2, {
+      adoption_date: ADOPT_DATE,
+      currency: 'USD',
+      rent: { amount_cents: 150000, due_day: 1, start_date: '2026-05-01' },
+      opening_balance_cents: 0,
+      deposit: { amount_cents: 150000, received_on: '2026-05-01' },
+    });
+    assert(r.status === 201, `expected 201, got ${r.status}: ${JSON.stringify(r.body)}`);
+    const rows = await admin
+      .from('payments')
+      .select('id, received_at')
+      .eq('tenancy_id', tenancyI2);
+    assert(!rows.error, `payments read failed: ${rows.error?.message}`);
+    const data = rows.data ?? [];
+    assert(data.length === 1, `expected only the deposit payment, got ${data.length}`);
+    const receivedAt = data[0]!.received_at;
+    // Midnight UTC would render as 2026-04-30 anywhere west of Greenwich —
+    // a deposit payment visibly contradicting its own charge date.
+    assert(receivedAt.startsWith('2026-05-01'), `deposit received_at drifted: ${receivedAt}`);
+    assert(receivedAt.includes('T12:00:00'), `expected noon UTC, got ${receivedAt}`);
+  });
+
+  await check('I3: a backfilled charge derives its period window from its due_date', async () => {
+    const rows = await admin
+      .from('charges')
+      .select('due_date, period_start, period_end')
+      .eq('tenancy_id', tenancyI)
+      .eq('type', 'rent');
+    assert(!rows.error, `charges read failed: ${rows.error?.message}`);
+    const data = rows.data ?? [];
+    assert(data.length === 1, `expected the single backfilled rent charge, got ${data.length}`);
+    const row = data[0]!;
+    assert(
+      row.period_start === row.due_date,
+      `period_start ${row.period_start} should equal due_date ${row.due_date}`,
+    );
+    // due 2026-08-01 -> the window closes the day before one month later.
+    assert(row.period_end === '2026-08-31', `period_end ${row.period_end}, expected 2026-08-31`);
+  });
 }
 
-await main().catch((err) => {
-  console.error(err);
+await main();
+
+if (failures.length > 0) {
+  console.error(`\n${failures.length} adoption failure(s):`);
+  for (const failure of failures) console.error(`  ${failure.name}: ${failure.detail}`);
   process.exit(1);
-});
+}
+
+console.info('\nOK: tenancy-adoption checks all green');

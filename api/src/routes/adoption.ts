@@ -2,8 +2,9 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import type { DbFunctionArgs } from '../supabase/db-types';
-import { ApiError, errorResponses, schemaCacheMiss, type ErrorCode } from './_lib/error';
+import { ApiError, errorResponses, mapPrefixedRpcError } from './_lib/error';
 import { CurrencyCode, GraceDays, LateFeeCents } from '../schemas/importable';
+import { CalendarDate } from '../schemas/calendar-date';
 
 // Tenancy adoption (ADR-0013): the atomic commit behind the Field Log
 // "adopt mid-tenancy" wizard. One request creates the rent schedule, the
@@ -13,7 +14,6 @@ import { CurrencyCode, GraceDays, LateFeeCents } from '../schemas/importable';
 // half a ledger. The wizard keeps every draft client-side; this endpoint
 // is the only persistence step.
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const PaymentMethod = z.enum([
   'cash',
   'check',
@@ -31,11 +31,14 @@ const AdoptionAllocation = z.object({
   amount_cents: z.number().int().positive(),
 });
 
+// No period fields: the RPC derives period_start = due_date and period_end =
+// due_date + 1 month - 1 day, the same grid the generator bills on, so the
+// (source_schedule_id, period_start) dedupe holds structurally — a caller
+// could otherwise write a NULL/off-grid period the cron can't see (double
+// bill) or pre-claim a future window the cron still owes (missing bill).
 const AdoptionCharge = z.object({
   amount_cents: z.number().int().positive(),
-  due_date: z.string().regex(DATE_RE),
-  period_start: z.string().regex(DATE_RE).optional(),
-  period_end: z.string().regex(DATE_RE).optional(),
+  due_date: CalendarDate,
   description: z.string().min(1).max(500).optional(),
 });
 
@@ -43,7 +46,7 @@ const AdoptionPayment = z.object({
   amount_cents: z.number().int().positive(),
   // The landlord's asserted receipt date. The row's created_at will be now —
   // that gap IS the backfill provenance the statement renders.
-  received_at: z.string(),
+  received_at: z.string().datetime({ offset: true }),
   method: PaymentMethod,
   reference: z.string().min(1).max(200).optional(),
   notes: z.string().min(1).max(2000).optional(),
@@ -52,13 +55,13 @@ const AdoptionPayment = z.object({
 
 const AdoptionDeposit = z.object({
   amount_cents: z.number().int().positive(),
-  received_on: z.string().regex(DATE_RE),
+  received_on: CalendarDate,
   method: PaymentMethod.optional().openapi({ description: "Defaults to 'other'." }),
 });
 
 const AdoptionBody = z
   .object({
-    adoption_date: z.string().regex(DATE_RE).openapi({
+    adoption_date: CalendarDate.openapi({
       description:
         'The day tracking begins. Every backfilled date must be on or before it; ' +
         "it drives the statement's tracking-since divider.",
@@ -67,7 +70,7 @@ const AdoptionBody = z
     rent: z.object({
       amount_cents: z.number().int().min(0),
       due_day: z.number().int().min(1).max(28),
-      start_date: z.string().regex(DATE_RE),
+      start_date: CalendarDate,
       grace_days: GraceDays.optional(),
       late_fee_cents: LateFeeCents.optional(),
     }),
@@ -92,30 +95,22 @@ const AdoptionBody = z
         path: ['opening_balance_cents'],
       });
     }
-    // The generator dedupes on (source_schedule_id, period_start); two
-    // backfilled charges sharing a period would 23505 mid-transaction.
-    const seenPeriods = new Set<string>();
+    // Periods derive from due_date, so a duplicate due_date would collide on
+    // the (source_schedule_id, period_start) dedupe key mid-transaction.
+    const seenDueDates = new Set<string>();
     body.charges.forEach((charge, i) => {
-      if ((charge.period_start === undefined) !== (charge.period_end === undefined)) {
+      if (seenDueDates.has(charge.due_date)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: 'period_start and period_end must be provided together',
-          path: ['charges', i],
+          message: `duplicate charge due_date ${charge.due_date}`,
+          path: ['charges', i, 'due_date'],
         });
       }
-      if (charge.period_start !== undefined) {
-        if (seenPeriods.has(charge.period_start)) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: `duplicate period_start ${charge.period_start}`,
-            path: ['charges', i, 'period_start'],
-          });
-        }
-        seenPeriods.add(charge.period_start);
-      }
+      seenDueDates.add(charge.due_date);
     });
     body.payments.forEach((payment, i) => {
       let total = 0;
+      const seenIndexes = new Set<number>();
       for (const alloc of payment.allocations) {
         if (alloc.charge_index >= body.charges.length) {
           ctx.addIssue({
@@ -124,6 +119,16 @@ const AdoptionBody = z
             path: ['payments', i, 'allocations'],
           });
         }
+        // One allocation row per (payment, charge) — a duplicate would hit
+        // the UNIQUE constraint as a raw 23505 instead of a clean 400.
+        if (seenIndexes.has(alloc.charge_index)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `duplicate allocation charge_index ${alloc.charge_index} (merge the amounts)`,
+            path: ['payments', i, 'allocations'],
+          });
+        }
+        seenIndexes.add(alloc.charge_index);
         total += alloc.amount_cents;
       }
       if (total > payment.amount_cents) {
@@ -213,41 +218,17 @@ adoptionApp.openapi(adopt, async (c) => {
 
   const { data, error } = await sb.rpc('adopt_tenancy_history', params);
   if (error) {
-    const pending = schemaCacheMiss(error);
-    if (pending) throw pending;
-    // adopt_tenancy_history RAISEs with the stable prefixes
-    // (not_found:/conflict:/invalid:); the prefix is stripped for the client.
-    const msg = error.message ?? '';
-    if (msg.startsWith('not_found:')) {
-      throw new ApiError(404, 'not_found', msg.slice('not_found:'.length).trim());
-    }
-    if (msg.startsWith('conflict:')) {
-      const detail = msg.slice('conflict:'.length).trim();
-      // Fine-grained 409 codes (branch-on-code-never-message); test:adoption
-      // pins each pairing so a reworded RAISE fails loudly there.
-      const code: ErrorCode = /already adopted/i.test(detail)
-        ? 'already_adopted'
-        : /already has a rent schedule/i.test(detail)
-          ? 'schedule_exists'
-          : /already has ledger activity/i.test(detail)
-            ? 'tenancy_has_money'
-            : /tenancy already ended/i.test(detail)
-              ? 'tenancy_ended'
-              : 'conflict';
-      throw new ApiError(409, code, detail);
-    }
-    if (msg.startsWith('invalid:')) {
-      throw new ApiError(400, 'invalid_request', msg.slice('invalid:'.length).trim());
-    }
-    if (error.code === '23514') throw new ApiError(400, 'invalid_request', msg);
-    if (error.code === '23505') throw new ApiError(409, 'conflict', msg);
-    // RLS veto on the tenancy_adoptions insert (writes are owner/manager at
-    // the DB). It fires LAST in the transaction, so everything else the
+    // Fine-grained 409 codes (branch-on-code-never-message); test:adoption
+    // pins each pairing so a reworded RAISE fails loudly there. The 42501 ->
+    // 403 leg is the RLS veto on the tenancy_adoptions insert (owner/manager
+    // writes); it fires LAST in the transaction, so everything else the
     // adoption wrote rolls back with it.
-    if (error.code === '42501') {
-      throw new ApiError(403, 'forbidden', 'adoption requires owner or manager membership');
-    }
-    throw new ApiError(500, 'database_error', msg);
+    throw mapPrefixedRpcError(error, [
+      [/already adopted/i, 'already_adopted'],
+      [/already has a rent schedule/i, 'schedule_exists'],
+      [/already has ledger activity/i, 'tenancy_has_money'],
+      [/tenancy already ended/i, 'tenancy_ended'],
+    ]);
   }
 
   const row = (Array.isArray(data) ? data[0] : data) as
