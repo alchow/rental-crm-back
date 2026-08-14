@@ -3715,6 +3715,45 @@
           "void_reason"
         ]
       },
+      "LedgerAdoption": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "adoption_date": {
+            "type": "string",
+            "description": "The day tracking began — everything before it is landlord testimony, and the statement's tracking-since divider sits here."
+          },
+          "opening_balance_cents": {
+            "type": "integer",
+            "description": "Signed: > 0 the tenant owed at adoption, < 0 the tenant held a credit."
+          },
+          "currency": {
+            "type": "string"
+          },
+          "balance_basis": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "needs_review": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "adoption_date",
+          "opening_balance_cents",
+          "currency",
+          "balance_basis",
+          "needs_review",
+          "created_at"
+        ]
+      },
       "LedgerTotalsByType": {
         "type": "object",
         "properties": {
@@ -3895,6 +3934,9 @@
               "null"
             ]
           },
+          "adoption": {
+            "$ref": "#/components/schemas/LedgerAdoption"
+          },
           "entries": {
             "type": "array",
             "items": {
@@ -3951,6 +3993,9 @@
                         "rent_schedule"
                       ]
                     },
+                    "created_at": {
+                      "type": "string"
+                    },
                     "type": {
                       "type": "string"
                     },
@@ -3991,6 +4036,7 @@
                     "period_end",
                     "source_schedule_id",
                     "source",
+                    "created_at",
                     "type",
                     "amount_cents",
                     "voided_at",
@@ -4140,8 +4186,271 @@
         "required": [
           "tenancy_id",
           "currency",
+          "adoption",
           "entries",
           "totals"
+        ]
+      },
+      "AdoptionResult": {
+        "type": "object",
+        "properties": {
+          "adoption_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "schedule_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "charge_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "payment_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "deposit_charge_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "adoption_id",
+          "schedule_id",
+          "charge_ids",
+          "payment_ids",
+          "deposit_charge_id"
+        ]
+      },
+      "AdoptionBody": {
+        "type": "object",
+        "properties": {
+          "adoption_date": {
+            "type": "string",
+            "format": "date",
+            "description": "The day tracking begins. Every backfilled date must be on or before it; it drives the statement's tracking-since divider."
+          },
+          "currency": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 3
+          },
+          "rent": {
+            "type": "object",
+            "properties": {
+              "amount_cents": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "due_day": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 28
+              },
+              "start_date": {
+                "type": "string",
+                "format": "date"
+              },
+              "grace_days": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 30,
+                "description": "Days after the due date before rent counts late under the lease (0–30; 0 means late the next day). null = not set — no default is assumed, and the client proposes no fee."
+              },
+              "late_fee_cents": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "exclusiveMinimum": 0,
+                "description": "Late fee from the lease in minor units of the schedule currency. null = not set. Only ever proposed to a human, never charged automatically."
+              }
+            },
+            "required": [
+              "amount_cents",
+              "due_day",
+              "start_date"
+            ]
+          },
+          "charges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "amount_cents": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                "due_date": {
+                  "type": "string",
+                  "format": "date"
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                }
+              },
+              "required": [
+                "amount_cents",
+                "due_date"
+              ]
+            },
+            "maxItems": 120,
+            "default": []
+          },
+          "payments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "amount_cents": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                "received_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "method": {
+                  "type": "string",
+                  "enum": [
+                    "cash",
+                    "check",
+                    "ach",
+                    "card",
+                    "zelle_venmo",
+                    "money_order",
+                    "other"
+                  ]
+                },
+                "reference": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "notes": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000
+                },
+                "allocations": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "charge_index": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "amount_cents": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0
+                      }
+                    },
+                    "required": [
+                      "charge_index",
+                      "amount_cents"
+                    ]
+                  },
+                  "maxItems": 24,
+                  "default": []
+                }
+              },
+              "required": [
+                "amount_cents",
+                "received_at",
+                "method"
+              ]
+            },
+            "maxItems": 200,
+            "default": []
+          },
+          "deposit": {
+            "type": "object",
+            "properties": {
+              "amount_cents": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              "received_on": {
+                "type": "string",
+                "format": "date"
+              },
+              "method": {
+                "type": "string",
+                "enum": [
+                  "cash",
+                  "check",
+                  "ach",
+                  "card",
+                  "zelle_venmo",
+                  "money_order",
+                  "other"
+                ],
+                "description": "Defaults to 'other'."
+              }
+            },
+            "required": [
+              "amount_cents",
+              "received_on"
+            ]
+          },
+          "opening_balance_cents": {
+            "type": "integer",
+            "default": 0,
+            "description": "Signed: > 0 the tenant owed money at adoption, < 0 the tenant held a credit. A recorded fact, not a charge — it can never take a late fee and is never part of payment-dated income exports. Mutually exclusive with itemized charges/payments."
+          },
+          "balance_basis": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "needs_review": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "adoption_date",
+          "currency",
+          "rent"
+        ]
+      },
+      "AdoptionPatched": {
+        "type": "object",
+        "properties": {
+          "needs_review": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "needs_review"
+        ]
+      },
+      "PatchAdoptionBody": {
+        "type": "object",
+        "properties": {
+          "needs_review": {
+            "type": "boolean",
+            "description": "Resolve (or re-raise) the wizard's \"save as unresolved\" flag. The only mutable adoption field: everything else is frozen testimony at the DB."
+          }
+        },
+        "required": [
+          "needs_review"
         ]
       },
       "RentRollupRow": {
@@ -21557,6 +21866,270 @@
           },
           "404": {
             "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/adoption": {
+      "post": {
+        "tags": [
+          "adoption"
+        ],
+        "summary": "Adopt an existing tenancy: atomic historical backfill or opening balance",
+        "description": "One transaction creates the rent schedule, backfilled rent charges, payments with caller-proposed allocations, an optional held deposit, and the adoption record. Requires a virgin money timeline (no live schedule, no non-voided charge/payment, no prior adoption) and owner/manager membership. The generator never backfills; this endpoint is how a past-start tenancy gets its history. See ADR-0013.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "tenancyId",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdoptionBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "adopted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdoptionResult"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "adoption"
+        ],
+        "summary": "Resolve or re-raise the adoption's needs_review flag",
+        "description": "Targets the tenancy’s single live adoption record (no id needed). Owner/manager only. Every other adoption field is frozen by a DB trigger; corrections beyond the flag are an operator soft-delete + re-adoption.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "tenancyId",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchAdoptionBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdoptionPatched"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource",
             "content": {
               "application/json": {
                 "schema": {

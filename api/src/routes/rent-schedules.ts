@@ -7,7 +7,7 @@ import {
   errorResponses,
   conflictResponse,
   schemaCacheMiss,
-  type ErrorCode,
+  mapPrefixedRpcError,
 } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { softDeleteStamp } from './_lib/soft-delete';
@@ -615,38 +615,16 @@ rentSchedulesApp.openapi(rentChange, async (c) => {
 
   const { data, error } = await sb.rpc('change_tenancy_rent', params);
   if (error) {
-    // A policy override against the pre-migration 10-argument overload resolves
-    // to no function at all (PGRST202): "not yet available", not "server fault".
-    const pending = schemaCacheMiss(error);
-    if (pending) throw pending;
-    // change_tenancy_rent RAISEs with a stable prefix on the message
-    // (not_found:/conflict:/invalid:); everything else is a genuine DB error.
-    // The prefix is stripped so the client sees a clean message.
-    const msg = error.message ?? '';
-    if (msg.startsWith('not_found:')) {
-      throw new ApiError(404, 'not_found', msg.slice('not_found:'.length).trim());
-    }
-    if (msg.startsWith('conflict:')) {
-      const detail = msg.slice('conflict:'.length).trim();
-      // Fine-grained 409 codes (branch-on-code-never-message, per the FE
-      // contract). Keyed off the RPC's stable messages -- test:rent-changes
-      // pins each pairing, so a reworded RAISE fails loudly there instead of
-      // silently degrading to the generic code.
-      const code: ErrorCode = /tenancy already ended/i.test(detail)
-        ? 'tenancy_ended'
-        : /source lease is (expired|superseded)/i.test(detail)
-          ? 'instrument_not_current'
-          : /has not been served/i.test(detail)
-            ? 'notice_not_served'
-            : /conflicts with effective_date/i.test(detail)
-              ? 'schedule_conflict'
-              : 'conflict';
-      throw new ApiError(409, code, detail);
-    }
-    if (msg.startsWith('invalid:')) {
-      throw new ApiError(400, 'invalid_request', msg.slice('invalid:'.length).trim());
-    }
-    throw new ApiError(500, 'database_error', msg);
+    // Shared RPC ladder (schemaCacheMiss covers the pre-migration overload:
+    // PGRST202 -> "not yet available", not "server fault"). test:rent-changes
+    // pins each conflict-code pairing, so a reworded RAISE fails loudly there
+    // instead of silently degrading to the generic code.
+    throw mapPrefixedRpcError(error, [
+      [/tenancy already ended/i, 'tenancy_ended'],
+      [/source lease is (expired|superseded)/i, 'instrument_not_current'],
+      [/has not been served/i, 'notice_not_served'],
+      [/conflicts with effective_date/i, 'schedule_conflict'],
+    ]);
   }
 
   // The function RETURNS TABLE, so supabase-js hands back a one-row array.

@@ -141,7 +141,14 @@ export type ErrorCode =
   // distinct next action).
   | 'unclassified' // recurrence on an unclassified incident: PATCH category first
   | 'already_cited' // duplicate live citation of the same evidence row: nothing to do
-  | 'already_unlinked'; // repeat unlink of a citation: nothing to do, do not retry
+  | 'already_unlinked' // repeat unlink of a citation: nothing to do, do not retry
+  // Tenancy-adoption conflicts (ADR-0013, same fine-grained convention).
+  | 'already_adopted' // a live adoption already exists: nothing to do, do not retry
+  | 'schedule_exists' // adoption requires a virgin billing setup and a live rent
+  // schedule exists: record history through the ordinary flows instead
+  | 'tenancy_start_date_conflict'; // the backfill starts before the tenancy's
+// recorded start_date: PATCH the tenancy start_date first (cheap while the
+// timeline is virgin, impossible after adoption money lands)
 
 export class ApiError extends Error {
   constructor(
@@ -251,4 +258,55 @@ export function dbError(error: { code?: string; message: string }): ApiError {
     return new ApiError(403, 'forbidden', 'not authorized to write this resource');
   }
   return new ApiError(500, 'database_error', error.message);
+}
+
+/**
+ * The one home for the RPC error ladder. Domain RPCs RAISE with a stable
+ * prefix on the message -- `not_found:` / `conflict:` / `invalid:` -- and this
+ * maps prefix -> status, strips the prefix, and resolves fine-grained 409
+ * codes from the caller's regex table (branch-on-code-never-message, per the
+ * FE contract; the route's integration suite pins each pairing so a reworded
+ * RAISE fails loudly there).
+ *
+ * DATA FLOW: RPC RAISE -> prefix map -> conflict-code table -> SQLSTATE
+ * fallbacks (CHECK/cast violations that slipped past pre-validation are still
+ * the CALLER's malformed input -> 400; duplicate key -> 409; then dbError for
+ * 42501/transient/500). Before this helper each RPC route carried its own
+ * diverging copy, so the same DB condition could be a clean 4xx on one money
+ * route and a 500 on its sibling.
+ */
+export function mapPrefixedRpcError(
+  error: { code?: string; message?: string },
+  conflictCodes: ReadonlyArray<readonly [RegExp, ErrorCode]> = [],
+): ApiError {
+  const pending = schemaCacheMiss(error);
+  if (pending) return pending;
+  const msg = error.message ?? '';
+  if (msg.startsWith('not_found:')) {
+    return new ApiError(404, 'not_found', msg.slice('not_found:'.length).trim());
+  }
+  if (msg.startsWith('conflict:')) {
+    const detail = msg.slice('conflict:'.length).trim();
+    for (const [pattern, code] of conflictCodes) {
+      if (pattern.test(detail)) return new ApiError(409, code, detail);
+    }
+    return new ApiError(409, 'conflict', detail);
+  }
+  if (msg.startsWith('invalid:')) {
+    return new ApiError(400, 'invalid_request', msg.slice('invalid:'.length).trim());
+  }
+  // 23514 CHECK violation; 22007/22008 bad date/timestamp casts; 22P02 bad
+  // literal casts from jsonb payload fields the RPC casts server-side; 22003
+  // numeric out of range (zod's int() admits values beyond int8, e.g. 1e19).
+  if (
+    error.code === '23514' ||
+    error.code === '22007' ||
+    error.code === '22008' ||
+    error.code === '22P02' ||
+    error.code === '22003'
+  ) {
+    return new ApiError(400, 'invalid_request', msg);
+  }
+  if (error.code === '23505') return new ApiError(409, 'conflict', msg);
+  return dbError({ code: error.code, message: msg });
 }

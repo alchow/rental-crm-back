@@ -97,6 +97,10 @@
     { "script": "test:auto-charge", "description": "Automatic rent charging." },
     { "script": "test:rent-changes", "description": "Instrument-anchored rent changes." },
     {
+      "script": "test:adoption",
+      "description": "Tenancy adoption: atomic backfill and opening balance."
+    },
+    {
       "script": "test:statement-policy",
       "description": "Statement late-fee policy: schedule policy fields, charge parenting, and era carry-forward."
     }

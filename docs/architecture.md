@@ -130,6 +130,13 @@ human confirms as an ordinary charge, linked to the bill it derives from by
 `charges.parent_charge_id`, where a partial unique index allows at most one
 live late fee per parent.
 
+Tenancy adoption (ADR-0013) is the one sanctioned way history enters the
+subledger: `adopt_tenancy_history` atomically creates a schedule, backfilled
+charges, payments with caller-proposed allocations, an optional held deposit,
+and a `tenancy_adoptions` row — on a virgin money timeline only. An opening
+balance lives on the adoption row, never as a charge, so it cannot take a
+late fee or enter income exports. The generator still never backfills.
+
 ## Imports and Background Work
 
 Imports separate recognition/mapping from execution. Preview and commit share

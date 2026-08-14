@@ -157,20 +157,74 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
         (ledger.opening_balance_cents > 0 ? '  (carried in)' : ''),
     );
   }
+  const adoptionBalance = ledger.adoption_opening_balance_cents;
+  const adopted = ledger.adoption_date !== null || adoptionBalance !== 0;
+  if (adopted) {
+    // The landlord's own qualifiers travel with the figure: a balance they
+    // flagged unresolved must not read as settled, and the basis they stated
+    // is what a reader would otherwise have to ask for.
+    const stated =
+      (ledger.adoption_needs_review ? ' — FLAGGED NEEDS REVIEW by the landlord' : '') +
+      (ledger.adoption_balance_basis ? ` · basis: "${ledger.adoption_balance_basis}"` : '');
+    if (adoptionBalance !== 0) {
+      // The pre-tracking balance is a landlord assertion, not a transaction the
+      // system can evidence -- label it as such wherever it is read.
+      doc.text(
+        `Opening balance at adoption (${ledger.adoption_date ?? 'date unrecorded'}):  ` +
+          fmtMoney(adoptionBalance, ledger.currency) +
+          (adoptionBalance > 0 ? '  (carried in)' : '') +
+          '  (from landlord statement; no itemized transactions)' +
+          stated,
+      );
+      doc.text(
+        '  Charges and payments dated before this were entered at adoption, not as contemporaneous records.',
+      );
+    } else {
+      // An adoption that backfilled itemized rows states no balance, so nothing
+      // above would say the pre-adoption rows were entered after the fact.
+      doc.text(
+        `Adopted into tracking on ${ledger.adoption_date ?? 'date unrecorded'} — charges and payments dated before this were entered at adoption.` +
+          stated,
+      );
+    }
+  }
   doc.text(
     `Rent charged${fromDate || toDate ? ' (in range)' : ''}:  ${fmtMoney(ledger.rent_charges_in_range_cents, ledger.currency)}`,
   );
   doc.text(
     `Rent paid${fromDate || toDate ? ' (in range)' : ''}:     ${fmtMoney(ledger.rent_payments_in_range_cents, ledger.currency)}`,
   );
-  doc.text(
-    `Closing balance${fromDate ? ` as of ${toDate ?? 'now'}` : ''}:  ${fmtMoney(ledger.closing_balance_cents, ledger.currency)}` +
-      (ledger.closing_balance_cents > 0
-        ? '  (owed by tenant)'
-        : ledger.closing_balance_cents < 0
-          ? '  (overpaid)'
-          : ''),
-  );
+  const owedSuffix =
+    ledger.closing_balance_cents > 0
+      ? '  (owed by tenant)'
+      : ledger.closing_balance_cents < 0
+        ? '  (overpaid)'
+        : '';
+  // An unallocated payment is money already received; without this the amount
+  // above reads as arrears with nothing tying it to the credit line below.
+  const creditQualifier =
+    ledger.unapplied_credit_cents > 0
+      ? `  (before ${fmtMoney(ledger.unapplied_credit_cents, ledger.currency)} unapplied credit — see below)`
+      : '';
+  if (adoptionBalance !== 0) {
+    // Show the arithmetic rather than folding the assertion into one number:
+    // the itemized figure is what these rows prove, the total is what the
+    // landlord claims, and GET /ledger returns both parts separately.
+    doc.text(
+      `Itemized closing balance:  ${fmtMoney(ledger.closing_balance_cents - adoptionBalance, ledger.currency)}`,
+    );
+    doc.text(
+      `Total including pre-tracking balance:  ${fmtMoney(ledger.closing_balance_cents, ledger.currency)}` +
+        owedSuffix +
+        creditQualifier,
+    );
+  } else {
+    doc.text(
+      `Closing balance${fromDate ? ` as of ${toDate ?? 'now'}` : ''}:  ${fmtMoney(ledger.closing_balance_cents, ledger.currency)}` +
+        owedSuffix +
+        creditQualifier,
+    );
+  }
   doc.text(
     `Deposit held:   ${fmtMoney(ledger.deposit_payments_cents, ledger.currency)}` +
       ` / charged ${fmtMoney(ledger.deposit_charges_cents, ledger.currency)}`,
