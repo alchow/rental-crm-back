@@ -47,19 +47,40 @@ Guards, in order: the same `rent_change:` per-tenancy advisory lock every
 other schedule writer takes (so the virgin checks cannot race a concurrent
 schedule creation into two billing eras); the tenancy must exist and not be
 ended; the money timeline must be virgin (no live schedule, no non-voided
-charge or payment, no live adoption); an opening balance and itemized history
-are mutually exclusive; `adoption_date` cannot be in the future and every
-backfilled date must be on or before it (payment timestamps get a one-day UTC
-slack so a same-day receipt in a western timezone is not rejected).
-Allocation sums, counts, and duplicates are pre-validated for clean 400s,
-with `_assert_allocation_integrity` as the unchanged backstop.
+charge or payment, no live adoption); the schedule must not start before the
+tenancy's recorded `start_date` (`tenancy_start_date_conflict` — correcting
+the tenancy start is cheap while the timeline is virgin and impossible after
+adoption money trips the `tenancy_has_money` guard); an opening balance and
+itemized history are mutually exclusive; `adoption_date` cannot be in the
+future and every backfilled date must be on or before it (payment timestamps
+get a one-day UTC slack so a same-day receipt in a western timezone is not
+rejected — the accepted trade-off is that such a payment appears in `?as_of`
+snapshots from its UTC date onward, the platform-wide snapshot rule) and no
+earlier than one month before the schedule start (year-typo guard). A
+malformed `deposit` is rejected, never skipped. Allocation sums, counts, and
+duplicates are pre-validated for clean 400s, with
+`_assert_allocation_integrity` as the unchanged backstop.
 
-Backfilled charge periods are **derived, never accepted**: `period_start =
-due_date`, `period_end = due_date + 1 month − 1 day` — the same grid the
-generator bills on. A caller-supplied period could either escape the
-`(source_schedule_id, period_start)` dedupe (NULL or off-grid → double bill)
-or pre-claim a future window the cron still owes (→ silently missing bill);
-deriving it makes the collision-safety claim structural.
+Backfilled charge periods are **derived, never accepted, and snapped to the
+schedule's due-day grid**: `period_start` is the grid date (day =
+`due_day`) of the window containing `due_date`, `period_end` one month minus
+a day later — while `due_date` stays the landlord's verbatim date. The
+generator only ever emits grid-aligned windows, so the
+`(source_schedule_id, period_start)` dedupe holds for ANY due date: a
+caller-supplied period could escape the key (NULL/off-grid → the cron
+re-bills the same month) or pre-claim a future window (→ silently missing
+bill), and an un-snapped `period_start = due_date` re-opened the same hole
+for off-grid dates (records dated the 1st under a due-day-15 schedule).
+
+**The adoption row is written FIRST and backstopped at the database.** The
+RPC inserts it before the schedule and money rows, so the owner/manager RLS
+policy vetoes an under-privileged caller before anything exists to roll
+back, and a `BEFORE INSERT` guard trigger re-asserts the virgin-timeline and
+future-date invariants against **direct PostgREST writes** (the posture
+precedent is the `rent_schedules` delete guard: member-writable money tables
+carry their invariants at the DB, not only in routes). After commit the row
+is frozen testimony — a `BEFORE UPDATE` trigger permits only `needs_review`
+(resolved via `PATCH /tenancies/{id}/adoption`) and the audited soft-delete.
 
 **Opening balance is a recorded fact, not a ledger row.** It is returned by
 the ledger endpoint in a separate `adoption` block, never mixed into
@@ -90,6 +111,12 @@ payment-dated received-rent exports.
 - The ledger response gains charge-entry `created_at` (the recording date —
   the payment side always had it) and a nullable `adoption` block, honored by
   `?as_of` (included only when `adoption_date <= as_of`).
+- The evidence-export PDF includes the adoption opening balance with the
+  same date-gating as the ledger's `?as_of` (absent when the range ends
+  before `adoption_date`), renders the composition explicitly (itemized
+  closing vs. total including the pre-tracking balance), and carries the
+  `needs_review`/`balance_basis` qualifiers; a failed adoption read fails
+  the export rather than printing a wrong figure.
 - `GET /rent-rollup` does **not** include opening balances yet; a portfolio
   tile can understate an adopted tenancy's arrears. Revisit when the FE
   portfolio surfaces adoption state.

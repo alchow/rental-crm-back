@@ -2,7 +2,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import type { DbFunctionArgs } from '../supabase/db-types';
-import { ApiError, errorResponses, mapPrefixedRpcError } from './_lib/error';
+import { ApiError, dbError, errorResponses, mapPrefixedRpcError } from './_lib/error';
 import { CurrencyCode, GraceDays, LateFeeCents } from '../schemas/importable';
 import { CalendarDate } from '../schemas/calendar-date';
 
@@ -31,11 +31,12 @@ const AdoptionAllocation = z.object({
   amount_cents: z.number().int().positive(),
 });
 
-// No period fields: the RPC derives period_start = due_date and period_end =
-// due_date + 1 month - 1 day, the same grid the generator bills on, so the
-// (source_schedule_id, period_start) dedupe holds structurally — a caller
-// could otherwise write a NULL/off-grid period the cron can't see (double
-// bill) or pre-claim a future window the cron still owes (missing bill).
+// No period fields: the RPC derives the period, snapping period_start to the
+// schedule's due-day grid (the grid window containing due_date) — the same
+// grid the generator bills on — so the (source_schedule_id, period_start)
+// dedupe holds structurally for ANY due_date. A caller-supplied period could
+// otherwise be NULL/off-grid (the cron re-bills the same month) or pre-claim
+// a future window the cron still owes (silently missing bill).
 const AdoptionCharge = z.object({
   amount_cents: z.number().int().positive(),
   due_date: CalendarDate,
@@ -166,6 +167,42 @@ const TenancyParam = z.object({
     .openapi({ param: { name: 'tenancyId', in: 'path' } }),
 });
 
+const PatchAdoptionBody = z
+  .object({
+    needs_review: z.boolean().openapi({
+      description:
+        "Resolve (or re-raise) the wizard's \"save as unresolved\" flag. The only " +
+        'mutable adoption field: everything else is frozen testimony at the DB.',
+    }),
+  })
+  .openapi('PatchAdoptionBody');
+
+const patchAdoption = createRoute({
+  method: 'patch',
+  path: '/accounts/{accountId}/tenancies/{tenancyId}/adoption',
+  tags: ['adoption'],
+  summary: "Resolve or re-raise the adoption's needs_review flag",
+  description:
+    'Targets the tenancy’s single live adoption record (no id needed). ' +
+    'Owner/manager only. Every other adoption field is frozen by a DB trigger; ' +
+    'corrections beyond the flag are an operator soft-delete + re-adoption.',
+  request: {
+    params: TenancyParam,
+    body: { content: { 'application/json': { schema: PatchAdoptionBody } }, required: true },
+  },
+  responses: {
+    200: {
+      description: 'updated',
+      content: {
+        'application/json': {
+          schema: z.object({ needs_review: z.boolean() }).openapi('AdoptionPatched'),
+        },
+      },
+    },
+    ...errorResponses,
+  },
+});
+
 const adopt = createRoute({
   method: 'post',
   path: '/accounts/{accountId}/tenancies/{tenancyId}/adoption',
@@ -221,13 +258,14 @@ adoptionApp.openapi(adopt, async (c) => {
     // Fine-grained 409 codes (branch-on-code-never-message); test:adoption
     // pins each pairing so a reworded RAISE fails loudly there. The 42501 ->
     // 403 leg is the RLS veto on the tenancy_adoptions insert (owner/manager
-    // writes); it fires LAST in the transaction, so everything else the
-    // adoption wrote rolls back with it.
+    // writes); the row is written FIRST, so the veto fires before anything
+    // else exists to roll back.
     throw mapPrefixedRpcError(error, [
       [/already adopted/i, 'already_adopted'],
       [/already has a rent schedule/i, 'schedule_exists'],
       [/already has ledger activity/i, 'tenancy_has_money'],
       [/tenancy already ended/i, 'tenancy_ended'],
+      [/correct the tenancy start_date first/i, 'tenancy_start_date_conflict'],
     ]);
   }
 
@@ -253,4 +291,25 @@ adoptionApp.openapi(adopt, async (c) => {
     } satisfies z.infer<typeof AdoptionResult>,
     201,
   );
+});
+
+adoptionApp.openapi(patchAdoption, async (c) => {
+  const { accountId, tenancyId } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const sb = getSb(c);
+  // Targets the single live row (partial unique index); the owner/manager
+  // UPDATE policy filters the row away for a viewer, surfacing as 404 like
+  // every other RLS-invisible resource. The freeze trigger backstops the
+  // field list: only needs_review (+ stamps) may change.
+  const { data, error } = await sb
+    .from('tenancy_adoptions')
+    .update({ needs_review: body.needs_review, updated_at: new Date().toISOString() })
+    .eq('account_id', accountId)
+    .eq('tenancy_id', tenancyId)
+    .is('deleted_at', null)
+    .select('needs_review');
+  if (error) throw dbError(error);
+  const row = (data ?? [])[0];
+  if (!row) throw new ApiError(404, 'not_found', 'no live adoption for this tenancy');
+  return c.json({ needs_review: row.needs_review }, 200);
 });

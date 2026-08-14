@@ -33,6 +33,7 @@ declare
   v_common_a uuid; v_common_b uuid;
   v_tenant_a uuid; v_tenant_b uuid;
   v_tenancy_a uuid; v_tenancy_b uuid;
+  v_tenancy_a2 uuid; v_tenancy_b2 uuid;
   v_tt_a uuid; v_tt_b uuid;
   v_lease_a uuid; v_lease_b uuid;
   v_vendor_a uuid; v_vendor_b uuid;
@@ -282,14 +283,19 @@ begin
     (v_acc_b, v_pay_b, v_charge_b, 50000);
 
   -- Tenancy adoption (20260810000001): one row per account so the isolation
-  -- suite gets its own>0 / cross==0 check on tenancy_adoptions. Seeded
-  -- directly (superuser); the RPC path requires the virgin ledger these
-  -- tenancies deliberately don't have.
+  -- suite gets its own>0 / cross==0 check on tenancy_adoptions. The
+  -- _tenancy_adoptions_guard trigger fires even for the superuser and demands
+  -- a virgin money timeline, so each adoption gets a dedicated second tenancy
+  -- with no schedule/charges/payments.
+  v_tenancy_a2 := gen_random_uuid(); v_tenancy_b2 := gen_random_uuid();
+  insert into public.tenancies (id, account_id, area_id, start_date, status) values
+    (v_tenancy_a2, v_acc_a, v_unit_a, '2026-01-01', 'active'),
+    (v_tenancy_b2, v_acc_b, v_unit_b, '2026-01-01', 'active');
   insert into public.tenancy_adoptions (
     account_id, tenancy_id, adoption_date, opening_balance_cents, currency
   ) values
-    (v_acc_a, v_tenancy_a, '2026-01-01', 0, 'USD'),
-    (v_acc_b, v_tenancy_b, '2026-01-01', 0, 'USD');
+    (v_acc_a, v_tenancy_a2, '2026-01-01', 0, 'USD'),
+    (v_acc_b, v_tenancy_b2, '2026-01-01', 0, 'USD');
 
   -- Comms ledger (20260701000002): one row of every account-scoped comms
   -- table per account. (comm_opt_outs / inbound_raw are service-tier — no

@@ -144,8 +144,11 @@ export type ErrorCode =
   | 'already_unlinked' // repeat unlink of a citation: nothing to do, do not retry
   // Tenancy-adoption conflicts (ADR-0013, same fine-grained convention).
   | 'already_adopted' // a live adoption already exists: nothing to do, do not retry
-  | 'schedule_exists'; // adoption requires a virgin billing setup and a live rent
-// schedule exists: record history through the ordinary flows instead
+  | 'schedule_exists' // adoption requires a virgin billing setup and a live rent
+  // schedule exists: record history through the ordinary flows instead
+  | 'tenancy_start_date_conflict'; // the backfill starts before the tenancy's
+// recorded start_date: PATCH the tenancy start_date first (cheap while the
+// timeline is virgin, impossible after adoption money lands)
 
 export class ApiError extends Error {
   constructor(
@@ -292,13 +295,15 @@ export function mapPrefixedRpcError(
   if (msg.startsWith('invalid:')) {
     return new ApiError(400, 'invalid_request', msg.slice('invalid:'.length).trim());
   }
-  // 23514 CHECK violation; 22007/22008/22P02 bad date/timestamp/literal casts
-  // from jsonb payload fields the RPC casts server-side.
+  // 23514 CHECK violation; 22007/22008 bad date/timestamp casts; 22P02 bad
+  // literal casts from jsonb payload fields the RPC casts server-side; 22003
+  // numeric out of range (zod's int() admits values beyond int8, e.g. 1e19).
   if (
     error.code === '23514' ||
     error.code === '22007' ||
     error.code === '22008' ||
-    error.code === '22P02'
+    error.code === '22P02' ||
+    error.code === '22003'
   ) {
     return new ApiError(400, 'invalid_request', msg);
   }

@@ -20,6 +20,12 @@ export interface DerivedLedger {
   // opening_balance_cents, which means "row-derived debt entering the range".
   adoption_opening_balance_cents: number;
   adoption_date: string | null;
+  // The landlord's own qualifiers on that stated balance: needs_review means
+  // they marked the figure unresolved, balance_basis is how they arrived at it.
+  // false/null when no adoption applies to this bundle -- a figure the landlord
+  // flagged must never print as a settled number.
+  adoption_needs_review: boolean;
+  adoption_balance_basis: string | null;
   // Whole-history (deposits + unapplied credit don't care about the slice
   // -- a deposit was either taken or wasn't; an unapplied credit is real
   // money regardless of when it landed).
@@ -130,8 +136,17 @@ export function deriveLedger(
     inRangePaymentsC += a.amount_cents as number;
   }
   // ---- adoption opening balance (whole-history, like the deposit) --------
-  const adoptionOpeningC = (data.adoption?.opening_balance_cents as number | undefined) ?? 0;
-  const adoptionDate = (data.adoption?.adoption_date as string | undefined) ?? null;
+  // INVARIANT: an adoption dated after to_date did not exist at the end of the
+  // slice, so a bundle cut before it must not state its balance -- the same
+  // financial-date rule GET /ledger?as_of applies (routes/ledger.ts). from_date
+  // does NOT gate it: like the row-derived opening balance, a balance predating
+  // the range is carried IN.
+  const adoption =
+    data.adoption && to && (data.adoption.adoption_date as string) > to ? null : data.adoption;
+  const adoptionOpeningC = (adoption?.opening_balance_cents as number | undefined) ?? 0;
+  const adoptionDate = (adoption?.adoption_date as string | undefined) ?? null;
+  const adoptionNeedsReview = (adoption?.needs_review as boolean | undefined) ?? false;
+  const adoptionBalanceBasis = (adoption?.balance_basis as string | null | undefined) ?? null;
 
   const closingBalanceC = adoptionOpeningC + openingBalanceC + inRangeChargesC - inRangePaymentsC;
 
@@ -139,7 +154,7 @@ export function deriveLedger(
   const currency =
     (data.charges[0]?.currency as string | undefined) ??
     (data.payments[0]?.currency as string | undefined) ??
-    (data.adoption?.currency as string | undefined) ??
+    (adoption?.currency as string | undefined) ??
     null;
 
   return {
@@ -149,6 +164,8 @@ export function deriveLedger(
     closing_balance_cents: closingBalanceC,
     adoption_opening_balance_cents: adoptionOpeningC,
     adoption_date: adoptionDate,
+    adoption_needs_review: adoptionNeedsReview,
+    adoption_balance_basis: adoptionBalanceBasis,
     deposit_charges_cents: depositChargesC,
     deposit_payments_cents: depositPaymentsC,
     unapplied_credit_cents: unappliedCredit,

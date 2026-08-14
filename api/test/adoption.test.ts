@@ -15,26 +15,39 @@
 //       writes nothing twice.
 //   (C) Conflicts, each with its fine-grained 409 code: re-adoption
 //       (already_adopted), live schedule (schedule_exists), existing money
-//       (tenancy_has_money).
+//       (tenancy_has_money), and a backfill starting before the tenancy's
+//       recorded start_date (tenancy_start_date_conflict).
 //   (D) Validation: branch exclusivity, out-of-range charge_index,
 //       over-allocation, two charges claiming the same due_date, two
 //       allocations claiming the same charge_index, a non-ISO received_at,
-//       an impossible calendar date, a far-future adoption_date, and a
-//       due_date after adoption_date. Every one is a 400 the wizard can
-//       show inline; none may reach the ledger.
+//       an impossible calendar date, a far-future adoption_date, a
+//       due_date after adoption_date, and a payment predating the schedule
+//       start. Every one is a 400 the wizard can show inline; none may reach
+//       the ledger. Plus the RPC-boundary refusal of a malformed deposit,
+//       which a PostgREST caller can reach without the route's zod.
 //   (E) Branch-C opening balance: no ledger rows, adoption block carries the
 //       signed balance, totals stay zero, currency falls back to the
 //       adoption's; ?as_of before adoption_date hides the block.
-//   (F) Atomicity via the RLS veto: a viewer's adoption 403s on the LAST
-//       insert and every earlier write rolls back with it.
+//   (F) The RLS veto: the adoption row is written FIRST, so a viewer's
+//       adoption 403s before any schedule/money row exists — the zero-row
+//       assertions prove the refusal writes nothing, and PL/pgSQL statement
+//       atomicity covers later-failure rollback (every later failure path is
+//       pre-validated, so no test can reach one).
 //   (G) Cross-account RLS: account B cannot adopt account A's tenancy (404).
 //   (H) Generator interplay, BOTH directions: a run landing inside an
 //       already-backfilled period writes nothing (the ON CONFLICT arm), and
-//       a run past the due day emits exactly the one advance window.
+//       a run past the due day emits exactly the one advance window. Then the
+//       off-grid case: records dated the 1st under a due-day-15 schedule snap
+//       onto the grid, so the generator bills the month once, not twice.
 //   (I) Date handling the money domain is judged on: a same-day payment
 //       entered from a western timezone is accepted, the deposit payment is
 //       stamped noon UTC so it renders on its own date, and a backfilled
-//       charge derives its period window from its due_date.
+//       charge lands in the grid window containing its due_date.
+//   (J) The database backstops behind the route, plus the one mutable field:
+//       a direct insert onto a tenancy that already has money is refused
+//       (virgin-timeline guard), a restated opening balance is refused
+//       (freeze trigger) while needs_review is allowed, and PATCH resolves
+//       the flag end-to-end (404 when there is no live adoption).
 //
 // Bootstraps through test/helpers/integration.ts (env, api client, check
 // harness). Needs the live local Supabase stack with 20260810000001 applied.
@@ -173,10 +186,11 @@ interface LedgerBody {
 // deposit 1500.00 held since the start. Plus a 100.00 overpay on the June
 // payment left deliberately unapplied.
 //
-// Charges carry no period: the RPC derives period_start = due_date and
-// period_end = due_date + 1 month - 1 day, so a caller cannot hand-place a
-// window that the generator's (source_schedule_id, period_start) dedupe would
-// then miss.
+// Charges carry no period: the RPC snaps each charge to the schedule's
+// due-day grid (the window CONTAINING due_date), so a caller cannot hand-place
+// a window that the generator's (source_schedule_id, period_start) dedupe
+// would then miss. Due day 1 puts every due_date here on the grid already;
+// H2 covers the off-grid case.
 const ADOPT_DATE = '2026-08-10';
 function branchABody() {
   return {
@@ -319,7 +333,10 @@ async function main(): Promise<void> {
   });
 
   await check('C2: live schedule -> 409 schedule_exists', async () => {
-    const t = await createTenancy(alice, '2026-06-01');
+    // The tenancy starts when the branch-A schedule does: a later start_date
+    // would trip tenancy_start_date_conflict instead of the conflict under
+    // test (see C4).
+    const t = await createTenancy(alice, '2026-05-01');
     const rs = await api('POST', `/v1/accounts/${alice.accountId}/rent-schedules`, {
       token: alice.accessToken,
       body: { tenancy_id: t, kind: 'rent', amount_cents: 100000, currency: 'USD', due_day: 1, start_date: '2026-06-01' },
@@ -331,7 +348,7 @@ async function main(): Promise<void> {
   });
 
   await check('C3: existing money -> 409 tenancy_has_money', async () => {
-    const t = await createTenancy(alice, '2026-06-01');
+    const t = await createTenancy(alice, '2026-05-01');
     const ch = await api('POST', `/v1/accounts/${alice.accountId}/charges`, {
       token: alice.accessToken,
       body: { tenancy_id: t, type: 'rent', amount_cents: 100000, currency: 'USD', due_date: '2026-07-01' },
@@ -340,6 +357,17 @@ async function main(): Promise<void> {
     const r = await adopt(alice, t, { ...branchABody(), charges: [], payments: [], deposit: undefined });
     assert(r.status === 409, `expected 409, got ${r.status}`);
     assert(errorCode(r.body) === 'tenancy_has_money', JSON.stringify(r.body));
+  });
+
+  await check('C4: backfill before the tenancy start -> tenancy_start_date_conflict', async () => {
+    // The tenancy says the tenant moved in 2026-08-01; the wizard is backfilling
+    // rent from May. Committing would strand the contradiction forever: adoption
+    // money permanently trips the PATCH /tenancies start_date guard, so the
+    // recorded move-in date could never be corrected afterwards.
+    const t = await createTenancy(alice, '2026-08-01');
+    const r = await adopt(alice, t, branchABody());
+    assert(r.status === 409, `expected 409, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert(errorCode(r.body) === 'tenancy_start_date_conflict', JSON.stringify(r.body));
   });
 
   console.info('\n(D) Validation');
@@ -411,6 +439,53 @@ async function main(): Promise<void> {
     assert(r.status === 400, `expected 400, got ${r.status}: ${JSON.stringify(r.body)}`);
     assert(errorCode(r.body) === 'invalid_request', JSON.stringify(r.body));
   });
+  await check('D9: a payment predating the schedule start -> 400', async () => {
+    // 1926, not 2026 — the wrong-century transcription typo. The upper bound
+    // (adoption_date) alone would let it through, and the ledger would then
+    // carry a receipt a century before the lease it pays.
+    const body = branchABody();
+    body.payments[0]!.received_at = '1926-06-02T12:00:00Z';
+    const r = await adopt(alice, tenancyD, body);
+    assert(r.status === 400, `expected 400, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert(
+      /predates the schedule start/i.test(JSON.stringify(r.body)),
+      `refusal should name the lower bound: ${JSON.stringify(r.body)}`,
+    );
+  });
+  await check('D10: a malformed deposit is refused at the RPC boundary', async () => {
+    // The RPC is EXECUTE-granted to authenticated PostgREST callers, so the
+    // route's zod is not the only door. A deposit of the wrong SHAPE silently
+    // ignored would answer 201 with the landlord's deposit unrecorded — the
+    // one failure mode a money wizard cannot have.
+    const t = await createTenancy(alice, '2026-05-01');
+    const { error } = await admin.rpc('adopt_tenancy_history', {
+      p_account_id: alice.accountId,
+      p_tenancy_id: t,
+      p_adoption_date: ADOPT_DATE,
+      p_currency: 'USD',
+      p_rent_amount_cents: 150000,
+      p_due_day: 1,
+      p_schedule_start_date: '2026-05-01',
+      // A jsonb STRING where the object belongs: "150000" instead of
+      // {amount_cents: 150000, received_on: ...}.
+      p_deposit: '150000',
+    });
+    assert(error !== null, 'expected the RPC to refuse a non-object deposit');
+    assert(
+      /deposit must be a json object/i.test(error?.message ?? ''),
+      `unexpected refusal: ${error?.message}`,
+    );
+    // Validation runs before the first write, so nothing may exist.
+    const [ado, sch] = await Promise.all([
+      admin
+        .from('tenancy_adoptions')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenancy_id', t),
+      admin.from('rent_schedules').select('id', { count: 'exact', head: true }).eq('tenancy_id', t),
+    ]);
+    assert(ado.count === 0, `adoption row written despite the refusal (${ado.count})`);
+    assert(sch.count === 0, `schedule written despite the refusal (${sch.count})`);
+  });
 
   console.info('\n(E) Branch-C opening balance');
   const tenancyE = await createTenancy(alice, '2025-10-15');
@@ -453,8 +528,8 @@ async function main(): Promise<void> {
     assert(body.adoption === null, 'adoption should be invisible before its date');
   });
 
-  console.info('\n(F) Atomicity via the owner/manager RLS veto');
-  await check('F1: a viewer adoption 403s and leaves zero rows behind', async () => {
+  console.info('\n(F) The owner/manager RLS veto');
+  await check('F1: a viewer adoption 403s and writes nothing', async () => {
     const viewer = await setupUser('v');
     const { error: memberErr } = await admin.from('account_members').insert({
       account_id: alice.accountId,
@@ -467,8 +542,8 @@ async function main(): Promise<void> {
     // inside this account, not a cross-account probe (that's G1).
     const r = await adopt({ ...viewer, accountId: alice.accountId }, t, branchABody());
     assert(r.status === 403, `expected 403, got ${r.status}: ${JSON.stringify(r.body)}`);
-    // The adoption row is inserted LAST, so its veto must roll back the
-    // schedule and every charge/payment written before it.
+    // The adoption row is inserted FIRST, so the veto fires before any
+    // schedule/charge/payment write — these prove the refusal wrote nothing.
     const [sch, chg, pay] = await Promise.all([
       admin.from('rent_schedules').select('id', { count: 'exact', head: true }).eq('tenancy_id', t),
       admin.from('charges').select('id', { count: 'exact', head: true }).eq('tenancy_id', t),
@@ -564,6 +639,90 @@ async function main(): Promise<void> {
     },
   );
 
+  const tenancyH = await createTenancy(alice, '2026-05-15');
+  await check('H2: an off-grid backfill bills its month once, not twice', async () => {
+    // The landlord's paper records are dated the 1st; the schedule bills the
+    // 15th. Verbatim due dates, off the generator's grid.
+    const r = await adopt(alice, tenancyH, {
+      adoption_date: ADOPT_DATE,
+      currency: 'USD',
+      rent: { amount_cents: 150000, due_day: 15, start_date: '2026-05-15' },
+      charges: [
+        { amount_cents: 150000, due_date: '2026-06-01' },
+        { amount_cents: 150000, due_date: '2026-07-01' },
+        { amount_cents: 150000, due_date: '2026-08-01' },
+      ],
+      payments: [
+        {
+          amount_cents: 150000,
+          received_at: '2026-06-02T12:00:00Z',
+          method: 'check',
+          allocations: [{ charge_index: 0, amount_cents: 150000 }],
+        },
+      ],
+    });
+    assert(r.status === 201, `expected 201, got ${r.status}: ${JSON.stringify(r.body)}`);
+
+    // due_date stays the landlord's word; the PERIOD is the grid window that
+    // contains it — the bill dated 2026-06-01 covers the window opened
+    // 2026-05-15.
+    const backfilled = await admin
+      .from('charges')
+      .select('due_date, period_start')
+      .eq('tenancy_id', tenancyH)
+      .eq('type', 'rent')
+      .order('due_date', { ascending: true });
+    assert(!backfilled.error, `charges read failed: ${backfilled.error?.message}`);
+    const backfilledPeriods = (backfilled.data ?? []).map((row) => row.period_start);
+    assert(
+      JSON.stringify(backfilledPeriods) ===
+        JSON.stringify(['2026-05-15', '2026-06-15', '2026-07-15']),
+      `snapped periods ${JSON.stringify(backfilledPeriods)}`,
+    );
+
+    const enabled = await admin
+      .from('accounts')
+      .update({ auto_charge_enabled: true })
+      .eq('id', alice.accountId);
+    assert(!enabled.error, `enable auto_charge failed: ${enabled.error?.message}`);
+    // Day 15 is not > due_day 15, so this run targets the 2026-08-15 window —
+    // the FIRST month the backfill does not cover. Had the periods stayed at
+    // their due_dates (…, 2026-08-01), the last backfilled charge would sit on
+    // a key the generator never writes and the same month would bill twice.
+    const run = await admin.rpc('generate_rent_charges', {
+      p_account_id: alice.accountId,
+      p_as_of: '2026-08-15',
+    });
+    assert(!run.error, `generator (as_of 2026-08-15) failed: ${run.error?.message}`);
+    const after = await admin
+      .from('charges')
+      .select('period_start')
+      .eq('tenancy_id', tenancyH)
+      .eq('type', 'rent');
+    assert(!after.error, `charges read failed: ${after.error?.message}`);
+    const rows = after.data ?? [];
+    assert(rows.length === 4, `expected one new charge (3 -> 4), got ${rows.length}`);
+    const added = rows
+      .map((row) => row.period_start)
+      .filter((period) => !backfilledPeriods.includes(period));
+    assert(
+      added.length === 1 && added[0] === '2026-08-15',
+      `generated windows ${JSON.stringify(added)}, expected ["2026-08-15"]`,
+    );
+    // Same run again: the (schedule, period) dedupe holds for the generated
+    // window too.
+    const rerun = await admin.rpc('generate_rent_charges', {
+      p_account_id: alice.accountId,
+      p_as_of: '2026-08-15',
+    });
+    assert(!rerun.error, `generator re-run failed: ${rerun.error?.message}`);
+    const again = await admin
+      .from('charges')
+      .select('id', { count: 'exact', head: true })
+      .eq('tenancy_id', tenancyH);
+    assert(again.count === rows.length, `second run wrote ${again.count} vs ${rows.length}`);
+  });
+
   console.info('\n(I) Dates as the landlord entered them');
   const tenancyI = await createTenancy(alice, '2026-08-01');
   await check('I1: a same-day payment entered from a western timezone is accepted', async () => {
@@ -614,7 +773,7 @@ async function main(): Promise<void> {
     assert(receivedAt.includes('T12:00:00'), `expected noon UTC, got ${receivedAt}`);
   });
 
-  await check('I3: a backfilled charge derives its period window from its due_date', async () => {
+  await check('I3: a backfilled charge lands in the grid window holding its due_date', async () => {
     const rows = await admin
       .from('charges')
       .select('due_date, period_start, period_end')
@@ -624,12 +783,128 @@ async function main(): Promise<void> {
     const data = rows.data ?? [];
     assert(data.length === 1, `expected the single backfilled rent charge, got ${data.length}`);
     const row = data[0]!;
+    // due_day 1 puts this due_date ON the grid, so the containing window opens
+    // on the due date itself (H2 pins the off-grid case, where it does not).
+    assert(row.period_start === '2026-08-01', `period_start ${row.period_start}`);
     assert(
       row.period_start === row.due_date,
       `period_start ${row.period_start} should equal due_date ${row.due_date}`,
     );
-    // due 2026-08-01 -> the window closes the day before one month later.
+    // The window closes the day before one month later.
     assert(row.period_end === '2026-08-31', `period_end ${row.period_end}, expected 2026-08-31`);
+  });
+
+  console.info('\n(J) Database backstops and the review flag');
+  await check('J1: a direct insert onto a money timeline is refused at the database', async () => {
+    // tenancy_adoptions is member-writable through PostgREST (the RLS role
+    // policy doubles as the RPC's atomicity veto), so the virgin-timeline
+    // invariant cannot live only inside adopt_tenancy_history. This tenancy has
+    // money but NO adoption, so the partial unique index cannot be what refuses
+    // the insert — only the guard can.
+    const t = await createTenancy(alice, '2026-05-01');
+    const ch = await api('POST', `/v1/accounts/${alice.accountId}/charges`, {
+      token: alice.accessToken,
+      body: { tenancy_id: t, type: 'rent', amount_cents: 100000, currency: 'USD', due_date: '2026-07-01' },
+    });
+    assert(ch.status === 201, `charge create ${ch.status}: ${JSON.stringify(ch.body)}`);
+    // Service role bypasses RLS; a BEFORE INSERT trigger it cannot bypass.
+    const { error } = await admin.from('tenancy_adoptions').insert({
+      account_id: alice.accountId,
+      tenancy_id: t,
+      adoption_date: ADOPT_DATE,
+      opening_balance_cents: 500000,
+      currency: 'USD',
+    });
+    assert(error !== null, 'expected the guard to refuse the direct insert');
+    assert(
+      /virgin money timeline/i.test(error?.message ?? ''),
+      `unexpected refusal: ${error?.message}`,
+    );
+  });
+
+  await check('J2: adoption facts are frozen; needs_review is the exception', async () => {
+    // Restating the opening balance after the fact would rewrite testimony the
+    // statement already rendered.
+    const restated = await admin
+      .from('tenancy_adoptions')
+      .update({ opening_balance_cents: 999 })
+      .eq('tenancy_id', tenancyE);
+    assert(restated.error !== null, 'expected the freeze trigger to refuse a restated balance');
+    assert(
+      /frozen/i.test(restated.error?.message ?? ''),
+      `unexpected refusal: ${restated.error?.message}`,
+    );
+    const flag = await admin
+      .from('tenancy_adoptions')
+      .update({ needs_review: true })
+      .eq('tenancy_id', tenancyE);
+    assert(!flag.error, `needs_review must stay mutable: ${flag.error?.message}`);
+  });
+
+  await check('J3: PATCH resolves the review flag and the ledger reflects it', async () => {
+    const r = await api('PATCH', `/v1/accounts/${alice.accountId}/tenancies/${tenancyE}/adoption`, {
+      token: alice.accessToken,
+      body: { needs_review: false },
+    });
+    assert(r.status === 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert(
+      (r.body as { needs_review?: boolean }).needs_review === false,
+      `patched flag ${JSON.stringify(r.body)}`,
+    );
+    const ledger = await api('GET', `/v1/accounts/${alice.accountId}/tenancies/${tenancyE}/ledger`, {
+      token: alice.accessToken,
+    });
+    const body = ledger.body as LedgerBody;
+    assert(body.adoption !== null, 'adoption block missing');
+    assert(body.adoption.needs_review === false, 'the resolved flag never reached the ledger');
+    // No live adoption: there is no flag to resolve, and the route must not
+    // silently answer 200 for a tenancy it never touched.
+    const virgin = await createTenancy(alice, '2026-05-01');
+    const missing = await api(
+      'PATCH',
+      `/v1/accounts/${alice.accountId}/tenancies/${virgin}/adoption`,
+      { token: alice.accessToken, body: { needs_review: false } },
+    );
+    assert(
+      missing.status === 404,
+      `expected 404, got ${missing.status}: ${JSON.stringify(missing.body)}`,
+    );
+  });
+
+  await check('J4: soft-delete is a one-way door; pre-deleted inserts are refused', async () => {
+    // Resurrecting a soft-deleted adoption would let it coexist with money
+    // recorded after the delete — the guard is INSERT-only, so the freeze
+    // trigger must refuse the un-delete outright.
+    const t = await createTenancy(alice, '2026-05-01');
+    const r = await adopt(alice, t, {
+      adoption_date: ADOPT_DATE,
+      currency: 'USD',
+      rent: { amount_cents: 150000, due_day: 1, start_date: '2026-05-01' },
+      opening_balance_cents: 0,
+    });
+    assert(r.status === 201, `setup adoption failed: ${r.status}`);
+    const del = await admin
+      .from('tenancy_adoptions')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('tenancy_id', t);
+    assert(!del.error, `soft-delete failed: ${del.error?.message}`);
+    const revive = await admin
+      .from('tenancy_adoptions')
+      .update({ deleted_at: null })
+      .eq('tenancy_id', t);
+    assert(revive.error !== null, 'resurrection should be refused');
+    assert(/resurrected/i.test(revive.error.message), revive.error.message);
+    // A pre-deleted insert is the other half of the same bypass.
+    const planted = await admin.from('tenancy_adoptions').insert({
+      account_id: alice.accountId,
+      tenancy_id: t,
+      adoption_date: ADOPT_DATE,
+      opening_balance_cents: 0,
+      currency: 'USD',
+      deleted_at: new Date().toISOString(),
+    });
+    assert(planted.error !== null, 'pre-deleted insert should be refused');
+    assert(/already soft-deleted/i.test(planted.error.message), planted.error.message);
   });
 }
 

@@ -597,15 +597,14 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   // COMPAT: tenancy_adoptions ships with migration 20260810000001 and this
   // service can run ahead of the applied migration, where PostgREST answers
   // PGRST205 ("Could not find the table") -- expected, and equivalent to "no
-  // adoption". Any other failure degrades the same way (the sibling reads here
-  // never throw either) but gets logged: the rendered balance then understates
-  // the obligation and nothing in the bundle would say so.
+  // adoption". Any OTHER failure fails the export: degrading a transient read
+  // error to "no adoption" would print a balance short by the whole
+  // pre-tracking obligation, into a legal document that says nothing about it.
   const adoptErr = adoptRes.error as { code?: string; message?: string } | null;
   const adoptionTableMissing =
     adoptErr?.code === 'PGRST205' || /Could not find the table/i.test(adoptErr?.message ?? '');
-  if (adoptErr && !adoptionTableMissing) {
-    getLogger().warn({ err: adoptErr, tenancyId }, 'evidence-export adoption load failed');
-  }
+  if (adoptErr && !adoptionTableMissing)
+    throw new Error(`tenancy_adoptions query failed: ${adoptErr.message}`);
   const adoption: Record<string, unknown> | null =
     ((adoptRes.data as Record<string, unknown>[] | null) ?? [])[0] ?? null;
   const leases: Record<string, unknown>[] = (leaseRes.data as Record<string, unknown>[]) ?? [];

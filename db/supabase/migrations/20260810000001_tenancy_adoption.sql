@@ -5,22 +5,25 @@
 --   adoption wizard (client-local state)
 --     -> POST /accounts/{a}/tenancies/{t}/adoption (one Idempotency-Key)
 --     -> adopt_tenancy_history RPC (this file, one transaction)
+--        -> tenancy_adoptions row FIRST (RLS veto + guard trigger, before
+--           anything else exists)
 --        -> rent_schedule (past start_date)
 --        -> N past rent charges (source_schedule_id = the new schedule)
 --        -> M payments + caller-proposed allocations
 --        -> optional held deposit (charge + payment + allocation)
---        -> tenancy_adoptions row
 --     -> ledger read model surfaces the adoption block
 --
 -- INVARIANT: the whole backfill commits atomically — never half the charges
 -- without the payments. Any rejection (including _assert_allocation_integrity)
 -- rolls the entire adoption back.
 --
--- INVARIANT: backfilled charge periods are DERIVED here from due_date
--- (period_start = due_date, period_end = due_date + 1 month - 1 day), never
--- caller-supplied. That makes the generator dedupe structural: a backfilled
--- period can neither escape the (source_schedule_id, period_start) key (NULL
--- or off-grid period) nor pre-claim a future window the cron still owes.
+-- INVARIANT: backfilled charge periods are DERIVED here, never
+-- caller-supplied: period_start is SNAPPED to the schedule's due-day grid
+-- (the grid window containing due_date), period_end one month minus a day
+-- later, while due_date stays the landlord's verbatim date. That makes the
+-- generator dedupe structural: a backfilled period can neither escape the
+-- (source_schedule_id, period_start) key (NULL or off-grid period) nor
+-- pre-claim a future window the cron still owes.
 --
 -- INVARIANT: an opening balance is a recorded fact, NOT a ledger row. It can
 -- never take a late fee (the fee walker iterates charges) and never appears in
@@ -126,6 +129,105 @@ create trigger tenancy_adoptions_audit
   after insert or update or delete on public.tenancy_adoptions
   for each row execute function public._emit_event();
 
+-- Direct-write backstops. tenancy_adoptions is member-writable through
+-- PostgREST (the RLS role policy doubles as the RPC's atomicity veto), and
+-- this schema's posture is that member-writable money tables carry their
+-- invariants at the database, not only in routes/RPCs (precedent:
+-- 20260706000002's rent_schedules delete guard).
+
+-- INSERT: the virgin-timeline and date-bound invariants. adopt_tenancy_history
+-- inserts the adoption row FIRST — before the schedule and money rows — so its
+-- own insert passes this guard; a direct insert onto a tenancy that already
+-- has live billing or money is exactly the bypass this stops.
+create or replace function public._tenancy_adoptions_guard()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_tenancy record;
+begin
+  -- Same per-tenancy lock every schedule writer takes, so a direct insert
+  -- serializes with adopt_tenancy_history and with rent changes.
+  perform pg_advisory_xact_lock(hashtextextended('rent_change:' || NEW.tenancy_id::text, 0));
+  -- A pre-deleted row would be a plantable dead record: paired with a later
+  -- resurrection it composes into a full virgin-invariant bypass.
+  if NEW.deleted_at is not null then
+    raise exception 'an adoption cannot be inserted already soft-deleted'
+      using errcode = 'check_violation';
+  end if;
+  if NEW.adoption_date > current_date + 1 then
+    raise exception 'adoption_date cannot be in the future'
+      using errcode = 'check_violation';
+  end if;
+  -- Mirror the RPC's tenancy-state refusal (ended or soft-deleted).
+  select status, deleted_at into v_tenancy
+    from public.tenancies
+   where account_id = NEW.account_id and id = NEW.tenancy_id;
+  if v_tenancy.deleted_at is not null or v_tenancy.status = 'ended' then
+    raise exception 'adoption requires a live, un-ended tenancy'
+      using errcode = 'check_violation';
+  end if;
+  if exists (
+    select 1 from public.rent_schedules
+     where account_id = NEW.account_id and tenancy_id = NEW.tenancy_id
+       and deleted_at is null
+  ) or exists (
+    select 1 from public.charges
+     where account_id = NEW.account_id and tenancy_id = NEW.tenancy_id
+       and voided_at is null and deleted_at is null
+  ) or exists (
+    select 1 from public.payments
+     where account_id = NEW.account_id and tenancy_id = NEW.tenancy_id
+       and voided_at is null and deleted_at is null
+  ) then
+    raise exception 'adoption requires a virgin money timeline; record history through adopt_tenancy_history'
+      using errcode = 'check_violation';
+  end if;
+  return NEW;
+end;
+$$;
+
+create trigger tenancy_adoptions_guard
+  before insert on public.tenancy_adoptions
+  for each row execute function public._tenancy_adoptions_guard();
+
+-- UPDATE: the adoption is testimony. After commit only the review flag and
+-- the audited soft-delete may change; the fail-closed jsonb diff freezes
+-- every other column, including ones added later (incidents pattern).
+-- Resurrection is refused outright: money recorded after a soft-delete would
+-- coexist with the revived adoption, silently bypassing the virgin
+-- invariant. Operator recovery is a fresh adoption, never an un-delete.
+create or replace function public._tenancy_adoptions_freeze()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_mutable constant text[] := array['needs_review', 'deleted_at', 'updated_at'];
+begin
+  if (to_jsonb(NEW) - v_mutable) is distinct from (to_jsonb(OLD) - v_mutable) then
+    raise exception 'adoption facts are frozen; only needs_review and soft-delete may change'
+      using errcode = 'check_violation';
+  end if;
+  if OLD.deleted_at is not null and NEW.deleted_at is null then
+    raise exception 'a soft-deleted adoption cannot be resurrected; re-adopt through adopt_tenancy_history'
+      using errcode = 'check_violation';
+  end if;
+  return NEW;
+end;
+$$;
+
+create trigger tenancy_adoptions_freeze
+  before update on public.tenancy_adoptions
+  for each row execute function public._tenancy_adoptions_freeze();
+
+-- Trigger functions are not application RPCs (incidents pattern).
+revoke all on function public._tenancy_adoptions_guard()
+  from public, anon, authenticated, service_role;
+revoke all on function public._tenancy_adoptions_freeze()
+  from public, anon, authenticated, service_role;
+
 -- ============================================================================
 -- (2) adopt_tenancy_history — the atomic adoption commit
 -- ============================================================================
@@ -196,7 +298,7 @@ declare
   v_pay_total       bigint;
   v_pay_allocs      int;
   v_pay_seen_idx    int[];
-  v_seen_due        date[] := '{}';
+  v_seen_periods    date[] := '{}';
   v_id              uuid;
   v_methods constant text[] :=
     array['cash', 'check', 'ach', 'card', 'zelle_venmo', 'money_order', 'other'];
@@ -248,6 +350,11 @@ begin
      or jsonb_typeof(coalesce(p_payments, '[]'::jsonb)) <> 'array' then
     raise exception 'invalid: charges and payments must be arrays';
   end if;
+  -- Reject, never skip: a malformed deposit silently ignored would return
+  -- success while the deposit went unrecorded.
+  if p_deposit is not null and jsonb_typeof(p_deposit) <> 'object' then
+    raise exception 'invalid: deposit must be a json object';
+  end if;
   v_n_charges := jsonb_array_length(coalesce(p_charges, '[]'::jsonb));
   if v_n_charges > 120 then
     raise exception 'invalid: at most 120 backfilled charges per adoption';
@@ -264,7 +371,7 @@ begin
   end if;
 
   -- 3. Tenancy must exist under the caller's RLS and not be ended.
-  select id, status
+  select id, status, start_date
     into v_tenancy
     from public.tenancies
    where account_id = p_account_id
@@ -305,8 +412,29 @@ begin
   ) then
     raise exception 'conflict: tenancy already has ledger activity';
   end if;
+  -- Checked AFTER the virgin conflicts (those name the more actionable
+  -- problem). Adoption money would otherwise permanently trip the PATCH
+  -- /tenancies start_date guard (409 tenancy_has_money) while the ledger
+  -- contradicts the recorded move-in date. Correcting start_date FIRST is
+  -- cheap now — the timeline is still virgin — and impossible later.
+  if p_schedule_start_date < v_tenancy.start_date then
+    raise exception 'conflict: schedule starts % but the tenancy''s recorded start_date is %; correct the tenancy start_date first',
+      p_schedule_start_date, v_tenancy.start_date;
+  end if;
 
-  -- 5. The schedule. Unanchored (no source instrument): adoption records the
+  -- 5. The adoption row FIRST: its BEFORE INSERT guard re-asserts the virgin
+  --    timeline at the database (nothing is written yet, so the RPC's own
+  --    insert passes), and the owner/manager RLS insert policy vetoes an
+  --    under-privileged caller before any other row exists to roll back.
+  insert into public.tenancy_adoptions
+    (account_id, tenancy_id, adoption_date, opening_balance_cents, currency,
+     balance_basis, needs_review)
+  values
+    (p_account_id, p_tenancy_id, p_adoption_date, p_opening_balance_cents,
+     p_currency, p_balance_basis, p_needs_review)
+  returning id into v_adoption_id;
+
+  -- 6. The schedule. Unanchored (no source instrument): adoption records the
   --    landlord's testimony about existing terms, not a rent CHANGE — the
   --    instrument-anchor requirement stays where eras fork (ADR-0012).
   insert into public.rent_schedules
@@ -317,13 +445,17 @@ begin
      p_due_day, p_schedule_start_date, p_grace_days, p_late_fee_cents)
   returning id into v_schedule_id;
 
-  -- 6. Backfilled rent charges, in input order. due_date bounds make the
+  -- 7. Backfilled rent charges, in input order. due_date bounds make the
   --    backfill incapable of asserting bills the adoption never witnessed:
-  --    nothing before the schedule started, nothing after adoption day. The
-  --    period is DERIVED from due_date exactly the way the generator derives
-  --    its window (period_start = due_date, period_end = +1 month - 1 day),
-  --    so the (source_schedule_id, period_start) dedupe holds structurally in
-  --    both directions — no NULL-period escape, no future-window pre-claim.
+  --    nothing before the schedule started, nothing after adoption day.
+  --
+  --    INVARIANT: the PERIOD is snapped to the schedule's due-day grid — the
+  --    grid window containing due_date — while due_date itself stays the
+  --    landlord's verbatim date. The generator only ever emits grid-aligned
+  --    period_starts, so the (source_schedule_id, period_start) dedupe holds
+  --    for ANY due_date: an off-grid backfill (records dated the 1st under a
+  --    due-day-15 schedule) occupies its true grid window instead of a key
+  --    the cron can't see, which would re-bill the same month.
   for v_elem in
     select value from jsonb_array_elements(coalesce(p_charges, '[]'::jsonb))
   loop
@@ -335,12 +467,15 @@ begin
     if v_due is null or v_due > p_adoption_date or v_due < p_schedule_start_date then
       raise exception 'invalid: every charge due_date must fall between the schedule start and adoption_date';
     end if;
-    if v_due = any (v_seen_due) then
-      raise exception 'invalid: duplicate charge due_date %', v_due;
+    v_pstart := make_date(extract(year from v_due)::int, extract(month from v_due)::int, p_due_day);
+    if v_pstart > v_due then
+      v_pstart := (v_pstart - interval '1 month')::date;
     end if;
-    v_seen_due := v_seen_due || v_due;
-    v_pstart := v_due;
-    v_pend   := (v_due + interval '1 month' - interval '1 day')::date;
+    v_pend := (v_pstart + interval '1 month' - interval '1 day')::date;
+    if v_pstart = any (v_seen_periods) then
+      raise exception 'invalid: two charges land in the same billing period (the month containing %)', v_due;
+    end if;
+    v_seen_periods := v_seen_periods || v_pstart;
     insert into public.charges
       (account_id, tenancy_id, type, amount_cents, currency, due_date,
        period_start, period_end, source_schedule_id, description)
@@ -353,7 +488,7 @@ begin
     v_charge_alloc   := v_charge_alloc || 0::bigint;
   end loop;
 
-  -- 7. Payments with the caller's proposed matching. Sums are pre-validated
+  -- 8. Payments with the caller's proposed matching. Sums are pre-validated
   --    for stable `invalid:` messages; _assert_allocation_integrity still
   --    runs per allocation row as the backstop and any rejection rolls back
   --    the entire adoption.
@@ -369,9 +504,16 @@ begin
     -- +1 day: the comparison date is UTC, but a payment received the evening
     -- of adoption day in a western timezone lands on the NEXT UTC date; a
     -- strict bound would reject the landlord's accurate same-day receipt.
+    -- CONTRACT: a payment inside that slack day appears in ?as_of snapshots
+    -- from its UTC date onward — the platform-wide snapshot rule.
     if v_received is null
        or (v_received at time zone 'utc')::date > p_adoption_date + 1 then
       raise exception 'invalid: every payment received_at must be on or before adoption_date';
+    end if;
+    -- Lower bound, symmetric with charges: a payment predating the schedule
+    -- by more than a month is a transcription typo (wrong year), not history.
+    if (v_received at time zone 'utc')::date < (p_schedule_start_date - interval '1 month')::date then
+      raise exception 'invalid: payment received_at predates the schedule start by more than a month (check the year)';
     end if;
     if v_method is null or v_method <> all (v_methods) then
       raise exception 'invalid: payment method must be one of %', array_to_string(v_methods, ', ');
@@ -428,10 +570,10 @@ begin
     end loop;
   end loop;
 
-  -- 8. Held deposit: deposit charge + payment + full allocation, all dated
+  -- 9. Held deposit: deposit charge + payment + full allocation, all dated
   --    received_on. Deposits stay their own subledger (type='deposit'), so
-  --    the rent totals never absorb them.
-  if p_deposit is not null and jsonb_typeof(p_deposit) = 'object' then
+  --    the rent totals never absorb them. (Shape validated in step 2.)
+  if p_deposit is not null then
     v_amount := (p_deposit->>'amount_cents')::bigint;
     v_due    := (p_deposit->>'received_on')::date;
     v_method := coalesce(p_deposit->>'method', 'other');
@@ -440,6 +582,10 @@ begin
     end if;
     if v_due is null or v_due > p_adoption_date then
       raise exception 'invalid: deposit received_on must be on or before adoption_date';
+    end if;
+    -- Same year-typo guard the payments get.
+    if v_due < (p_schedule_start_date - interval '1 month')::date then
+      raise exception 'invalid: deposit received_on predates the schedule start by more than a month (check the year)';
     end if;
     if v_method <> all (v_methods) then
       raise exception 'invalid: deposit method must be one of %', array_to_string(v_methods, ', ');
@@ -465,16 +611,6 @@ begin
       (p_account_id, v_id, v_deposit_charge, v_amount);
     v_payment_ids := v_payment_ids || v_id;
   end if;
-
-  -- 9. The adoption row itself — last, so its owner/manager insert policy
-  --    vetoes everything above for under-privileged callers in one rollback.
-  insert into public.tenancy_adoptions
-    (account_id, tenancy_id, adoption_date, opening_balance_cents, currency,
-     balance_basis, needs_review)
-  values
-    (p_account_id, p_tenancy_id, p_adoption_date, p_opening_balance_cents,
-     p_currency, p_balance_basis, p_needs_review)
-  returning id into v_adoption_id;
 
   -- 10. Deliberately NO set_config('audit.actor', ...): the audit trigger
   --     attributes every row to the calling user's JWT. Adoption is a human
@@ -513,3 +649,11 @@ notify pgrst, 'reload schema';
 --   invoker security (not definer):
 --   select prosecdef from pg_proc
 --    where proname = 'adopt_tenancy_history';                     -- false
+--   direct-write backstops wired:
+--   select tgname from pg_trigger
+--    where tgrelid = 'public.tenancy_adoptions'::regclass
+--      and tgname in ('tenancy_adoptions_guard',
+--                     'tenancy_adoptions_freeze');                -- 2 rows
+--   period snapping is in the body:
+--   select prosrc like '%v_seen_periods%' from pg_proc
+--    where proname = 'adopt_tenancy_history';                     -- true
