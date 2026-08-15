@@ -240,7 +240,7 @@ export interface DownloadResult {
 }
 
 /**
- * Pulls an attachment's bytes back from storage so the API can stream them
+ * Pulls and buffers an attachment's bytes so the API can return them
  * with the right Content-Disposition + Content-Type. Callers MUST have
  * verified the account membership already (this helper trusts that and
  * scopes by account_id + id).

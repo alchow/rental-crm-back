@@ -5,11 +5,11 @@ import { asJson, nullableRpcArg } from '../supabase/db-types';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 
-// Payments and allocations are immutable evidence. Correct a payment by
-// voiding it and recording a replacement payment; record any fee as a separate
-// charge. Inline allocations are atomic, and _assert_allocation_integrity rejects
-// cross-scope or excessive allocations. Voiding preserves allocations; ledger
-// reads ignore them through payment.voided_at.
+// Corrections preserve financial history: void a payment, record its replacement,
+// and record any fee as a separate charge. This router only appends allocations;
+// _assert_allocation_integrity rejects cross-scope or excessive amounts. Voiding
+// updates payment metadata but preserves allocation rows; ledger reads exclude
+// them through payment.voided_at.
 
 const PaymentMethod = z.enum([
   'cash',

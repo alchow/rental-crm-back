@@ -14,10 +14,10 @@ import {
   MAX_BYTES,
 } from '../admin/storage';
 
-// Attachment downloads stay behind the API. Each request rechecks membership,
-// forces the server-approved Content-Type, and sets Content-Disposition to
-// attachment, preventing stored HTML/SVG execution. The API intentionally
-// streams the bytes rather than granting durable access through signed URLs.
+// SECURITY DATA FLOW: JWT -> account guard (positive cache allowed) ->
+// account-scoped service-role lookup -> storage blob -> buffered response.
+// Keeping downloads behind the API avoids durable signed URLs and forces safe
+// Content-Type, attachment disposition, no-store, nosniff, and CSP headers.
 
 const Attachment = z
   .object({
@@ -280,8 +280,7 @@ attachmentsApp.get('/accounts/:accountId/attachments/:id/download', async (c) =>
       'content-type': dl.mimeType,
       'content-disposition': `attachment; filename="${dl.filename}"`,
       'content-length': String(dl.bytes.byteLength),
-      // Block downstream caches from sharing this URL's response across
-      // sessions. Membership is checked per-request.
+      // Block downstream caches from sharing this URL's response across sessions.
       'cache-control': 'private, no-store',
       // Make sure browsers obey our Content-Type strictly (no MIME sniffing
       // an SVG-disguised-as-png into stored-XSS).
