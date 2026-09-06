@@ -3,7 +3,8 @@
 -- SCOPE: three nullable columns on public.leases (voided_at, void_reason,
 -- corrects_lease_id) with their constraints and index; the lease guard
 -- rewritten around lifecycle status; the rent-schedule anchor guard and
--- change_tenancy_rent refuse draft/voided leases; a replace_lease RPC that
+-- change_tenancy_rent refuse draft/voided leases; detect_rent_drift and the
+-- rent-change supersede step skip voided leases; a replace_lease RPC that
 -- voids a lease, creates its correction and re-points live schedules in one
 -- transaction. No RLS change.
 --
@@ -184,9 +185,12 @@ begin
   -- (1) serialize every schedule write for this tenancy with the RPC.
   perform pg_advisory_xact_lock(hashtextextended('rent_change:' || NEW.tenancy_id::text, 0));
 
-  -- (2a) lease anchor must belong to the SAME tenancy (composite FK only proves
-  --      same account) and be in force. check_violation -> route maps to 400.
-  if NEW.source_lease_id is not null then
+  -- (2a) a new or changed lease anchor must belong to the SAME tenancy
+  --      (composite FK only proves same account) and be in force; a lease that
+  --      later leaves force does not lock its schedule. check_violation -> 400.
+  if NEW.source_lease_id is not null
+     and (TG_OP = 'INSERT' or NEW.source_lease_id is distinct from OLD.source_lease_id)
+  then
     if not exists (
       select 1
         from public.leases l
@@ -225,7 +229,8 @@ $$;
 -- (4) change_tenancy_rent refuses a voided source lease
 -- ============================================================================
 --
--- Same signature and body as before; step 5 now also reads voided_at.
+-- Same signature and body as before; step 5 also reads voided_at and step 10
+-- leaves voided leases alone.
 
 create or replace function public.change_tenancy_rent(
   p_account_id       uuid,
@@ -520,6 +525,7 @@ begin
        where account_id = p_account_id
          and tenancy_id = p_tenancy_id
          and status     = 'active'
+         and voided_at is null
          and deleted_at is null
          and id <> p_source_lease_id
       returning id
@@ -535,6 +541,80 @@ begin
 
   -- 12. Return exactly one summary row.
   return query select v_schedule_id, v_ended, v_superseded, v_voided;
+end;
+$$;
+
+-- ============================================================================
+-- (4b) detect_rent_drift ignores voided leases
+-- ============================================================================
+--
+-- Same signature and body as before; a voided lease is history, not drift.
+
+create or replace function public.detect_rent_drift(p_account_id uuid)
+returns table (
+  o_tenancy_id           uuid,
+  o_lease_id             uuid,
+  o_lease_amount_cents   bigint,
+  o_lease_currency       text,
+  o_schedule_total_cents bigint,
+  o_schedule_currencies  text[],
+  o_auto_charge_enabled  boolean
+)
+language plpgsql
+stable
+security invoker
+set search_path = public
+as $$
+begin
+  -- Pin the session to UTC so current_date (the open-schedule cutoff below) is
+  -- deterministic regardless of the caller's TimeZone -- same determinism
+  -- rationale generate_rent_charges documents. Transaction-local, never leaks.
+  perform set_config('timezone', 'UTC', true);
+
+  return query
+    select
+      t.id                                    as o_tenancy_id,
+      l.id                                    as o_lease_id,
+      l.rent_amount_cents                     as o_lease_amount_cents,
+      l.rent_currency                         as o_lease_currency,
+      coalesce(sch.total_cents, 0)            as o_schedule_total_cents,
+      coalesce(sch.currencies, '{}'::text[])  as o_schedule_currencies,
+      a.auto_charge_enabled                   as o_auto_charge_enabled
+    from public.leases l
+    join public.tenancies t
+      on t.account_id = l.account_id
+     and t.id         = l.tenancy_id
+    join public.accounts a
+      on a.id = l.account_id
+    left join lateral (
+      select
+        sum(s.amount_cents)::bigint      as total_cents,  -- sum() is numeric; the OUT column is bigint
+        array_agg(distinct s.currency)   as currencies
+      from public.rent_schedules s
+      where s.account_id = l.account_id
+        and s.tenancy_id = l.tenancy_id
+        and s.kind       = 'rent'
+        and s.deleted_at is null
+        and s.start_date <= current_date
+        and (s.end_date is null or s.end_date >= current_date)
+    ) sch on true
+    where l.account_id = p_account_id
+      and l.status     = 'active'
+      and l.voided_at is null
+      and l.deleted_at is null
+      and t.deleted_at is null
+      and t.status <> 'ended'
+      and (
+        -- amount drift (an empty schedule set totals 0, which drifts from any
+        -- non-zero lease amount)
+        coalesce(sch.total_cents, 0) <> l.rent_amount_cents
+        -- currency drift: any open-schedule currency differs from the lease's
+        or exists (
+          select 1
+            from unnest(coalesce(sch.currencies, '{}'::text[])) c
+           where c <> l.rent_currency
+        )
+      );
 end;
 $$;
 
@@ -684,11 +764,16 @@ notify pgrst, 'reload schema';
 --     from pg_proc where proname = '_leases_guard';                -- true
 --   select count(*) from pg_proc
 --    where proname = '_reject_anchored_lease_mutation';           -- 0
---   anchors refuse draft/voided leases:
---   select prosrc like '%non-draft%' from pg_proc
---    where proname = '_rent_schedules_guard';                     -- true
---   select count(*), bool_and(prosrc like '%source lease is voided%')
+--   anchors refuse draft/voided leases, re-checked only when the anchor changes:
+--   select prosrc like '%non-draft%'
+--          and prosrc like '%is distinct from OLD.source_lease_id%'
+--     from pg_proc where proname = '_rent_schedules_guard';       -- true
+--   select count(*), bool_and(prosrc like '%source lease is voided%'
+--       and prosrc ~ 'status\s+=\s+''active''\s+and voided_at is null')
 --     from pg_proc where proname = 'change_tenancy_rent';         -- 1, true
+--   voided leases are not drift:
+--   select prosrc like '%voided_at is null%' from pg_proc
+--    where proname = 'detect_rent_drift';                         -- true
 --   replace_lease is an invoker RPC for members only:
 --   select prosecdef from pg_proc where proname = 'replace_lease'; -- false
 --   select has_function_privilege('authenticated',

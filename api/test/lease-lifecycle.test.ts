@@ -16,7 +16,9 @@
 //    5 void: reason required, the row stays readable, re-void is 404, a later
 //      PATCH is lease_voided.
 //    6 void of a lease anchoring a live schedule is instrument_anchored until
-//      the schedule is gone.
+//      the schedule is gone; a schedule whose anchor has since been superseded
+//      still ends and deletes (the guard re-reads the lease only when
+//      source_lease_id itself changes).
 //    7 replace an unanchored lease: old voided, replacement corrects it.
 //    8 replace an anchored lease: the same rent repoints the schedule and
 //      leaves billing untouched; a different rent is schedule_conflict.
@@ -27,6 +29,9 @@
 //   12 anchoring: neither a draft nor a voided lease may anchor a schedule or a
 //      rent change; a draft lease anchoring a rent change is activated by it.
 //   13 isolation: account B cannot void or replace an account A lease.
+//   14 void-then-renew: a rent change never supersedes an already-voided lease.
+//   15 drift: detect_rent_drift ignores a voided lease, and a replacement that
+//      matches its schedule raises no drift of its own.
 //
 // Bootstraps through test/helpers/integration.ts (env, api client, check
 // harness). Needs the live local Supabase stack with 20260810000002 applied.
@@ -48,9 +53,12 @@ const { _resetEnvCacheForTests } = await import('../src/env');
 _resetEnvCacheForTests();
 const { _resetJwksCacheForTests } = await import('../src/middleware/auth');
 _resetJwksCacheForTests();
+const { _resetAdminClientForTests, getAdminClient } = await import('../src/admin/supabase-admin');
+_resetAdminClientForTests();
 const { buildApp } = await import('../src/app');
 
 const app = buildApp();
+const admin = getAdminClient();
 const api = createApiClient(app);
 const { failures, check } = createCheckHarness();
 
@@ -230,10 +238,17 @@ async function main(): Promise<void> {
   }
 
   // A lease-anchored rent change supersedes the tenancy's prior active lease.
-  async function supersededLease(): Promise<string> {
+  // anchorPrior points the outgoing schedule at that prior lease, so the era it
+  // leaves behind is anchored to a superseded instrument.
+  async function supersededFixture(
+    opts: { anchorPrior?: boolean } = {},
+  ): Promise<{ prior: string; oldSchedule: string; successorSchedule: string }> {
     const tid = await newTenancy();
     const prior = await newLease(tid, { status: 'active' });
-    await newSchedule(tid);
+    const oldSchedule = await newSchedule(
+      tid,
+      opts.anchorPrior === true ? { sourceLeaseId: prior.id } : {},
+    );
     const renewal = await newLease(tid, { status: 'draft', rent: 250000 });
     const r = await rentChange(tid, {
       amount_cents: 250000,
@@ -243,7 +258,11 @@ async function main(): Promise<void> {
       source_lease_id: renewal.id,
     });
     assertStatus(r, 201, 'rent change');
-    return prior.id;
+    return {
+      prior: prior.id,
+      oldSchedule: oldSchedule.id,
+      successorSchedule: (r.body as { rent_schedule: Schedule }).rent_schedule.id,
+    };
   }
 
   // =========================================================================
@@ -310,9 +329,9 @@ async function main(): Promise<void> {
       'expired -> active',
     );
 
-    const superseded = await supersededLease();
+    const superseded = await supersededFixture();
     expectError(
-      await patchA(`/leases/${superseded}`, { term_end: '2027-06-30' }),
+      await patchA(`/leases/${superseded.prior}`, { term_end: '2027-06-30' }),
       409,
       'lease_superseded',
       'term_end on a superseded lease',
@@ -410,6 +429,21 @@ async function main(): Promise<void> {
       200,
       'void after unanchoring',
     );
+
+    // The reverse direction: a lease leaving force does not freeze the schedule
+    // it anchored. The guard re-reads the lease only when source_lease_id
+    // changes, so ending and deleting a spent era still works.
+    const spent = await supersededFixture({ anchorPrior: true });
+    assertStatus(
+      await postA(`/rent-schedules/${spent.oldSchedule}/end`, { end_date: '2026-07-31' }),
+      200,
+      'end a schedule anchored to a superseded lease',
+    );
+    assertStatus(
+      await deleteA(`/rent-schedules/${spent.successorSchedule}`),
+      204,
+      'delete the successor schedule',
+    );
   });
 
   // =========================================================================
@@ -495,7 +529,8 @@ async function main(): Promise<void> {
   // 9. Replace keeps the status: a superseded lease begets a superseded one.
   // =========================================================================
   await check('9 replace: a superseded lease is replaced by a superseded lease', async () => {
-    const r = await replaceLease(await supersededLease(), 'scanned the wrong page', 200000);
+    const fixture = await supersededFixture();
+    const r = await replaceLease(fixture.prior, 'scanned the wrong page', 200000);
     assertStatus(r, 200, 'replace a superseded lease');
     const res = r.body as ReplaceResult;
     assert(
@@ -627,6 +662,69 @@ async function main(): Promise<void> {
     });
     expectError(replaced, 404, 'not_found', "B replacing A's lease");
     assert((await getLease(lease.id)).voided_at === null, "A's lease was mutated");
+  });
+
+  // =========================================================================
+  // 14. A voided lease is out of the rent change's reach entirely.
+  // =========================================================================
+  await check('14 void-then-renew: a rent change never supersedes a voided lease', async () => {
+    const tid = await newTenancy();
+    const outgoing = await newLease(tid, { status: 'active' });
+    await newSchedule(tid);
+    assertStatus(
+      await voidLease(outgoing.id, { void_reason: 'never signed' }),
+      200,
+      'void the outgoing lease',
+    );
+
+    const renewal = await newLease(tid, { status: 'draft', rent: 250000 });
+    const r = await rentChange(tid, {
+      amount_cents: 250000,
+      currency: 'USD',
+      effective_date: '2026-09-01',
+      due_day: 1,
+      source_lease_id: renewal.id,
+    });
+    assertStatus(r, 201, 'rent change after the void');
+    const superseded = (r.body as { superseded_lease_ids: string[] }).superseded_lease_ids;
+    assert(
+      !superseded.includes(outgoing.id),
+      `a voided lease was superseded: ${JSON.stringify(superseded)}`,
+    );
+    const after = await getLease(outgoing.id);
+    assert(
+      after.status === 'active' && after.voided_at !== null,
+      `the voided lease was rewritten: ${JSON.stringify(after)}`,
+    );
+  });
+
+  // =========================================================================
+  // 15. Drift is a live-lease report: a voided lease is not a contract.
+  // =========================================================================
+  await check('15 drift: detect_rent_drift skips a voided lease and its replacement', async () => {
+    const tid = await newTenancy();
+    const original = await newLease(tid, { status: 'active' });
+    const schedule = await newSchedule(tid, { sourceLeaseId: original.id });
+
+    // Unanchor first: replacing at a different rent while the schedule still
+    // names the lease is the schedule_conflict of case 8.
+    assertStatus(await deleteA(`/rent-schedules/${schedule.id}`), 204, 'delete schedule');
+    const replaced = await replaceLease(original.id, 'rent typed wrong', 250000);
+    assertStatus(replaced, 200, 'replace');
+    const replacement = (replaced.body as ReplaceResult).replacement;
+    await newSchedule(tid, { amount: 250000 });
+
+    const drift = await admin.rpc('detect_rent_drift', { p_account_id: A.accountId });
+    assert(!drift.error, `detect_rent_drift: ${drift.error?.message}`);
+    const rows = (drift.data as Array<{ o_lease_id: string }> | null) ?? [];
+    assert(
+      !rows.some((row) => row.o_lease_id === original.id),
+      'a voided lease must not be reported as drifting',
+    );
+    assert(
+      !rows.some((row) => row.o_lease_id === replacement.id),
+      'the replacement matches its schedule and must not drift',
+    );
   });
 }
 

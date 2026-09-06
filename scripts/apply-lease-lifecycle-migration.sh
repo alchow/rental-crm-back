@@ -15,8 +15,8 @@
 #
 # SAFETY: three nullable columns, two CHECKs, one FK and one index are ADDED to
 # public.leases; the anchoring trigger/function are dropped and replaced by the
-# lifecycle guard; _rent_schedules_guard and change_tenancy_rent are replaced
-# in place (same signatures); replace_lease is new. No row changes, nothing is
+# lifecycle guard; _rent_schedules_guard, change_tenancy_rent and
+# detect_rent_drift are replaced in place (same signatures); replace_lease is new. No row changes, nothing is
 # backfilled, no existing grant moves. NOT blindly re-runnable: `add column` has
 # no if-not-exists guard, so a partial apply must be repaired (un-record the
 # version, drop the partial objects, re-push) rather than re-pushed over; the
@@ -156,15 +156,20 @@ select
      from pg_proc
     where pronamespace = 'public'::regnamespace and proname = '_leases_guard')
     as guard_body,                       -- expect 1: lock key + all three rules
-  (select (prosrc like '%non-draft%')::int from pg_proc
+  (select (prosrc like '%non-draft%'
+           and prosrc like '%is distinct from OLD.source_lease_id%')::int from pg_proc
      where pronamespace = 'public'::regnamespace and proname = '_rent_schedules_guard')
-    as schedule_guard_body,              -- expect 1: draft/voided anchors refused
+    as schedule_guard_body,              -- expect 1: draft/voided anchors refused, only when the anchor changes
   (select count(*) from pg_proc
      where pronamespace = 'public'::regnamespace and proname = 'change_tenancy_rent')::int
     as rent_change_overloads,            -- expect 1
-  (select bool_and(prosrc like '%source lease is voided%')::int from pg_proc
+  (select bool_and(prosrc like '%source lease is voided%'
+                   and prosrc ~ 'status\s+=\s+''active''\s+and voided_at is null')::int from pg_proc
      where pronamespace = 'public'::regnamespace and proname = 'change_tenancy_rent')
-    as rent_change_body,                 -- expect 1
+    as rent_change_body,                 -- expect 1: voided source refused, voided leases never superseded
+  (select (prosrc like '%voided_at is null%')::int from pg_proc
+     where pronamespace = 'public'::regnamespace and proname = 'detect_rent_drift')
+    as drift_body,                       -- expect 1: voided leases are not drift
   (select count(*) from pg_proc
      where pronamespace = 'public'::regnamespace and proname = 'replace_lease')::int
     as replace_lease_present,            -- expect 1
@@ -203,6 +208,7 @@ SQL
           Number(v.schedule_guard_body) === 1 &&
           Number(v.rent_change_overloads) === 1 &&
           Number(v.rent_change_body) === 1 &&
+          Number(v.drift_body) === 1 &&
           Number(v.replace_lease_present) === 1 &&
           Number(v.invoker_security) === 1 &&
           Number(v.authenticated_can_execute) === 1 &&

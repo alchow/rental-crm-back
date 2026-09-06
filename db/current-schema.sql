@@ -2843,9 +2843,12 @@ begin
   -- (1) serialize every schedule write for this tenancy with the RPC.
   perform pg_advisory_xact_lock(hashtextextended('rent_change:' || NEW.tenancy_id::text, 0));
 
-  -- (2a) lease anchor must belong to the SAME tenancy (composite FK only proves
-  --      same account) and be in force. check_violation -> route maps to 400.
-  if NEW.source_lease_id is not null then
+  -- (2a) a new or changed lease anchor must belong to the SAME tenancy
+  --      (composite FK only proves same account) and be in force; a lease that
+  --      later leaves force does not lock its schedule. check_violation -> 400.
+  if NEW.source_lease_id is not null
+     and (TG_OP = 'INSERT' or NEW.source_lease_id is distinct from OLD.source_lease_id)
+  then
     if not exists (
       select 1
         from public.leases l
@@ -5127,6 +5130,7 @@ begin
        where account_id = p_account_id
          and tenancy_id = p_tenancy_id
          and status     = 'active'
+         and voided_at is null
          and deleted_at is null
          and id <> p_source_lease_id
       returning id
@@ -6888,6 +6892,7 @@ begin
     ) sch on true
     where l.account_id = p_account_id
       and l.status     = 'active'
+      and l.voided_at is null
       and l.deleted_at is null
       and t.deleted_at is null
       and t.status <> 'ended'

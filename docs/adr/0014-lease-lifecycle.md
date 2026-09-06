@@ -106,14 +106,14 @@ diff rather than being coded: echo-back tolerance (a read-modify-write client
 re-sending the stored rent changes nothing, so nothing raises) and uniform
 enforcement across every write path, including direct DB access.
 
-| Code                  | HTTP | Raised when                                                                              | Client recovery                                          |
-| --------------------- | ---- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| `lease_executed`      | 409  | frozen field or backward status transition on an `active`/`expired` lease                | rent-changes for a rent change; replace for a correction |
-| `lease_voided`        | 409  | any change to a voided lease                                                             | terminal; nothing to offer                               |
-| `lease_superseded`    | 409  | any change to a `superseded` lease other than voiding it (directly or through `replace`) | offer create-new-lease (unchanged from ADR-0012)         |
-| `instrument_anchored` | 409  | void of a lease anchoring a live schedule                                                | delete/end the schedule first (ADR-0012 §1 recipes)      |
-| `schedule_conflict`   | 409  | replace whose rent differs from an anchored schedule's                                   | offer rent-changes instead                               |
-| `invalid_request`     | 400  | `corrects_lease_id` naming a non-voided lease, or one from another tenancy               | void the target first                                    |
+| Code                  | HTTP | Raised when                                                                              | Client recovery                                                      |
+| --------------------- | ---- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `lease_executed`      | 409  | frozen field or backward status transition on an `active`/`expired` lease                | rent-changes for a rent change; replace for a correction             |
+| `lease_voided`        | 409  | any change to a voided lease                                                             | terminal; nothing to offer                                           |
+| `lease_superseded`    | 409  | any change to a `superseded` lease other than voiding it (directly or through `replace`) | offer create-new-lease (unchanged from ADR-0012)                     |
+| `instrument_anchored` | 409  | void of a lease anchoring a live schedule                                                | delete the schedule first (ending it keeps the anchor), or `replace` |
+| `schedule_conflict`   | 409  | replace whose rent differs from an anchored schedule's                                   | offer rent-changes instead                                           |
+| `invalid_request`     | 400  | `corrects_lease_id` naming a non-voided lease, or one from another tenancy               | void the target first                                                |
 
 ## Rejected alternatives
 
