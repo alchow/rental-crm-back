@@ -122,7 +122,17 @@ Balances are derived from immutable/reversible facts rather than mutable total
 columns. Rent changes are anchored to lease/notice instruments and execute
 through database transactions that preserve schedule and charge integrity, and
 the successor era inherits the predecessor's billing day, end bound, and
-late-fee policy.
+late-fee policy. A schedule may only anchor to a lease that is neither draft
+nor voided.
+
+Lease mutability is gated by lease status, not by whether a schedule anchors
+the lease (ADR-0014): a draft is freely editable, an executed lease freezes
+`term_start` and its rent terms, a superseded one is read-only. Leases are
+never deleted — `POST /leases/{id}/void` records a reason, and
+`POST /leases/{id}/replace` atomically voids a lease, creates its replacement
+carrying `corrects_lease_id`, and re-points the live schedules that cited the
+old one. A single `leases_guard` trigger enforces all of it, so direct
+database writes obey the same rules as the API.
 
 A schedule's late-fee policy (`grace_days`, `late_fee_cents`) is recorded, not
 enforced: no server process reads it. It lets a client propose a fee that a

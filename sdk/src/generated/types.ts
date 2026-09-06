@@ -3792,7 +3792,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List leases (filterable by tenancy_id and status) */
+        /**
+         * List leases (filterable by tenancy_id and status)
+         * @description Voided leases are returned (voided_at/void_reason set). There is no delete: a lease leaves service by POST .../void with a reason.
+         */
         get: {
             parameters: {
                 query?: {
@@ -3859,7 +3862,10 @@ export interface paths {
             };
         };
         put?: never;
-        /** Create a lease attached to a tenancy */
+        /**
+         * Create a lease attached to a tenancy
+         * @description corrects_lease_id, when given, must name a voided lease of the same tenancy (400 otherwise). For an atomic correction use POST .../leases/{id}/replace.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -4015,88 +4021,12 @@ export interface paths {
         };
         put?: never;
         post?: never;
-        /**
-         * Soft-delete a lease
-         * @description Rejected 409 instrument_anchored while the lease anchors a live rent schedule (it is the instrument of record for that billing era). Deleting the schedule first (DELETE /rent-schedules/{id}, never-billed only) releases the block.
-         */
-        delete: {
-            parameters: {
-                query?: never;
-                header: {
-                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
-                    "Idempotency-Key": string;
-                };
-                path: {
-                    accountId: string;
-                    id: string;
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description deleted */
-                204: {
-                    headers: {
-                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
-                        "Idempotency-Replay"?: "true";
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-                /** @description invalid request */
-                400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description not found / not a member */
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
-                409: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description server error */
-                500: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
-                503: {
-                    headers: {
-                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
-                        "Retry-After"?: number;
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-            };
-        };
+        delete?: never;
         options?: never;
         head?: never;
         /**
          * Update a lease (partial)
-         * @description term_end, deposit_*, document and allowed status transitions stay editable on every lease, including one that anchors a live rent schedule (anchoring blocks only soft-delete). Rent terms are immutable everywhere: a differing rent_amount_cents/rent_currency is rejected 400 (unchanged echoed values are tolerated) — use the rent-changes endpoint. Any transition out of status=superseded is rejected 409 lease_superseded.
+         * @description Mutability by status — draft: every field; active/expired (executed): term_end, deposit_*, document, status; superseded: nothing; voided: nothing. Status only moves forward (draft→active|expired|superseded, active→expired|superseded). Re-sending an unchanged value is a no-op. Refusals: 409 lease_executed (a differing term_start/rent_amount_cents/rent_currency or a backward status on an executed lease — record a rent change via rent-changes, or a correction via replace), 409 lease_superseded, 409 lease_voided; 400 on unknown fields or CHECK violations (e.g. term_end before term_start).
          */
         patch: {
             parameters: {
@@ -4177,6 +4107,202 @@ export interface paths {
                 };
             };
         };
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/leases/{id}/void": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Void a lease
+         * @description Sets voided_at and void_reason; the row stays readable and accepts no further change. Voiding does not stop billing: rent schedules keep emitting charges. 409 instrument_anchored while a live rent schedule names the lease as source_lease_id — use replace, or delete that schedule first. 404 when the lease is missing or already voided.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["VoidLeaseBody"];
+                };
+            };
+            responses: {
+                /** @description voided */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Lease"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/leases/{id}/replace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Void a lease and create its corrected replacement atomically
+         * @description Voids the lease with void_reason, creates the replacement from `lease` (same tenancy and status, corrects_lease_id = this lease), and re-points live rent schedules anchored on it. 409 schedule_conflict when an anchored schedule bills a different rent than the replacement (void its charges, delete the schedule, replace, then record a rent change); 409 lease_voided when already voided; 400 on invalid lease fields.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ReplaceLeaseBody"];
+                };
+            };
+            responses: {
+                /** @description replaced */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReplaceLeaseResult"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/v1/accounts/{accountId}/notices": {
@@ -18111,6 +18237,10 @@ export interface components {
             };
             /** @enum {string} */
             status: "draft" | "active" | "expired" | "superseded";
+            voided_at: string | null;
+            void_reason: string | null;
+            /** Format: uuid */
+            corrects_lease_id: string | null;
             created_at: string;
             updated_at: string;
             deleted_at: string | null;
@@ -18133,9 +18263,14 @@ export interface components {
             };
             /** @enum {string} */
             status: "draft" | "active" | "expired" | "superseded";
+            /** Format: uuid */
+            corrects_lease_id?: string;
         };
         PatchLeaseBody: {
+            term_start?: string;
             term_end?: string | null;
+            rent_amount_cents?: number;
+            rent_currency?: string;
             deposit_amount_cents?: number;
             deposit_currency?: string | null;
             document?: {
@@ -18143,6 +18278,29 @@ export interface components {
             };
             /** @enum {string} */
             status?: "draft" | "active" | "expired" | "superseded";
+        };
+        VoidLeaseBody: {
+            void_reason: string;
+        };
+        ReplaceLeaseResult: {
+            voided: components["schemas"]["Lease"];
+            replacement: components["schemas"]["Lease"];
+            repointed_schedule_ids: string[];
+        };
+        ReplaceLeaseBody: {
+            void_reason: string;
+            lease: {
+                term_start: string;
+                term_end?: string | null;
+                rent_amount_cents: number;
+                rent_currency: string;
+                /** @default 0 */
+                deposit_amount_cents: number;
+                deposit_currency?: string | null;
+                document?: {
+                    [key: string]: unknown;
+                };
+            };
         };
         /** @enum {string|null} */
         NoticeClass: "rent_change" | "written_warning" | "cure_or_quit" | "nonpayment_demand" | "other" | null;

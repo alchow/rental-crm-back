@@ -17,7 +17,8 @@
 //       notice -> 404; ended tenancy -> 409; future-dated conflict -> 409.
 //   (D) Generator interplay: a change effective next period bills the NEW
 //       amount off the NEW schedule; the ended schedule bills nothing.
-//   (E) Lease PATCH guard: a rent edit is 400; a term_end edit still 200.
+//   (E) Lease PATCH guard: a rent edit on an executed lease is 409
+//       lease_executed; a term_end edit still 200.
 //   (F) Drift: detect_rent_drift flags a lease/schedule mismatch, and a
 //       rent-change that reconciles them clears it.
 //   (G) RLS isolation: an account-B principal cannot drive an account-A change.
@@ -34,11 +35,11 @@
 //   F2 end-bound inheritance -- the successor inherits a bounded schedule's
 //      end_date rather than silently going open-ended.
 //   F5 echo-back tolerance -- a read-modify-write PATCH re-sending UNCHANGED
-//      rent values is 200; a changed value is the 400 pointer.
+//      rent values is 200; a changed value is 409 lease_executed.
 //   F6 unserved notice -- anchoring to a notice without served_at -> 409.
 //   F7 anchored notice locked -- PATCH/DELETE of an anchoring notice -> 409.
 //   F8 cross-tenancy anchor on a direct schedule create -> 400.
-//   F9 superseded lease resurrect -> 409; anchor-lease delete -> 409.
+//   F9 superseded lease resurrect -> 409; anchor-lease void -> 409.
 //
 // Mirrors auto-charge.test.ts exactly (same env bootstrap, getAdminClient,
 // check()). Needs the live local Supabase stack (SUPABASE_URL etc. resolved
@@ -587,21 +588,21 @@ async function main(): Promise<void> {
   // =========================================================================
   // (E) Lease PATCH guard
   // =========================================================================
-  await check('lease PATCH: rent_amount_cents -> 400 with pointer message', async () => {
+  await check('lease PATCH: rent_amount_cents on an executed lease -> 409', async () => {
     const tid = await newTenancy();
     const lease = await newLease(tid, { status: 'active', rent: 200000 });
     // A realistic "old client" body: a valid patchable field alongside the rent
-    // edit. Without the handler guard the term_end would apply and the rent be
-    // silently stripped (a no-op); the guard turns that into an explicit 400.
+    // edit. The DB guard diffs NEW against OLD, so the changed frozen column
+    // refuses the whole statement instead of letting the term_end land alone.
     const r = await patchA(`/leases/${lease.id}`, {
       rent_amount_cents: 999000,
       term_end: '2027-06-30',
     });
-    if (r.status !== 400)
-      throw new Error(`expected 400, got ${r.status} ${JSON.stringify(r.body)}`);
-    const msg = (r.body as { error?: { message?: string } })?.error?.message ?? '';
-    if (!/rent terms are immutable/i.test(msg)) {
-      throw new Error(`expected immutability message, got: ${msg}`);
+    if (r.status !== 409)
+      throw new Error(`expected 409, got ${r.status} ${JSON.stringify(r.body)}`);
+    const code = (r.body as { error?: { code?: string } })?.error?.code;
+    if (code !== 'lease_executed') {
+      throw new Error(`expected code lease_executed, got ${code}`);
     }
     // The rent must be unchanged.
     const after = await getLease(lease.id);
@@ -1184,7 +1185,7 @@ async function main(): Promise<void> {
   // =========================================================================
   // (F9) Superseded lease is a historical record; the anchor lease is locked.
   // =========================================================================
-  await check('superseded lease resurrect -> 409; anchor lease delete -> 409', async () => {
+  await check('superseded lease resurrect -> 409; anchor lease void -> 409', async () => {
     const tid = await newTenancy();
     const v1 = await newLease(tid, { status: 'active', rent: 200000 });
     await newSchedule(tid, { amount: 200000, dueDay: 1 });
@@ -1209,22 +1210,20 @@ async function main(): Promise<void> {
       throw new Error(`expected resurrect code lease_superseded, got ${resCode}`);
 
     // v2 now anchors the successor schedule; it is the instrument of record and
-    // cannot be deleted.
-    const del = await api('DELETE', `/v1/accounts/${A.accountId}/leases/${v2.id}`, {
-      token: A.accessToken,
-    });
-    if (del.status !== 409)
-      throw new Error(`expected delete 409, got ${del.status} ${JSON.stringify(del.body)}`);
-    const delCode = (del.body as { error?: { code?: string } })?.error?.code;
-    if (delCode !== 'instrument_anchored')
-      throw new Error(`expected delete code instrument_anchored, got ${delCode}`);
+    // cannot be voided (there is no lease DELETE).
+    const voided = await postA(`/leases/${v2.id}/void`, { void_reason: 'mistaken renewal' });
+    if (voided.status !== 409)
+      throw new Error(`expected void 409, got ${voided.status} ${JSON.stringify(voided.body)}`);
+    const voidCode = (voided.body as { error?: { code?: string } })?.error?.code;
+    if (voidCode !== 'instrument_anchored')
+      throw new Error(`expected void code instrument_anchored, got ${voidCode}`);
   });
 
   // =========================================================================
   // (F5) Echo-back tolerance: unchanged rent values on a read-modify-write
-  // PATCH are tolerated; a genuinely changed value is the 400 pointer.
+  // PATCH are tolerated; a genuinely changed value is 409 lease_executed.
   // =========================================================================
-  await check('echo-back tolerance: unchanged rent -> 200, changed rent -> 400', async () => {
+  await check('echo-back tolerance: unchanged rent -> 200, changed rent -> 409', async () => {
     const tid = await newTenancy();
     const lease = await newLease(tid, { status: 'active', rent: 200000 });
     const got = await getLease(lease.id);
@@ -1241,24 +1240,25 @@ async function main(): Promise<void> {
     if ((echo.body as { term_end: string }).term_end !== '2027-06-30')
       throw new Error(`term_end not updated: ${(echo.body as { term_end: string }).term_end}`);
 
-    // A genuinely different rent value alongside another field -> the handler
-    // guard fires with the 400 pointer message.
+    // A genuinely different rent value alongside another field -> the DB guard
+    // refuses the frozen column on an executed lease.
     const bad = await patchA(`/leases/${lease.id}`, {
       term_end: '2027-07-31',
       rent_amount_cents: 300000,
     });
-    if (bad.status !== 400)
-      throw new Error(`expected 400, got ${bad.status} ${JSON.stringify(bad.body)}`);
-    const msg = (bad.body as { error?: { message?: string } })?.error?.message ?? '';
-    if (!/rent terms are immutable/i.test(msg))
-      throw new Error(`expected immutability message, got: ${msg}`);
+    if (bad.status !== 409)
+      throw new Error(`expected 409, got ${bad.status} ${JSON.stringify(bad.body)}`);
+    const badCode = (bad.body as { error?: { code?: string } })?.error?.code;
+    if (badCode !== 'lease_executed')
+      throw new Error(`expected code lease_executed, got ${badCode}`);
 
-    // A body containing ONLY rent keys never reaches the handler: zod strips
-    // the unknown keys, the empty remainder fails the at-least-one-field
-    // refine, and the request 400s with the generic validation envelope. Still
-    // a loud block (never a silent no-op) -- just a less specific message.
+    // rent_amount_cents is a real patch field now (draft leases edit it), so a
+    // rent-only body reaches the guard rather than zod's at-least-one refine.
     const rentOnly = await patchA(`/leases/${lease.id}`, { rent_amount_cents: 300000 });
-    if (rentOnly.status !== 400) throw new Error(`expected rent-only 400, got ${rentOnly.status}`);
+    if (rentOnly.status !== 409) throw new Error(`expected rent-only 409, got ${rentOnly.status}`);
+    const rentOnlyCode = (rentOnly.body as { error?: { code?: string } })?.error?.code;
+    if (rentOnlyCode !== 'lease_executed')
+      throw new Error(`expected rent-only code lease_executed, got ${rentOnlyCode}`);
 
     // And nothing changed on the row.
     const after = await getLease(lease.id);

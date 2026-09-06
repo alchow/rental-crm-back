@@ -97,6 +97,10 @@
     { "script": "test:auto-charge", "description": "Automatic rent charging." },
     { "script": "test:rent-changes", "description": "Instrument-anchored rent changes." },
     {
+      "script": "test:lease-lifecycle",
+      "description": "Lease lifecycle: draft edits, executed freeze, void, replace."
+    },
+    {
       "script": "test:adoption",
       "description": "Tenancy adoption: atomic backfill and opening balance."
     },
