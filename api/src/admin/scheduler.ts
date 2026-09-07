@@ -43,17 +43,24 @@ export async function runJob(job: ScheduledJob): Promise<JobRunRecord> {
   const t0 = Date.now();
   const record: JobRunRecord = { started_at: new Date(t0).toISOString(), ok: null, ms: null };
   lastRuns.set(job.name, record);
+  let err: unknown;
   try {
     const result = await withDeadline(job.run(), RUN_DEADLINE_MS);
     record.ok = !(job.failed?.(result) ?? false);
-  } catch (err) {
+  } catch (e) {
+    err = e;
     record.ok = false;
-    log.error({ event: 'job_failed', job: job.name, err }, `${job.name} threw`);
   }
   record.ms = Date.now() - t0;
-  // Each runner logs its own result; this line is the operational trace.
+  // Each runner logs its own result; this line is the operational trace
+  // (alert on event=scheduled_job_failed).
   log[record.ok ? 'info' : 'error'](
-    { event: record.ok ? 'job_done' : 'job_failed', job: job.name, ms: record.ms },
+    {
+      event: record.ok ? 'scheduled_job_done' : 'scheduled_job_failed',
+      job: job.name,
+      ms: record.ms,
+      err,
+    },
     `${job.name} ${record.ok ? 'done' : 'failed'}`,
   );
   return record;
@@ -88,7 +95,7 @@ export function startScheduler(jobs: readonly ScheduledJob[]): () => Promise<voi
   for (const job of jobs) {
     lastRuns.set(job.name, null);
     arm(job);
-    log.info({ event: 'job_scheduled', job: job.name, at: `${job.at}Z` }, 'job scheduled');
+    log.info({ event: 'scheduled_job_armed', job: job.name, at: `${job.at}Z` }, 'job scheduled');
   }
   return async () => {
     stopped = true;

@@ -160,7 +160,9 @@ are one registry, `api/src/admin/scheduled-jobs.ts`, run in-process by
 `pnpm --filter ./api job <name>`. Every job is idempotent, so a run lost to a
 restart heals on the next one. `/healthz` reports each job's last run;
 `SCHEDULED_JOBS_ENABLED=false` stops them. A second API instance would
-double-run them — the scheduler assumes one instance.
+double-run them — the scheduler assumes one instance. This is separate from
+the single-concurrency job queue in `admin/job-runner.ts` (exports, imports),
+which is not drained on shutdown; its rows record their own failure.
 
 ## Contract Pipeline
 

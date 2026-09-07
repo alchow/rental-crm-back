@@ -16,6 +16,7 @@ export interface ScheduledJob {
   failed?: (result: unknown) => boolean;
 }
 
+// Erases T so the registry is homogeneous; the registry is the only construction site.
 function job<T>(def: {
   name: string;
   at: string;

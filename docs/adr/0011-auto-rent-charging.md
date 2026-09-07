@@ -130,6 +130,11 @@ have skipped.
 - **What survives:** the schedule is still reviewable in code, the runner is
   still TypeScript (the comms fan-out path is unchanged), and idempotency
   still makes a doubled or missed run safe.
+- **Operator steps:** Render's blueprint sync never deletes a resource, so
+  the three cron services must be deleted by hand in the dashboard after the
+  API deploy is live. Render's cron-failure email is gone with them; alert on
+  log `event=scheduled_job_failed`, or on `/healthz` `jobs.<name>.ok === false`.
+  After a restart `jobs.<name>` is `null` until the next run.
 - **Revisit trigger:** a second API instance (ADR-0005 scale-out) would run
   every job twice. Move the timer behind a DB lock or into a worker first.
 

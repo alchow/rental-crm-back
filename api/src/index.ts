@@ -59,21 +59,19 @@ function shutdown(signal: string): void {
     process.exit(1);
   }, 10_000);
   deadline.unref();
-  // Let a mid-run daily job finish (bounded by the deadline) before closing.
-  void stopScheduler().then(() =>
-    server.close((closeErr) => {
-      void closePool()
-        .catch((poolErr: unknown) => log.error({ err: poolErr }, 'pg pool close failed'))
-        .finally(() => {
-          if (closeErr) {
-            log.error({ err: closeErr }, 'server close error');
-            process.exit(1);
-          }
-          log.info('shutdown complete');
-          process.exit(0);
-        });
-    }),
-  );
+  const closed = new Promise<Error | undefined>((resolve) => server.close(resolve));
+  void Promise.all([stopScheduler(), closed]).then(([, closeErr]) => {
+    void closePool()
+      .catch((poolErr: unknown) => log.error({ err: poolErr }, 'pg pool close failed'))
+      .finally(() => {
+        if (closeErr) {
+          log.error({ err: closeErr }, 'server close error');
+          process.exit(1);
+        }
+        log.info('shutdown complete');
+        process.exit(0);
+      });
+  });
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));

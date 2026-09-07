@@ -36,7 +36,7 @@ describe('runJob', () => {
       },
     });
     expect([ok.ok, bad.ok, threw.ok]).toEqual([true, false, false]);
-    expect(jobStatus().a).toEqual(ok);
+    expect(jobStatus().a).toMatchObject({ ok: true, ms: 0 });
   });
 });
 
@@ -117,6 +117,8 @@ describe('startScheduler', () => {
     await vi.advanceTimersByTimeAsync(3000);
     await stopping;
     expect(done).toBe(true);
+    await vi.advanceTimersByTimeAsync(2 * DAY);
+    expect(jobStatus().slow?.ok).toBe(true); // no further run after stop()
   });
 });
 
