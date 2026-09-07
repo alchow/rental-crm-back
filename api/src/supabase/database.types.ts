@@ -2926,17 +2926,17 @@ export type Database = {
         };
         Relationships: [
           {
-            foreignKeyName: 'leases_corrects_lease_fk';
-            columns: ['account_id', 'corrects_lease_id'];
-            isOneToOne: false;
-            referencedRelation: 'leases';
-            referencedColumns: ['account_id', 'id'];
-          },
-          {
             foreignKeyName: 'leases_account_id_tenancy_id_fkey';
             columns: ['account_id', 'tenancy_id'];
             isOneToOne: false;
             referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'leases_corrects_lease_fk';
+            columns: ['account_id', 'corrects_lease_id'];
+            isOneToOne: false;
+            referencedRelation: 'leases';
             referencedColumns: ['account_id', 'id'];
           },
         ];
@@ -5171,8 +5171,8 @@ export type Database = {
           p_void_reason: string;
         };
         Returns: {
-          o_repointed_schedule_ids: string[];
           o_replacement_id: string;
+          o_repointed_schedule_ids: string[];
           o_voided_id: string;
         }[];
       };
