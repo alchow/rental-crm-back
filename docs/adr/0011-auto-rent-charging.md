@@ -117,6 +117,21 @@ have skipped.
   unaffected by web autoscaling (ADR-0005); revisit only if a second scheduler
   could race it (it cannot today — idempotency makes a double-run safe anyway).
 
+## Amendment — 2026-09-07: in-process scheduler replaces the Render cron
+
+- **Amends:** decision 3. The `rent-charge-generator` cron service is gone;
+  the always-on API process runs the same runner daily at 08:00 UTC from the
+  job registry (`api/src/admin/scheduled-jobs.ts`, `admin/scheduler.ts`),
+  alongside the evidence-retention and maintenance janitors.
+- **Why:** three cron services cost a $1/month minimum each and carried their
+  own copies of the env vars; two of them failed every night for weeks because
+  `sync: false` values were never set. One process, one env, one registry.
+- **What survives:** the schedule is still reviewable in code, the runner is
+  still TypeScript (the comms fan-out path is unchanged), and idempotency
+  still makes a doubled or missed run safe.
+- **Revisit trigger:** a second API instance (ADR-0005 scale-out) would run
+  every job twice. Move the timer behind a DB lock or into a worker first.
+
 ## Amendment — 2026-08-01: the default flips to ON
 
 - **Amends:** decision 1 only. Decisions 2 (advance timing), 3 (Render cron),

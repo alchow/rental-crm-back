@@ -154,6 +154,14 @@ the same executor semantics. In-process jobs use persisted status rows as the
 truth; boot recovery marks orphaned work honestly rather than leaving it
 pending forever. Horizontal scale-out requires the checklist in ADR-0005.
 
+Daily jobs (rent-charge generation, evidence retention, maintenance janitors)
+are one registry, `api/src/admin/scheduled-jobs.ts`, run in-process by
+`admin/scheduler.ts` at fixed UTC times and by hand with
+`pnpm --filter ./api job <name>`. Every job is idempotent, so a run lost to a
+restart heals on the next one. `/healthz` reports each job's last run;
+`SCHEDULED_JOBS_ENABLED=false` stops them. A second API instance would
+double-run them — the scheduler assumes one instance.
+
 ## Contract Pipeline
 
 ```text

@@ -182,7 +182,7 @@ EOF
 Next steps after this succeeds:
   1. Nothing to deploy: the API reads/writes the same column either way.
   2. Spot-check the next daily run (08:00 UTC) — or force one immediately:
-       pnpm --filter ./api charges:generate
+       pnpm --filter ./api job rent-charges
      Then audit the created rows: charges attributed 'system:cron:rent',
      one per (source_schedule_id, period_start).
   3. The backfill's own audit events are attributed

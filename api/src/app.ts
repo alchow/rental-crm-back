@@ -60,6 +60,7 @@ import { requireImmediateParent } from './middleware/immediate-parent';
 import { assertImageStackAtBoot, heicSupported } from './admin/heic-probe';
 import { recoverOrphanedEvidenceExports } from './admin/export-pdf';
 import { importCapability, recoverOrphanedImportSessions } from './admin/import-health';
+import { jobStatus } from './admin/scheduler';
 import {
   OPENAPI_DOC_CONFIG,
   injectIdempotencyContract,
@@ -156,6 +157,9 @@ export function buildApp(): OpenAPIHono {
         // instead of the user hitting a 502 on first preview.
         import: await importCapability(),
       },
+      // Last in-process daily job runs (null = not yet run since boot; {} =
+      // scheduler off). The only place a failed job is visible besides logs.
+      jobs: jobStatus(),
     });
   });
 
