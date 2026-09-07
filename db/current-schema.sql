@@ -1935,6 +1935,119 @@ $$;
 ALTER FUNCTION "public"."_interaction_participants_immutable"() OWNER TO "postgres";
 
 --
+-- Name: _leases_guard(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_leases_guard"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_old     jsonb;
+  v_new     jsonb   := to_jsonb(NEW);
+  v_changed text[]  := '{}';
+  v_col     text;
+begin
+  if TG_OP = 'INSERT' and NEW.voided_at is not null then
+    raise exception 'invalid: a lease cannot be created voided'
+      using errcode = 'check_violation';
+  end if;
+
+  if TG_OP = 'UPDATE' then
+    v_old := to_jsonb(OLD);
+    select coalesce(array_agg(k), '{}')
+      into v_changed
+      from jsonb_object_keys(v_new) as k
+     where k not in ('updated_at', 'deleted_at')
+       and v_new -> k is distinct from v_old -> k;
+
+    foreach v_col in array array['id', 'account_id', 'tenancy_id', 'created_at'] loop
+      if v_col = any(v_changed) then
+        raise exception 'invalid: lease % cannot change', v_col
+          using errcode = 'check_violation';
+      end if;
+    end loop;
+    if 'corrects_lease_id' = any(v_changed) and OLD.corrects_lease_id is not null then
+      raise exception 'invalid: lease corrects_lease_id cannot change'
+        using errcode = 'check_violation';
+    end if;
+  end if;
+
+  if NEW.corrects_lease_id is not null
+     and (TG_OP = 'INSERT' or 'corrects_lease_id' = any(v_changed))
+     and not exists (
+       select 1
+         from public.leases t
+        where t.account_id = NEW.account_id
+          and t.id         = NEW.corrects_lease_id
+          and t.tenancy_id = NEW.tenancy_id
+          and t.voided_at is not null
+          and t.deleted_at is null
+     )
+  then
+    raise exception 'invalid: corrects_lease_id must reference a voided lease of the same tenancy'
+      using errcode = 'check_violation';
+  end if;
+
+  if TG_OP = 'INSERT' then
+    return NEW;
+  end if;
+
+  if OLD.voided_at is not null and cardinality(v_changed) > 0 then
+    raise exception 'conflict: lease is voided'
+      using errcode = 'check_violation';
+  end if;
+
+  if OLD.status = 'superseded' and exists (
+    select 1
+      from unnest(v_changed) as c
+     where c not in ('voided_at', 'void_reason', 'corrects_lease_id')
+  ) then
+    raise exception 'conflict: lease is superseded'
+      using errcode = 'check_violation';
+  end if;
+
+  if 'status' = any(v_changed)
+     and (OLD.status, NEW.status) not in
+         (('draft', 'active'), ('draft', 'expired'), ('draft', 'superseded'),
+          ('active', 'expired'), ('active', 'superseded'))
+  then
+    raise exception 'conflict: lease is executed; status cannot change from % to %', OLD.status, NEW.status
+      using errcode = 'check_violation';
+  end if;
+
+  if OLD.status in ('active', 'expired') then
+    foreach v_col in array array['term_start', 'rent_amount_cents', 'rent_currency'] loop
+      if v_col = any(v_changed) then
+        raise exception 'conflict: lease is executed; % is frozen', v_col
+          using errcode = 'check_violation';
+      end if;
+    end loop;
+  end if;
+
+  -- Voiding takes the tenancy's schedule-writer lock so an anchor cannot race in.
+  if OLD.voided_at is null and NEW.voided_at is not null then
+    perform pg_advisory_xact_lock(hashtextextended('rent_change:' || OLD.tenancy_id::text, 0));
+    if exists (
+      select 1
+        from public.rent_schedules s
+       where s.account_id      = OLD.account_id
+         and s.source_lease_id = OLD.id
+         and s.deleted_at is null
+    ) then
+      raise exception 'conflict: lease anchors a rent schedule'
+        using errcode = 'check_violation';
+    end if;
+  end if;
+
+  return NEW;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."_leases_guard"() OWNER TO "postgres";
+
+--
 -- Name: _party_display_name("uuid", "text", "uuid"); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -2201,42 +2314,6 @@ $_$;
 
 
 ALTER FUNCTION "public"."_phone_to_e164"("raw" "text") OWNER TO "postgres";
-
---
--- Name: _reject_anchored_lease_mutation(); Type: FUNCTION; Schema: public; Owner: postgres
---
-
-CREATE OR REPLACE FUNCTION "public"."_reject_anchored_lease_mutation"() RETURNS "trigger"
-    LANGUAGE "plpgsql"
-    SET "search_path" TO 'public'
-    AS $$
-begin
-  -- F9: superseded is terminal -- no reactivation. All leases.
-  if OLD.status = 'superseded' and NEW.status = 'active' then
-    raise exception 'a superseded lease is a historical record; create a new lease instead'
-      using errcode = 'check_violation';
-  end if;
-
-  -- F7: an anchored lease cannot be soft-deleted.
-  if OLD.deleted_at is null and NEW.deleted_at is not null
-     and exists (
-       select 1
-         from public.rent_schedules s
-        where s.account_id      = OLD.account_id
-          and s.source_lease_id = OLD.id
-          and s.deleted_at is null
-     )
-  then
-    raise exception 'lease % is anchored to a rent schedule and cannot be deleted', OLD.id
-      using errcode = 'check_violation';
-  end if;
-
-  return NEW;
-end;
-$$;
-
-
-ALTER FUNCTION "public"."_reject_anchored_lease_mutation"() OWNER TO "postgres";
 
 --
 -- Name: _reject_anchored_notice_mutation(); Type: FUNCTION; Schema: public; Owner: postgres
@@ -2766,18 +2843,23 @@ begin
   -- (1) serialize every schedule write for this tenancy with the RPC.
   perform pg_advisory_xact_lock(hashtextextended('rent_change:' || NEW.tenancy_id::text, 0));
 
-  -- (2a) lease anchor must belong to the SAME tenancy (composite FK only proves
-  --      same account). check_violation -> route maps to 400 invalid_request.
-  if NEW.source_lease_id is not null then
+  -- (2a) a new or changed lease anchor must belong to the SAME tenancy
+  --      (composite FK only proves same account) and be in force; a lease that
+  --      later leaves force does not lock its schedule. check_violation -> 400.
+  if NEW.source_lease_id is not null
+     and (TG_OP = 'INSERT' or NEW.source_lease_id is distinct from OLD.source_lease_id)
+  then
     if not exists (
       select 1
         from public.leases l
        where l.account_id = NEW.account_id
          and l.id         = NEW.source_lease_id
          and l.tenancy_id = NEW.tenancy_id
+         and l.status    <> 'draft'
+         and l.voided_at is null
          and l.deleted_at is null
     ) then
-      raise exception 'source_lease_id must reference a lease of the same tenancy'
+      raise exception 'source_lease_id must reference a non-draft, non-voided lease of the same tenancy'
         using errcode = 'check_violation';
     end if;
   end if;
@@ -4847,7 +4929,7 @@ begin
   --    pre-created renewal into force). An expired/superseded lease cannot
   --    anchor a new change.
   if p_source_lease_id is not null then
-    select id, status
+    select id, status, voided_at
       into v_lease
       from public.leases
      where account_id = p_account_id
@@ -4856,6 +4938,9 @@ begin
        and deleted_at is null;
     if v_lease.id is null then
       raise exception 'not_found: source lease';
+    end if;
+    if v_lease.voided_at is not null then
+      raise exception 'conflict: source lease is voided';
     end if;
     if v_lease.status in ('expired', 'superseded') then
       raise exception 'conflict: source lease is %', v_lease.status;
@@ -5045,6 +5130,7 @@ begin
        where account_id = p_account_id
          and tenancy_id = p_tenancy_id
          and status     = 'active'
+         and voided_at is null
          and deleted_at is null
          and id <> p_source_lease_id
       returning id
@@ -6806,6 +6892,7 @@ begin
     ) sch on true
     where l.account_id = p_account_id
       and l.status     = 'active'
+      and l.voided_at is null
       and l.deleted_at is null
       and t.deleted_at is null
       and t.status <> 'ended'
@@ -8657,6 +8744,93 @@ $$;
 
 
 ALTER FUNCTION "public"."rent_rollup"("p_account_id" "uuid", "p_statuses" "text"[], "p_as_of" "date") OWNER TO "postgres";
+
+--
+-- Name: replace_lease("uuid", "uuid", "text", "date", "date", bigint, "text", bigint, "text", "jsonb"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."replace_lease"("p_account_id" "uuid", "p_lease_id" "uuid", "p_void_reason" "text", "p_term_start" "date", "p_term_end" "date", "p_rent_amount_cents" bigint, "p_rent_currency" "text", "p_deposit_amount_cents" bigint, "p_deposit_currency" "text", "p_document" "jsonb") RETURNS TABLE("o_voided_id" "uuid", "o_replacement_id" "uuid", "o_repointed_schedule_ids" "uuid"[])
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_lease          record;
+  v_replacement_id uuid;
+  v_repointed      uuid[] := '{}';
+begin
+  -- a. Lock the lease row for the rest of the transaction.
+  select id, tenancy_id, status, voided_at
+    into v_lease
+    from public.leases
+   where account_id = p_account_id
+     and id         = p_lease_id
+     and deleted_at is null
+     for update;
+  if v_lease.id is null then
+    raise exception 'not_found: lease';
+  end if;
+  if v_lease.voided_at is not null then
+    raise exception 'conflict: lease is voided';
+  end if;
+
+  -- b. Serialize with every other schedule writer for this tenancy.
+  perform pg_advisory_xact_lock(hashtextextended('rent_change:' || v_lease.tenancy_id::text, 0));
+
+  -- c. A correction never changes what an anchored schedule bills.
+  if exists (
+    select 1
+      from public.rent_schedules s
+     where s.account_id      = p_account_id
+       and s.source_lease_id = p_lease_id
+       and s.deleted_at is null
+       and (s.amount_cents <> p_rent_amount_cents or s.currency <> p_rent_currency)
+  ) then
+    raise exception 'conflict: lease anchors a rent schedule with a different rent';
+  end if;
+
+  -- d. The correction, in the same lifecycle position as the lease it replaces.
+  insert into public.leases
+    (account_id, tenancy_id, status, term_start, term_end,
+     rent_amount_cents, rent_currency, deposit_amount_cents, deposit_currency, document)
+  values
+    (p_account_id, v_lease.tenancy_id, v_lease.status, p_term_start, p_term_end,
+     p_rent_amount_cents, p_rent_currency, coalesce(p_deposit_amount_cents, 0),
+     p_deposit_currency, coalesce(p_document, '{}'::jsonb))
+  returning id into v_replacement_id;
+
+  -- e. Live schedules now cite the correction.
+  with repointed as (
+    update public.rent_schedules
+       set source_lease_id = v_replacement_id,
+           updated_at      = now()
+     where account_id      = p_account_id
+       and source_lease_id = p_lease_id
+       and deleted_at is null
+    returning id
+  )
+  select coalesce(array_agg(id), '{}') into v_repointed from repointed;
+
+  -- f. Void the old lease (nothing anchors it any more).
+  update public.leases
+     set voided_at   = now(),
+         void_reason = p_void_reason,
+         updated_at  = now()
+   where account_id = p_account_id
+     and id         = p_lease_id;
+
+  -- g. Link the correction to the now-voided lease.
+  update public.leases
+     set corrects_lease_id = p_lease_id,
+         updated_at        = now()
+   where account_id = p_account_id
+     and id         = v_replacement_id;
+
+  return query select p_lease_id, v_replacement_id, v_repointed;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."replace_lease"("p_account_id" "uuid", "p_lease_id" "uuid", "p_void_reason" "text", "p_term_start" "date", "p_term_end" "date", "p_rent_amount_cents" bigint, "p_rent_currency" "text", "p_deposit_amount_cents" bigint, "p_deposit_currency" "text", "p_document" "jsonb") OWNER TO "postgres";
 
 --
 -- Name: resolve_relay_landlord_recipient("uuid", "uuid", "uuid", "text"); Type: FUNCTION; Schema: public; Owner: postgres
@@ -11395,18 +11569,44 @@ CREATE TABLE IF NOT EXISTS "public"."leases" (
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "deleted_at" timestamp with time zone,
+    "voided_at" timestamp with time zone,
+    "void_reason" "text",
+    "corrects_lease_id" "uuid",
     CONSTRAINT "leases_check" CHECK ((("term_end" IS NULL) OR ("term_end" >= "term_start"))),
     CONSTRAINT "leases_check1" CHECK ((("deposit_amount_cents" = 0) OR ("deposit_currency" IS NOT NULL))),
+    CONSTRAINT "leases_corrects_self_check" CHECK ((("corrects_lease_id" IS NULL) OR ("corrects_lease_id" <> "id"))),
     CONSTRAINT "leases_deposit_amount_cents_check" CHECK (("deposit_amount_cents" >= 0)),
     CONSTRAINT "leases_rent_amount_cents_check" CHECK (("rent_amount_cents" >= 0)),
     CONSTRAINT "leases_rent_currency_check" CHECK (("length"("rent_currency") = 3)),
-    CONSTRAINT "leases_status_check" CHECK (("status" = ANY (ARRAY['draft'::"text", 'active'::"text", 'expired'::"text", 'superseded'::"text"])))
+    CONSTRAINT "leases_status_check" CHECK (("status" = ANY (ARRAY['draft'::"text", 'active'::"text", 'expired'::"text", 'superseded'::"text"]))),
+    CONSTRAINT "leases_void_reason_pairs_check" CHECK ((("voided_at" IS NULL) = ("void_reason" IS NULL)))
 );
 
 ALTER TABLE ONLY "public"."leases" FORCE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."leases" OWNER TO "postgres";
+
+--
+-- Name: COLUMN "leases"."voided_at"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."leases"."voided_at" IS 'When the lease was voided; a voided lease is read-only history and is still listed.';
+
+
+--
+-- Name: COLUMN "leases"."void_reason"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."leases"."void_reason" IS 'The landlord''s reason for voiding; required exactly when voided_at is set.';
+
+
+--
+-- Name: COLUMN "leases"."corrects_lease_id"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."leases"."corrects_lease_id" IS 'The voided lease of the same tenancy this one corrects; set once, by replace_lease or at create.';
+
 
 --
 -- Name: maintenance_request_reports; Type: TABLE; Schema: public; Owner: postgres
@@ -14068,6 +14268,13 @@ CREATE INDEX "leases_account_id_idx" ON "public"."leases" USING "btree" ("accoun
 
 
 --
+-- Name: leases_corrects_lease_id_idx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "leases_corrects_lease_id_idx" ON "public"."leases" USING "btree" ("corrects_lease_id") WHERE ("corrects_lease_id" IS NOT NULL);
+
+
+--
 -- Name: leases_tenancy_id_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
@@ -14922,10 +15129,10 @@ CREATE OR REPLACE TRIGGER "leases_audit" AFTER INSERT OR DELETE OR UPDATE ON "pu
 
 
 --
--- Name: leases leases_reject_anchored_mutation; Type: TRIGGER; Schema: public; Owner: postgres
+-- Name: leases leases_guard; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
-CREATE OR REPLACE TRIGGER "leases_reject_anchored_mutation" BEFORE UPDATE ON "public"."leases" FOR EACH ROW EXECUTE FUNCTION "public"."_reject_anchored_lease_mutation"();
+CREATE OR REPLACE TRIGGER "leases_guard" BEFORE INSERT OR UPDATE ON "public"."leases" FOR EACH ROW EXECUTE FUNCTION "public"."_leases_guard"();
 
 
 --
@@ -16000,6 +16207,14 @@ ALTER TABLE ONLY "public"."interactions"
 
 ALTER TABLE ONLY "public"."leases"
     ADD CONSTRAINT "leases_account_id_tenancy_id_fkey" FOREIGN KEY ("account_id", "tenancy_id") REFERENCES "public"."tenancies"("account_id", "id") ON DELETE RESTRICT;
+
+
+--
+-- Name: leases leases_corrects_lease_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."leases"
+    ADD CONSTRAINT "leases_corrects_lease_fk" FOREIGN KEY ("account_id", "corrects_lease_id") REFERENCES "public"."leases"("account_id", "id") ON DELETE RESTRICT;
 
 
 --
@@ -17731,6 +17946,15 @@ GRANT ALL ON FUNCTION "public"."_interaction_participants_immutable"() TO "servi
 
 
 --
+-- Name: FUNCTION "_leases_guard"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON FUNCTION "public"."_leases_guard"() TO "anon";
+GRANT ALL ON FUNCTION "public"."_leases_guard"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."_leases_guard"() TO "service_role";
+
+
+--
 -- Name: FUNCTION "_party_display_name"("p_account_id" "uuid", "p_party_type" "text", "p_party_id" "uuid"); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -17761,15 +17985,6 @@ GRANT ALL ON FUNCTION "public"."_persona_record_unmatched"("p_account_id" "uuid"
 
 REVOKE ALL ON FUNCTION "public"."_phone_to_e164"("raw" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."_phone_to_e164"("raw" "text") TO "service_role";
-
-
---
--- Name: FUNCTION "_reject_anchored_lease_mutation"(); Type: ACL; Schema: public; Owner: postgres
---
-
-GRANT ALL ON FUNCTION "public"."_reject_anchored_lease_mutation"() TO "anon";
-GRANT ALL ON FUNCTION "public"."_reject_anchored_lease_mutation"() TO "authenticated";
-GRANT ALL ON FUNCTION "public"."_reject_anchored_lease_mutation"() TO "service_role";
 
 
 --
@@ -18475,6 +18690,15 @@ GRANT ALL ON FUNCTION "public"."record_platform_number"("p_account_id" "uuid", "
 REVOKE ALL ON FUNCTION "public"."rent_rollup"("p_account_id" "uuid", "p_statuses" "text"[], "p_as_of" "date") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."rent_rollup"("p_account_id" "uuid", "p_statuses" "text"[], "p_as_of" "date") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."rent_rollup"("p_account_id" "uuid", "p_statuses" "text"[], "p_as_of" "date") TO "service_role";
+
+
+--
+-- Name: FUNCTION "replace_lease"("p_account_id" "uuid", "p_lease_id" "uuid", "p_void_reason" "text", "p_term_start" "date", "p_term_end" "date", "p_rent_amount_cents" bigint, "p_rent_currency" "text", "p_deposit_amount_cents" bigint, "p_deposit_currency" "text", "p_document" "jsonb"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."replace_lease"("p_account_id" "uuid", "p_lease_id" "uuid", "p_void_reason" "text", "p_term_start" "date", "p_term_end" "date", "p_rent_amount_cents" bigint, "p_rent_currency" "text", "p_deposit_amount_cents" bigint, "p_deposit_currency" "text", "p_document" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."replace_lease"("p_account_id" "uuid", "p_lease_id" "uuid", "p_void_reason" "text", "p_term_start" "date", "p_term_end" "date", "p_rent_amount_cents" bigint, "p_rent_currency" "text", "p_deposit_amount_cents" bigint, "p_deposit_currency" "text", "p_document" "jsonb") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."replace_lease"("p_account_id" "uuid", "p_lease_id" "uuid", "p_void_reason" "text", "p_term_start" "date", "p_term_end" "date", "p_rent_amount_cents" bigint, "p_rent_currency" "text", "p_deposit_amount_cents" bigint, "p_deposit_currency" "text", "p_document" "jsonb") TO "service_role";
 
 
 --

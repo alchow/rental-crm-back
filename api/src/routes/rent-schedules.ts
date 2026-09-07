@@ -621,7 +621,7 @@ rentSchedulesApp.openapi(rentChange, async (c) => {
     // instead of silently degrading to the generic code.
     throw mapPrefixedRpcError(error, [
       [/tenancy already ended/i, 'tenancy_ended'],
-      [/source lease is (expired|superseded)/i, 'instrument_not_current'],
+      [/source lease is (expired|superseded|voided)/i, 'instrument_not_current'],
       [/has not been served/i, 'notice_not_served'],
       [/conflicts with effective_date/i, 'schedule_conflict'],
     ]);

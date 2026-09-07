@@ -103,6 +103,7 @@ export const CreateLeaseBody = z
     deposit_currency: CurrencyCode.optional(),
     document: z.record(z.unknown()).optional(),
     status: LeaseStatus,
+    corrects_lease_id: z.string().uuid().optional(),
   })
   .refine((b) => (b.deposit_amount_cents ?? 0) === 0 || b.deposit_currency !== undefined, {
     message: 'deposit_currency is required when deposit_amount_cents > 0',

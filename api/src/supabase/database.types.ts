@@ -2869,6 +2869,7 @@ export type Database = {
       leases: {
         Row: {
           account_id: string;
+          corrects_lease_id: string | null;
           created_at: string;
           deleted_at: string | null;
           deposit_amount_cents: number;
@@ -2882,9 +2883,12 @@ export type Database = {
           term_end: string | null;
           term_start: string;
           updated_at: string;
+          void_reason: string | null;
+          voided_at: string | null;
         };
         Insert: {
           account_id: string;
+          corrects_lease_id?: string | null;
           created_at?: string;
           deleted_at?: string | null;
           deposit_amount_cents?: number;
@@ -2898,9 +2902,12 @@ export type Database = {
           term_end?: string | null;
           term_start: string;
           updated_at?: string;
+          void_reason?: string | null;
+          voided_at?: string | null;
         };
         Update: {
           account_id?: string;
+          corrects_lease_id?: string | null;
           created_at?: string;
           deleted_at?: string | null;
           deposit_amount_cents?: number;
@@ -2914,6 +2921,8 @@ export type Database = {
           term_end?: string | null;
           term_start?: string;
           updated_at?: string;
+          void_reason?: string | null;
+          voided_at?: string | null;
         };
         Relationships: [
           {
@@ -2921,6 +2930,13 @@ export type Database = {
             columns: ['account_id', 'tenancy_id'];
             isOneToOne: false;
             referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'leases_corrects_lease_fk';
+            columns: ['account_id', 'corrects_lease_id'];
+            isOneToOne: false;
+            referencedRelation: 'leases';
             referencedColumns: ['account_id', 'id'];
           },
         ];
@@ -5139,6 +5155,25 @@ export type Database = {
           status: string;
           tenancy_id: string;
           unapplied_credit_cents: number;
+        }[];
+      };
+      replace_lease: {
+        Args: {
+          p_account_id: string;
+          p_deposit_amount_cents: number;
+          p_deposit_currency: string;
+          p_document: Json;
+          p_lease_id: string;
+          p_rent_amount_cents: number;
+          p_rent_currency: string;
+          p_term_end: string;
+          p_term_start: string;
+          p_void_reason: string;
+        };
+        Returns: {
+          o_replacement_id: string;
+          o_repointed_schedule_ids: string[];
+          o_voided_id: string;
         }[];
       };
       resolve_relay_landlord_recipient: {

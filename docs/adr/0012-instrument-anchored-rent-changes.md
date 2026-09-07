@@ -1,6 +1,12 @@
 # ADR-0012: Instrument-anchored rent changes
 
-- **Status:** accepted, 2026-07-06
+- **Status:** accepted, 2026-07-06. **Superseded in part by ADR-0014**
+  (`adr/0014-lease-lifecycle.md`, 2026-09-06): rule 4's blanket PATCH freeze on
+  lease rent terms becomes status-gated (a draft lease is freely editable; an
+  executed one answers 409 `lease_executed`), and its "soft-delete + recreate"
+  lease correction path is replaced by void + `replace`. Everything else here —
+  the anchoring model, the RPC, drift detection, the notice lock, and the
+  schedule/charge correction recipes — is current.
 - **Context owner:** money subledger (docs/api-guide.md §7) + occupancy (leases,
   notices)
 - **Implements:** migrations `20260706000001_instrument_anchored_rent_changes`

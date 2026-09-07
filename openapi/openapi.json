@@ -1816,6 +1816,25 @@
               "superseded"
             ]
           },
+          "voided_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "void_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "corrects_lease_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
           "created_at": {
             "type": "string"
           },
@@ -1841,6 +1860,9 @@
           "deposit_currency",
           "document",
           "status",
+          "voided_at",
+          "void_reason",
+          "corrects_lease_id",
           "created_at",
           "updated_at",
           "deleted_at"
@@ -1915,6 +1937,10 @@
               "expired",
               "superseded"
             ]
+          },
+          "corrects_lease_id": {
+            "type": "string",
+            "format": "uuid"
           }
         },
         "required": [
@@ -1928,12 +1954,25 @@
       "PatchLeaseBody": {
         "type": "object",
         "properties": {
+          "term_start": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
           "term_end": {
             "type": [
               "string",
               "null"
             ],
             "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "rent_amount_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "rent_currency": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 3
           },
           "deposit_amount_cents": {
             "type": "integer",
@@ -1960,7 +1999,103 @@
               "superseded"
             ]
           }
-        }
+        },
+        "additionalProperties": false
+      },
+      "VoidLeaseBody": {
+        "type": "object",
+        "properties": {
+          "void_reason": {
+            "type": "string",
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "void_reason"
+        ]
+      },
+      "ReplaceLeaseResult": {
+        "type": "object",
+        "properties": {
+          "voided": {
+            "$ref": "#/components/schemas/Lease"
+          },
+          "replacement": {
+            "$ref": "#/components/schemas/Lease"
+          },
+          "repointed_schedule_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "required": [
+          "voided",
+          "replacement",
+          "repointed_schedule_ids"
+        ]
+      },
+      "ReplaceLeaseBody": {
+        "type": "object",
+        "properties": {
+          "void_reason": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "lease": {
+            "type": "object",
+            "properties": {
+              "term_start": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+              },
+              "term_end": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+              },
+              "rent_amount_cents": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "rent_currency": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 3
+              },
+              "deposit_amount_cents": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0
+              },
+              "deposit_currency": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 3,
+                "maxLength": 3
+              },
+              "document": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "term_start",
+              "rent_amount_cents",
+              "rent_currency"
+            ]
+          }
+        },
+        "required": [
+          "void_reason",
+          "lease"
+        ]
       },
       "NoticeClass": {
         "type": [
@@ -17142,6 +17277,7 @@
           "leases"
         ],
         "summary": "List leases (filterable by tenancy_id and status)",
+        "description": "Voided leases are returned (voided_at/void_reason set). There is no delete: a lease leaves service by POST .../void with a reason.",
         "parameters": [
           {
             "schema": {
@@ -17262,6 +17398,7 @@
           "leases"
         ],
         "summary": "Create a lease attached to a tenancy",
+        "description": "corrects_lease_id, when given, must name a voided lease of the same tenancy (400 otherwise). For an atomic correction use POST .../leases/{id}/replace.",
         "parameters": [
           {
             "schema": {
@@ -17472,7 +17609,7 @@
           "leases"
         ],
         "summary": "Update a lease (partial)",
-        "description": "term_end, deposit_*, document and allowed status transitions stay editable on every lease, including one that anchors a live rent schedule (anchoring blocks only soft-delete). Rent terms are immutable everywhere: a differing rent_amount_cents/rent_currency is rejected 400 (unchanged echoed values are tolerated) — use the rent-changes endpoint. Any transition out of status=superseded is rejected 409 lease_superseded.",
+        "description": "Mutability by status — draft: every field; active/expired (executed): term_end, deposit_*, document, status; superseded: nothing; voided: nothing. Status only moves forward (draft→active|expired|superseded, active→expired|superseded). Re-sending an unchanged value is a no-op. Refusals: 409 lease_executed (a differing term_start/rent_amount_cents/rent_currency or a backward status on an executed lease — record a rent change via rent-changes, or a correction via replace), 409 lease_superseded, 409 lease_voided; 400 on unknown fields or CHECK violations (e.g. term_end before term_start).",
         "parameters": [
           {
             "schema": {
@@ -17597,13 +17734,15 @@
             }
           }
         }
-      },
-      "delete": {
+      }
+    },
+    "/v1/accounts/{accountId}/leases/{id}/void": {
+      "post": {
         "tags": [
           "leases"
         ],
-        "summary": "Soft-delete a lease",
-        "description": "Rejected 409 instrument_anchored while the lease anchors a live rent schedule (it is the instrument of record for that billing era). Deleting the schedule first (DELETE /rent-schedules/{id}, never-billed only) releases the block.",
+        "summary": "Void a lease",
+        "description": "Sets voided_at and void_reason; the row stays readable and accepts no further change. Voiding does not stop billing: rent schedules keep emitting charges. 409 instrument_anchored while a live rent schedule names the lease as source_lease_id — use replace, or delete that schedule first. 404 when the lease is missing or already voided.",
         "parameters": [
           {
             "schema": {
@@ -17636,9 +17775,159 @@
             }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoidLeaseBody"
+              }
+            }
+          }
+        },
         "responses": {
-          "204": {
-            "description": "deleted",
+          "200": {
+            "description": "voided",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Lease"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/leases/{id}/replace": {
+      "post": {
+        "tags": [
+          "leases"
+        ],
+        "summary": "Void a lease and create its corrected replacement atomically",
+        "description": "Voids the lease with void_reason, creates the replacement from `lease` (same tenancy and status, corrects_lease_id = this lease), and re-points live rent schedules anchored on it. 409 schedule_conflict when an anchored schedule bills a different rent than the replacement (void its charges, delete the schedule, replace, then record a rent change); 409 lease_voided when already voided; 400 on invalid lease fields.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplaceLeaseBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "replaced",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplaceLeaseResult"
+                }
+              }
+            },
             "headers": {
               "Idempotency-Replay": {
                 "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",

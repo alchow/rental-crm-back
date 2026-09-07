@@ -25,6 +25,8 @@
 //   4. As A's token, GET /v1/accounts/<B>/<resource>/<B-row>     -> 404
 //   5. As A's token, PATCH /v1/accounts/<B>/<resource>/<B-row>   -> 404
 //   6. As A's token, DELETE /v1/accounts/<B>/<resource>/<B-row>  -> 404
+//      (or, where the resource is removed by voiding rather than deleting,
+//      POST .../<B-row>/void                                     -> 404)
 //
 // Note: there is no X-Account-Id header. The URL path is the ONLY source of
 // account scope. We do not test header-based attack vectors because there is
@@ -298,6 +300,9 @@ interface TopLevelResource {
   // PATCH body that should succeed against a row the caller doesn't own.
   // Used only for the cross-tenant PATCH attack -- it never gets applied.
   patchBody: Record<string, unknown>;
+  // Set when the resource has no DELETE route: removal is a void (ADR-0014),
+  // so the destructive cross-account attempt is that POST instead.
+  voidPath?: (accountId: string, id: string) => string;
 }
 
 const topLevelResources: TopLevelResource[] = [
@@ -306,7 +311,12 @@ const topLevelResources: TopLevelResource[] = [
   { name: 'tenants',    fixtureKey: 'tenantId',   patchBody: { full_name: 'evil' } },
   { name: 'areas',      fixtureKey: 'unitAreaId', patchBody: { name: 'evil' } },
   { name: 'tenancies',  fixtureKey: 'tenancyId',  patchBody: { status: 'ended' } },
-  { name: 'leases',     fixtureKey: 'leaseId',    patchBody: { status: 'expired' } },
+  {
+    name: 'leases',
+    fixtureKey: 'leaseId',
+    patchBody: { status: 'expired' },
+    voidPath: (a, id) => `/v1/accounts/${a}/leases/${id}/void`,
+  },
   { name: 'assets',     fixtureKey: 'assetId',    patchBody: { name: 'evil' } },
 ];
 // Money resources don't have a PATCH endpoint (the brief: reversal-not-
@@ -402,10 +412,21 @@ async function main(): Promise<void> {
       await expectStatus('PATCH B id', res, 404);
     });
 
-    await check(`${r.name}: A DELETE B's row -> 404`, async () => {
-      const res = await api('DELETE', otherIdUrl, { token: A.accessToken });
-      await expectStatus('DELETE B id', res, 404);
-    });
+    if (r.voidPath) {
+      const voidUrl = r.voidPath(B.accountId, bId);
+      await check(`${r.name}: A POST B's .../void -> 404`, async () => {
+        const res = await api('POST', voidUrl, {
+          token: A.accessToken,
+          body: { void_reason: 'attack' },
+        });
+        await expectStatus('POST B void', res, 404);
+      });
+    } else {
+      await check(`${r.name}: A DELETE B's row -> 404`, async () => {
+        const res = await api('DELETE', otherIdUrl, { token: A.accessToken });
+        await expectStatus('DELETE B id', res, 404);
+      });
+    }
   }
 
   // -----------------------------------------------------------------------

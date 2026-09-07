@@ -124,8 +124,11 @@ export type ErrorCode =
   | 'instrument_not_current' // anchor lease is expired/superseded: pick/create a current one
   | 'schedule_conflict' // a same-kind schedule starts on/after effective_date:
   // delete it (never-billed) or change on a later date
-  | 'lease_superseded' // transition out of status=superseded: create a new lease instead
-  | 'instrument_anchored' // patch/delete of a lease/notice anchoring a live schedule
+  | 'lease_superseded' // any edit of a superseded lease: it is history, void or replace it
+  | 'lease_executed' // frozen field or backward status on an active/expired lease:
+  // rent-changes for a rent change, replace for a correction
+  | 'lease_voided' // any change to a voided lease: nothing to do
+  | 'instrument_anchored' // void/patch of a lease/notice anchoring a live schedule
   | 'schedule_has_charges' // DELETE of a schedule with non-voided charges: void them first
   | 'property_requires_area' // property scope has zero/multiple live units: caller must choose area_id
   | 'tenancy_already_ended' // POST /tenancies/{id}/end was already applied: do not retry
