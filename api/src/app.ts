@@ -157,8 +157,8 @@ export function buildApp(): OpenAPIHono {
         // instead of the user hitting a 502 on first preview.
         import: await importCapability(),
       },
-      // Last in-process daily job runs (null = not yet run since boot; {} =
-      // scheduler off). The only place a failed job is visible besides logs.
+      // Last in-process daily job runs: null = not yet run since boot, ok null =
+      // running, {} = scheduler off. The only place a failed job shows besides logs.
       jobs: jobStatus(),
     });
   });

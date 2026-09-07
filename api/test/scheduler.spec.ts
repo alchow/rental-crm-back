@@ -28,7 +28,13 @@ describe('runJob', () => {
   it('records ok, a failed() verdict, and a throw', async () => {
     const ok = await runJob({ name: 'a', at: '00:00', run: async () => 1 });
     const bad = await runJob({ name: 'b', at: '00:00', run: async () => 1, failed: () => true });
-    const threw = await runJob({ name: 'c', at: '00:00', run: async () => { throw new Error('x'); } });
+    const threw = await runJob({
+      name: 'c',
+      at: '00:00',
+      run: async () => {
+        throw new Error('x');
+      },
+    });
     expect([ok.ok, bad.ok, threw.ok]).toEqual([true, false, false]);
     expect(jobStatus().a).toEqual(ok);
   });
@@ -63,9 +69,54 @@ describe('startScheduler', () => {
     expect(maxActive).toBe(1);
     expect(jobStatus().tick?.ok).toBe(true);
 
-    stop();
+    await stop();
     await vi.advanceTimersByTimeAsync(2 * DAY);
     expect(runs).toBe(2);
+  });
+
+  it('a run past the deadline is marked failed and the job is re-armed', async () => {
+    vi.setSystemTime(new Date('2026-09-07T07:59:00Z'));
+    let starts = 0;
+    const stop = startScheduler([
+      {
+        name: 'hang',
+        at: '08:00',
+        run: () => {
+          starts += 1;
+          return new Promise(() => {});
+        },
+      },
+    ]);
+    await vi.advanceTimersByTimeAsync(HOUR);
+    expect(jobStatus().hang?.ok).toBeNull(); // running
+    await vi.advanceTimersByTimeAsync(2 * HOUR);
+    expect(jobStatus().hang?.ok).toBe(false);
+    await vi.advanceTimersByTimeAsync(DAY);
+    expect(starts).toBe(2);
+    await stop();
+  });
+
+  it('stop() waits for an in-flight run', async () => {
+    vi.setSystemTime(new Date('2026-09-07T07:59:59Z'));
+    let done = false;
+    const stop = startScheduler([
+      {
+        name: 'slow',
+        at: '08:00',
+        run: () =>
+          new Promise((r) =>
+            setTimeout(() => {
+              done = true;
+              r(1);
+            }, 3000),
+          ),
+      },
+    ]);
+    await vi.advanceTimersByTimeAsync(2000);
+    const stopping = stop();
+    await vi.advanceTimersByTimeAsync(3000);
+    await stopping;
+    expect(done).toBe(true);
   });
 });
 

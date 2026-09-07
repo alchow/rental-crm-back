@@ -35,7 +35,7 @@ https://rental-crm-api.onrender.com/v1
 ```
 
 - All endpoints live under `/v1`. Breaking changes ship as `/v2`; `/v1` is never broken in place.
-- `GET /healthz` (no `/v1` prefix) returns `{"status":"ok","capabilities":{"heic_decode":true|false|null}}` and is safe to hit from load balancer health checks. `heic_decode` starts with an end-to-end HEVC fixture upload and authenticated Supabase Storage rendition, then follows the latest real HEIC rendition outcome so outages and recoveries change the signal; `null` means the asynchronous boot probe has not finished yet.
+- `GET /healthz` (no `/v1` prefix) returns `{"status":"ok","capabilities":{"heic_decode":true|false|null,...},"jobs":{...}}` (`jobs` = last run per in-process daily job) and is safe to hit from load balancer health checks. `heic_decode` starts with an end-to-end HEVC fixture upload and authenticated Supabase Storage rendition, then follows the latest real HEIC rendition outcome so outages and recoveries change the signal; `null` means the asynchronous boot probe has not finished yet.
 - `GET /openapi.json` returns the full OpenAPI 3.1 spec.
 - Couple only to this contract. Do **not** reach past it into the underlying database — that coupling forfeits forward-compatibility, and the API enforces invariants (isolation, audit trail, money integrity) that direct DB access bypasses.
 

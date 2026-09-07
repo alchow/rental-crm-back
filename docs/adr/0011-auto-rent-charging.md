@@ -3,10 +3,11 @@
 - **Status:** accepted, 2026-07-04; **decision 1 amended 2026-08-01** — the flag
   now defaults to `true`, so automatic charging is **opt-out**. See
   [Amendment — 2026-08-01](#amendment--2026-08-01-the-default-flips-to-on)
-  at the end of this file. Decisions 2–5 stand unchanged and are current.
+  at the end of this file. **Decision 3 amended 2026-09-07** — the schedule
+  runs in-process, not as a Render cron. Decisions 2, 4, 5 are current.
 - **Context owner:** money subledger (docs/api-guide.md §7) + ops (render.yaml)
 - **Implements:** migration `20260704000001_auto_rent_charging`, route
-  `api/src/routes/settings.ts`, runner `api/src/admin/run-rent-charges.ts`;
+  `api/src/routes/settings.ts`, runner `api/src/admin/rent-charges.ts` (registered in `admin/scheduled-jobs.ts`);
   amended by migration `20260801000001_auto_charge_default_on`.
 
 ## Context

@@ -144,12 +144,10 @@ EOF
 
 Next steps after this succeeds:
   1. Deploy the API code (merge PR #58 / Render) so the /settings route ships.
-  2. In Render, set the `rent-charge-generator` cron env vars:
-     SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_DB_URL.
-  3. Opt one account in (Settings toggle, or PATCH /v1/accounts/{id}/settings),
+  2. Opt one account in (Settings toggle, or PATCH /v1/accounts/{id}/settings),
      let a cycle run, then audit charges attributed 'system:cron:rent'.
      To see a run immediately instead of waiting for 08:00 UTC:
-       pnpm --filter ./api charges:generate
+       pnpm --filter ./api job rent-charges
 EOF
 }
 

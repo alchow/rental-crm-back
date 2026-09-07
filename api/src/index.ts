@@ -43,7 +43,7 @@ void syncPremiumSubdomainLabels().catch((err: unknown) => {
   );
 });
 
-const stopScheduler = env.SCHEDULED_JOBS_ENABLED ? startScheduler(SCHEDULED_JOBS) : () => {};
+const stopScheduler = env.SCHEDULED_JOBS_ENABLED ? startScheduler(SCHEDULED_JOBS) : async () => {};
 
 // Render (and any supervisor) sends SIGTERM on every deploy. Stop accepting
 // new connections, let in-flight requests finish, drain the import pg pool,
@@ -54,24 +54,26 @@ function shutdown(signal: string): void {
   if (shuttingDown) return;
   shuttingDown = true;
   log.info({ signal }, 'shutting down');
-  stopScheduler();
   const deadline = setTimeout(() => {
     log.error('shutdown deadline exceeded; forcing exit');
     process.exit(1);
   }, 10_000);
   deadline.unref();
-  server.close((closeErr) => {
-    void closePool()
-      .catch((poolErr: unknown) => log.error({ err: poolErr }, 'pg pool close failed'))
-      .finally(() => {
-        if (closeErr) {
-          log.error({ err: closeErr }, 'server close error');
-          process.exit(1);
-        }
-        log.info('shutdown complete');
-        process.exit(0);
-      });
-  });
+  // Let a mid-run daily job finish (bounded by the deadline) before closing.
+  void stopScheduler().then(() =>
+    server.close((closeErr) => {
+      void closePool()
+        .catch((poolErr: unknown) => log.error({ err: poolErr }, 'pg pool close failed'))
+        .finally(() => {
+          if (closeErr) {
+            log.error({ err: closeErr }, 'server close error');
+            process.exit(1);
+          }
+          log.info('shutdown complete');
+          process.exit(0);
+        });
+    }),
+  );
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
