@@ -4,6 +4,8 @@ import { loadEnv } from './env';
 import { getLogger } from './log';
 import { closePool } from './admin/db-pool';
 import { syncPremiumSubdomainLabels } from './admin/sync-premium-subdomains';
+import { SCHEDULED_JOBS } from './admin/scheduled-jobs';
+import { startScheduler } from './admin/scheduler';
 
 const env = loadEnv();
 const log = getLogger();
@@ -41,6 +43,8 @@ void syncPremiumSubdomainLabels().catch((err: unknown) => {
   );
 });
 
+const stopScheduler = env.SCHEDULED_JOBS_ENABLED ? startScheduler(SCHEDULED_JOBS) : async () => {};
+
 // Render (and any supervisor) sends SIGTERM on every deploy. Stop accepting
 // new connections, let in-flight requests finish, drain the import pg pool,
 // then exit. The deadline force-exits if a request wedges -- bounded by the
@@ -55,7 +59,8 @@ function shutdown(signal: string): void {
     process.exit(1);
   }, 10_000);
   deadline.unref();
-  server.close((closeErr) => {
+  const closed = new Promise<Error | undefined>((resolve) => server.close(resolve));
+  void Promise.all([stopScheduler(), closed]).then(([, closeErr]) => {
     void closePool()
       .catch((poolErr: unknown) => log.error({ err: poolErr }, 'pg pool close failed'))
       .finally(() => {

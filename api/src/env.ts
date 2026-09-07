@@ -85,6 +85,10 @@ const RawEnvSchema = z.object({
   // because a silently-dead link is exactly the failure this declaration
   // exists to surface. SET THIS IN PRODUCTION.
   APP_BASE_URL: z.string().url().optional(),
+
+  // Kill switch for the in-process daily jobs (admin/scheduled-jobs.ts).
+  // Defaults on in production only, so dev/test processes never bill or prune.
+  SCHEDULED_JOBS_ENABLED: z.enum(['true', 'false']).optional(),
 });
 
 export interface Env {
@@ -105,6 +109,7 @@ export interface Env {
   EMAIL_PLATFORM_PARENT_DOMAIN: string | null;
   COMM_EVIDENCE_RETENTION_DAYS: number;
   APP_BASE_URL: string | null;
+  SCHEDULED_JOBS_ENABLED: boolean;
 }
 
 let cached: Env | null = null;
@@ -140,6 +145,9 @@ export function loadEnv(): Env {
     EMAIL_PLATFORM_PARENT_DOMAIN: raw.EMAIL_PLATFORM_PARENT_DOMAIN ?? null,
     COMM_EVIDENCE_RETENTION_DAYS: raw.COMM_EVIDENCE_RETENTION_DAYS,
     APP_BASE_URL: raw.APP_BASE_URL ?? null,
+    SCHEDULED_JOBS_ENABLED: raw.SCHEDULED_JOBS_ENABLED
+      ? raw.SCHEDULED_JOBS_ENABLED === 'true'
+      : raw.NODE_ENV === 'production',
   };
   return cached;
 }

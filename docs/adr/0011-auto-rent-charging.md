@@ -3,10 +3,11 @@
 - **Status:** accepted, 2026-07-04; **decision 1 amended 2026-08-01** — the flag
   now defaults to `true`, so automatic charging is **opt-out**. See
   [Amendment — 2026-08-01](#amendment--2026-08-01-the-default-flips-to-on)
-  at the end of this file. Decisions 2–5 stand unchanged and are current.
+  at the end of this file. **Decision 3 amended 2026-09-07** — the schedule
+  runs in-process, not as a Render cron. Decisions 2, 4, 5 are current.
 - **Context owner:** money subledger (docs/api-guide.md §7) + ops (render.yaml)
 - **Implements:** migration `20260704000001_auto_rent_charging`, route
-  `api/src/routes/settings.ts`, runner `api/src/admin/run-rent-charges.ts`;
+  `api/src/routes/settings.ts`, runner `api/src/admin/rent-charges.ts` (registered in `admin/scheduled-jobs.ts`);
   amended by migration `20260801000001_auto_charge_default_on`.
 
 ## Context
@@ -116,6 +117,26 @@ have skipped.
 - **Instance/scale changes** → the cron is a separate one-shot service, so it is
   unaffected by web autoscaling (ADR-0005); revisit only if a second scheduler
   could race it (it cannot today — idempotency makes a double-run safe anyway).
+
+## Amendment — 2026-09-07: in-process scheduler replaces the Render cron
+
+- **Amends:** decision 3. The `rent-charge-generator` cron service is gone;
+  the always-on API process runs the same runner daily at 08:00 UTC from the
+  job registry (`api/src/admin/scheduled-jobs.ts`, `admin/scheduler.ts`),
+  alongside the evidence-retention and maintenance janitors.
+- **Why:** three cron services cost a $1/month minimum each and carried their
+  own copies of the env vars; two of them failed every night for weeks because
+  `sync: false` values were never set. One process, one env, one registry.
+- **What survives:** the schedule is still reviewable in code, the runner is
+  still TypeScript (the comms fan-out path is unchanged), and idempotency
+  still makes a doubled or missed run safe.
+- **Operator steps:** Render's blueprint sync never deletes a resource, so
+  the three cron services must be deleted by hand in the dashboard after the
+  API deploy is live. Render's cron-failure email is gone with them; alert on
+  log `event=scheduled_job_failed`, or on `/healthz` `jobs.<name>.ok === false`.
+  After a restart `jobs.<name>` is `null` until the next run.
+- **Revisit trigger:** a second API instance (ADR-0005 scale-out) would run
+  every job twice. Move the timer behind a DB lock or into a worker first.
 
 ## Amendment — 2026-08-01: the default flips to ON
 

@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "tsx watch --env-file=../.env.local src/index.ts",
     "start": "node dist/index.js",
+    "job": "tsx src/admin/run-job.ts",
     "build": "tsup && node scripts/copy-static.mjs && node test/bundle-static-smoke.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:api-isolation": "tsx test/api-isolation.test.ts",
@@ -49,9 +50,6 @@
     "test:comms-persona": "tsx test/comms-persona.test.ts",
     "test:comms-persona-usecases": "tsx test/comms-persona-usecases.test.ts",
     "test:comms-evidence": "tsx test/comms-evidence.test.ts",
-    "retention:evidence": "tsx src/admin/run-evidence-retention.ts",
-    "janitors:maintenance": "tsx src/admin/run-maintenance-janitors.ts",
-    "charges:generate": "tsx src/admin/run-rent-charges.ts",
     "test:events-feed": "tsx test/events-feed.test.ts",
     "test:agent-principal": "tsx test/agent-principal.test.ts",
     "test:agent-grants": "tsx test/agent-grants.test.ts",

@@ -112,15 +112,15 @@ record DKIM/SPF verdicts inside the payload where available.
   `COMM_EVIDENCE_RETENTION_DAYS` (default 2555 ≈ 7 years — the outer edge of
   US written-lease limitation periods). Each removal stamps `purged_at`,
   which the audit trigger records: destruction is an audited event.
-- The evidence-retention janitor is scheduled in `render.yaml` as
-  `evidence-retention`; the same command remains safe to run manually:
+- The evidence-retention janitor runs daily inside the API process
+  (`api/src/admin/scheduled-jobs.ts`); the same job is safe to run manually:
 
   ```
-  pnpm --filter ./api retention:evidence
+  pnpm --filter ./api job evidence-retention
   ```
 
-- The raw-capture prune runs through the `maintenance-janitors` Render cron
-  (`pnpm --filter ./api janitors:maintenance`), alongside the other SQL
+- The raw-capture prune runs through the `maintenance-janitors` job
+  (`pnpm --filter ./api job maintenance-janitors`), alongside the other SQL
   janitors.
 - **Legal hold**: `PUT /v1/accounts/{id}/comms/legal-hold {"active": true,
   "reason": "..."}` (owner/manager; the agent principal is denied — a
