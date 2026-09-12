@@ -62,7 +62,7 @@ interface ApiResp {
 async function api(
   method: string,
   path: string,
-  opts: { token?: string; body?: unknown } = {},
+  opts: { token?: string; body?: unknown; requestKey?: string } = {},
 ): Promise<ApiResp> {
   const headers: Record<string, string> = { accept: 'application/json' };
   if (opts.token) headers.authorization = `Bearer ${opts.token}`;
@@ -70,7 +70,7 @@ async function api(
     ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase()) &&
     path.startsWith('/v1/accounts/')
   ) {
-    headers['idempotency-key'] = `t-${crypto.randomUUID()}`;
+    headers['idempotency-key'] = opts.requestKey ?? `t-${crypto.randomUUID()}`;
   }
   let init: RequestInit = { method, headers };
   if (opts.body !== undefined) {
@@ -376,16 +376,15 @@ await check('(E) by_type composes with as_of (utility not yet due is excluded)',
   );
   assertEq(r.status, 200, 'status');
   const t = (r.body as LedgerBody).totals;
-  // At Feb 15: rent (due Feb 1) + deposit (due Feb 1, paid Feb 2) are in;
-  // the utility charge (due Mar 1) and its payment (Mar 2) are not.
+  // Receipts are backdated; their applications were recorded today, after this cutoff.
   assertTypeTotals(
     t.by_type.rent!,
-    { charges_cents: 500, allocated_cents: 500, balance_cents: 0 },
+    { charges_cents: 500, allocated_cents: 0, balance_cents: 500 },
     'as_of by_type.rent',
   );
   assertTypeTotals(
     t.by_type.deposit!,
-    { charges_cents: 30000, allocated_cents: 30000, balance_cents: 0 },
+    { charges_cents: 30000, allocated_cents: 0, balance_cents: 30000 },
     'as_of by_type.deposit',
   );
   assertTypeTotals(
@@ -422,6 +421,121 @@ await check('(C2) pagination walk returns every row exactly once', async () => {
     guard += 1;
   } while (cursor && guard < 10);
   assertEq(seen.size, 4, 'total rows across pages (1 fixture + 3 pag)');
+});
+
+await check('credit application, retry, reversal, audit and reapplication', async () => {
+  const { createClient } = await import('@supabase/supabase-js');
+  const admin = createClient(status.API_URL, status.SERVICE_ROLE_KEY);
+  const creditTenancy = await post<{ id: string }>('/tenancies', {
+    area_id: areaB.id,
+    start_date: '2026-08-01',
+    status: 'ended',
+    end_date: '2026-09-01',
+  });
+  const bill = await post<{ id: string }>('/charges', {
+    tenancy_id: creditTenancy.id,
+    type: 'rent',
+    amount_cents: 476800,
+    currency: 'USD',
+    due_date: '2026-09-01',
+  });
+  const received = await post<{ payment: { id: string; received_at: string } }>('/payments', {
+    tenancy_id: creditTenancy.id,
+    amount_cents: 30000,
+    currency: 'USD',
+    received_at: '2026-08-10',
+    method: 'other',
+  });
+  const path = `/v1/accounts/${acct}/payments/${received.payment.id}/allocations`;
+  const requestKey = crypto.randomUUID();
+  const body = { charge_id: bill.id, amount_cents: 30000 };
+  const applied = await api('POST', path, { token, body, requestKey });
+  assertEq(applied.status, 201, 'application without note');
+  const allocation = applied.body as { id: string; note: string | null };
+  assertEq(allocation.note, null, 'optional note stays empty');
+  const retry = await api('POST', path, { token, body, requestKey });
+  assertEq((retry.body as { id: string }).id, allocation.id, 'same key returns same application');
+  // Simulate a committed application whose HTTP completion cache was lost.
+  await admin.from('idempotency_keys').delete().eq('account_id', acct).eq('key', requestKey);
+  const recovered = await api('POST', path, { token, body, requestKey });
+  assertEq(recovered.status, 201, 'retry after completion loss');
+  assertEq((recovered.body as { id: string }).id, allocation.id, 'no duplicate application');
+  const ledgerPath = `/v1/accounts/${acct}/tenancies/${creditTenancy.id}/ledger`;
+  const current = await api('GET', ledgerPath, { token });
+  assertEq((current.body as LedgerBody).totals.unapplied_credit_cents, 0, 'credit consumed');
+  assertEq((current.body as LedgerBody).totals.rent_balance_cents, 446800, 'bill reduced');
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const historical = await api('GET', ledgerPath + '?as_of=' + yesterday, { token });
+  assertEq(
+    (historical.body as LedgerBody).totals.unapplied_credit_cents,
+    30000,
+    'application not backdated',
+  );
+
+  for (const change of [
+    { amount_cents: 1 },
+    { note: 'rewritten' },
+    { deleted_at: new Date().toISOString() },
+  ]) {
+    const result = await admin.from('payment_allocations').update(change).eq('id', allocation.id);
+    if (!result.error) throw new Error('original application was mutable');
+  }
+  const reversal = await api('POST', path + '/' + allocation.id + '/void', {
+    token,
+    body: { void_reason: 'Selected the wrong bill' },
+  });
+  assertEq(reversal.status, 200, 'reversal');
+  const restored = await api('GET', ledgerPath, { token });
+  assertEq((restored.body as LedgerBody).totals.unapplied_credit_cents, 30000, 'credit restored');
+  assertEq((restored.body as LedgerBody).totals.rent_balance_cents, 476800, 'bill restored');
+  const restoredRollup = await api('GET', `/v1/accounts/${acct}/rent-rollup?status=ended`, {
+    token,
+  });
+  const restoredRow = (
+    restoredRollup.body as {
+      data: Array<{
+        tenancy_id: string;
+        rent_balance_cents: number;
+        unapplied_credit_cents: number;
+      }>;
+    }
+  ).data.find((row) => row.tenancy_id === creditTenancy.id);
+  assertEq(restoredRow?.rent_balance_cents, 476800, 'rollup restores bill');
+  assertEq(restoredRow?.unapplied_credit_cents, 30000, 'rollup restores credit');
+  const original = await api('GET', `/v1/accounts/${acct}/payments/${received.payment.id}`, {
+    token,
+  });
+  assertEq(
+    (original.body as { received_at: string }).received_at,
+    received.payment.received_at,
+    'receipt date preserved',
+  );
+  assertEq((original.body as { voided_at: unknown }).voided_at, null, 'payment remains live');
+  const { data: events } = await admin
+    .from('events')
+    .select('actor,event_type')
+    .eq('account_id', acct)
+    .eq('entity_id', allocation.id);
+  assertEq(events?.length, 2, 'creation and reversal audit events');
+  if (events?.some((e) => !e.actor)) throw new Error('missing audit actor');
+  const again = await api('POST', path, {
+    token,
+    body: { ...body, note: 'Tenant instruction recorded separately' },
+  });
+  assertEq(again.status, 201, 'released capacity can be reapplied');
+  const overflow = await api('POST', path, { token, body: { ...body, amount_cents: 1 } });
+  assertEq(overflow.status, 400, 'cannot exceed remaining payment');
+  const cross = await api('POST', path, {
+    token,
+    body: { charge_id: chargeA.id, amount_cents: 1 },
+  });
+  assertEq(cross.status, 400, 'cannot cross tenancies');
+  const rollup = await api('GET', `/v1/accounts/${acct}/rent-rollup?status=ended`, { token });
+  assertEq(rollup.status, 200, 'rollup response');
+  const row = (
+    rollup.body as { data: Array<{ tenancy_id: string; rent_balance_cents: number }> }
+  ).data.find((r) => r.tenancy_id === creditTenancy.id);
+  assertEq(row?.rent_balance_cents, 446800, 'rollup and ledger agree');
 });
 
 // --- summary -----------------------------------------------------------------

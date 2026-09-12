@@ -1,38 +1,20 @@
 import type { ExportData } from '../export-pdf';
-
-// ---- ledger derivation ------------------------------------------------------
+import { dayBefore, ledgerRowsAt } from '../../lib/ledger-history';
 
 export interface DerivedLedger {
-  // Standing context: opening_balance is what's owed
-  // entering the date range. With no from_date, opening_balance is 0
-  // and rent_charges_in_range / rent_payments_in_range are the totals.
   opening_balance_cents: number;
   rent_charges_in_range_cents: number;
+  // Net application movement, including reversals; not cash received or taxable income.
   rent_payments_in_range_cents: number;
-  // Closing balance = adoption opening + opening + in-range charges
-  // - in-range payments. This is the "balance you'd see if you looked just
-  // at the slice", carrying the pre-tracking balance the slice can't show.
   closing_balance_cents: number;
-  // The landlord-stated balance at adoption (signed: > 0 owed, < 0 credit),
-  // 0 when the tenancy was never adopted. Like deposits and unapplied credit
-  // it predates every row and doesn't care about the date slice -- omitting
-  // it would misstate the obligation the export exists to prove. Kept OUT of
-  // opening_balance_cents, which means "row-derived debt entering the range".
+  // Landlord-stated adoption balance is separate from row-derived opening debt.
   adoption_opening_balance_cents: number;
   adoption_date: string | null;
-  // The landlord's own qualifiers on that stated balance: needs_review means
-  // they marked the figure unresolved, balance_basis is how they arrived at it.
-  // false/null when no adoption applies to this bundle -- a figure the landlord
-  // flagged must never print as a settled number.
   adoption_needs_review: boolean;
   adoption_balance_basis: string | null;
-  // Whole-history (deposits + unapplied credit don't care about the slice
-  // -- a deposit was either taken or wasn't; an unapplied credit is real
-  // money regardless of when it landed).
   deposit_charges_cents: number;
   deposit_payments_cents: number;
   unapplied_credit_cents: number;
-  // The dates used; surfaced so the renderer can label the opening line.
   from_date: string | null;
   to_date: string | null;
   currency: string | null;
@@ -44,12 +26,64 @@ export function inRangeISO(
   to: string | null,
 ): boolean {
   if (!iso) return false;
-  // Compare lexically. Postgres dates render as YYYY-MM-DD; timestamps
-  // render as YYYY-MM-DD... -- both compare correctly against ISO date
-  // bounds at the prefix.
-  if (from && iso < from) return false;
-  if (to && iso > `${to}T23:59:59Z`) return false;
-  return true;
+  const day = iso.slice(0, 10);
+  return (!from || day >= from) && (!to || day <= to);
+}
+
+export function exportLedgerAt(data: ExportData, cutoff: string | null): ExportData {
+  return {
+    ...data,
+    charges: ledgerRowsAt(data.charges, (row) => String(row.due_date), cutoff),
+    payments: ledgerRowsAt(data.payments, (row) => String(row.received_at), cutoff),
+    allocations: ledgerRowsAt(data.allocations, (row) => String(row.created_at), cutoff),
+  };
+}
+
+export function paymentActivityInRange(
+  payment: Record<string, unknown>,
+  allocations: Array<Record<string, unknown>>,
+  from: string | null,
+  to: string | null,
+): boolean {
+  const within = (date: unknown) => typeof date === 'string' && inRangeISO(date, from, to);
+  return (
+    within(payment.received_at) ||
+    within(payment.voided_at) ||
+    allocations.some((row) => within(row.created_at) || within(row.voided_at))
+  );
+}
+
+function totalsAt(data: ExportData, cutoff: string | null) {
+  const snapshot = exportLedgerAt(data, cutoff);
+  const charges = new Map(
+    snapshot.charges.filter((row) => !row.voided_at).map((row) => [row.id, row]),
+  );
+  const payments = new Map(
+    snapshot.payments.filter((row) => !row.voided_at).map((row) => [row.id, row]),
+  );
+  let charged = 0,
+    applied = 0,
+    depositCharged = 0,
+    depositApplied = 0,
+    received = 0;
+  for (const row of charges.values()) {
+    if (row.type === 'deposit') depositCharged += Number(row.amount_cents);
+    else charged += Number(row.amount_cents);
+  }
+  for (const row of payments.values()) received += Number(row.amount_cents);
+  for (const row of snapshot.allocations) {
+    const charge = charges.get(row.charge_id);
+    if (row.voided_at || !charge || !payments.has(row.payment_id)) continue;
+    if (charge.type === 'deposit') depositApplied += Number(row.amount_cents);
+    else applied += Number(row.amount_cents);
+  }
+  return {
+    charged,
+    applied,
+    depositCharged,
+    depositApplied,
+    credit: received - applied - depositApplied,
+  };
 }
 
 export function deriveLedger(
@@ -57,120 +91,28 @@ export function deriveLedger(
   from: string | null,
   to: string | null,
 ): DerivedLedger {
-  const chargeIds = new Set(data.charges.map((c) => c.id as string));
-  const paymentIds = new Set(data.payments.map((p) => p.id as string));
-  const voidedCharges = new Set(data.charges.filter((c) => c.voided_at).map((c) => c.id as string));
-  const voidedPayments = new Set(
-    data.payments.filter((p) => p.voided_at).map((p) => p.id as string),
-  );
-  const tenancyAllocs = data.allocations.filter(
-    (a) => chargeIds.has(a.charge_id as string) && paymentIds.has(a.payment_id as string),
-  );
-
-  // ---- whole-history aggregates (deposit + unapplied credit) -------------
-  let depositChargesC = 0,
-    depositPaymentsC = 0;
-  for (const cr of data.charges) {
-    if (cr.voided_at) continue;
-    if (cr.type === 'deposit') depositChargesC += cr.amount_cents as number;
-  }
-  let totalAllocatedC = 0;
-  for (const a of tenancyAllocs) {
-    if (voidedPayments.has(a.payment_id as string)) continue;
-    if (voidedCharges.has(a.charge_id as string)) continue;
-    totalAllocatedC += a.amount_cents as number;
-    const isDeposit = data.charges.find((c) => c.id === a.charge_id)?.type === 'deposit';
-    if (isDeposit) depositPaymentsC += a.amount_cents as number;
-  }
-  let totalReceivedC = 0;
-  for (const pr of data.payments) {
-    if (pr.voided_at) continue;
-    totalReceivedC += pr.amount_cents as number;
-  }
-  const unappliedCredit = Math.max(0, totalReceivedC - totalAllocatedC);
-
-  // ---- opening balance + in-range slice ----------------------------------
-  // Opening balance = rent charges due strictly BEFORE from_date minus the
-  // RENT-charge-allocated portion of payments received before from_date.
-  // (Deposit charges don't roll into the rent balance.)
-  const isRentCharge = (id: string) =>
-    data.charges.find((c) => c.id === id)?.type !== 'deposit' && !voidedCharges.has(id);
-
-  let openingChargedC = 0;
-  for (const cr of data.charges) {
-    if (cr.voided_at) continue;
-    if (cr.type === 'deposit') continue;
-    if (from && (cr.due_date as string) < from) {
-      openingChargedC += cr.amount_cents as number;
-    }
-  }
-  let openingPaidC = 0;
-  for (const a of tenancyAllocs) {
-    const pay = data.payments.find((p) => p.id === a.payment_id);
-    if (!pay) continue;
-    if (pay.voided_at) continue;
-    if (!isRentCharge(a.charge_id as string)) continue;
-    if (from && (pay.received_at as string) < from) {
-      openingPaidC += a.amount_cents as number;
-    }
-  }
-  const openingBalanceC = from ? openingChargedC - openingPaidC : 0;
-
-  let inRangeChargesC = 0;
-  for (const cr of data.charges) {
-    if (cr.voided_at) continue;
-    if (cr.type === 'deposit') continue;
-    const dd = cr.due_date as string;
-    // due_date is a YYYY-MM-DD; treat the range bounds the same way.
-    if (from && dd < from) continue;
-    if (to && dd > to) continue;
-    inRangeChargesC += cr.amount_cents as number;
-  }
-  let inRangePaymentsC = 0;
-  for (const a of tenancyAllocs) {
-    const pay = data.payments.find((p) => p.id === a.payment_id);
-    if (!pay) continue;
-    if (pay.voided_at) continue;
-    if (!isRentCharge(a.charge_id as string)) continue;
-    if (!inRangeISO(pay.received_at as string, from, to)) continue;
-    inRangePaymentsC += a.amount_cents as number;
-  }
-  // ---- adoption opening balance (whole-history, like the deposit) --------
-  // INVARIANT: an adoption dated after to_date did not exist at the end of the
-  // slice, so a bundle cut before it must not state its balance -- the same
-  // financial-date rule GET /ledger?as_of applies (routes/ledger.ts). from_date
-  // does NOT gate it: like the row-derived opening balance, a balance predating
-  // the range is carried IN.
+  const end = totalsAt(data, to);
+  const start = from ? totalsAt(data, dayBefore(from)) : { charged: 0, applied: 0 };
   const adoption =
-    data.adoption && to && (data.adoption.adoption_date as string) > to ? null : data.adoption;
-  const adoptionOpeningC = (adoption?.opening_balance_cents as number | undefined) ?? 0;
-  const adoptionDate = (adoption?.adoption_date as string | undefined) ?? null;
-  const adoptionNeedsReview = (adoption?.needs_review as boolean | undefined) ?? false;
-  const adoptionBalanceBasis = (adoption?.balance_basis as string | null | undefined) ?? null;
-
-  const closingBalanceC = adoptionOpeningC + openingBalanceC + inRangeChargesC - inRangePaymentsC;
-
-  // A Branch-C adoption (opening balance, no rows) still states its currency.
-  const currency =
-    (data.charges[0]?.currency as string | undefined) ??
-    (data.payments[0]?.currency as string | undefined) ??
-    (adoption?.currency as string | undefined) ??
-    null;
-
+    data.adoption && to && String(data.adoption.adoption_date) > to ? null : data.adoption;
+  const adoptionOpening = Number(adoption?.opening_balance_cents ?? 0);
   return {
-    opening_balance_cents: openingBalanceC,
-    rent_charges_in_range_cents: inRangeChargesC,
-    rent_payments_in_range_cents: inRangePaymentsC,
-    closing_balance_cents: closingBalanceC,
-    adoption_opening_balance_cents: adoptionOpeningC,
-    adoption_date: adoptionDate,
-    adoption_needs_review: adoptionNeedsReview,
-    adoption_balance_basis: adoptionBalanceBasis,
-    deposit_charges_cents: depositChargesC,
-    deposit_payments_cents: depositPaymentsC,
-    unapplied_credit_cents: unappliedCredit,
+    opening_balance_cents: start.charged - start.applied,
+    rent_charges_in_range_cents: end.charged - start.charged,
+    rent_payments_in_range_cents: end.applied - start.applied,
+    closing_balance_cents: adoptionOpening + end.charged - end.applied,
+    adoption_opening_balance_cents: adoptionOpening,
+    adoption_date: (adoption?.adoption_date as string | undefined) ?? null,
+    adoption_needs_review: Boolean(adoption?.needs_review),
+    adoption_balance_basis: (adoption?.balance_basis as string | null | undefined) ?? null,
+    deposit_charges_cents: end.depositCharged,
+    deposit_payments_cents: end.depositApplied,
+    unapplied_credit_cents: end.credit,
     from_date: from,
     to_date: to,
-    currency,
+    currency: (data.charges[0]?.currency ??
+      data.payments[0]?.currency ??
+      adoption?.currency ??
+      null) as string | null,
   };
 }

@@ -2,7 +2,7 @@ import PDFDocument from 'pdfkit';
 import { createHash } from 'node:crypto';
 import { getAdminClient } from '../supabase-admin';
 import type { AttachmentRow, ChainStatus, ExportData, ExportScope } from '../export-pdf';
-import { deriveLedger, inRangeISO } from './ledger';
+import { deriveLedger, exportLedgerAt, inRangeISO, paymentActivityInRange } from './ledger';
 import {
   groupInteractionChains,
   interactionCastDisplay,
@@ -31,6 +31,7 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
   const fromDate = scope.fromDate ?? null;
   const toDate = scope.toDate ?? null;
   const ledger = deriveLedger(data, fromDate, toDate);
+  const money = exportLedgerAt(data, toDate);
 
   // PDF info dict + file id derived from (scope, generatedAt) so each
   // export has a stable identity within its own bytes. Unlike the inspection
@@ -189,10 +190,10 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
     }
   }
   doc.text(
-    `Rent charged${fromDate || toDate ? ' (in range)' : ''}:  ${fmtMoney(ledger.rent_charges_in_range_cents, ledger.currency)}`,
+    `Non-deposit charges, net of voids${fromDate || toDate ? ' (in range)' : ''}:  ${fmtMoney(ledger.rent_charges_in_range_cents, ledger.currency)}`,
   );
   doc.text(
-    `Rent paid${fromDate || toDate ? ' (in range)' : ''}:     ${fmtMoney(ledger.rent_payments_in_range_cents, ledger.currency)}`,
+    `Applications, net of reversals${fromDate || toDate ? ' (in range)' : ''}:     ${fmtMoney(ledger.rent_payments_in_range_cents, ledger.currency)}`,
   );
   const owedSuffix =
     ledger.closing_balance_cents > 0
@@ -246,17 +247,20 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
   // the void happened (not just the absence).
   const isInRangeCharge = (due: string) =>
     (!fromDate || due >= fromDate) && (!toDate || due <= toDate);
-  const isInRangePayment = (received: string) => inRangeISO(received, fromDate, toDate);
 
   doc.moveDown(0.3);
   doc.fontSize(9).fillColor('#333');
   doc.text(`Charges${fromDate || toDate ? ' (in range)' : ''}:`);
-  const chargesSorted = [...data.charges].sort((a, b) =>
+  const chargesSorted = [...money.charges].sort((a, b) =>
     String(a.due_date).localeCompare(String(b.due_date)),
   );
   let renderedCharges = 0;
   for (const cr of chargesSorted) {
-    if (!isInRangeCharge(cr.due_date as string)) continue;
+    if (
+      !isInRangeCharge(cr.due_date as string) &&
+      !inRangeISO(cr.voided_at as string, fromDate, toDate)
+    )
+      continue;
     const v = cr.voided_at ? ' [VOID]' : '';
     doc.text(
       `  ${cr.due_date as string}  ${(cr.type as string).padEnd(10)}  ${fmtMoney(cr.amount_cents as number, cr.currency as string)}${v}`,
@@ -267,22 +271,28 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
 
   doc.moveDown(0.3);
   doc.text(`Payments + allocations${fromDate || toDate ? ' (in range)' : ''}:`);
-  const paymentsSorted = [...data.payments].sort((a, b) =>
+  const paymentsSorted = [...money.payments].sort((a, b) =>
     String(a.received_at).localeCompare(String(b.received_at)),
   );
   let renderedPayments = 0;
   for (const pr of paymentsSorted) {
-    if (!isInRangePayment(pr.received_at as string)) continue;
+    const allocs = money.allocations.filter((a) => a.payment_id === pr.id);
+    if (!paymentActivityInRange(pr, allocs, fromDate, toDate)) continue;
     const v = pr.voided_at ? ' [VOID]' : '';
     doc.text(
       `  ${pr.received_at as string}  via ${pr.method as string}  ${fmtMoney(pr.amount_cents as number, pr.currency as string)}${v}`,
     );
-    const allocs = data.allocations.filter((a) => a.payment_id === pr.id);
     for (const a of allocs) {
+      if (toDate && a.created_at && String(a.created_at).slice(0, 10) > toDate) continue;
       const ch = data.charges.find((c) => c.id === a.charge_id);
       doc.text(
         `     → ${fmtMoney(a.amount_cents as number, (ch?.currency as string) ?? '')} to charge ${(ch?.due_date as string) ?? '?'} (${(ch?.type as string) ?? '?'})`,
       );
+      if (a.created_at)
+        doc.text(`       Applied ${String(a.created_at)} · application ${String(a.id)}`);
+      if (a.note) doc.text(`       Note: ${String(a.note)}`);
+      if (a.voided_at && (!toDate || String(a.voided_at).slice(0, 10) <= toDate))
+        doc.text(`       Reversed ${String(a.voided_at)}: ${String(a.void_reason ?? '')}`);
     }
     renderedPayments += 1;
   }

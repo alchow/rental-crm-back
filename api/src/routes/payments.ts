@@ -5,11 +5,7 @@ import { asJson, nullableRpcArg } from '../supabase/db-types';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 
-// Corrections preserve financial history: void a payment, record its replacement,
-// and record any fee as a separate charge. This router only appends allocations;
-// _assert_allocation_integrity rejects cross-scope or excessive amounts. Voiding
-// updates payment metadata but preserves allocation rows; ledger reads exclude
-// them through payment.voided_at.
+// Payment voids and application reversals preserve original facts and append audit events.
 
 const PaymentMethod = z.enum([
   'cash',
@@ -51,6 +47,9 @@ const PaymentAllocation = z
     payment_id: z.string().uuid(),
     charge_id: z.string().uuid(),
     amount_cents: z.number().int().positive(),
+    note: z.string().nullable(),
+    voided_at: z.string().nullable(),
+    void_reason: z.string().nullable(),
     created_at: z.string(),
     updated_at: z.string(),
     deleted_at: z.string().nullable(),
@@ -63,6 +62,23 @@ const AllocationInput = z
     amount_cents: z.number().int().positive(),
   })
   .openapi('PaymentAllocationInput');
+
+const ApplyCreditBody = AllocationInput.extend({
+  note: z.string().trim().max(1000).optional(),
+}).openapi('ApplyCreditBody');
+
+function matchesApplication(
+  allocation: z.infer<typeof PaymentAllocation>,
+  paymentId: string,
+  body: z.infer<typeof ApplyCreditBody>,
+): boolean {
+  return (
+    allocation.payment_id === paymentId &&
+    allocation.charge_id === body.charge_id &&
+    allocation.amount_cents === body.amount_cents &&
+    allocation.note === (body.note || null)
+  );
+}
 
 const CreatePaymentBody = z
   .object({
@@ -177,10 +193,28 @@ const addAllocation = createRoute({
   summary: 'Add an allocation against an existing payment',
   request: {
     params: AccountAndIdParam,
-    body: { content: { 'application/json': { schema: AllocationInput } }, required: true },
+    body: { content: { 'application/json': { schema: ApplyCreditBody } }, required: true },
   },
   responses: {
     201: { description: 'created', content: { 'application/json': { schema: PaymentAllocation } } },
+    ...errorResponses,
+  },
+});
+
+const voidAllocation = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/payments/{id}/allocations/{allocationId}/void',
+  tags: ['payments'],
+  summary: 'Reverse one application without changing the received payment',
+  request: {
+    params: AccountAndIdParam.extend({ allocationId: z.string().uuid() }),
+    body: { content: { 'application/json': { schema: VoidPaymentBody } }, required: true },
+  },
+  responses: {
+    200: {
+      description: 'reversed',
+      content: { 'application/json': { schema: PaymentAllocation } },
+    },
     ...errorResponses,
   },
 });
@@ -307,6 +341,19 @@ paymentsApp.openapi(addAllocation, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
+  const requestKey = c.req.header('idempotency-key')!;
+  const { data: replay, error: replayError } = await sb
+    .from('payment_allocations')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('request_key', requestKey)
+    .maybeSingle();
+  if (replayError) throw new ApiError(500, 'database_error', replayError.message);
+  if (replay) {
+    if (!matchesApplication(replay, id, body))
+      throw new ApiError(409, 'idempotency_conflict', 'This request key was already used.');
+    return c.json(replay as z.infer<typeof PaymentAllocation>, 201);
+  }
   const { data, error } = await sb
     .from('payment_allocations')
     .insert({
@@ -314,10 +361,25 @@ paymentsApp.openapi(addAllocation, async (c) => {
       payment_id: id,
       charge_id: body.charge_id,
       amount_cents: body.amount_cents,
+      note: body.note || null,
+      request_key: requestKey,
     })
     .select('*')
     .single();
   if (error) {
+    // The unique key closes the gap between committing the row and caching the HTTP response.
+    if (error.code === '23505') {
+      const { data: existing } = await sb
+        .from('payment_allocations')
+        .select('*')
+        .eq('account_id', accountId)
+        .eq('request_key', requestKey)
+        .maybeSingle();
+      if (existing && matchesApplication(existing, id, body)) {
+        return c.json(existing as z.infer<typeof PaymentAllocation>, 201);
+      }
+      throw new ApiError(409, 'idempotency_conflict', 'This request key was already used.');
+    }
     if (
       /cross-tenancy|cross-account|account mismatch|currency mismatch|voided/i.test(error.message)
     ) {
@@ -332,4 +394,36 @@ paymentsApp.openapi(addAllocation, async (c) => {
     throw new ApiError(500, 'database_error', error.message);
   }
   return c.json(data as z.infer<typeof PaymentAllocation>, 201);
+});
+
+paymentsApp.openapi(voidAllocation, async (c) => {
+  const { accountId, id, allocationId } = c.req.valid('param');
+  const reason = c.req.valid('json').void_reason.trim();
+  if (!reason) throw new ApiError(400, 'invalid_request', 'A reversal reason is required.');
+  const sb = getSb(c);
+  const { data, error } = await sb
+    .from('payment_allocations')
+    .update({ voided_at: new Date().toISOString(), void_reason: reason })
+    .eq('account_id', accountId)
+    .eq('payment_id', id)
+    .eq('id', allocationId)
+    .is('deleted_at', null)
+    .is('voided_at', null)
+    .select('*')
+    .maybeSingle();
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  if (data) return c.json(data as z.infer<typeof PaymentAllocation>, 200);
+  const { data: existing, error: readError } = await sb
+    .from('payment_allocations')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('payment_id', id)
+    .eq('id', allocationId)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (readError) throw new ApiError(500, 'database_error', readError.message);
+  if (!existing) throw new ApiError(404, 'not_found', 'Application not found.');
+  if (existing.void_reason !== reason)
+    throw new ApiError(409, 'invalid_request', 'Application already reversed.');
+  return c.json(existing as z.infer<typeof PaymentAllocation>, 200);
 });

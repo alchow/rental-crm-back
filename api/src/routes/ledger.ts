@@ -1,3 +1,4 @@
+import { ledgerRowsAt } from '../lib/ledger-history';
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
@@ -59,8 +60,12 @@ const LedgerPayment = z.object({
   void_reason: z.string().nullable(),
   allocations: z.array(
     z.object({
+      id: z.string().uuid(),
       charge_id: z.string().uuid(),
       amount_cents: z.number().int(),
+      note: z.string().nullable(),
+      voided_at: z.string().nullable(),
+      void_reason: z.string().nullable(),
       created_at: z.string().openapi({
         description:
           'When this money was APPLIED to that charge — which can be well after the ' +
@@ -80,7 +85,7 @@ const LedgerAdoption = z
   .object({
     adoption_date: z.string().openapi({
       description:
-        "The day tracking began — everything before it is landlord testimony, and the " +
+        'The day tracking began — everything before it is landlord testimony, and the ' +
         "statement's tracking-since divider sits here.",
     }),
     opening_balance_cents: z.number().int().openapi({
@@ -246,6 +251,9 @@ interface AllocationRow {
   charge_id: string;
   amount_cents: number;
   created_at: string;
+  note?: string | null;
+  voided_at?: string | null;
+  void_reason?: string | null;
 }
 
 ledgerApp.openapi(get, async (c) => {
@@ -293,29 +301,8 @@ ledgerApp.openapi(get, async (c) => {
   let chargeRows = (charges.data ?? []) as ChargeRow[];
   let paymentRows = (payments.data ?? []) as PaymentRow[];
 
-  // Point-in-time filter, applied before aggregation:
-  //   - Charges included when due_date <= as_of.
-  //   - Payments included when received_at (date part) <= as_of.
-  //   - A void is respected only when voided_at (date part) <= as_of —
-  //     a charge/payment voided AFTER as_of counts as live at that date.
-  //   - Allocations referencing excluded rows fall out naturally via the
-  //     existing chargeById / paymentIds filters below.
-  if (as_of !== undefined) {
-    chargeRows = chargeRows.filter((cr) => cr.due_date <= as_of);
-    paymentRows = paymentRows.filter((pr) => pr.received_at.slice(0, 10) <= as_of);
-    // Null out voided_at/void_reason when the void happened AFTER as_of,
-    // so the row is treated as live at the as_of date.
-    chargeRows = chargeRows.map((cr) =>
-      cr.voided_at !== null && cr.voided_at.slice(0, 10) > as_of
-        ? { ...cr, voided_at: null, void_reason: null }
-        : cr,
-    );
-    paymentRows = paymentRows.map((pr) =>
-      pr.voided_at !== null && pr.voided_at.slice(0, 10) > as_of
-        ? { ...pr, voided_at: null, void_reason: null }
-        : pr,
-    );
-  }
+  chargeRows = ledgerRowsAt(chargeRows, (row) => row.due_date, as_of);
+  paymentRows = ledgerRowsAt(paymentRows, (row) => row.received_at, as_of);
   const chargeById = new Map(chargeRows.map((cr) => [cr.id, cr]));
 
   // Allocations are fetched for THIS tenancy's charges only (chunked .in()
@@ -335,16 +322,19 @@ ledgerApp.openapi(get, async (c) => {
     allRows.push(...((data ?? []) as AllocationRow[]));
   }
   const paymentIds = new Set(paymentRows.map((p) => p.id));
-  const tenancyAllocations = allRows.filter((a) => paymentIds.has(a.payment_id));
+  const tenancyAllocations = ledgerRowsAt(allRows, (row) => row.created_at, as_of).filter((row) =>
+    paymentIds.has(row.payment_id),
+  );
 
   // Index voided rows so we can exclude their allocations from the balance.
   const voidedPayments = new Set(paymentRows.filter((p) => p.voided_at !== null).map((p) => p.id));
   const voidedCharges = new Set(chargeRows.filter((c) => c.voided_at !== null).map((c) => c.id));
 
   // Per-charge derived balance.
-  // active allocation = allocation row whose payment AND charge are both not voided.
+  // Only unreversed allocations with live payment and charge affect balances.
   const allocByCharge = new Map<string, number>();
   for (const a of tenancyAllocations) {
+    if (a.voided_at) continue;
     if (voidedPayments.has(a.payment_id)) continue;
     if (voidedCharges.has(a.charge_id)) continue;
     allocByCharge.set(a.charge_id, (allocByCharge.get(a.charge_id) ?? 0) + a.amount_cents);
@@ -412,6 +402,7 @@ ledgerApp.openapi(get, async (c) => {
   // what they're allocated to.
   let totalAllocatedC = 0;
   for (const a of tenancyAllocations) {
+    if (a.voided_at) continue;
     if (voidedPayments.has(a.payment_id)) continue;
     if (voidedCharges.has(a.charge_id)) continue;
     totalAllocatedC += a.amount_cents;
@@ -475,9 +466,13 @@ ledgerApp.openapi(get, async (c) => {
       voided_at: pr.voided_at,
       void_reason: pr.void_reason,
       allocations: (allocByPayment.get(pr.id) ?? []).map((a) => ({
+        id: a.id,
         charge_id: a.charge_id,
         amount_cents: a.amount_cents,
         created_at: a.created_at,
+        note: a.note ?? null,
+        voided_at: a.voided_at ?? null,
+        void_reason: a.void_reason ?? null,
       })),
     });
   }

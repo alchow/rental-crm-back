@@ -48,14 +48,29 @@ declare
   v_charge       record;
   v_alloc_sum    bigint;
 begin
+  if TG_OP = 'DELETE' then
+    raise exception 'allocations cannot be deleted; void the application' using errcode = '23514';
+  end if;
+  if TG_OP = 'UPDATE' then
+    if (to_jsonb(NEW) - array['voided_at','void_reason','updated_at'])
+       is distinct from (to_jsonb(OLD) - array['voided_at','void_reason','updated_at'])
+       or OLD.voided_at is not null or NEW.voided_at is null
+       or nullif(btrim(NEW.void_reason), '') is null then
+      raise exception 'only a reasoned allocation void is allowed' using errcode = '23514';
+    end if;
+    NEW.voided_at := now();
+    NEW.updated_at := now();
+    return NEW;
+  end if;
+  if NEW.voided_at is not null or NEW.deleted_at is not null then
+    raise exception 'new allocation must be live' using errcode = '23514';
+  end if;
+  NEW.created_at := now();
+  NEW.updated_at := now();
   if NEW.amount_cents is null or NEW.amount_cents <= 0 then
     raise exception 'allocation amount_cents must be positive (got %)', NEW.amount_cents
       using errcode = 'check_violation';
   end if;
-
-  -- Fetch the referenced payment and charge under the DEFINER's privileges
-  -- (we're SECURITY DEFINER) so the trigger sees the real rows regardless
-  -- of the caller's RLS context. We re-verify scoping below.
   select id, account_id, tenancy_id, amount_cents, currency, voided_at
     into v_payment
     from public.payments where id = NEW.payment_id;
@@ -71,10 +86,6 @@ begin
     raise exception 'charge % not found', NEW.charge_id
       using errcode = 'foreign_key_violation';
   end if;
-
-  -- Same account_id throughout. The composite FK already enforces this for
-  -- the (account_id, payment_id) and (account_id, charge_id) links, but we
-  -- compare the bare account_id of payment and charge as belt-and-braces.
   if v_payment.account_id <> NEW.account_id then
     raise exception 'allocation/payment account mismatch (alloc=%, payment=%)',
       NEW.account_id, v_payment.account_id
@@ -85,24 +96,16 @@ begin
       NEW.account_id, v_charge.account_id
       using errcode = 'check_violation';
   end if;
-
-  -- Same tenancy_id between payment and charge. The attack the brief flags:
-  -- allocate A's payment to a different tenancy's (or another account's)
-  -- charge. Rejected at the DB, not in the handler.
   if v_payment.tenancy_id <> v_charge.tenancy_id then
     raise exception 'cross-tenancy allocation: payment.tenancy=% charge.tenancy=%',
       v_payment.tenancy_id, v_charge.tenancy_id
       using errcode = 'check_violation';
   end if;
-
-  -- Same currency.
   if v_payment.currency <> v_charge.currency then
     raise exception 'currency mismatch in allocation: payment=% charge=%',
       v_payment.currency, v_charge.currency
       using errcode = 'check_violation';
   end if;
-
-  -- Voided sources can't accept new allocations.
   if v_payment.voided_at is not null then
     raise exception 'cannot allocate from a voided payment'
       using errcode = 'check_violation';
@@ -111,29 +114,19 @@ begin
     raise exception 'cannot allocate to a voided charge'
       using errcode = 'check_violation';
   end if;
-
-  -- Per-payment + per-charge advisory locks so two concurrent allocations
-  -- against the same payment / same charge serialize. Without this, two
-  -- parallel writers could each see the OLD sum and both pass the cap
-  -- check.
   perform pg_advisory_xact_lock(
     hashtextextended('payment_alloc:' || NEW.payment_id::text, 0)
   );
   perform pg_advisory_xact_lock(
     hashtextextended('charge_alloc:'  || NEW.charge_id::text,  0)
   );
-
-  -- Sum of allocations against this payment after this row. Allocations to a
-  -- VOIDED charge are excluded: voiding the charge releases that allocation
-  -- (the ledger surfaces it as unapplied credit), so its cents no longer
-  -- consume this payment's capacity. Mirrors the ledger's "active allocation
-  -- = payment AND charge both non-voided" rule.
   select coalesce(sum(pa.amount_cents), 0) into v_alloc_sum
     from public.payment_allocations pa
     join public.charges ch on ch.id = pa.charge_id
     where pa.payment_id = NEW.payment_id
       and (TG_OP = 'INSERT' or pa.id <> NEW.id)
       and pa.deleted_at is null
+      and pa.voided_at is null
       and ch.voided_at is null;
   v_alloc_sum := v_alloc_sum + NEW.amount_cents;
   if v_alloc_sum > v_payment.amount_cents then
@@ -141,18 +134,13 @@ begin
       v_alloc_sum, v_payment.amount_cents, NEW.payment_id
       using errcode = 'check_violation';
   end if;
-
-  -- Sum of allocations against this charge after this row. Allocations from a
-  -- VOIDED payment are excluded: voiding the payment releases its allocation
-  -- (the charge reads as open again in the ledger), so its cents no longer
-  -- consume this charge's capacity. Without this, a charge that ever had a
-  -- voided payment stayed un-payable.
   select coalesce(sum(pa.amount_cents), 0) into v_alloc_sum
     from public.payment_allocations pa
     join public.payments pm on pm.id = pa.payment_id
     where pa.charge_id = NEW.charge_id
       and (TG_OP = 'INSERT' or pa.id <> NEW.id)
       and pa.deleted_at is null
+      and pa.voided_at is null
       and pm.voided_at is null;
   v_alloc_sum := v_alloc_sum + NEW.amount_cents;
   if v_alloc_sum > v_charge.amount_cents then
@@ -8678,6 +8666,7 @@ CREATE OR REPLACE FUNCTION "public"."rent_rollup"("p_account_id" "uuid", "p_stat
        and p.tenancy_id = c.tenancy_id
      where a.account_id = p_account_id
        and a.deleted_at is null
+       and a.voided_at is null
        and p.deleted_at is null
        and p.voided_at is null
      group by c.id, c.tenancy_id
@@ -11747,7 +11736,13 @@ CREATE TABLE IF NOT EXISTS "public"."payment_allocations" (
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "deleted_at" timestamp with time zone,
-    CONSTRAINT "payment_allocations_amount_cents_positive" CHECK (("amount_cents" > 0))
+    "note" "text",
+    "voided_at" timestamp with time zone,
+    "void_reason" "text",
+    "request_key" "text",
+    CONSTRAINT "allocation_void_reason" CHECK (((("voided_at" IS NULL) AND ("void_reason" IS NULL)) OR (("voided_at" IS NOT NULL) AND (("length"("btrim"("void_reason")) >= 1) AND ("length"("btrim"("void_reason")) <= 500))))),
+    CONSTRAINT "payment_allocations_amount_cents_positive" CHECK (("amount_cents" > 0)),
+    CONSTRAINT "payment_allocations_note_check" CHECK (("length"("note") <= 1000))
 );
 
 ALTER TABLE ONLY "public"."payment_allocations" FORCE ROW LEVEL SECURITY;
@@ -13009,14 +13004,6 @@ ALTER TABLE ONLY "public"."notices"
 
 ALTER TABLE ONLY "public"."notices"
     ADD CONSTRAINT "notices_pkey" PRIMARY KEY ("id");
-
-
---
--- Name: payment_allocations payment_allocations_payment_id_charge_id_key; Type: CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY "public"."payment_allocations"
-    ADD CONSTRAINT "payment_allocations_payment_id_charge_id_key" UNIQUE ("payment_id", "charge_id");
 
 
 --
@@ -14359,6 +14346,13 @@ CREATE INDEX "notices_tenancy_id_idx" ON "public"."notices" USING "btree" ("tena
 
 
 --
+-- Name: payment_allocation_request_key; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE UNIQUE INDEX "payment_allocation_request_key" ON "public"."payment_allocations" USING "btree" ("account_id", "request_key") WHERE ("request_key" IS NOT NULL);
+
+
+--
 -- Name: payment_allocations_account_id_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
@@ -15181,7 +15175,7 @@ CREATE OR REPLACE TRIGGER "payment_allocations_audit" AFTER INSERT OR DELETE OR 
 -- Name: payment_allocations payment_allocations_integrity; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
-CREATE OR REPLACE TRIGGER "payment_allocations_integrity" BEFORE INSERT OR UPDATE ON "public"."payment_allocations" FOR EACH ROW EXECUTE FUNCTION "public"."_assert_allocation_integrity"();
+CREATE OR REPLACE TRIGGER "payment_allocations_integrity" BEFORE INSERT OR DELETE OR UPDATE ON "public"."payment_allocations" FOR EACH ROW EXECUTE FUNCTION "public"."_assert_allocation_integrity"();
 
 
 --
