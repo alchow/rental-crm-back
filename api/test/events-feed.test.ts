@@ -536,23 +536,24 @@ await check('(f) as_of=2026-01-10 → charge A counted (due 01-01), no payment y
   assertEq(body.totals.rent_balance_cents, 10000, 'rent_balance_cents');
 });
 
-await check('(f) as_of=2026-01-31 → charge A + payment both count, balance=0', async () => {
+await check('(f) as_of=2026-01-31 → received payment remains credit until its application is recorded', async () => {
   const body = await ledger('as_of=2026-01-31');
   // Charge A (due 01-01 <= 01-31). Payment received 01-15 <= 01-31 → included.
   // Charge B due 03-01 > 01-31 → excluded.
   assertEq(body.totals.rent_charges_cents, 10000, 'rent_charges_cents');
-  assertEq(body.totals.rent_payments_cents, 10000, 'rent_payments_cents');
-  assertEq(body.totals.rent_balance_cents, 0, 'rent_balance_cents');
+  assertEq(body.totals.rent_payments_cents, 0, 'application recorded after cutoff');
+  assertEq(body.totals.total_received_cents, 10000, 'original receipt date');
+  assertEq(body.totals.unapplied_credit_cents, 10000, 'credit before application');
+  assertEq(body.totals.rent_balance_cents, 10000, 'rent_balance_cents');
 });
 
-await check('(f) as_of=2026-03-15 → charge B counts as LIVE (void happened today, after 03-15), balance=5000', async () => {
+await check('(f) as_of=2026-03-15 → both charges precede their application and void, balance=15000', async () => {
   const body = await ledger('as_of=2026-03-15');
-  // Charge A (due 01-01) + payment (01-15) → cancel out.
-  // Charge B (due 03-01 <= 03-15). Void happened TODAY (2026-06-12 per context),
-  // which is > 03-15, so charge B is live at 03-15 → balance = 5000.
+  // The payment exists, but today's application and charge void do not apply yet.
   assertEq(body.totals.rent_charges_cents, 15000, 'rent_charges_cents');
-  assertEq(body.totals.rent_payments_cents, 10000, 'rent_payments_cents');
-  assertEq(body.totals.rent_balance_cents, 5000, 'rent_balance_cents');
+  assertEq(body.totals.rent_payments_cents, 0, 'rent_payments_cents');
+  assertEq(body.totals.unapplied_credit_cents, 10000, 'credit before application');
+  assertEq(body.totals.rent_balance_cents, 15000, 'rent_balance_cents');
 });
 
 // =========================================================================
