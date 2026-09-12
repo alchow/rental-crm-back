@@ -117,6 +117,16 @@ Heavy PDF, image, storage, and import implementations live under
 
 ## Money
 
+Applying existing credit creates one immutable allocation slice with an optional
+note and a durable request key. A reasoned reversal preserves that slice and
+the original payment; both actions append audit events. Multiple slices may
+connect the same payment and charge, subject to serialized amount caps.
+`lib/ledger-history.ts` supplies the shared cutoff rule for the ledger and PDF:
+receipt/due dates select facts, application timestamps select applications, and
+later reversals do not change earlier snapshots. PDF period movements are net
+applications, not cash receipts or tax classifications. `rent_rollup()` excludes
+reversed allocations using the same current-balance rules.
+
 Charges, payments, allocations, schedules, and rent changes form a subledger.
 Balances are derived from immutable/reversible facts rather than mutable total
 columns. Rent changes are anchored to lease/notice instruments and execute

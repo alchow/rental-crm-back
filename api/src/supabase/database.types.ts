@@ -3125,8 +3125,12 @@ export type Database = {
           created_at: string;
           deleted_at: string | null;
           id: string;
+          note: string | null;
           payment_id: string;
+          request_key: string | null;
           updated_at: string;
+          void_reason: string | null;
+          voided_at: string | null;
         };
         Insert: {
           account_id: string;
@@ -3135,8 +3139,12 @@ export type Database = {
           created_at?: string;
           deleted_at?: string | null;
           id?: string;
+          note?: string | null;
           payment_id: string;
+          request_key?: string | null;
           updated_at?: string;
+          void_reason?: string | null;
+          voided_at?: string | null;
         };
         Update: {
           account_id?: string;
@@ -3145,8 +3153,12 @@ export type Database = {
           created_at?: string;
           deleted_at?: string | null;
           id?: string;
+          note?: string | null;
           payment_id?: string;
+          request_key?: string | null;
           updated_at?: string;
+          void_reason?: string | null;
+          voided_at?: string | null;
         };
         Relationships: [
           {

@@ -7105,12 +7105,108 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json": components["schemas"]["PaymentAllocationInput"];
+                    "application/json": components["schemas"]["ApplyCreditBody"];
                 };
             };
             responses: {
                 /** @description created */
                 201: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PaymentAllocation"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/payments/{id}/allocations/{allocationId}/void": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reverse one application without changing the received payment */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    id: string;
+                    allocationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["VoidPaymentBody"];
+                };
+            };
+            responses: {
+                /** @description reversed */
+                200: {
                     headers: {
                         /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
                         "Idempotency-Replay"?: "true";
@@ -18733,6 +18829,9 @@ export interface components {
             /** Format: uuid */
             charge_id: string;
             amount_cents: number;
+            note: string | null;
+            voided_at: string | null;
+            void_reason: string | null;
             created_at: string;
             updated_at: string;
             deleted_at: string | null;
@@ -18762,6 +18861,9 @@ export interface components {
         };
         VoidPaymentBody: {
             void_reason: string;
+        };
+        ApplyCreditBody: components["schemas"]["PaymentAllocationInput"] & {
+            note?: string;
         };
         LedgerAdoption: {
             /** @description The day tracking began — everything before it is landlord testimony, and the statement's tracking-since divider sits here. */
@@ -18859,8 +18961,13 @@ export interface components {
                 void_reason: string | null;
                 allocations: {
                     /** Format: uuid */
+                    id: string;
+                    /** Format: uuid */
                     charge_id: string;
                     amount_cents: number;
+                    note: string | null;
+                    voided_at: string | null;
+                    void_reason: string | null;
                     /** @description When this money was APPLIED to that charge — which can be well after the payment itself (a credit re-applied once a replacement charge exists). */
                     created_at: string;
                 }[];

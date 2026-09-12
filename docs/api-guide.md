@@ -439,7 +439,8 @@ Money received. Inline allocations are atomic: if any allocation fails (cross-te
 | `POST` | `/payments`                  | `tenancy_id`, `amount_cents` (>0), `currency`, `received_at`, `method`, `reference`\|null, `payer_tenant_id`\|null, `notes`\|null, `allocations[]` (optional). |
 | `GET`  | `/payments/{id}`             | Returns `{payment, allocations[]}`.                                                                                                                            |
 | `POST` | `/payments/{id}/void`        | `void_reason` (required).                                                                                                                                      |
-| `POST` | `/payments/{id}/allocations` | `{charge_id, amount_cents}[]` — apply more of an existing payment to charges after the fact.                                                                   |
+| `POST` | `/payments/{id}/allocations` | `{charge_id, amount_cents, note?}` — one application of existing credit. Note optional, at most 1,000 characters. Reuse the same Idempotency-Key on retries. |
+| `POST` | `/payments/{id}/allocations/{allocationId}/void` | `{void_reason}` — required reason, at most 500 characters. Preserves the original payment and application facts. |
 
 `method` values: `cash` / `check` / `ach` / `card` / `zelle_venmo` / `money_order` / `other`.
 
@@ -469,6 +470,12 @@ Conflicts carry fine-grained codes: `already_adopted` (a live adoption exists �
 An **opening balance is a recorded fact, not a charge**: the ledger returns it in a separate `adoption` block, it is excluded from every totals field, it can never take a late fee, and it never appears in payment-dated income exports. If legal action is ever needed on that balance, reconstruct the itemized charges first.
 
 ### Ledger (read-only)
+
+Applications carry `id`, `created_at`, `note`, `voided_at`, and `void_reason`.
+An `as_of` snapshot includes only applications created by that date, and applies
+only reversals effective by that date. Current portfolio balances exclude
+reversed applications. Evidence-PDF period summaries show net application
+movement, not cash receipts or taxable income; receipt dates remain unchanged.
 
 The derived financial view of a tenancy. Balances are computed from charges minus allocations — never stored. Optional `?as_of=YYYY-MM-DD` gives a point-in-time balance as of end of that date: charges included when `due_date <= as_of`; payments when `received_at` date-part `<= as_of`; voids respected only when `voided_at` date-part `<= as_of` (a charge voided after `as_of` counts as live at that date); allocations count when both sides qualify. Charge entries carry `created_at` (when the row was **recorded** — far after `due_date` marks a backfilled charge; never render it as the due date), and the response's `adoption` block (null unless the tenancy was adopted, or when `adoption_date > as_of`) carries `adoption_date`, the signed `opening_balance_cents`, `balance_basis`, and `needs_review`.
 

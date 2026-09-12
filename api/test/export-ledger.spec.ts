@@ -4,7 +4,7 @@
 // pinned here at the seam function.
 
 import { describe, expect, it } from 'vitest';
-import { deriveLedger } from '../src/admin/export-pdf/ledger';
+import { deriveLedger, paymentActivityInRange } from '../src/admin/export-pdf/ledger';
 import type { ExportData } from '../src/admin/export-pdf';
 
 const CUR = 'USD';
@@ -39,6 +39,7 @@ function alloc(chargeId: string, paymentId: string, amountCents: number): Record
     charge_id: chargeId,
     payment_id: paymentId,
     amount_cents: amountCents,
+    created_at: '2026-06-02T00:00:00Z',
   };
 }
 
@@ -84,6 +85,30 @@ function twoMonths(paidCents: number): {
 }
 
 describe('deriveLedger', () => {
+  it('honors application and reversal dates without changing the receipt date', () => {
+    const bill = charge({ id: 'rent', amount_cents: 476800, due_date: '2026-09-01' });
+    const pay = payment({ id: 'payment', amount_cents: 30000, received_at: '2026-08-10' });
+    const application = {
+      ...alloc('rent', 'payment', 30000),
+      created_at: '2026-09-12T00:00:00Z',
+      voided_at: '2026-09-13T00:00:00Z',
+    };
+    const data = exportData({ charges: [bill], payments: [pay], allocations: [application] });
+    expect(deriveLedger(data, null, '2026-09-11').unapplied_credit_cents).toBe(30000);
+    expect(deriveLedger(data, null, '2026-09-12').unapplied_credit_cents).toBe(0);
+    expect(deriveLedger(data, null, '2026-09-13').unapplied_credit_cents).toBe(30000);
+    expect(deriveLedger(data, null, null).closing_balance_cents).toBe(476800);
+    expect(pay.received_at).toBe('2026-08-10');
+    const applied = deriveLedger(data, '2026-09-12', '2026-09-12');
+    expect(applied.opening_balance_cents).toBe(476800);
+    expect(applied.rent_payments_in_range_cents).toBe(30000);
+    expect(applied.closing_balance_cents).toBe(446800);
+    const reversed = deriveLedger(data, '2026-09-13', '2026-09-13');
+    expect(reversed.opening_balance_cents).toBe(446800);
+    expect(reversed.rent_payments_in_range_cents).toBe(-30000);
+    expect(reversed.closing_balance_cents).toBe(476800);
+    expect(paymentActivityInRange(pay, [application], '2026-09-13', '2026-09-13')).toBe(true);
+  });
   it('states no adoption when the tenancy was never adopted', () => {
     const l = deriveLedger(twoMonths(100000).data(null), null, null);
     expect(l.rent_charges_in_range_cents).toBe(200000);
