@@ -31,7 +31,6 @@
     "test:adoption": "tsx test/adoption.test.ts",
     "test:rent-rollup": "tsx test/rent-rollup.test.ts",
     "test:tenancy-start-date": "tsx test/tenancy-start-date.test.ts",
-    "test:tenancy-dates-concurrency": "tsx test/tenancy-dates-concurrency.test.ts",
     "test:tenancy-endings": "tsx test/tenancy-endings.test.ts",
     "test:tenant-email-uniqueness": "tsx test/tenant-email-uniqueness.test.ts",
     "test:tenant-phone-e164": "tsx test/tenant-phone-e164.test.ts",

@@ -14,8 +14,10 @@ import {
   AddMemberBody,
   CreateAreaBody,
   CreateInteractionBody,
+  CreateLeaseBody,
   CreatePropertyBody,
   CreateRentScheduleBody,
+  CreateTenancyBody,
   CreateTenantBody,
   PutUnitDetailsBody,
 } from '../../schemas/importable';
@@ -31,9 +33,6 @@ import {
   firstIssue,
   todayIso,
 } from './coercions';
-import { mapImportedDate, mapImportedTenancyMetadata } from './date-mapping';
-import { importLease } from './lease-import';
-import { preAcquireTenancyIdentityLocks, resolveTenancyIdentity } from './tenancy-resolution';
 import type {
   EntityCounts,
   ExecutionBlocker,
@@ -41,32 +40,40 @@ import type {
   ParentResolutions,
   RawImportRow,
 } from './types';
+
 // ----- the per-run execution context ----------------------------------------
+
 // Sentinel for "this name matches MORE than one live row" in prefetched
 // lookup maps. Not a valid UUID, so it cannot collide with a
 // real id. Preserves the pre-batching `limit 2` ambiguity semantics exactly.
 const AMBIGUOUS = '__ambiguous__';
+
 export class ExecCtx {
   private byRegion = new Map<number, Map<EntityType, FieldMapping[]>>();
   private regionScope = new Map<number, Set<EntityType>>();
+
   private propertyCache = new Map<string, string>();
   private areaCache = new Map<string, string>();
   private tenantCache = new Map<string, string>();
+  private tenancyCache = new Map<string, string>();
   private leaseCache = new Set<string>();
   private rentScheduleCache = new Set<string>();
-  // Snapshot live account rows once per transaction so per-row SELECTs disappear. A value is an
+  // Snapshot the account's LIVE rows once per run
+  // (inside the txn) so per-row existence SELECTs disappear. A value is an
   // id, or AMBIGUOUS when >1 live row shares the key. Rows the run itself
   // creates land in the per-run caches above, which are consulted first.
   private prefetchedProperties = new Map<string, string>(); // lower(name)
   private prefetchedAreas = new Map<string, string>(); // propertyId::kind::lower(name)
   private prefetchedTenants = new Map<string, string>(); // lower(full_name), first by created_at
-  // Buffer provenance into one unnest INSERT per 500 entities; runImport flushes after the row loop.
+  // Buffer provenance into one unnest INSERT per 500 entities
+  // instead of one INSERT per entity. runImport flushes after the row loop.
   private provenanceBuf: { et: EntityType; entityId: string; region: number; row: number }[] = [];
   // Memoizes whether a user-supplied parent id actually belongs to THIS
   // account. The service_role connection bypasses RLS, so this manual scoping
   // is the isolation guard (defense-in-depth ahead of the composite FK).
   private verifiedProperties = new Map<string, boolean>();
   private defaultPropertyCounted = false;
+
   private counts: Record<string, EntityCounts> = {};
   private createdIds: Record<string, string[]> = {};
   readonly blockers: ExecutionBlocker[] = [];
@@ -76,7 +83,7 @@ export class ExecCtx {
   >();
   private blockedRowIds = new Set<string>();
   private dateSamples = new Map<string, ExecutionResult['date_interpretations'][number]>();
-  private dateDefaults: ExecutionResult['date_defaults'] = [];
+
   constructor(
     private readonly client: PoolClient,
     private readonly accountId: string,
@@ -126,6 +133,7 @@ export class ExecCtx {
       this.regionScope.set(ri, scope);
     }
   }
+
   private getValue(
     fields: FieldMapping[] | undefined,
     target: string,
@@ -141,6 +149,7 @@ export class ExecCtx {
     if (fm.constant != null && fm.constant !== '') return fm.constant;
     return null;
   }
+
   private recordCreated(et: EntityType, id: string): void {
     this.counts[et]!.created += 1;
     this.createdIds[et]!.push(id);
@@ -148,6 +157,7 @@ export class ExecCtx {
   private recordReused(et: EntityType): void {
     this.counts[et]!.reused += 1;
   }
+
   /** Snapshot the account's live properties/areas/tenants into lookup maps.
    *  Runs inside the executor txn (service_role; manual account scoping is
    *  the isolation guard, same as every other query here). */
@@ -178,28 +188,12 @@ export class ExecCtx {
       if (!this.prefetchedTenants.has(r.k)) this.prefetchedTenants.set(r.k, r.id);
     }
   }
-  /** Pre-lock every existing unit this batch can resolve without writes. Locks
-   * are ordered by unit UUID, so two imports containing the same units in
-   * opposite spreadsheet order cannot deadlock. Newly created units have no
-   * tenancy identity to race yet and are locked when first used. */
-  async preAcquireTenancyIdentityLocks(rows: RawImportRow[]): Promise<void> {
-    await preAcquireTenancyIdentityLocks({
-      client: this.client,
-      accountId: this.accountId,
-      rows,
-      byRegion: this.byRegion,
-      regionScope: this.regionScope,
-      parents: this.parents,
-      prefetchedProperties: this.prefetchedProperties,
-      prefetchedAreas: this.prefetchedAreas,
-      ambiguous: AMBIGUOUS,
-      getValue: (fields, target, raw) => this.getValue(fields, target, raw),
-    });
-  }
+
   private async provenance(et: EntityType, entityId: string, row: RawImportRow): Promise<void> {
     this.provenanceBuf.push({ et, entityId, region: row.region_index, row: row.row_index });
     if (this.provenanceBuf.length >= 500) await this.flushProvenance();
   }
+
   /** Flush buffered provenance with one unnest INSERT. Must run after the
    *  row loop and BEFORE any savepoint rollback decision -- provenance is
    *  part of entity_writes and must roll back with them on preview. */
@@ -221,6 +215,7 @@ export class ExecCtx {
       ],
     );
   }
+
   private recordDate(field: string, raw: string | null, iso: string | null): void {
     if (!raw || !iso) return;
     const key = `${field}|${raw}`;
@@ -229,6 +224,7 @@ export class ExecCtx {
     const ambiguous = !!m && Number(m[1]) <= 12 && Number(m[2]) <= 12 && m[1] !== m[2];
     this.dateSamples.set(key, { field, raw, iso, interpreted_as: 'US M/D/Y', ambiguous });
   }
+
   private blockRow(
     row: RawImportRow,
     entity: EntityType,
@@ -250,7 +246,9 @@ export class ExecCtx {
     this.rowBlockers.set(row.id, list);
     this.blockedRowIds.add(row.id);
   }
+
   // -------- per-entity resolvers (cache -> existing DB row -> create) --------
+
   private buildAddress(
     fields: FieldMapping[] | undefined,
     raw: Record<string, string>,
@@ -272,6 +270,7 @@ export class ExecCtx {
     }
     return map;
   }
+
   /** True iff `id` is a live property in THIS account. Memoized. The only
    *  isolation guard on bound parent ids, since service_role bypasses RLS. */
   private async verifyPropertyInAccount(id: string): Promise<boolean> {
@@ -285,6 +284,7 @@ export class ExecCtx {
     this.verifiedProperties.set(id, ok);
     return ok;
   }
+
   /** Resolve the session-wide default property, verifying account ownership. */
   private async resolveDefaultProperty(row: RawImportRow, id: string): Promise<string | null> {
     if (!(await this.verifyPropertyInAccount(id))) {
@@ -303,6 +303,7 @@ export class ExecCtx {
     }
     return id;
   }
+
   private async resolveProperty(
     row: RawImportRow,
     name: string,
@@ -311,6 +312,7 @@ export class ExecCtx {
     const key = name.toLowerCase();
     const cached = this.propertyCache.get(key);
     if (cached) return cached;
+
     const override = this.parents.property_overrides?.[name];
     if (override?.mode === 'existing' && override.id) {
       // bind_existing: the id MUST belong to this account (RLS is bypassed here).
@@ -361,6 +363,7 @@ export class ExecCtx {
     await this.provenance('property', id, row);
     return id;
   }
+
   private async resolveArea(
     row: RawImportRow,
     propertyId: string,
@@ -370,6 +373,7 @@ export class ExecCtx {
     const key = `${propertyId}::${kind}::${name.toLowerCase()}`;
     const cached = this.areaCache.get(key);
     if (cached) return cached;
+
     const pre = this.prefetchedAreas.get(`${propertyId}::${kind}::${name.toLowerCase()}`);
     if (pre === AMBIGUOUS) {
       this.blockRow(
@@ -401,6 +405,7 @@ export class ExecCtx {
     await this.provenance('area', id, row);
     return id;
   }
+
   private async maybeCreateUnitDetails(
     row: RawImportRow,
     areaId: string,
@@ -433,6 +438,7 @@ export class ExecCtx {
       this.recordReused('unit_details');
     }
   }
+
   private async resolveTenant(
     row: RawImportRow,
     name: string,
@@ -441,6 +447,7 @@ export class ExecCtx {
     const key = name.toLowerCase();
     const cached = this.tenantCache.get(key);
     if (cached) return cached;
+
     const pre = this.prefetchedTenants.get(key);
     if (pre) {
       this.tenantCache.set(key, pre);
@@ -526,6 +533,50 @@ export class ExecCtx {
     await this.provenance('tenant', id, row);
     return id;
   }
+
+  private async resolveTenancy(
+    row: RawImportRow,
+    areaId: string,
+    start: string,
+    end: string | null,
+  ): Promise<string | null> {
+    const key = `${areaId}::${start}`;
+    const cached = this.tenancyCache.get(key);
+    if (cached) return cached;
+
+    const ex = await this.client.query(
+      `select id from tenancies where account_id = $1 and area_id = $2 and start_date = $3 and deleted_at is null limit 1`,
+      [this.accountId, areaId, start],
+    );
+    if (ex.rowCount === 1) {
+      const id = ex.rows[0].id as string;
+      this.tenancyCache.set(key, id);
+      this.recordReused('tenancy');
+      return id;
+    }
+    const today = todayIso();
+    const status = end && end < today ? 'ended' : start > today ? 'upcoming' : 'active';
+    const v = CreateTenancyBody.safeParse({
+      area_id: areaId,
+      start_date: start,
+      end_date: end ?? null,
+      status,
+    });
+    if (!v.success) {
+      this.blockRow(row, 'tenancy', 'start_date', 'invalid_value', firstIssue(v.error));
+      return null;
+    }
+    const ins = await this.client.query(
+      `insert into tenancies (account_id, area_id, start_date, end_date, status) values ($1, $2, $3, $4, $5) returning id`,
+      [this.accountId, v.data.area_id, v.data.start_date, v.data.end_date ?? null, v.data.status],
+    );
+    const id = ins.rows[0].id as string;
+    this.tenancyCache.set(key, id);
+    this.recordCreated('tenancy', id);
+    await this.provenance('tenancy', id, row);
+    return id;
+  }
+
   private async maybeCreateMember(
     row: RawImportRow,
     tenancyId: string,
@@ -551,12 +602,81 @@ export class ExecCtx {
       this.recordReused('tenancy_member');
     }
   }
+
+  private async maybeCreateLease(
+    row: RawImportRow,
+    tenancyId: string,
+    tenancyStart: string,
+    tenancyEnd: string | null,
+    fields: FieldMapping[],
+  ): Promise<void> {
+    const rentCents = coerceMoney(this.getValue(fields, 'rent_amount', row.raw));
+    // A lease is optional; only materialize one when there's a rent figure for it.
+    if (rentCents === null) return;
+    const termStart = coerceDate(this.getValue(fields, 'term_start', row.raw)) ?? tenancyStart;
+    const termEnd = coerceDate(this.getValue(fields, 'term_end', row.raw)) ?? tenancyEnd;
+    const currency = coerceCurrency(this.getValue(fields, 'rent_currency', row.raw)) ?? 'USD';
+    const depositCents = coerceMoney(this.getValue(fields, 'deposit_amount', row.raw)) ?? 0;
+
+    const today = todayIso();
+    const status = termEnd && termEnd < today ? 'expired' : 'active';
+    const v = CreateLeaseBody.safeParse({
+      tenancy_id: tenancyId,
+      term_start: termStart,
+      term_end: termEnd ?? null,
+      rent_amount_cents: rentCents,
+      rent_currency: currency,
+      deposit_amount_cents: depositCents,
+      deposit_currency: depositCents > 0 ? currency : undefined,
+      status,
+    });
+    if (!v.success) {
+      this.blockRow(row, 'lease', null, 'invalid_value', firstIssue(v.error));
+      return;
+    }
+    const cacheKey = `${tenancyId}::${termStart}::${rentCents}`;
+    if (this.leaseCache.has(cacheKey)) {
+      this.recordReused('lease');
+      return;
+    }
+    const ex = await this.client.query(
+      `select id from leases where account_id = $1 and tenancy_id = $2 and term_start = $3
+         and rent_amount_cents = $4 and deleted_at is null limit 1`,
+      [this.accountId, tenancyId, termStart, rentCents],
+    );
+    if (ex.rowCount === 1) {
+      this.leaseCache.add(cacheKey);
+      this.recordReused('lease');
+      return;
+    }
+    const ins = await this.client.query(
+      `insert into leases
+         (account_id, tenancy_id, term_start, term_end, rent_amount_cents, rent_currency,
+          deposit_amount_cents, deposit_currency, status)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
+      [
+        this.accountId,
+        v.data.tenancy_id,
+        v.data.term_start,
+        v.data.term_end ?? null,
+        v.data.rent_amount_cents,
+        v.data.rent_currency,
+        v.data.deposit_amount_cents ?? 0,
+        v.data.deposit_currency ?? null,
+        v.data.status,
+      ],
+    );
+    const id = ins.rows[0].id as string;
+    this.leaseCache.add(cacheKey);
+    this.recordCreated('lease', id);
+    await this.provenance('lease', id, row);
+  }
+
   private async maybeCreateRentSchedule(
     row: RawImportRow,
     tenancyId: string,
     tenancyStart: string,
     fields: FieldMapping[],
-    tenancyWasCreated: boolean,
   ): Promise<void> {
     const amountRaw = this.getValue(fields, 'amount', row.raw);
     const amountCents = coerceMoney(amountRaw);
@@ -573,32 +693,9 @@ export class ExecCtx {
     const currency = coerceCurrency(this.getValue(fields, 'currency', row.raw)) ?? 'USD';
     const dueDayRaw = coerceInt(this.getValue(fields, 'due_day', row.raw));
     const dueDay = dueDayRaw === null ? 1 : Math.min(28, Math.max(1, dueDayRaw));
-    const startRaw = this.getValue(fields, 'start_date', row.raw);
-    const mappedStart = mapImportedDate(startRaw, tenancyWasCreated ? tenancyStart : undefined);
-    if (mappedStart.kind === 'invalid') {
-      this.blockRow(
-        row,
-        'rent_schedule',
-        'start_date',
-        'unparseable_value',
-        `unparseable rent effective date "${mappedStart.raw}"`,
-      );
-      return;
-    }
-    // A reused tenancy may already have several rent eras. An omitted date is
-    // not enough information to select one or authorize creating another.
-    if (mappedStart.kind === 'missing') return;
-    const startDate = mappedStart.value;
-    this.recordDate('rent_schedule.start_date', startRaw, startDate);
-    if (mappedStart.kind === 'defaulted') {
-      this.dateDefaults.push({
-        field: 'rent_schedule.start_date',
-        value: startDate,
-        source: 'possession_start',
-        reason: 'new_tenancy_default',
-      });
-    }
+    const startDate = coerceDate(this.getValue(fields, 'start_date', row.raw)) ?? tenancyStart;
     const kind = 'rent';
+
     const v = CreateRentScheduleBody.safeParse({
       tenancy_id: tenancyId,
       kind,
@@ -618,19 +715,9 @@ export class ExecCtx {
     }
     const ex = await this.client.query(
       `select id from rent_schedules where account_id = $1 and tenancy_id = $2 and kind = $3
-         and start_date = $4 and deleted_at is null order by id limit 2`,
+         and start_date = $4 and deleted_at is null limit 1`,
       [this.accountId, tenancyId, kind, startDate],
     );
-    if ((ex.rowCount ?? 0) > 1) {
-      this.blockRow(
-        row,
-        'rent_schedule',
-        'start_date',
-        'ambiguous_match',
-        'multiple rent eras match this explicit effective date',
-      );
-      return;
-    }
     if (ex.rowCount === 1) {
       this.rentScheduleCache.add(cacheKey);
       this.recordReused('rent_schedule');
@@ -654,7 +741,9 @@ export class ExecCtx {
     this.recordCreated('rent_schedule', id);
     await this.provenance('rent_schedule', id, row);
   }
+
   // -------- the per-row driver, in topological order ------------------------
+
   /** One imported note per non-empty cell: kind='note'. Import provenance
    *  lives in actor='system:import:<sessionId>' + the provenance row, not in
    *  the channel; channel='import' remains only on rows imported before
@@ -672,6 +761,7 @@ export class ExecCtx {
     const mapped = coerceDate(mappedRaw);
     this.recordDate('interaction.occurred_at', mappedRaw, mapped);
     const occurred = mapped ?? extractLeadingDate(body) ?? todayIso();
+
     const v = CreateInteractionBody.safeParse({
       kind: 'note',
       body,
@@ -707,14 +797,17 @@ export class ExecCtx {
     this.recordCreated('interaction', id);
     await this.provenance('interaction', id, row);
   }
+
   async processRow(row: RawImportRow): Promise<void> {
     const regionMap = this.byRegion.get(row.region_index);
     const scope = this.regionScope.get(row.region_index);
     if (!regionMap || !scope) return;
+
     let propertyId: string | null = null;
     let areaId: string | null = null;
     let tenantId: string | null = null;
     let tenancyId: string | null = null;
+
     // property
     if (this.parents.default_property_id) {
       propertyId = await this.resolveDefaultProperty(row, this.parents.default_property_id);
@@ -724,6 +817,7 @@ export class ExecCtx {
         this.blockRow(row, 'property', 'name', 'missing_required_field', 'missing property name');
       else propertyId = await this.resolveProperty(row, name, regionMap.get('property')!);
     }
+
     // area (unit or common space) + unit_details
     if (scope.has('area')) {
       if (!propertyId) {
@@ -769,6 +863,7 @@ export class ExecCtx {
         }
       }
     }
+
     // tenant
     if (scope.has('tenant')) {
       const fullName = this.getValue(regionMap.get('tenant'), 'full_name', row.raw);
@@ -785,6 +880,7 @@ export class ExecCtx {
         tenantId = await this.resolveTenant(row, fullName, regionMap.get('tenant')!);
       }
     }
+
     // tenancy + members + lease + rent_schedule
     if (scope.has('tenancy')) {
       if (!areaId) {
@@ -816,126 +912,25 @@ export class ExecCtx {
           } else if (end && end < start) {
             this.blockRow(row, 'tenancy', 'end_date', 'date_order', 'end date precedes start date');
           } else {
-            const tenancyMeta = mapImportedTenancyMetadata({
-              explicitIdRaw: this.getValue(
-                regionMap.get('tenancy'),
-                'existing_tenancy_id',
-                row.raw,
-              ),
-              basisRaw: this.getValue(regionMap.get('tenancy'), 'start_date_basis', row.raw),
-              actualMoveInRaw: this.getValue(
-                regionMap.get('tenancy'),
-                'actual_move_in_date',
-                row.raw,
-              ),
-              today: todayIso(),
-            });
-            if (tenancyMeta.kind === 'invalid') {
-              this.blockRow(
-                row,
-                'tenancy',
-                tenancyMeta.field,
-                tenancyMeta.code,
-                tenancyMeta.message,
-              );
-              return;
-            }
-            const actualMoveInRaw = this.getValue(
-              regionMap.get('tenancy'),
-              'actual_move_in_date',
-              row.raw,
-            );
-            this.recordDate(
-              'tenancy.actual_move_in_date',
-              actualMoveInRaw,
-              tenancyMeta.actualMoveInDate,
-            );
-            const today = todayIso();
-            const status = end && end < today ? 'ended' : start > today ? 'upcoming' : 'active';
-            const tenancy = await resolveTenancyIdentity({
-              client: this.client,
-              accountId: this.accountId,
-              areaId,
-              importedStartDate: start,
-              importedEndDate: end,
-              explicitTenancyId: tenancyMeta.explicitTenancyId,
-              create: {
-                status,
-                startDateBasis: tenancyMeta.startDateBasis,
-                actualMoveInDate: tenancyMeta.actualMoveInDate,
-              },
-            });
-            if (tenancy.kind === 'invalid') {
-              this.blockRow(row, 'tenancy', 'start_date', 'invalid_value', tenancy.message);
-            } else if (tenancy.kind === 'explicit_scope_mismatch') {
-              this.blockRow(
-                row,
-                'tenancy',
-                'existing_tenancy_id',
-                'parent_not_found',
-                'existing tenancy ID was not found in this account and unit',
-              );
-            } else if (tenancy.kind === 'ambiguous') {
-              this.blockRow(
-                row,
-                'tenancy',
-                'existing_tenancy_id',
-                'ambiguous_tenancy',
-                'the possession start matches multiple tenancies; map an existing tenancy ID',
-              );
-            } else {
-              if (tenancy.kind === 'created') {
-                this.recordCreated('tenancy', tenancy.id);
-                await this.provenance('tenancy', tenancy.id, row);
-              } else this.recordReused('tenancy');
-              const resolvedTenancyId = tenancy.id;
-              tenancyId = resolvedTenancyId;
-              const tenancyWasCreated = tenancy.kind === 'created';
+            tenancyId = await this.resolveTenancy(row, areaId, start, end);
+            if (tenancyId) {
               if (scope.has('tenancy_member') && tenantId) {
                 await this.maybeCreateMember(
                   row,
-                  resolvedTenancyId,
+                  tenancyId,
                   tenantId,
                   regionMap.get('tenancy_member'),
                 );
               }
               if (scope.has('lease')) {
-                const fields = regionMap.get('lease')!;
-                await importLease({
-                  client: this.client,
-                  accountId: this.accountId,
-                  row,
-                  tenancyId: resolvedTenancyId,
-                  tenancyStart: tenancy.startDate,
-                  tenancyEnd: tenancy.endDate,
-                  tenancyWasCreated,
-                  fields,
-                  cache: this.leaseCache,
-                  getValue: (field) => this.getValue(fields, field, row.raw),
-                  block: (field, code, message) =>
-                    this.blockRow(row, 'lease', field, code, message),
-                  recordDate: (field, raw, iso) => this.recordDate(field, raw, iso),
-                  recordDefault: (value) =>
-                    this.dateDefaults.push({
-                      field: 'lease.term_start',
-                      value,
-                      source: 'possession_start',
-                      reason: 'new_tenancy_default',
-                    }),
-                  reused: () => this.recordReused('lease'),
-                  created: async (id) => {
-                    this.recordCreated('lease', id);
-                    await this.provenance('lease', id, row);
-                  },
-                });
+                await this.maybeCreateLease(row, tenancyId, start, end, regionMap.get('lease')!);
               }
               if (scope.has('rent_schedule')) {
                 await this.maybeCreateRentSchedule(
                   row,
-                  resolvedTenancyId,
-                  tenancy.startDate,
+                  tenancyId,
+                  start,
                   regionMap.get('rent_schedule')!,
-                  tenancyWasCreated,
                 );
               }
             }
@@ -943,6 +938,7 @@ export class ExecCtx {
         }
       }
     }
+
     // interaction (imported note) — attaches to whatever parents this row
     // resolved (area and/or tenancy may be null; both are optional on the
     // table). An EMPTY note cell is simply no note: skip, never a blocker.
@@ -952,6 +948,7 @@ export class ExecCtx {
       if (body) await this.createInteraction(row, body, fields, areaId, tenancyId);
     }
   }
+
   buildResult(opts: {
     dryRun: boolean;
     rowsTotal: number;
@@ -970,9 +967,9 @@ export class ExecCtx {
       created_ids: this.createdIds,
       blockers: this.blockers,
       date_interpretations: [...this.dateSamples.values()],
-      date_defaults: this.dateDefaults,
     };
   }
+
   /** Persist per-row blockers for the UI (clears stale ones first). Runs after
    *  the savepoint rollback so it survives into the COMMIT. One unnest UPDATE
    *  for all blocked rows instead of one UPDATE per row. */

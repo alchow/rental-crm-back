@@ -50,9 +50,6 @@ DECLARE
   violations   text[] := '{}';
   allowlist    text[] := ARRAY[
     'create_account_for_new_user',
-    -- Date commands use a narrow function-owner role and verify live membership.
-    'correct_tenancy_dates',
-    'record_tenancy_date_explanation',
     'create_payment_with_allocations',
     'set_owner_phone_verified',
     'is_approver_member',

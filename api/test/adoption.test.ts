@@ -15,8 +15,8 @@
 //       writes nothing twice.
 //   (C) Conflicts, each with its fine-grained 409 code: re-adoption
 //       (already_adopted), live schedule (schedule_exists), existing money
-//       (tenancy_has_money). A schedule may start before possession because
-//       these are independent recorded facts.
+//       (tenancy_has_money), and a backfill starting before the tenancy's
+//       recorded start_date (tenancy_start_date_conflict).
 //   (D) Validation: branch exclusivity, out-of-range charge_index,
 //       over-allocation, two charges claiming the same due_date, two
 //       allocations claiming the same charge_index, a non-ISO received_at,
@@ -260,67 +260,48 @@ async function main(): Promise<void> {
     assert(adoptedA.deposit_charge_id !== null, 'expected a deposit charge id');
   });
 
-  await check(
-    'A2: ledger surfaces adoption block, backfill provenance, and honest totals',
-    async () => {
-      const r = await api('GET', `/v1/accounts/${alice.accountId}/tenancies/${tenancyA}/ledger`, {
-        token: alice.accessToken,
-      });
-      assert(r.status === 200, `ledger ${r.status}`);
-      const body = r.body as LedgerBody;
-      assert(body.adoption !== null, 'adoption block missing');
-      assert(
-        body.adoption.adoption_date === ADOPT_DATE,
-        `adoption_date ${body.adoption.adoption_date}`,
-      );
-      assert(body.adoption.opening_balance_cents === 0, 'branch A opening balance must be 0');
-      assert(body.adoption.needs_review === false, 'needs_review should default false');
+  await check('A2: ledger surfaces adoption block, backfill provenance, and honest totals', async () => {
+    const r = await api('GET', `/v1/accounts/${alice.accountId}/tenancies/${tenancyA}/ledger`, {
+      token: alice.accessToken,
+    });
+    assert(r.status === 200, `ledger ${r.status}`);
+    const body = r.body as LedgerBody;
+    assert(body.adoption !== null, 'adoption block missing');
+    assert(body.adoption.adoption_date === ADOPT_DATE, `adoption_date ${body.adoption.adoption_date}`);
+    assert(body.adoption.opening_balance_cents === 0, 'branch A opening balance must be 0');
+    assert(body.adoption.needs_review === false, 'needs_review should default false');
 
-      const charges = body.entries.filter(
-        (e): e is LedgerCharge & Record<string, unknown> => e.kind === 'charge',
-      );
-      assert(charges.length === 5, `expected 5 charges (4 rent + deposit), got ${charges.length}`);
-      for (const ch of charges) {
-        assert(
-          typeof ch.created_at === 'string' && ch.created_at.length > 0,
-          'charge created_at missing',
-        );
-        // Backfill provenance: recorded today, due in the past.
-        assert(ch.created_at.slice(0, 10) >= ch.due_date, 'created_at should not precede due_date');
-      }
-      const rentCharges = charges.filter((ch) => ch.type === 'rent');
-      assert(
-        rentCharges.every((ch) => ch.source === 'rent_schedule'),
-        'backfilled rent must carry the schedule (source=rent_schedule)',
-      );
-      // July short 1000.00, August fully open.
-      const july = rentCharges.find((ch) => ch.due_date === '2026-07-01');
-      const august = rentCharges.find((ch) => ch.due_date === '2026-08-01');
-      assert(
-        july !== undefined && july.derived_balance_cents === 100000,
-        `july balance ${july?.derived_balance_cents}`,
-      );
-      assert(
-        august !== undefined && august.derived_balance_cents === 150000,
-        `august balance ${august?.derived_balance_cents}`,
-      );
-      // June's 100.00 overpay stays unapplied credit — never invented into a charge.
-      assert(
-        body.totals.unapplied_credit_cents === 10000,
-        `unapplied credit ${body.totals.unapplied_credit_cents}, expected 10000`,
-      );
-      assert(body.totals.deposit_payments_cents === 150000, 'deposit not held');
-    },
-  );
+    const charges = body.entries.filter(
+      (e): e is LedgerCharge & Record<string, unknown> => e.kind === 'charge',
+    );
+    assert(charges.length === 5, `expected 5 charges (4 rent + deposit), got ${charges.length}`);
+    for (const ch of charges) {
+      assert(typeof ch.created_at === 'string' && ch.created_at.length > 0, 'charge created_at missing');
+      // Backfill provenance: recorded today, due in the past.
+      assert(ch.created_at.slice(0, 10) >= ch.due_date, 'created_at should not precede due_date');
+    }
+    const rentCharges = charges.filter((ch) => ch.type === 'rent');
+    assert(
+      rentCharges.every((ch) => ch.source === 'rent_schedule'),
+      'backfilled rent must carry the schedule (source=rent_schedule)',
+    );
+    // July short 1000.00, August fully open.
+    const july = rentCharges.find((ch) => ch.due_date === '2026-07-01');
+    const august = rentCharges.find((ch) => ch.due_date === '2026-08-01');
+    assert(july !== undefined && july.derived_balance_cents === 100000, `july balance ${july?.derived_balance_cents}`);
+    assert(august !== undefined && august.derived_balance_cents === 150000, `august balance ${august?.derived_balance_cents}`);
+    // June's 100.00 overpay stays unapplied credit — never invented into a charge.
+    assert(
+      body.totals.unapplied_credit_cents === 10000,
+      `unapplied credit ${body.totals.unapplied_credit_cents}, expected 10000`,
+    );
+    assert(body.totals.deposit_payments_cents === 150000, 'deposit not held');
+  });
 
   await check('A3: the schedule carries the late-fee policy and past start', async () => {
-    const r = await api(
-      'GET',
-      `/v1/accounts/${alice.accountId}/rent-schedules?tenancy_id=${tenancyA}`,
-      {
-        token: alice.accessToken,
-      },
-    );
+    const r = await api('GET', `/v1/accounts/${alice.accountId}/rent-schedules?tenancy_id=${tenancyA}`, {
+      token: alice.accessToken,
+    });
     assert(r.status === 200, `schedules ${r.status}`);
     const items = (r.body as { data: Array<Record<string, unknown>> }).data;
     assert(items.length === 1, `expected 1 schedule, got ${items.length}`);
@@ -352,25 +333,16 @@ async function main(): Promise<void> {
   });
 
   await check('C2: live schedule -> 409 schedule_exists', async () => {
+    // The tenancy starts when the branch-A schedule does: a later start_date
+    // would trip tenancy_start_date_conflict instead of the conflict under
+    // test (see C4).
     const t = await createTenancy(alice, '2026-05-01');
     const rs = await api('POST', `/v1/accounts/${alice.accountId}/rent-schedules`, {
       token: alice.accessToken,
-      body: {
-        tenancy_id: t,
-        kind: 'rent',
-        amount_cents: 100000,
-        currency: 'USD',
-        due_day: 1,
-        start_date: '2026-06-01',
-      },
+      body: { tenancy_id: t, kind: 'rent', amount_cents: 100000, currency: 'USD', due_day: 1, start_date: '2026-06-01' },
     });
     assert(rs.status === 201, `schedule create ${rs.status}: ${JSON.stringify(rs.body)}`);
-    const r = await adopt(alice, t, {
-      ...branchABody(),
-      charges: [],
-      payments: [],
-      deposit: undefined,
-    });
+    const r = await adopt(alice, t, { ...branchABody(), charges: [], payments: [], deposit: undefined });
     assert(r.status === 409, `expected 409, got ${r.status}: ${JSON.stringify(r.body)}`);
     assert(errorCode(r.body) === 'schedule_exists', JSON.stringify(r.body));
   });
@@ -379,45 +351,24 @@ async function main(): Promise<void> {
     const t = await createTenancy(alice, '2026-05-01');
     const ch = await api('POST', `/v1/accounts/${alice.accountId}/charges`, {
       token: alice.accessToken,
-      body: {
-        tenancy_id: t,
-        type: 'rent',
-        amount_cents: 100000,
-        currency: 'USD',
-        due_date: '2026-07-01',
-      },
+      body: { tenancy_id: t, type: 'rent', amount_cents: 100000, currency: 'USD', due_date: '2026-07-01' },
     });
     assert(ch.status === 201, `charge create ${ch.status}: ${JSON.stringify(ch.body)}`);
-    const r = await adopt(alice, t, {
-      ...branchABody(),
-      charges: [],
-      payments: [],
-      deposit: undefined,
-    });
+    const r = await adopt(alice, t, { ...branchABody(), charges: [], payments: [], deposit: undefined });
     assert(r.status === 409, `expected 409, got ${r.status}`);
     assert(errorCode(r.body) === 'tenancy_has_money', JSON.stringify(r.body));
   });
 
-  await check(
-    'C4: rent schedule may precede possession while money invariants remain enforced',
-    async () => {
-      const t = await createTenancy(alice, '2026-08-01');
-      const r = await adopt(alice, t, branchABody());
-      assert(r.status === 201, `expected 201, got ${r.status}: ${JSON.stringify(r.body)}`);
-      const result = r.body as AdoptionResult;
-      const { data: schedule, error } = await admin
-        .from('rent_schedules')
-        .select('start_date, tenancy_id')
-        .eq('id', result.schedule_id)
-        .single();
-      assert(!error, error?.message ?? 'schedule lookup failed');
-      assert(schedule?.tenancy_id === t, 'adoption schedule belongs to the wrong tenancy');
-      assert(
-        schedule?.start_date === '2026-05-01',
-        `expected independent rent start, got ${schedule?.start_date}`,
-      );
-    },
-  );
+  await check('C4: backfill before the tenancy start -> tenancy_start_date_conflict', async () => {
+    // The tenancy says the tenant moved in 2026-08-01; the wizard is backfilling
+    // rent from May. Committing would strand the contradiction forever: adoption
+    // money permanently trips the PATCH /tenancies start_date guard, so the
+    // recorded move-in date could never be corrected afterwards.
+    const t = await createTenancy(alice, '2026-08-01');
+    const r = await adopt(alice, t, branchABody());
+    assert(r.status === 409, `expected 409, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert(errorCode(r.body) === 'tenancy_start_date_conflict', JSON.stringify(r.body));
+  });
 
   console.info('\n(D) Validation');
   // Every (D) case is refused, so tenancyD stays a virgin money timeline and
@@ -475,18 +426,12 @@ async function main(): Promise<void> {
     const nonIso = branchABody();
     nonIso.payments[0]!.received_at = '08/10/2026';
     const r1 = await adopt(alice, tenancyD, nonIso);
-    assert(
-      r1.status === 400,
-      `non-ISO received_at: expected 400, got ${r1.status}: ${JSON.stringify(r1.body)}`,
-    );
+    assert(r1.status === 400, `non-ISO received_at: expected 400, got ${r1.status}: ${JSON.stringify(r1.body)}`);
     // ...and a date that never existed must fail as a 400, not a cast 500.
     const impossible = branchABody();
     impossible.charges[0]!.due_date = '2026-02-30';
     const r2 = await adopt(alice, tenancyD, impossible);
-    assert(
-      r2.status === 400,
-      `2026-02-30: expected 400, got ${r2.status}: ${JSON.stringify(r2.body)}`,
-    );
+    assert(r2.status === 400, `2026-02-30: expected 400, got ${r2.status}: ${JSON.stringify(r2.body)}`);
   });
   await check('D8: a far-future adoption_date -> 400 invalid_request', async () => {
     // The fat-fingered year. Tracking cannot begin after today.
@@ -647,10 +592,7 @@ async function main(): Promise<void> {
         p_account_id: alice.accountId,
         p_as_of: '2026-08-01',
       });
-      assert(
-        !conflictRun.error,
-        `generator (as_of 2026-08-01) failed: ${conflictRun.error?.message}`,
-      );
+      assert(!conflictRun.error, `generator (as_of 2026-08-01) failed: ${conflictRun.error?.message}`);
       const afterConflict = await admin
         .from('charges')
         .select('id', { count: 'exact', head: true })
@@ -666,10 +608,7 @@ async function main(): Promise<void> {
         p_account_id: alice.accountId,
         p_as_of: '2026-08-10',
       });
-      assert(
-        !advanceRun.error,
-        `generator (as_of 2026-08-10) failed: ${advanceRun.error?.message}`,
-      );
+      assert(!advanceRun.error, `generator (as_of 2026-08-10) failed: ${advanceRun.error?.message}`);
       const after = await admin
         .from('charges')
         .select('id, period_start, source_schedule_id')
@@ -691,10 +630,7 @@ async function main(): Promise<void> {
       assert(emitted === '2026-09-01', `advance window ${emitted}`);
       // A second identical run is a no-op: the (schedule, period) dedupe holds
       // for the generated period too, not just the backfilled ones.
-      await admin.rpc('generate_rent_charges', {
-        p_account_id: alice.accountId,
-        p_as_of: '2026-08-10',
-      });
+      await admin.rpc('generate_rent_charges', { p_account_id: alice.accountId, p_as_of: '2026-08-10' });
       const again = await admin
         .from('charges')
         .select('id', { count: 'exact', head: true })
@@ -814,31 +750,28 @@ async function main(): Promise<void> {
   });
 
   const tenancyI2 = await createTenancy(alice, '2026-05-01');
-  await check(
-    'I2: the deposit payment is stamped noon UTC, so it renders on its own date',
-    async () => {
-      const r = await adopt(alice, tenancyI2, {
-        adoption_date: ADOPT_DATE,
-        currency: 'USD',
-        rent: { amount_cents: 150000, due_day: 1, start_date: '2026-05-01' },
-        opening_balance_cents: 0,
-        deposit: { amount_cents: 150000, received_on: '2026-05-01' },
-      });
-      assert(r.status === 201, `expected 201, got ${r.status}: ${JSON.stringify(r.body)}`);
-      const rows = await admin
-        .from('payments')
-        .select('id, received_at')
-        .eq('tenancy_id', tenancyI2);
-      assert(!rows.error, `payments read failed: ${rows.error?.message}`);
-      const data = rows.data ?? [];
-      assert(data.length === 1, `expected only the deposit payment, got ${data.length}`);
-      const receivedAt = data[0]!.received_at;
-      // Midnight UTC would render as 2026-04-30 anywhere west of Greenwich —
-      // a deposit payment visibly contradicting its own charge date.
-      assert(receivedAt.startsWith('2026-05-01'), `deposit received_at drifted: ${receivedAt}`);
-      assert(receivedAt.includes('T12:00:00'), `expected noon UTC, got ${receivedAt}`);
-    },
-  );
+  await check('I2: the deposit payment is stamped noon UTC, so it renders on its own date', async () => {
+    const r = await adopt(alice, tenancyI2, {
+      adoption_date: ADOPT_DATE,
+      currency: 'USD',
+      rent: { amount_cents: 150000, due_day: 1, start_date: '2026-05-01' },
+      opening_balance_cents: 0,
+      deposit: { amount_cents: 150000, received_on: '2026-05-01' },
+    });
+    assert(r.status === 201, `expected 201, got ${r.status}: ${JSON.stringify(r.body)}`);
+    const rows = await admin
+      .from('payments')
+      .select('id, received_at')
+      .eq('tenancy_id', tenancyI2);
+    assert(!rows.error, `payments read failed: ${rows.error?.message}`);
+    const data = rows.data ?? [];
+    assert(data.length === 1, `expected only the deposit payment, got ${data.length}`);
+    const receivedAt = data[0]!.received_at;
+    // Midnight UTC would render as 2026-04-30 anywhere west of Greenwich —
+    // a deposit payment visibly contradicting its own charge date.
+    assert(receivedAt.startsWith('2026-05-01'), `deposit received_at drifted: ${receivedAt}`);
+    assert(receivedAt.includes('T12:00:00'), `expected noon UTC, got ${receivedAt}`);
+  });
 
   await check('I3: a backfilled charge lands in the grid window holding its due_date', async () => {
     const rows = await admin
@@ -871,13 +804,7 @@ async function main(): Promise<void> {
     const t = await createTenancy(alice, '2026-05-01');
     const ch = await api('POST', `/v1/accounts/${alice.accountId}/charges`, {
       token: alice.accessToken,
-      body: {
-        tenancy_id: t,
-        type: 'rent',
-        amount_cents: 100000,
-        currency: 'USD',
-        due_date: '2026-07-01',
-      },
+      body: { tenancy_id: t, type: 'rent', amount_cents: 100000, currency: 'USD', due_date: '2026-07-01' },
     });
     assert(ch.status === 201, `charge create ${ch.status}: ${JSON.stringify(ch.body)}`);
     // Service role bypasses RLS; a BEFORE INSERT trigger it cannot bypass.
@@ -924,13 +851,9 @@ async function main(): Promise<void> {
       (r.body as { needs_review?: boolean }).needs_review === false,
       `patched flag ${JSON.stringify(r.body)}`,
     );
-    const ledger = await api(
-      'GET',
-      `/v1/accounts/${alice.accountId}/tenancies/${tenancyE}/ledger`,
-      {
-        token: alice.accessToken,
-      },
-    );
+    const ledger = await api('GET', `/v1/accounts/${alice.accountId}/tenancies/${tenancyE}/ledger`, {
+      token: alice.accessToken,
+    });
     const body = ledger.body as LedgerBody;
     assert(body.adoption !== null, 'adoption block missing');
     assert(body.adoption.needs_review === false, 'the resolved flag never reached the ledger');

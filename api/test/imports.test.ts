@@ -82,22 +82,12 @@ await _resetIntakeIpBucketsForTests();
 
 // --- helpers ----------------------------------------------------------------
 
-interface ApiResp {
-  status: number;
-  body: unknown;
-  headers: Record<string, string>;
-}
+interface ApiResp { status: number; body: unknown; headers: Record<string, string> }
 
 async function api(
   method: string,
   path: string,
-  opts: {
-    token?: string;
-    body?: unknown;
-    multipart?: FormData;
-    idempotencyKey?: string;
-    noIdempotency?: boolean;
-  } = {},
+  opts: { token?: string; body?: unknown; multipart?: FormData; idempotencyKey?: string; noIdempotency?: boolean } = {},
 ): Promise<ApiResp> {
   const headers: Record<string, string> = { accept: 'application/json' };
   if (opts.token) headers.authorization = `Bearer ${opts.token}`;
@@ -114,9 +104,7 @@ async function api(
   }
   const res = await app.fetch(new Request(`http://test${path}`, init));
   const responseHeaders: Record<string, string> = {};
-  res.headers.forEach((v, k) => {
-    responseHeaders[k] = v;
-  });
+  res.headers.forEach((v, k) => { responseHeaders[k] = v; });
   const ctype = res.headers.get('content-type') ?? '';
   if (ctype.includes('application/json') || ctype === '') {
     const text = await res.text();
@@ -126,9 +114,7 @@ async function api(
   return { status: res.status, body: buf, headers: responseHeaders };
 }
 
-function rnd(): string {
-  return Math.random().toString(36).slice(2, 10);
-}
+function rnd(): string { return Math.random().toString(36).slice(2, 10); }
 
 interface UserFixture {
   userId: string;
@@ -144,8 +130,7 @@ async function setupUser(label: string): Promise<UserFixture> {
   const su = await api('POST', '/v1/auth/signup', {
     body: { email, password, account_name: `Acct ${label}` },
   });
-  if (su.status !== 200)
-    throw new Error(`signup ${label} failed: ${su.status} ${JSON.stringify(su.body)}`);
+  if (su.status !== 200) throw new Error(`signup ${label} failed: ${su.status} ${JSON.stringify(su.body)}`);
   const b = su.body as {
     user: { id: string };
     account: { id: string };
@@ -159,25 +144,17 @@ async function setupUser(label: string): Promise<UserFixture> {
     token: accessToken,
     body: { name: propertyName },
   });
-  if (propRes.status !== 201)
-    throw new Error(
-      `setup property ${label} failed: ${propRes.status} ${JSON.stringify(propRes.body)}`,
-    );
+  if (propRes.status !== 201) throw new Error(`setup property ${label} failed: ${propRes.status} ${JSON.stringify(propRes.body)}`);
   const propertyId = (propRes.body as { id: string }).id;
   return { userId, accessToken, accountId, propertyId, propertyName };
 }
 
-interface Failure {
-  name: string;
-  detail: string;
-}
+interface Failure { name: string; detail: string }
 const failures: Failure[] = [];
 
 async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try {
-    await fn();
-    console.info(`  PASS  ${name}`);
-  } catch (e) {
+  try { await fn(); console.info(`  PASS  ${name}`); }
+  catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     failures.push({ name, detail });
     console.error(`  FAIL  ${name}: ${detail}`);
@@ -185,20 +162,15 @@ async function check(name: string, fn: () => Promise<void>): Promise<void> {
 }
 
 function assertStatus(r: ApiResp, expected: number, ctx: string): unknown {
-  if (r.status !== expected)
-    throw new Error(`${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`);
+  if (r.status !== expected) throw new Error(
+    `${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`,
+  );
   return r.body;
 }
 
 function assertEnvelope(body: unknown, ctx: string): { code: string; message: string } {
   const b = body as { error?: { code?: unknown; message?: unknown } };
-  if (
-    !b ||
-    typeof b !== 'object' ||
-    !b.error ||
-    typeof b.error.code !== 'string' ||
-    typeof b.error.message !== 'string'
-  ) {
+  if (!b || typeof b !== 'object' || !b.error || typeof b.error.code !== 'string' || typeof b.error.message !== 'string') {
     throw new Error(`${ctx}: not a standard error envelope: ${JSON.stringify(body)}`);
   }
   return { code: b.error.code, message: b.error.message };
@@ -209,16 +181,10 @@ function csvFile(rows: string[][], filename = 'rentroll.csv'): File {
   return new File([text], filename, { type: 'text/csv' });
 }
 
-async function uploadCsv(
-  user: UserFixture,
-  rows: string[][],
-): Promise<{ id: string; status: string; mapping: unknown[] }> {
+async function uploadCsv(user: UserFixture, rows: string[][]): Promise<{ id: string; status: string; mapping: unknown[] }> {
   const fd = new FormData();
   fd.set('file', csvFile(rows));
-  const r = await api('POST', `/v1/accounts/${user.accountId}/imports`, {
-    token: user.accessToken,
-    multipart: fd,
-  });
+  const r = await api('POST', `/v1/accounts/${user.accountId}/imports`, { token: user.accessToken, multipart: fd });
   if (r.status !== 201) throw new Error(`upload failed: ${r.status} ${JSON.stringify(r.body)}`);
   const created = r.body as { id: string; status: string };
   // Async recognition (Phase 2.2): upload returns the 'parsing' session and a
@@ -244,12 +210,7 @@ interface ToolUseParams {
   messages?: { role: string; content: unknown }[];
 }
 
-type MappingField = {
-  target_field: string;
-  source_column: string | null;
-  constant: string | null;
-  confidence: number;
-};
+type MappingField = { target_field: string; source_column: string | null; constant: string | null; confidence: number };
 
 type FakeRecognition = {
   region_index: number;
@@ -276,8 +237,7 @@ function fakeAnthropic(opts: {
         const name = p.tool_choice?.name;
         if (name === 'report_recognition') {
           recognitionCalls++;
-          const regions =
-            recognitionCalls > 1 && opts.recognition2 ? opts.recognition2 : opts.recognition;
+          const regions = recognitionCalls > 1 && opts.recognition2 ? opts.recognition2 : opts.recognition;
           return { content: [{ type: 'tool_use', name, input: { regions } }] };
         }
         if (name === 'report_mapping') {
@@ -305,18 +265,9 @@ async function main(): Promise<void> {
   // (1) out_of_scope/none everywhere -> no_importable_data, 0 writes, 409
   // =========================================================================
   await check('out-of-scope upload -> no_importable_data, mapping empty', async () => {
-    __setAnthropicForTests(
-      fakeAnthropic({
-        recognition: [
-          {
-            region_index: 0,
-            importable: false,
-            summary: 'a list of grocery items',
-            entity_types: [],
-          },
-        ],
-      }),
-    );
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{ region_index: 0, importable: false, summary: 'a list of grocery items', entity_types: [] }],
+    }));
     const session = await uploadCsv(A, [
       ['Item', 'Price'],
       ['Bananas', '1.50'],
@@ -329,19 +280,11 @@ async function main(): Promise<void> {
       throw new Error(`expected empty mapping, got ${JSON.stringify(session.mapping)}`);
     }
 
-    const previewR = await api(
-      'POST',
-      `/v1/accounts/${A.accountId}/imports/${session.id}/preview`,
-      { token: A.accessToken },
-    );
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/preview`, { token: A.accessToken });
     assertStatus(previewR, 409, 'preview on no_importable_data');
     assertEnvelope(previewR.body, 'preview on no_importable_data');
 
-    const confirmR = await api(
-      'POST',
-      `/v1/accounts/${A.accountId}/imports/${session.id}/confirm`,
-      { token: A.accessToken },
-    );
+    const confirmR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/confirm`, { token: A.accessToken });
     assertStatus(confirmR, 409, 'confirm on no_importable_data');
     assertEnvelope(confirmR.body, 'confirm on no_importable_data');
   });
@@ -350,30 +293,16 @@ async function main(): Promise<void> {
   // (2) low-confidence column -> left unmapped
   // =========================================================================
   await check('low-confidence column mapping is dropped (left unmapped)', async () => {
-    __setAnthropicForTests(
-      fakeAnthropic({
-        recognition: [
-          {
-            region_index: 0,
-            importable: true,
-            summary: 'a property roster',
-            entity_types: [{ entity_type: 'property', confidence: 0.9 }],
-          },
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{ region_index: 0, importable: true, summary: 'a property roster', entity_types: [{ entity_type: 'property', confidence: 0.9 }] }],
+      mappings: {
+        property: [
+          { target_field: 'name', source_column: 'Building', constant: null, confidence: 0.95 },
+          // Below MIN_CONFIDENCE (0.5) -- must be dropped, not guessed.
+          { target_field: 'address_line1', source_column: 'Notes', constant: null, confidence: 0.3 },
         ],
-        mappings: {
-          property: [
-            { target_field: 'name', source_column: 'Building', constant: null, confidence: 0.95 },
-            // Below MIN_CONFIDENCE (0.5) -- must be dropped, not guessed.
-            {
-              target_field: 'address_line1',
-              source_column: 'Notes',
-              constant: null,
-              confidence: 0.3,
-            },
-          ],
-        },
-      }),
-    );
+      },
+    }));
     const session = await uploadCsv(A, [
       ['Building', 'Notes'],
       ['Maple Court', 'corner lot'],
@@ -386,14 +315,10 @@ async function main(): Promise<void> {
     if (!propertyMapping) throw new Error('expected a property mapping entry');
     const fieldNames = propertyMapping.fields.map((f) => f.target_field);
     if (fieldNames.includes('address_line1')) {
-      throw new Error(
-        `low-confidence field address_line1 should be left unmapped, got fields=${JSON.stringify(propertyMapping.fields)}`,
-      );
+      throw new Error(`low-confidence field address_line1 should be left unmapped, got fields=${JSON.stringify(propertyMapping.fields)}`);
     }
     if (!fieldNames.includes('name')) {
-      throw new Error(
-        `expected high-confidence field "name" to be mapped, got fields=${JSON.stringify(propertyMapping.fields)}`,
-      );
+      throw new Error(`expected high-confidence field "name" to be mapped, got fields=${JSON.stringify(propertyMapping.fields)}`);
     }
   });
 
@@ -410,46 +335,33 @@ async function main(): Promise<void> {
           const p = params as ToolUseParams;
           if (p.tool_choice?.name === 'report_recognition') {
             return {
-              content: [
-                {
-                  type: 'tool_use',
-                  name: 'report_recognition',
-                  input: {
-                    regions: [
-                      'junk-not-an-object',
-                      {
-                        region_index: 0,
-                        importable: true,
-                        summary: 'a property roster',
-                        entity_types: [
-                          { entity_type: 'charge', confidence: 0.9 }, // out-of-scope hallucination
-                          { entity_type: 'property', confidence: 0.9 },
-                        ],
-                      },
-                    ],
-                  },
+              content: [{
+                type: 'tool_use',
+                name: 'report_recognition',
+                input: {
+                  regions: [
+                    'junk-not-an-object',
+                    {
+                      region_index: 0,
+                      importable: true,
+                      summary: 'a property roster',
+                      entity_types: [
+                        { entity_type: 'charge', confidence: 0.9 }, // out-of-scope hallucination
+                        { entity_type: 'property', confidence: 0.9 },
+                      ],
+                    },
+                  ],
                 },
-              ],
+              }],
             };
           }
           if (p.tool_choice?.name === 'report_mapping') {
             return {
-              content: [
-                {
-                  type: 'tool_use',
-                  name: 'report_mapping',
-                  input: {
-                    fields: [
-                      {
-                        target_field: 'name',
-                        source_column: 'Building',
-                        constant: null,
-                        confidence: 0.95,
-                      },
-                    ],
-                  },
-                },
-              ],
+              content: [{
+                type: 'tool_use',
+                name: 'report_mapping',
+                input: { fields: [{ target_field: 'name', source_column: 'Building', constant: null, confidence: 0.95 }] },
+              }],
             };
           }
           return { content: [{ type: 'text', text: '' }] };
@@ -463,24 +375,16 @@ async function main(): Promise<void> {
     if (session.status !== 'awaiting_mapping') {
       throw new Error(`expected awaiting_mapping (salvaged), got ${session.status}`);
     }
-    const r = await api('GET', `/v1/accounts/${A.accountId}/imports/${session.id}`, {
-      token: A.accessToken,
-    });
+    const r = await api('GET', `/v1/accounts/${A.accountId}/imports/${session.id}`, { token: A.accessToken });
     const body = assertStatus(r, 200, 'get salvaged session') as {
       recognition: { entity_types: { entity_type: string }[] }[];
     };
-    const entityTypes = body.recognition.flatMap((reg) =>
-      reg.entity_types.map((e) => e.entity_type),
-    );
+    const entityTypes = body.recognition.flatMap((reg) => reg.entity_types.map((e) => e.entity_type));
     if (entityTypes.includes('charge')) {
-      throw new Error(
-        `hallucinated entity_type "charge" should be dropped, got ${JSON.stringify(entityTypes)}`,
-      );
+      throw new Error(`hallucinated entity_type "charge" should be dropped, got ${JSON.stringify(entityTypes)}`);
     }
     if (!entityTypes.includes('property')) {
-      throw new Error(
-        `valid entity_type "property" should survive salvage, got ${JSON.stringify(entityTypes)}`,
-      );
+      throw new Error(`valid entity_type "property" should survive salvage, got ${JSON.stringify(entityTypes)}`);
     }
   });
 
@@ -498,22 +402,11 @@ async function main(): Promise<void> {
             // First attempt: no usable tool input. Second: valid.
             if (calls === 1) return { content: [{ type: 'text', text: 'oops' }] };
             return {
-              content: [
-                {
-                  type: 'tool_use',
-                  name: 'report_recognition',
-                  input: {
-                    regions: [
-                      {
-                        region_index: 0,
-                        importable: false,
-                        summary: 'nothing structural',
-                        entity_types: [],
-                      },
-                    ],
-                  },
-                },
-              ],
+              content: [{
+                type: 'tool_use',
+                name: 'report_recognition',
+                input: { regions: [{ region_index: 0, importable: false, summary: 'nothing structural', entity_types: [] }] },
+              }],
             };
           }
           return { content: [{ type: 'text', text: '' }] };
@@ -546,9 +439,7 @@ async function main(): Promise<void> {
     ]);
     if (calls !== 2) throw new Error(`expected exactly 2 recognition attempts, got ${calls}`);
     if (session.status !== 'failed') throw new Error(`expected failed, got ${session.status}`);
-    const r = await api('GET', `/v1/accounts/${A.accountId}/imports/${session.id}`, {
-      token: A.accessToken,
-    });
+    const r = await api('GET', `/v1/accounts/${A.accountId}/imports/${session.id}`, { token: A.accessToken });
     const body = assertStatus(r, 200, 'get failed session') as { error: string | null };
     if (!body.error?.includes('recognition failed')) {
       throw new Error(`expected "recognition failed" in error, got ${JSON.stringify(body.error)}`);
@@ -558,253 +449,165 @@ async function main(): Promise<void> {
   // =========================================================================
   // (2d) area kinds: units and common areas import; junk kind blocks
   // =========================================================================
-  await check(
-    'area kind column imports units + common areas; unknown kind blocks the row',
-    async () => {
-      __setAnthropicForTests(
-        fakeAnthropic({
-          recognition: [
-            {
-              region_index: 0,
-              importable: true,
-              summary: 'a list of units and shared spaces',
-              entity_types: [{ entity_type: 'area', confidence: 0.9 }],
-            },
-          ],
-          mappings: {
-            area: [
-              { target_field: 'name', source_column: 'Area', constant: null, confidence: 0.95 },
-              { target_field: 'kind', source_column: 'Type', constant: null, confidence: 0.9 },
-            ],
-          },
-        }),
-      );
-      const session = await uploadCsv(A, [
-        ['Area', 'Type'],
-        ['Apt 9', ''], // empty kind -> defaults to unit
-        ['Front lawn', 'Exterior Grounds'], // normalizes to exterior_grounds
-        ['Closet', 'broom_cupboard'], // not an AreaKind -> row blocker
-      ]);
-      if (session.status !== 'awaiting_mapping')
-        throw new Error(`expected awaiting_mapping, got ${session.status}`);
+  await check('area kind column imports units + common areas; unknown kind blocks the row', async () => {
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a list of units and shared spaces',
+        entity_types: [{ entity_type: 'area', confidence: 0.9 }],
+      }],
+      mappings: {
+        area: [
+          { target_field: 'name', source_column: 'Area', constant: null, confidence: 0.95 },
+          { target_field: 'kind', source_column: 'Type', constant: null, confidence: 0.9 },
+        ],
+      },
+    }));
+    const session = await uploadCsv(A, [
+      ['Area', 'Type'],
+      ['Apt 9', ''],                       // empty kind -> defaults to unit
+      ['Front lawn', 'Exterior Grounds'],  // normalizes to exterior_grounds
+      ['Closet', 'broom_cupboard'],        // not an AreaKind -> row blocker
+    ]);
+    if (session.status !== 'awaiting_mapping') throw new Error(`expected awaiting_mapping, got ${session.status}`);
 
-      const patchR = await api(
-        'PATCH',
-        `/v1/accounts/${A.accountId}/imports/${session.id}/parents`,
-        {
-          token: A.accessToken,
-          body: { parent_resolutions: { default_property_id: A.propertyId } },
-        },
-      );
-      assertStatus(patchR, 200, 'patch parents for kind test');
+    const patchR = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${session.id}/parents`, {
+      token: A.accessToken,
+      body: { parent_resolutions: { default_property_id: A.propertyId } },
+    });
+    assertStatus(patchR, 200, 'patch parents for kind test');
 
-      const previewR = await api(
-        'POST',
-        `/v1/accounts/${A.accountId}/imports/${session.id}/preview`,
-        { token: A.accessToken },
-      );
-      const preview = assertStatus(previewR, 200, 'preview kinds') as {
-        result: {
-          blockers: { field: string | null; message: string }[];
-          counts: Record<string, { created: number }>;
-        };
-      };
-      if (preview.result.counts.area?.created !== 2) {
-        throw new Error(
-          `expected area created=2 (unit + exterior_grounds), got ${JSON.stringify(preview.result.counts.area)}`,
-        );
-      }
-      const kindBlocker = preview.result.blockers.find((b) =>
-        b.message.includes('unknown area kind'),
-      );
-      if (!kindBlocker) {
-        throw new Error(
-          `expected an "unknown area kind" blocker for broom_cupboard, got ${JSON.stringify(preview.result.blockers)}`,
-        );
-      }
-      if ((kindBlocker as { code?: string }).code !== 'invalid_value') {
-        throw new Error(`expected blocker code invalid_value, got ${JSON.stringify(kindBlocker)}`);
-      }
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/preview`, { token: A.accessToken });
+    const preview = assertStatus(previewR, 200, 'preview kinds') as {
+      result: { blockers: { field: string | null; message: string }[]; counts: Record<string, { created: number }> };
+    };
+    if (preview.result.counts.area?.created !== 2) {
+      throw new Error(`expected area created=2 (unit + exterior_grounds), got ${JSON.stringify(preview.result.counts.area)}`);
+    }
+    const kindBlocker = preview.result.blockers.find((b) => b.message.includes('unknown area kind'));
+    if (!kindBlocker) {
+      throw new Error(`expected an "unknown area kind" blocker for broom_cupboard, got ${JSON.stringify(preview.result.blockers)}`);
+    }
+    if ((kindBlocker as { code?: string }).code !== 'invalid_value') {
+      throw new Error(`expected blocker code invalid_value, got ${JSON.stringify(kindBlocker)}`);
+    }
 
-      // Confirm refuses while the blocker stands; exclude the bad row, then confirm.
-      const blockedConfirmR = await api(
-        'POST',
-        `/v1/accounts/${A.accountId}/imports/${session.id}/confirm`,
-        { token: A.accessToken },
-      );
-      assertStatus(blockedConfirmR, 409, 'confirm with kind blocker');
+    // Confirm refuses while the blocker stands; exclude the bad row, then confirm.
+    const blockedConfirmR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/confirm`, { token: A.accessToken });
+    assertStatus(blockedConfirmR, 409, 'confirm with kind blocker');
 
-      const rowsR = await api('GET', `/v1/accounts/${A.accountId}/imports/${session.id}/rows`, {
-        token: A.accessToken,
-      });
-      const rows = assertStatus(rowsR, 200, 'list rows for kind test') as {
-        data: { id: string; row_index: number }[];
-      };
-      const closetRow = rows.data.find((r) => r.row_index === 2);
-      if (!closetRow) throw new Error('expected row_index 2 in rows list');
-      const exclR = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${session.id}/rows`, {
-        token: A.accessToken,
-        body: { updates: [{ id: closetRow.id, excluded: true }] },
-      });
-      assertStatus(exclR, 200, 'exclude blocked row');
+    const rowsR = await api('GET', `/v1/accounts/${A.accountId}/imports/${session.id}/rows`, { token: A.accessToken });
+    const rows = assertStatus(rowsR, 200, 'list rows for kind test') as { data: { id: string; row_index: number }[] };
+    const closetRow = rows.data.find((r) => r.row_index === 2);
+    if (!closetRow) throw new Error('expected row_index 2 in rows list');
+    const exclR = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${session.id}/rows`, {
+      token: A.accessToken,
+      body: { updates: [{ id: closetRow.id, excluded: true }] },
+    });
+    assertStatus(exclR, 200, 'exclude blocked row');
 
-      const confirmR = await api(
-        'POST',
-        `/v1/accounts/${A.accountId}/imports/${session.id}/confirm`,
-        { token: A.accessToken },
-      );
-      const confirm = assertStatus(confirmR, 200, 'confirm kinds') as {
-        result: { committed: boolean };
-      };
-      if (!confirm.result.committed) throw new Error('expected committed=true');
+    const confirmR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/confirm`, { token: A.accessToken });
+    const confirm = assertStatus(confirmR, 200, 'confirm kinds') as { result: { committed: boolean } };
+    if (!confirm.result.committed) throw new Error('expected committed=true');
 
-      const areasR = await api(
-        'GET',
-        `/v1/accounts/${A.accountId}/areas?property_id=${A.propertyId}`,
-        { token: A.accessToken },
-      );
-      const areas = assertStatus(areasR, 200, 'list areas after kind import') as {
-        data: { name: string; kind: string }[];
-      };
-      const byName = new Map(areas.data.map((a) => [a.name, a.kind]));
-      if (byName.get('Apt 9') !== 'unit')
-        throw new Error(`expected Apt 9 kind=unit, got ${byName.get('Apt 9')}`);
-      if (byName.get('Front lawn') !== 'exterior_grounds') {
-        throw new Error(
-          `expected Front lawn kind=exterior_grounds, got ${byName.get('Front lawn')}`,
-        );
-      }
-      if (byName.has('Closet')) throw new Error('blocked row "Closet" must not be imported');
-    },
-  );
+    const areasR = await api('GET', `/v1/accounts/${A.accountId}/areas?property_id=${A.propertyId}`, { token: A.accessToken });
+    const areas = assertStatus(areasR, 200, 'list areas after kind import') as { data: { name: string; kind: string }[] };
+    const byName = new Map(areas.data.map((a) => [a.name, a.kind]));
+    if (byName.get('Apt 9') !== 'unit') throw new Error(`expected Apt 9 kind=unit, got ${byName.get('Apt 9')}`);
+    if (byName.get('Front lawn') !== 'exterior_grounds') {
+      throw new Error(`expected Front lawn kind=exterior_grounds, got ${byName.get('Front lawn')}`);
+    }
+    if (byName.has('Closet')) throw new Error('blocked row "Closet" must not be imported');
+  });
 
   // =========================================================================
   // (2e) header advice: headerless sheet -> re-sliced, first row NOT lost
   // =========================================================================
-  await check(
-    'headerless sheet: advice present=false re-slices; first row kept as data',
-    async () => {
-      __setAnthropicForTests(
-        fakeAnthropic({
-          // Pass 1 sees columns named after the first DATA row -> advises headerless.
-          recognition: [
-            {
-              region_index: 0,
-              importable: true,
-              summary: 'unit labels and tenant names, no header row',
-              header: { present: false, row_index: 0 },
-              entity_types: [{ entity_type: 'area', confidence: 0.9 }],
-            },
-          ],
-          // Pass 2 (re-recognition on the corrected slice) sees Column 1/Column 2.
-          recognition2: [
-            {
-              region_index: 0,
-              importable: true,
-              summary: 'unit labels with tenant names (synthesized columns)',
-              entity_types: [
-                { entity_type: 'area', confidence: 0.9 },
-                { entity_type: 'tenant', confidence: 0.8 },
-              ],
-            },
-          ],
-          mappings: {
-            area: [
-              { target_field: 'name', source_column: 'Column 1', constant: null, confidence: 0.9 },
-            ],
-            tenant: [
-              {
-                target_field: 'full_name',
-                source_column: 'Column 2',
-                constant: null,
-                confidence: 0.85,
-              },
-            ],
-          },
-        }),
-      );
-      // No header row: the first line is already a record.
-      const session = await uploadCsv(A, [
-        ['Apt 1', 'John Smith'],
-        ['Apt 2', 'Maria Garcia'],
-        ['Apt 3', 'Wei Chen'],
-      ]);
-      if (session.status !== 'awaiting_mapping')
-        throw new Error(`expected awaiting_mapping, got ${session.status}`);
-      const region = (
-        session as unknown as { regions: { columns: { name: string }[]; total_rows: number }[] }
-      ).regions[0];
-      if (!region) throw new Error('expected one region');
-      const colNames = region.columns.map((c) => c.name);
-      if (colNames[0] !== 'Column 1' || colNames[1] !== 'Column 2') {
-        throw new Error(
-          `expected synthesized Column 1/Column 2 headers, got ${JSON.stringify(colNames)}`,
-        );
-      }
-      // The crucial bit: all 3 lines are data — "Apt 1"/"John Smith" was NOT
-      // consumed as a header row.
-      if (region.total_rows !== 3) {
-        throw new Error(`expected 3 data rows (no first-row loss), got ${region.total_rows}`);
-      }
-      const rowsR = await api('GET', `/v1/accounts/${A.accountId}/imports/${session.id}/rows`, {
-        token: A.accessToken,
-      });
-      const rows = assertStatus(rowsR, 200, 'rows after headerless re-slice') as {
-        data: { raw: Record<string, string> }[];
-      };
-      if (rows.data.length !== 3 || rows.data[0]!.raw['Column 1'] !== 'Apt 1') {
-        throw new Error(
-          `expected 3 persisted rows keyed by Column N starting at "Apt 1", got ${JSON.stringify(rows.data.map((r) => r.raw))}`,
-        );
-      }
-    },
-  );
+  await check('headerless sheet: advice present=false re-slices; first row kept as data', async () => {
+    __setAnthropicForTests(fakeAnthropic({
+      // Pass 1 sees columns named after the first DATA row -> advises headerless.
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'unit labels and tenant names, no header row',
+        header: { present: false, row_index: 0 },
+        entity_types: [{ entity_type: 'area', confidence: 0.9 }],
+      }],
+      // Pass 2 (re-recognition on the corrected slice) sees Column 1/Column 2.
+      recognition2: [{
+        region_index: 0,
+        importable: true,
+        summary: 'unit labels with tenant names (synthesized columns)',
+        entity_types: [
+          { entity_type: 'area', confidence: 0.9 },
+          { entity_type: 'tenant', confidence: 0.8 },
+        ],
+      }],
+      mappings: {
+        area: [{ target_field: 'name', source_column: 'Column 1', constant: null, confidence: 0.9 }],
+        tenant: [{ target_field: 'full_name', source_column: 'Column 2', constant: null, confidence: 0.85 }],
+      },
+    }));
+    // No header row: the first line is already a record.
+    const session = await uploadCsv(A, [
+      ['Apt 1', 'John Smith'],
+      ['Apt 2', 'Maria Garcia'],
+      ['Apt 3', 'Wei Chen'],
+    ]);
+    if (session.status !== 'awaiting_mapping') throw new Error(`expected awaiting_mapping, got ${session.status}`);
+    const region = (session as unknown as { regions: { columns: { name: string }[]; total_rows: number }[] }).regions[0];
+    if (!region) throw new Error('expected one region');
+    const colNames = region.columns.map((c) => c.name);
+    if (colNames[0] !== 'Column 1' || colNames[1] !== 'Column 2') {
+      throw new Error(`expected synthesized Column 1/Column 2 headers, got ${JSON.stringify(colNames)}`);
+    }
+    // The crucial bit: all 3 lines are data — "Apt 1"/"John Smith" was NOT
+    // consumed as a header row.
+    if (region.total_rows !== 3) {
+      throw new Error(`expected 3 data rows (no first-row loss), got ${region.total_rows}`);
+    }
+    const rowsR = await api('GET', `/v1/accounts/${A.accountId}/imports/${session.id}/rows`, { token: A.accessToken });
+    const rows = assertStatus(rowsR, 200, 'rows after headerless re-slice') as { data: { raw: Record<string, string> }[] };
+    if (rows.data.length !== 3 || rows.data[0]!.raw['Column 1'] !== 'Apt 1') {
+      throw new Error(`expected 3 persisted rows keyed by Column N starting at "Apt 1", got ${JSON.stringify(rows.data.map((r) => r.raw))}`);
+    }
+  });
 
   // =========================================================================
   // (2f) header advice: banner row above the real header -> re-sliced
   // =========================================================================
   await check('banner row above real header: advice row_index=1 re-slices correctly', async () => {
-    __setAnthropicForTests(
-      fakeAnthropic({
-        recognition: [
-          {
-            region_index: 0,
-            importable: true,
-            summary: 'a rent roll with a title row above the header',
-            header: { present: true, row_index: 1 },
-            entity_types: [{ entity_type: 'area', confidence: 0.9 }],
-          },
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a rent roll with a title row above the header',
+        header: { present: true, row_index: 1 },
+        entity_types: [{ entity_type: 'area', confidence: 0.9 }],
+      }],
+      recognition2: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a unit/tenant roster',
+        entity_types: [
+          { entity_type: 'area', confidence: 0.9 },
+          { entity_type: 'tenant', confidence: 0.85 },
         ],
-        recognition2: [
-          {
-            region_index: 0,
-            importable: true,
-            summary: 'a unit/tenant roster',
-            entity_types: [
-              { entity_type: 'area', confidence: 0.9 },
-              { entity_type: 'tenant', confidence: 0.85 },
-            ],
-          },
-        ],
-        mappings: {
-          area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }],
-          tenant: [
-            { target_field: 'full_name', source_column: 'Tenant', constant: null, confidence: 0.9 },
-          ],
-        },
-      }),
-    );
+      }],
+      mappings: {
+        area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }],
+        tenant: [{ target_field: 'full_name', source_column: 'Tenant', constant: null, confidence: 0.9 }],
+      },
+    }));
     const session = await uploadCsv(A, [
       ['June 2026 Rent Roll', ''],
       ['Unit', 'Tenant'],
       ['101', 'John Smith'],
       ['102', 'Maria Garcia'],
     ]);
-    if (session.status !== 'awaiting_mapping')
-      throw new Error(`expected awaiting_mapping, got ${session.status}`);
-    const region = (
-      session as unknown as { regions: { columns: { name: string }[]; total_rows: number }[] }
-    ).regions[0];
+    if (session.status !== 'awaiting_mapping') throw new Error(`expected awaiting_mapping, got ${session.status}`);
+    const region = (session as unknown as { regions: { columns: { name: string }[]; total_rows: number }[] }).regions[0];
     if (!region) throw new Error('expected one region');
     const colNames = region.columns.map((c) => c.name);
     if (colNames[0] !== 'Unit' || colNames[1] !== 'Tenant') {
@@ -821,397 +624,238 @@ async function main(): Promise<void> {
   // resolveTenant blocks the row (never throws / aborts the import) and names
   // the holder; the DB trigger is the backstop for direct writes.
   // =========================================================================
-  await check(
-    'import row with a colliding tenant email -> duplicate_email blocker, not failure',
-    async () => {
-      const sharedEmail = `imp-dup-${rnd()}@example.test`;
-      // Seed an existing holder via the API (different NAME so import does not
-      // reuse it by name — it must reach the email conflict check).
-      const holder = await api('POST', `/v1/accounts/${A.accountId}/tenants`, {
-        token: A.accessToken,
-        body: { full_name: 'Holder Hank', emails: [sharedEmail] },
-      });
-      assertStatus(holder, 201, 'seed existing email holder');
+  await check('import row with a colliding tenant email -> duplicate_email blocker, not failure', async () => {
+    const sharedEmail = `imp-dup-${rnd()}@example.test`;
+    // Seed an existing holder via the API (different NAME so import does not
+    // reuse it by name — it must reach the email conflict check).
+    const holder = await api('POST', `/v1/accounts/${A.accountId}/tenants`, {
+      token: A.accessToken,
+      body: { full_name: 'Holder Hank', emails: [sharedEmail] },
+    });
+    assertStatus(holder, 201, 'seed existing email holder');
 
-      __setAnthropicForTests(
-        fakeAnthropic({
-          recognition: [
-            {
-              region_index: 0,
-              importable: true,
-              summary: 'a tenant roster with emails',
-              entity_types: [{ entity_type: 'tenant', confidence: 0.9 }],
-            },
-          ],
-          mappings: {
-            tenant: [
-              {
-                target_field: 'full_name',
-                source_column: 'Name',
-                constant: null,
-                confidence: 0.95,
-              },
-              { target_field: 'email', source_column: 'Email', constant: null, confidence: 0.9 },
-            ],
-          },
-        }),
-      );
-      const session = await uploadCsv(A, [
-        ['Name', 'Email'],
-        ['Dan Dup', sharedEmail], // collides with Holder Hank -> blocked
-        ['Uma Unique', `imp-ok-${rnd()}@example.test`], // fine
-      ]);
-      if (session.status !== 'awaiting_mapping')
-        throw new Error(`expected awaiting_mapping, got ${session.status}`);
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a tenant roster with emails',
+        entity_types: [{ entity_type: 'tenant', confidence: 0.9 }],
+      }],
+      mappings: {
+        tenant: [
+          { target_field: 'full_name', source_column: 'Name', constant: null, confidence: 0.95 },
+          { target_field: 'email', source_column: 'Email', constant: null, confidence: 0.9 },
+        ],
+      },
+    }));
+    const session = await uploadCsv(A, [
+      ['Name', 'Email'],
+      ['Dan Dup', sharedEmail],       // collides with Holder Hank -> blocked
+      ['Uma Unique', `imp-ok-${rnd()}@example.test`], // fine
+    ]);
+    if (session.status !== 'awaiting_mapping') throw new Error(`expected awaiting_mapping, got ${session.status}`);
 
-      const previewR = await api(
-        'POST',
-        `/v1/accounts/${A.accountId}/imports/${session.id}/preview`,
-        { token: A.accessToken },
-      );
-      const preview = assertStatus(previewR, 200, 'preview dup email') as {
-        result: {
-          blockers: { field: string | null; code?: string; message: string }[];
-          counts: Record<string, { created: number }>;
-        };
-      };
-      const dupBlocker = preview.result.blockers.find((b) => b.code === 'duplicate_email');
-      if (!dupBlocker) {
-        throw new Error(
-          `expected a duplicate_email blocker, got ${JSON.stringify(preview.result.blockers)}`,
-        );
-      }
-      if (dupBlocker.field !== 'emails' || !dupBlocker.message.includes('Holder Hank')) {
-        throw new Error(
-          `expected field=emails naming the holder, got ${JSON.stringify(dupBlocker)}`,
-        );
-      }
-      // The clean row still imports (a blocker excludes one row, never fails the run).
-      if (preview.result.counts.tenant?.created !== 1) {
-        throw new Error(
-          `expected 1 tenant created (the unique row), got ${JSON.stringify(preview.result.counts.tenant)}`,
-        );
-      }
-    },
-  );
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/preview`, { token: A.accessToken });
+    const preview = assertStatus(previewR, 200, 'preview dup email') as {
+      result: { blockers: { field: string | null; code?: string; message: string }[]; counts: Record<string, { created: number }> };
+    };
+    const dupBlocker = preview.result.blockers.find((b) => b.code === 'duplicate_email');
+    if (!dupBlocker) {
+      throw new Error(`expected a duplicate_email blocker, got ${JSON.stringify(preview.result.blockers)}`);
+    }
+    if (dupBlocker.field !== 'emails' || !dupBlocker.message.includes('Holder Hank')) {
+      throw new Error(`expected field=emails naming the holder, got ${JSON.stringify(dupBlocker)}`);
+    }
+    // The clean row still imports (a blocker excludes one row, never fails the run).
+    if (preview.result.counts.tenant?.created !== 1) {
+      throw new Error(`expected 1 tenant created (the unique row), got ${JSON.stringify(preview.result.counts.tenant)}`);
+    }
+  });
 
   // =========================================================================
   // (2g) notes column -> interactions (channel=import, direction=none)
   // =========================================================================
-  await check(
-    'notes column imports as interactions; dates inferred; empty cells skipped',
-    async () => {
-      __setAnthropicForTests(
-        fakeAnthropic({
-          recognition: [
-            {
-              region_index: 0,
-              importable: true,
-              summary: 'units with a free-text notes column',
-              entity_types: [
-                { entity_type: 'area', confidence: 0.9 },
-                { entity_type: 'interaction', confidence: 0.85 },
-              ],
-            },
-          ],
-          mappings: {
-            area: [
-              { target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 },
-            ],
-            interaction: [
-              { target_field: 'body', source_column: 'Notes', constant: null, confidence: 0.85 },
-            ],
-          },
-        }),
-      );
-      const session = await uploadCsv(A, [
-        ['Unit', 'Notes'],
-        ['201', '6/2: Disagreement about front lawn usage.'],
-        ['202', ''],
-        ['203', 'Gardeners coming.'],
-      ]);
-      if (session.status !== 'awaiting_mapping')
-        throw new Error(`expected awaiting_mapping, got ${session.status}`);
+  await check('notes column imports as interactions; dates inferred; empty cells skipped', async () => {
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'units with a free-text notes column',
+        entity_types: [
+          { entity_type: 'area', confidence: 0.9 },
+          { entity_type: 'interaction', confidence: 0.85 },
+        ],
+      }],
+      mappings: {
+        area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }],
+        interaction: [{ target_field: 'body', source_column: 'Notes', constant: null, confidence: 0.85 }],
+      },
+    }));
+    const session = await uploadCsv(A, [
+      ['Unit', 'Notes'],
+      ['201', '6/2: Disagreement about front lawn usage.'],
+      ['202', ''],
+      ['203', 'Gardeners coming.'],
+    ]);
+    if (session.status !== 'awaiting_mapping') throw new Error(`expected awaiting_mapping, got ${session.status}`);
 
-      const patchR = await api(
-        'PATCH',
-        `/v1/accounts/${A.accountId}/imports/${session.id}/parents`,
-        {
-          token: A.accessToken,
-          body: { parent_resolutions: { default_property_id: A.propertyId } },
-        },
-      );
-      assertStatus(patchR, 200, 'patch parents for notes test');
+    const patchR = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${session.id}/parents`, {
+      token: A.accessToken,
+      body: { parent_resolutions: { default_property_id: A.propertyId } },
+    });
+    assertStatus(patchR, 200, 'patch parents for notes test');
 
-      const previewR = await api(
-        'POST',
-        `/v1/accounts/${A.accountId}/imports/${session.id}/preview`,
-        { token: A.accessToken },
-      );
-      const preview = assertStatus(previewR, 200, 'preview notes') as {
-        result: { blockers: unknown[]; counts: Record<string, { created: number }> };
-      };
-      if (preview.result.blockers.length !== 0) {
-        throw new Error(
-          `expected no blockers (empty note = skip, not block), got ${JSON.stringify(preview.result.blockers)}`,
-        );
-      }
-      if (preview.result.counts.interaction?.created !== 2) {
-        throw new Error(
-          `expected 2 interactions (empty cell skipped), got ${JSON.stringify(preview.result.counts.interaction)}`,
-        );
-      }
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/preview`, { token: A.accessToken });
+    const preview = assertStatus(previewR, 200, 'preview notes') as {
+      result: { blockers: unknown[]; counts: Record<string, { created: number }> };
+    };
+    if (preview.result.blockers.length !== 0) {
+      throw new Error(`expected no blockers (empty note = skip, not block), got ${JSON.stringify(preview.result.blockers)}`);
+    }
+    if (preview.result.counts.interaction?.created !== 2) {
+      throw new Error(`expected 2 interactions (empty cell skipped), got ${JSON.stringify(preview.result.counts.interaction)}`);
+    }
 
-      const confirmR = await api(
-        'POST',
-        `/v1/accounts/${A.accountId}/imports/${session.id}/confirm`,
-        { token: A.accessToken },
-      );
-      const confirm = assertStatus(confirmR, 200, 'confirm notes') as {
-        result: { committed: boolean };
-      };
-      if (!confirm.result.committed) throw new Error('expected committed=true');
+    const confirmR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/confirm`, { token: A.accessToken });
+    const confirm = assertStatus(confirmR, 200, 'confirm notes') as { result: { committed: boolean } };
+    if (!confirm.result.committed) throw new Error('expected committed=true');
 
-      const listR = await api('GET', `/v1/accounts/${A.accountId}/interactions`, {
-        token: A.accessToken,
-      });
-      const list = assertStatus(listR, 200, 'list interactions') as {
-        data: {
-          kind: string;
-          channel: string;
-          direction: string;
-          body: string | null;
-          occurred_at: string;
-          area_id: string | null;
-          actor: string;
-        }[];
-      };
-      // Provenance lives in the actor (and the provenance table), not the
-      // channel: imported journal entries are first-class kind='note' rows.
-      const imported = list.data.filter((i) => i.actor.startsWith('system:import:'));
-      if (imported.length !== 2)
-        throw new Error(`expected 2 imported interactions, got ${imported.length}`);
-      for (const i of imported) {
-        if (i.kind !== 'note') throw new Error(`expected kind note, got ${i.kind}`);
-        if (i.channel !== 'note') throw new Error(`expected channel note, got ${i.channel}`);
-        if (i.direction !== 'none') throw new Error(`expected direction none, got ${i.direction}`);
-        if (!i.area_id) throw new Error('expected the interaction to be attached to its row area');
-      }
-      const year = new Date().getUTCFullYear();
-      const dated = imported.find((i) => i.body?.startsWith('6/2:'));
-      if (!dated || !dated.occurred_at.startsWith(`${year}-06-02`)) {
-        throw new Error(
-          `expected "6/2:" note dated ${year}-06-02 (year inferred), got ${dated?.occurred_at}`,
-        );
-      }
-      const undated = imported.find((i) => i.body === 'Gardeners coming.');
-      const today = new Date().toISOString().slice(0, 10);
-      if (!undated || !undated.occurred_at.startsWith(today)) {
-        throw new Error(
-          `expected undated note to fall back to the import date ${today}, got ${undated?.occurred_at}`,
-        );
-      }
-    },
-  );
+    const listR = await api('GET', `/v1/accounts/${A.accountId}/interactions`, { token: A.accessToken });
+    const list = assertStatus(listR, 200, 'list interactions') as {
+      data: { kind: string; channel: string; direction: string; body: string | null; occurred_at: string; area_id: string | null; actor: string }[];
+    };
+    // Provenance lives in the actor (and the provenance table), not the
+    // channel: imported journal entries are first-class kind='note' rows.
+    const imported = list.data.filter((i) => i.actor.startsWith('system:import:'));
+    if (imported.length !== 2) throw new Error(`expected 2 imported interactions, got ${imported.length}`);
+    for (const i of imported) {
+      if (i.kind !== 'note') throw new Error(`expected kind note, got ${i.kind}`);
+      if (i.channel !== 'note') throw new Error(`expected channel note, got ${i.channel}`);
+      if (i.direction !== 'none') throw new Error(`expected direction none, got ${i.direction}`);
+      if (!i.area_id) throw new Error('expected the interaction to be attached to its row area');
+    }
+    const year = new Date().getUTCFullYear();
+    const dated = imported.find((i) => i.body?.startsWith('6/2:'));
+    if (!dated || !dated.occurred_at.startsWith(`${year}-06-02`)) {
+      throw new Error(`expected "6/2:" note dated ${year}-06-02 (year inferred), got ${dated?.occurred_at}`);
+    }
+    const undated = imported.find((i) => i.body === 'Gardeners coming.');
+    const today = new Date().toISOString().slice(0, 10);
+    if (!undated || !undated.occurred_at.startsWith(today)) {
+      throw new Error(`expected undated note to fall back to the import date ${today}, got ${undated?.occurred_at}`);
+    }
+  });
 
   // =========================================================================
   // (3) unit with no property -> blocker -> confirm 409 -> resolutions
   // =========================================================================
   let blockedSessionId = '';
-  await check(
-    'unit with no property mapped -> blocker in preview, no placeholder property',
-    async () => {
-      __setAnthropicForTests(
-        fakeAnthropic({
-          recognition: [
-            {
-              region_index: 0,
-              importable: true,
-              summary: 'a unit + move-in roster, no property column',
-              entity_types: [
-                { entity_type: 'area', confidence: 0.9 },
-                { entity_type: 'tenancy', confidence: 0.9 },
-              ],
-            },
-          ],
-          mappings: {
-            area: [
-              { target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 },
-            ],
-            tenancy: [
-              {
-                target_field: 'start_date',
-                source_column: 'Move-in',
-                constant: null,
-                confidence: 0.9,
-              },
-            ],
-          },
-        }),
-      );
-      const session = await uploadCsv(A, [
-        ['Unit', 'Move-in'],
-        ['101', '2026-02-01'],
-      ]);
-      if (session.status !== 'awaiting_mapping')
-        throw new Error(`expected awaiting_mapping, got ${session.status}`);
-      blockedSessionId = session.id;
+  await check('unit with no property mapped -> blocker in preview, no placeholder property', async () => {
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a unit + move-in roster, no property column',
+        entity_types: [
+          { entity_type: 'area', confidence: 0.9 },
+          { entity_type: 'tenancy', confidence: 0.9 },
+        ],
+      }],
+      mappings: {
+        area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }],
+        tenancy: [{ target_field: 'start_date', source_column: 'Move-in', constant: null, confidence: 0.9 }],
+      },
+    }));
+    const session = await uploadCsv(A, [
+      ['Unit', 'Move-in'],
+      ['101', '2026-02-01'],
+    ]);
+    if (session.status !== 'awaiting_mapping') throw new Error(`expected awaiting_mapping, got ${session.status}`);
+    blockedSessionId = session.id;
 
-      // The FE-facing machine-readable signal: property needed, nothing supplies
-      // it yet -- available straight off the upload response, before any preview.
-      const req = (
-        session as unknown as {
-          requirements: { property: { needed: boolean; satisfied: boolean; sources: string[] } };
-        }
-      ).requirements;
-      if (
-        !req ||
-        req.property.needed !== true ||
-        req.property.satisfied !== false ||
-        req.property.sources.length !== 0
-      ) {
-        throw new Error(
-          `expected requirements.property {needed:true, satisfied:false, sources:[]}, got ${JSON.stringify(req)}`,
-        );
-      }
+    // The FE-facing machine-readable signal: property needed, nothing supplies
+    // it yet -- available straight off the upload response, before any preview.
+    const req = (session as unknown as { requirements: { property: { needed: boolean; satisfied: boolean; sources: string[] } } }).requirements;
+    if (!req || req.property.needed !== true || req.property.satisfied !== false || req.property.sources.length !== 0) {
+      throw new Error(`expected requirements.property {needed:true, satisfied:false, sources:[]}, got ${JSON.stringify(req)}`);
+    }
 
-      const previewR = await api(
-        'POST',
-        `/v1/accounts/${A.accountId}/imports/${session.id}/preview`,
-        { token: A.accessToken },
-      );
-      const previewBody = assertStatus(previewR, 200, 'preview') as {
-        result: {
-          blockers: { code?: string }[];
-          counts: Record<string, { created: number; reused: number }>;
-        };
-      };
-      if (previewBody.result.blockers.length === 0) {
-        throw new Error('expected a blocker for the unmapped property parent');
-      }
-      if (!previewBody.result.blockers.some((b) => b.code === 'missing_parent_property')) {
-        throw new Error(
-          `expected a missing_parent_property code, got ${JSON.stringify(previewBody.result.blockers)}`,
-        );
-      }
-      const propCounts = previewBody.result.counts.property;
-      if (!propCounts || propCounts.created !== 0 || propCounts.reused !== 0) {
-        throw new Error(
-          `expected NO placeholder property, got counts.property=${JSON.stringify(propCounts)}`,
-        );
-      }
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/preview`, { token: A.accessToken });
+    const previewBody = assertStatus(previewR, 200, 'preview') as { result: { blockers: { code?: string }[]; counts: Record<string, { created: number; reused: number }> } };
+    if (previewBody.result.blockers.length === 0) {
+      throw new Error('expected a blocker for the unmapped property parent');
+    }
+    if (!previewBody.result.blockers.some((b) => b.code === 'missing_parent_property')) {
+      throw new Error(`expected a missing_parent_property code, got ${JSON.stringify(previewBody.result.blockers)}`);
+    }
+    const propCounts = previewBody.result.counts.property;
+    if (!propCounts || propCounts.created !== 0 || propCounts.reused !== 0) {
+      throw new Error(`expected NO placeholder property, got counts.property=${JSON.stringify(propCounts)}`);
+    }
 
-      const confirmR = await api(
-        'POST',
-        `/v1/accounts/${A.accountId}/imports/${session.id}/confirm`,
-        { token: A.accessToken },
-      );
-      const confirmBody = assertStatus(confirmR, 409, 'confirm with unresolved blocker');
-      assertEnvelope(confirmBody, 'confirm with unresolved blocker');
-    },
-  );
+    const confirmR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/confirm`, { token: A.accessToken });
+    const confirmBody = assertStatus(confirmR, 409, 'confirm with unresolved blocker');
+    assertEnvelope(confirmBody, 'confirm with unresolved blocker');
+  });
 
   await check('bind_existing via default_property_id resolves the blocker', async () => {
-    const r = await api(
-      'PATCH',
-      `/v1/accounts/${A.accountId}/imports/${blockedSessionId}/parents`,
-      {
-        token: A.accessToken,
-        body: { parent_resolutions: { default_property_id: A.propertyId } },
-      },
-    );
+    const r = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${blockedSessionId}/parents`, {
+      token: A.accessToken,
+      body: { parent_resolutions: { default_property_id: A.propertyId } },
+    });
     const patched = assertStatus(r, 200, 'patch parents (default_property_id)') as {
       requirements: { property: { needed: boolean; satisfied: boolean; sources: string[] } };
     };
     // requirements flips to satisfied the moment the parent is supplied.
     const pr = patched.requirements?.property;
-    if (
-      !pr ||
-      pr.needed !== true ||
-      pr.satisfied !== true ||
-      !pr.sources.includes('default_property_id')
-    ) {
-      throw new Error(
-        `expected requirements.property satisfied via default_property_id, got ${JSON.stringify(patched.requirements)}`,
-      );
+    if (!pr || pr.needed !== true || pr.satisfied !== true || !pr.sources.includes('default_property_id')) {
+      throw new Error(`expected requirements.property satisfied via default_property_id, got ${JSON.stringify(patched.requirements)}`);
     }
 
-    const previewR = await api(
-      'POST',
-      `/v1/accounts/${A.accountId}/imports/${blockedSessionId}/preview`,
-      { token: A.accessToken },
-    );
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${blockedSessionId}/preview`, { token: A.accessToken });
     const previewBody = assertStatus(previewR, 200, 'preview after default_property_id') as {
       result: { blockers: unknown[]; counts: Record<string, { created: number; reused: number }> };
     };
     if (previewBody.result.blockers.length !== 0) {
-      throw new Error(
-        `expected no blockers after binding default property, got ${JSON.stringify(previewBody.result.blockers)}`,
-      );
+      throw new Error(`expected no blockers after binding default property, got ${JSON.stringify(previewBody.result.blockers)}`);
     }
-    if (
-      previewBody.result.counts.property?.reused !== 1 ||
-      previewBody.result.counts.property?.created !== 0
-    ) {
-      throw new Error(
-        `expected property reused=1 created=0, got ${JSON.stringify(previewBody.result.counts.property)}`,
-      );
+    if (previewBody.result.counts.property?.reused !== 1 || previewBody.result.counts.property?.created !== 0) {
+      throw new Error(`expected property reused=1 created=0, got ${JSON.stringify(previewBody.result.counts.property)}`);
     }
     if (previewBody.result.counts.area?.created !== 1) {
-      throw new Error(
-        `expected area created=1, got ${JSON.stringify(previewBody.result.counts.area)}`,
-      );
+      throw new Error(`expected area created=1, got ${JSON.stringify(previewBody.result.counts.area)}`);
     }
 
-    const confirmR = await api(
-      'POST',
-      `/v1/accounts/${A.accountId}/imports/${blockedSessionId}/confirm`,
-      { token: A.accessToken },
-    );
+    const confirmR = await api('POST', `/v1/accounts/${A.accountId}/imports/${blockedSessionId}/confirm`, { token: A.accessToken });
     const confirmBody = assertStatus(confirmR, 200, 'confirm after binding default property') as {
       result: { committed: boolean; counts: Record<string, { created: number; reused: number }> };
     };
     if (!confirmBody.result.committed) throw new Error('expected committed=true');
     if (confirmBody.result.counts.area?.created !== 1) {
-      throw new Error(
-        `expected area created=1 on commit, got ${JSON.stringify(confirmBody.result.counts.area)}`,
-      );
+      throw new Error(`expected area created=1 on commit, got ${JSON.stringify(confirmBody.result.counts.area)}`);
     }
   });
 
   // -- from_column (reuse-by-name AND create-by-name) + create_new override + bind_existing override
   let fromColumnSessionId = '';
   await check('from_column: property name reused by match, created when absent', async () => {
-    __setAnthropicForTests(
-      fakeAnthropic({
-        recognition: [
-          {
-            region_index: 0,
-            importable: true,
-            summary: 'a property+unit+move-in roster',
-            entity_types: [
-              { entity_type: 'property', confidence: 0.9 },
-              { entity_type: 'area', confidence: 0.9 },
-              { entity_type: 'tenancy', confidence: 0.9 },
-            ],
-          },
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a property+unit+move-in roster',
+        entity_types: [
+          { entity_type: 'property', confidence: 0.9 },
+          { entity_type: 'area', confidence: 0.9 },
+          { entity_type: 'tenancy', confidence: 0.9 },
         ],
-        mappings: {
-          property: [
-            { target_field: 'name', source_column: 'Property', constant: null, confidence: 0.9 },
-          ],
-          area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }],
-          tenancy: [
-            {
-              target_field: 'start_date',
-              source_column: 'Move-in',
-              constant: null,
-              confidence: 0.9,
-            },
-          ],
-        },
-      }),
-    );
+      }],
+      mappings: {
+        property: [{ target_field: 'name', source_column: 'Property', constant: null, confidence: 0.9 }],
+        area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }],
+        tenancy: [{ target_field: 'start_date', source_column: 'Move-in', constant: null, confidence: 0.9 }],
+      },
+    }));
     const session = await uploadCsv(A, [
       ['Property', 'Unit', 'Move-in'],
       [A.propertyName, '201', '2026-03-01'], // matches A's existing property by name
@@ -1219,514 +863,203 @@ async function main(): Promise<void> {
     ]);
     fromColumnSessionId = session.id;
 
-    const previewR = await api(
-      'POST',
-      `/v1/accounts/${A.accountId}/imports/${session.id}/preview`,
-      { token: A.accessToken },
-    );
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/preview`, { token: A.accessToken });
     const previewBody = assertStatus(previewR, 200, 'preview from_column') as {
       result: { blockers: unknown[]; counts: Record<string, { created: number; reused: number }> };
     };
     if (previewBody.result.blockers.length !== 0) {
       throw new Error(`expected no blockers, got ${JSON.stringify(previewBody.result.blockers)}`);
     }
-    if (
-      previewBody.result.counts.property?.reused !== 1 ||
-      previewBody.result.counts.property?.created !== 1
-    ) {
-      throw new Error(
-        `expected property reused=1 created=1, got ${JSON.stringify(previewBody.result.counts.property)}`,
-      );
+    if (previewBody.result.counts.property?.reused !== 1 || previewBody.result.counts.property?.created !== 1) {
+      throw new Error(`expected property reused=1 created=1, got ${JSON.stringify(previewBody.result.counts.property)}`);
     }
   });
 
-  await check(
-    'ambiguity: two same-named live properties still block with ambiguous_match',
-    async () => {
-      // Guards the Phase 2.3 prefetch maps: the old per-row `limit 2` lookup
-      // blocked on duplicate names; the prefetched map must do the same via
-      // its AMBIGUOUS sentinel.
-      const dupName = `Dup Bldg ${Math.random().toString(36).slice(2, 8)}`;
-      for (let i = 0; i < 2; i++) {
-        const r = await api('POST', `/v1/accounts/${A.accountId}/properties`, {
-          token: A.accessToken,
-          body: { name: dupName },
-        });
-        assertStatus(r, 201, `seed dup property ${i}`);
-      }
-      __setAnthropicForTests(
-        fakeAnthropic({
-          recognition: [
-            {
-              region_index: 0,
-              importable: true,
-              summary: 'a property roster',
-              entity_types: [{ entity_type: 'property', confidence: 0.9 }],
-            },
-          ],
-          mappings: {
-            property: [
-              { target_field: 'name', source_column: 'Property', constant: null, confidence: 0.9 },
-            ],
-          },
-        }),
-      );
-      const session = await uploadCsv(A, [['Property'], [dupName]]);
-      const previewR = await api(
-        'POST',
-        `/v1/accounts/${A.accountId}/imports/${session.id}/preview`,
-        { token: A.accessToken },
-      );
-      const previewBody = assertStatus(previewR, 200, 'preview ambiguous property') as {
-        result: { blockers: { code: string; entity_type: string | null }[] };
-      };
-      const hit = previewBody.result.blockers.find(
-        (b) => b.code === 'ambiguous_match' && b.entity_type === 'property',
-      );
-      if (!hit) {
-        throw new Error(
-          `expected an ambiguous_match property blocker, got ${JSON.stringify(previewBody.result.blockers)}`,
-        );
-      }
-    },
-  );
-
-  await check('corrected possession date remains an import identity alias', async () => {
-    const unitName = `Corrected unit ${rnd()}`;
-    const areaR = await api('POST', `/v1/accounts/${A.accountId}/areas`, {
-      token: A.accessToken,
-      body: { property_id: A.propertyId, kind: 'unit', name: unitName },
-    });
-    const area = assertStatus(areaR, 201, 'create corrected-date unit') as { id: string };
-    const tenancyR = await api('POST', `/v1/accounts/${A.accountId}/tenancies`, {
-      token: A.accessToken,
-      body: { area_id: area.id, start_date: '2026-07-01', status: 'active' },
-    });
-    const tenancy = assertStatus(tenancyR, 201, 'create corrected-date tenancy') as { id: string };
-
-    const previewR = await api(
-      'POST',
-      `/v1/accounts/${A.accountId}/tenancies/${tenancy.id}/date-corrections/preview`,
-      { token: A.accessToken, body: { changes: { start_date: '2026-05-01' } } },
-    );
-    const preview = assertStatus(previewR, 200, 'preview date correction') as {
-      proposed: { status: 'active' };
-      context_fingerprint: string;
-    };
-    const correctionR = await api(
-      'POST',
-      `/v1/accounts/${A.accountId}/tenancies/${tenancy.id}/date-corrections`,
-      {
-        token: A.accessToken,
-        body: {
-          changes: { start_date: '2026-05-01' },
-          expected_date_revision: 0,
-          expected_context_fingerprint: preview.context_fingerprint,
-          expected_resulting_status: preview.proposed.status,
-          reason_code: 'data_entry_error',
-          reason_note: 'The imported July date was corrected to the possession record.',
-        },
-      },
-    );
-    assertStatus(correctionR, 200, 'apply date correction');
-
-    __setAnthropicForTests(
-      fakeAnthropic({
-        recognition: [
-          {
-            region_index: 0,
-            importable: true,
-            summary: 'a unit, tenancy, lease and rent roster using an old possession date',
-            entity_types: [
-              { entity_type: 'area', confidence: 0.9 },
-              { entity_type: 'tenancy', confidence: 0.9 },
-              { entity_type: 'lease', confidence: 0.9 },
-              { entity_type: 'rent_schedule', confidence: 0.9 },
-            ],
-          },
-        ],
-        mappings: {
-          area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }],
-          tenancy: [
-            {
-              target_field: 'start_date',
-              source_column: 'Old start',
-              constant: null,
-              confidence: 0.9,
-            },
-          ],
-          lease: [
-            { target_field: 'rent_amount', source_column: 'Rent', constant: null, confidence: 0.9 },
-          ],
-          rent_schedule: [
-            { target_field: 'amount', source_column: 'Rent', constant: null, confidence: 0.9 },
-          ],
-        },
-      }),
-    );
-    const session = await uploadCsv(A, [
-      ['Unit', 'Old start', 'Rent'],
-      [unitName, '2026-07-01', '1500'],
-    ]);
-    const parentsR = await api(
-      'PATCH',
-      `/v1/accounts/${A.accountId}/imports/${session.id}/parents`,
-      {
-        token: A.accessToken,
-        body: { parent_resolutions: { default_property_id: A.propertyId } },
-      },
-    );
-    assertStatus(parentsR, 200, 'bind property for old-date import');
-    const importPreviewR = await api(
-      'POST',
-      `/v1/accounts/${A.accountId}/imports/${session.id}/preview`,
-      {
-        token: A.accessToken,
-      },
-    );
-    const importPreview = assertStatus(importPreviewR, 200, 'preview old-date import') as {
-      result: {
-        blockers: unknown[];
-        counts: Record<string, { created: number; reused: number }>;
-        date_defaults: unknown[];
-      };
-    };
-    if (importPreview.result.blockers.length !== 0)
-      throw new Error(JSON.stringify(importPreview.result.blockers));
-    if (
-      importPreview.result.counts.tenancy?.reused !== 1 ||
-      importPreview.result.counts.tenancy?.created !== 0
-    ) {
-      throw new Error(
-        `expected corrected tenancy reuse, got ${JSON.stringify(importPreview.result.counts.tenancy)}`,
-      );
+  await check('ambiguity: two same-named live properties still block with ambiguous_match', async () => {
+    // Guards the Phase 2.3 prefetch maps: the old per-row `limit 2` lookup
+    // blocked on duplicate names; the prefetched map must do the same via
+    // its AMBIGUOUS sentinel.
+    const dupName = `Dup Bldg ${Math.random().toString(36).slice(2, 8)}`;
+    for (let i = 0; i < 2; i++) {
+      const r = await api('POST', `/v1/accounts/${A.accountId}/properties`, {
+        token: A.accessToken, body: { name: dupName },
+      });
+      assertStatus(r, 201, `seed dup property ${i}`);
     }
-    if (
-      importPreview.result.counts.lease?.created !== 0 ||
-      importPreview.result.counts.rent_schedule?.created !== 0
-    ) {
-      throw new Error(
-        'a reused tenancy must not derive a new lease or rent era from its old imported start',
-      );
-    }
-    if (importPreview.result.date_defaults.length !== 0) {
-      throw new Error(
-        `reused tenancy unexpectedly reported defaults: ${JSON.stringify(importPreview.result.date_defaults)}`,
-      );
-    }
-    const confirmR = await api(
-      'POST',
-      `/v1/accounts/${A.accountId}/imports/${session.id}/confirm`,
-      {
-        token: A.accessToken,
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a property roster',
+        entity_types: [{ entity_type: 'property', confidence: 0.9 }],
+      }],
+      mappings: {
+        property: [{ target_field: 'name', source_column: 'Property', constant: null, confidence: 0.9 }],
       },
-    );
-    const confirmed = assertStatus(confirmR, 200, 'confirm old-date import') as {
-      result: { committed: boolean; counts: Record<string, { created: number; reused: number }> };
+    }));
+    const session = await uploadCsv(A, [['Property'], [dupName]]);
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/preview`, { token: A.accessToken });
+    const previewBody = assertStatus(previewR, 200, 'preview ambiguous property') as {
+      result: { blockers: { code: string; entity_type: string | null }[] };
     };
-    if (!confirmed.result.committed || confirmed.result.counts.tenancy?.reused !== 1) {
-      throw new Error(
-        `old-date confirm did not reuse tenancy: ${JSON.stringify(confirmed.result)}`,
-      );
+    const hit = previewBody.result.blockers.find(
+      (b) => b.code === 'ambiguous_match' && b.entity_type === 'property',
+    );
+    if (!hit) {
+      throw new Error(`expected an ambiguous_match property blocker, got ${JSON.stringify(previewBody.result.blockers)}`);
     }
   });
 
-  await check(
-    'create_new override (mode:create) forces a new property despite a name match',
-    async () => {
-      const r = await api(
-        'PATCH',
-        `/v1/accounts/${A.accountId}/imports/${fromColumnSessionId}/parents`,
-        {
-          token: A.accessToken,
-          body: {
-            parent_resolutions: { property_overrides: { [A.propertyName]: { mode: 'create' } } },
-          },
-        },
-      );
-      assertStatus(r, 200, 'patch parents (create_new override)');
+  await check('create_new override (mode:create) forces a new property despite a name match', async () => {
+    const r = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${fromColumnSessionId}/parents`, {
+      token: A.accessToken,
+      body: { parent_resolutions: { property_overrides: { [A.propertyName]: { mode: 'create' } } } },
+    });
+    assertStatus(r, 200, 'patch parents (create_new override)');
 
-      const previewR = await api(
-        'POST',
-        `/v1/accounts/${A.accountId}/imports/${fromColumnSessionId}/preview`,
-        { token: A.accessToken },
-      );
-      const previewBody = assertStatus(previewR, 200, 'preview create_new override') as {
-        result: {
-          blockers: unknown[];
-          counts: Record<string, { created: number; reused: number }>;
-        };
-      };
-      if (previewBody.result.blockers.length !== 0) {
-        throw new Error(`expected no blockers, got ${JSON.stringify(previewBody.result.blockers)}`);
-      }
-      // Both rows now create a property: row1 forced via override, row2 still has no name match.
-      if (
-        previewBody.result.counts.property?.created !== 2 ||
-        previewBody.result.counts.property?.reused !== 0
-      ) {
-        throw new Error(
-          `expected property created=2 reused=0, got ${JSON.stringify(previewBody.result.counts.property)}`,
-        );
-      }
-    },
-  );
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${fromColumnSessionId}/preview`, { token: A.accessToken });
+    const previewBody = assertStatus(previewR, 200, 'preview create_new override') as {
+      result: { blockers: unknown[]; counts: Record<string, { created: number; reused: number }> };
+    };
+    if (previewBody.result.blockers.length !== 0) {
+      throw new Error(`expected no blockers, got ${JSON.stringify(previewBody.result.blockers)}`);
+    }
+    // Both rows now create a property: row1 forced via override, row2 still has no name match.
+    if (previewBody.result.counts.property?.created !== 2 || previewBody.result.counts.property?.reused !== 0) {
+      throw new Error(`expected property created=2 reused=0, got ${JSON.stringify(previewBody.result.counts.property)}`);
+    }
+  });
 
-  await check(
-    'bind_existing override (mode:existing,id) binds a name to a specific property',
-    async () => {
-      const r = await api(
-        'PATCH',
-        `/v1/accounts/${A.accountId}/imports/${fromColumnSessionId}/parents`,
-        {
-          token: A.accessToken,
-          body: {
-            parent_resolutions: {
-              property_overrides: { 'Brand New Bldg': { mode: 'existing', id: A.propertyId } },
-            },
-          },
-        },
-      );
-      assertStatus(r, 200, 'patch parents (bind_existing override)');
+  await check('bind_existing override (mode:existing,id) binds a name to a specific property', async () => {
+    const r = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${fromColumnSessionId}/parents`, {
+      token: A.accessToken,
+      body: { parent_resolutions: { property_overrides: { 'Brand New Bldg': { mode: 'existing', id: A.propertyId } } } },
+    });
+    assertStatus(r, 200, 'patch parents (bind_existing override)');
 
-      const previewR = await api(
-        'POST',
-        `/v1/accounts/${A.accountId}/imports/${fromColumnSessionId}/preview`,
-        { token: A.accessToken },
-      );
-      const previewBody = assertStatus(previewR, 200, 'preview bind_existing override') as {
-        result: {
-          blockers: unknown[];
-          counts: Record<string, { created: number; reused: number }>;
-        };
-      };
-      if (previewBody.result.blockers.length !== 0) {
-        throw new Error(`expected no blockers, got ${JSON.stringify(previewBody.result.blockers)}`);
-      }
-      // row1 matches A.propertyName by name (reused); row2 bound by id to the same property (reused).
-      if (
-        previewBody.result.counts.property?.reused !== 2 ||
-        previewBody.result.counts.property?.created !== 0
-      ) {
-        throw new Error(
-          `expected property reused=2 created=0, got ${JSON.stringify(previewBody.result.counts.property)}`,
-        );
-      }
-    },
-  );
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${fromColumnSessionId}/preview`, { token: A.accessToken });
+    const previewBody = assertStatus(previewR, 200, 'preview bind_existing override') as {
+      result: { blockers: unknown[]; counts: Record<string, { created: number; reused: number }> };
+    };
+    if (previewBody.result.blockers.length !== 0) {
+      throw new Error(`expected no blockers, got ${JSON.stringify(previewBody.result.blockers)}`);
+    }
+    // row1 matches A.propertyName by name (reused); row2 bound by id to the same property (reused).
+    if (previewBody.result.counts.property?.reused !== 2 || previewBody.result.counts.property?.created !== 0) {
+      throw new Error(`expected property reused=2 created=0, got ${JSON.stringify(previewBody.result.counts.property)}`);
+    }
+  });
 
   // =========================================================================
   // (item 2) cross-account isolation: account A's import cannot touch B's data
   // =========================================================================
-  await check(
-    "cross-account: default_property_id pointing at B's property blocks, writes nothing",
-    async () => {
-      __setAnthropicForTests(
-        fakeAnthropic({
-          recognition: [
-            {
-              region_index: 0,
-              importable: true,
-              summary: 'unit + move-in roster, no property column',
-              entity_types: [
-                { entity_type: 'area', confidence: 0.9 },
-                { entity_type: 'tenancy', confidence: 0.9 },
-              ],
-            },
-          ],
-          mappings: {
-            area: [
-              { target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 },
-            ],
-            tenancy: [
-              {
-                target_field: 'start_date',
-                source_column: 'Move-in',
-                constant: null,
-                confidence: 0.9,
-              },
-            ],
-          },
-        }),
-      );
-      const session = await uploadCsv(A, [
-        ['Unit', 'Move-in'],
-        ['XACCT', '2026-04-01'],
-      ]);
+  await check('cross-account: default_property_id pointing at B\'s property blocks, writes nothing', async () => {
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'unit + move-in roster, no property column',
+        entity_types: [
+          { entity_type: 'area', confidence: 0.9 },
+          { entity_type: 'tenancy', confidence: 0.9 },
+        ],
+      }],
+      mappings: {
+        area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }],
+        tenancy: [{ target_field: 'start_date', source_column: 'Move-in', constant: null, confidence: 0.9 }],
+      },
+    }));
+    const session = await uploadCsv(A, [
+      ['Unit', 'Move-in'],
+      ['XACCT', '2026-04-01'],
+    ]);
 
-      const patchR = await api(
-        'PATCH',
-        `/v1/accounts/${A.accountId}/imports/${session.id}/parents`,
-        {
-          token: A.accessToken,
-          body: { parent_resolutions: { default_property_id: B.propertyId } },
-        },
-      );
-      assertStatus(patchR, 200, 'patch parents (cross-account default_property_id)');
+    const patchR = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${session.id}/parents`, {
+      token: A.accessToken,
+      body: { parent_resolutions: { default_property_id: B.propertyId } },
+    });
+    assertStatus(patchR, 200, 'patch parents (cross-account default_property_id)');
 
-      // Snapshot B's properties/areas before the (attempted) import.
-      const bAreasBefore = await api('GET', `/v1/accounts/${B.accountId}/areas`, {
-        token: B.accessToken,
-      });
-      assertStatus(bAreasBefore, 200, 'B areas before');
-      const bAreaCountBefore = (bAreasBefore.body as { data: unknown[] }).data.length;
+    // Snapshot B's properties/areas before the (attempted) import.
+    const bAreasBefore = await api('GET', `/v1/accounts/${B.accountId}/areas`, { token: B.accessToken });
+    assertStatus(bAreasBefore, 200, 'B areas before');
+    const bAreaCountBefore = (bAreasBefore.body as { data: unknown[] }).data.length;
 
-      const previewR = await api(
-        'POST',
-        `/v1/accounts/${A.accountId}/imports/${session.id}/preview`,
-        { token: A.accessToken },
-      );
-      const previewBody = assertStatus(
-        previewR,
-        200,
-        'preview cross-account default_property_id',
-      ) as {
-        result: {
-          blockers: { message: string }[];
-          counts: Record<string, { created: number; reused: number }>;
-        };
-      };
-      if (previewBody.result.blockers.length === 0) {
-        throw new Error("expected a blocker: B's property is not in A's account");
-      }
-      if (!previewBody.result.blockers.some((bl) => /not found in this account/.test(bl.message))) {
-        throw new Error(
-          `expected "not found in this account" blocker, got ${JSON.stringify(previewBody.result.blockers)}`,
-        );
-      }
-      if (
-        previewBody.result.counts.property?.created !== 0 ||
-        previewBody.result.counts.area?.created !== 0
-      ) {
-        throw new Error(
-          `expected zero creates, got property=${JSON.stringify(previewBody.result.counts.property)} area=${JSON.stringify(previewBody.result.counts.area)}`,
-        );
-      }
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/preview`, { token: A.accessToken });
+    const previewBody = assertStatus(previewR, 200, 'preview cross-account default_property_id') as {
+      result: { blockers: { message: string }[]; counts: Record<string, { created: number; reused: number }> };
+    };
+    if (previewBody.result.blockers.length === 0) {
+      throw new Error('expected a blocker: B\'s property is not in A\'s account');
+    }
+    if (!previewBody.result.blockers.some((bl) => /not found in this account/.test(bl.message))) {
+      throw new Error(`expected "not found in this account" blocker, got ${JSON.stringify(previewBody.result.blockers)}`);
+    }
+    if (previewBody.result.counts.property?.created !== 0 || previewBody.result.counts.area?.created !== 0) {
+      throw new Error(`expected zero creates, got property=${JSON.stringify(previewBody.result.counts.property)} area=${JSON.stringify(previewBody.result.counts.area)}`);
+    }
 
-      const confirmR = await api(
-        'POST',
-        `/v1/accounts/${A.accountId}/imports/${session.id}/confirm`,
-        { token: A.accessToken },
-      );
-      assertStatus(confirmR, 409, 'confirm cross-account default_property_id');
+    const confirmR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/confirm`, { token: A.accessToken });
+    assertStatus(confirmR, 409, 'confirm cross-account default_property_id');
 
-      // B's areas are unchanged -- no leakage of writes into account B.
-      const bAreasAfter = await api('GET', `/v1/accounts/${B.accountId}/areas`, {
-        token: B.accessToken,
-      });
-      assertStatus(bAreasAfter, 200, 'B areas after');
-      const bAreaCountAfter = (bAreasAfter.body as { data: unknown[] }).data.length;
-      if (bAreaCountAfter !== bAreaCountBefore) {
-        throw new Error(
-          `account B gained areas from account A's import: before=${bAreaCountBefore} after=${bAreaCountAfter}`,
-        );
-      }
-    },
-  );
+    // B's areas are unchanged -- no leakage of writes into account B.
+    const bAreasAfter = await api('GET', `/v1/accounts/${B.accountId}/areas`, { token: B.accessToken });
+    assertStatus(bAreasAfter, 200, 'B areas after');
+    const bAreaCountAfter = (bAreasAfter.body as { data: unknown[] }).data.length;
+    if (bAreaCountAfter !== bAreaCountBefore) {
+      throw new Error(`account B gained areas from account A's import: before=${bAreaCountBefore} after=${bAreaCountAfter}`);
+    }
+  });
 
-  await check(
-    "cross-account: bind_existing property_overrides with B's property id blocks",
-    async () => {
-      __setAnthropicForTests(
-        fakeAnthropic({
-          recognition: [
-            {
-              region_index: 0,
-              importable: true,
-              summary: 'property + unit + move-in roster',
-              entity_types: [
-                { entity_type: 'property', confidence: 0.9 },
-                { entity_type: 'area', confidence: 0.9 },
-                { entity_type: 'tenancy', confidence: 0.9 },
-              ],
-            },
-          ],
-          mappings: {
-            property: [
-              { target_field: 'name', source_column: 'Property', constant: null, confidence: 0.9 },
-            ],
-            area: [
-              { target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 },
-            ],
-            tenancy: [
-              {
-                target_field: 'start_date',
-                source_column: 'Move-in',
-                constant: null,
-                confidence: 0.9,
-              },
-            ],
-          },
-        }),
-      );
-      const propName = `Cross Acct Bind ${rnd()}`;
-      const session = await uploadCsv(A, [
-        ['Property', 'Unit', 'Move-in'],
-        [propName, 'X1', '2026-04-01'],
-      ]);
+  await check('cross-account: bind_existing property_overrides with B\'s property id blocks', async () => {
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'property + unit + move-in roster',
+        entity_types: [
+          { entity_type: 'property', confidence: 0.9 },
+          { entity_type: 'area', confidence: 0.9 },
+          { entity_type: 'tenancy', confidence: 0.9 },
+        ],
+      }],
+      mappings: {
+        property: [{ target_field: 'name', source_column: 'Property', constant: null, confidence: 0.9 }],
+        area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }],
+        tenancy: [{ target_field: 'start_date', source_column: 'Move-in', constant: null, confidence: 0.9 }],
+      },
+    }));
+    const propName = `Cross Acct Bind ${rnd()}`;
+    const session = await uploadCsv(A, [
+      ['Property', 'Unit', 'Move-in'],
+      [propName, 'X1', '2026-04-01'],
+    ]);
 
-      const patchR = await api(
-        'PATCH',
-        `/v1/accounts/${A.accountId}/imports/${session.id}/parents`,
-        {
-          token: A.accessToken,
-          body: {
-            parent_resolutions: {
-              property_overrides: { [propName]: { mode: 'existing', id: B.propertyId } },
-            },
-          },
-        },
-      );
-      assertStatus(patchR, 200, 'patch parents (cross-account bind_existing override)');
+    const patchR = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${session.id}/parents`, {
+      token: A.accessToken,
+      body: { parent_resolutions: { property_overrides: { [propName]: { mode: 'existing', id: B.propertyId } } } },
+    });
+    assertStatus(patchR, 200, 'patch parents (cross-account bind_existing override)');
 
-      const previewR = await api(
-        'POST',
-        `/v1/accounts/${A.accountId}/imports/${session.id}/preview`,
-        { token: A.accessToken },
-      );
-      const previewBody = assertStatus(
-        previewR,
-        200,
-        'preview cross-account bind_existing override',
-      ) as {
-        result: {
-          blockers: { message: string }[];
-          counts: Record<string, { created: number; reused: number }>;
-        };
-      };
-      if (!previewBody.result.blockers.some((bl) => /not found in this account/.test(bl.message))) {
-        throw new Error(
-          `expected "not found in this account" blocker, got ${JSON.stringify(previewBody.result.blockers)}`,
-        );
-      }
-      if (
-        previewBody.result.counts.property?.created !== 0 ||
-        previewBody.result.counts.property?.reused !== 0
-      ) {
-        throw new Error(
-          `expected zero property writes, got ${JSON.stringify(previewBody.result.counts.property)}`,
-        );
-      }
-    },
-  );
+    const previewR = await api('POST', `/v1/accounts/${A.accountId}/imports/${session.id}/preview`, { token: A.accessToken });
+    const previewBody = assertStatus(previewR, 200, 'preview cross-account bind_existing override') as {
+      result: { blockers: { message: string }[]; counts: Record<string, { created: number; reused: number }> };
+    };
+    if (!previewBody.result.blockers.some((bl) => /not found in this account/.test(bl.message))) {
+      throw new Error(`expected "not found in this account" blocker, got ${JSON.stringify(previewBody.result.blockers)}`);
+    }
+    if (previewBody.result.counts.property?.created !== 0 || previewBody.result.counts.property?.reused !== 0) {
+      throw new Error(`expected zero property writes, got ${JSON.stringify(previewBody.result.counts.property)}`);
+    }
+  });
 
   // =========================================================================
   // (item 4) HTTP route-level behavior
   // =========================================================================
   await check('missing Idempotency-Key on POST import upload -> 400', async () => {
     const fd = new FormData();
-    fd.set(
-      'file',
-      csvFile([
-        ['A', 'B'],
-        ['1', '2'],
-      ]),
-    );
-    const r = await api('POST', `/v1/accounts/${A.accountId}/imports`, {
-      token: A.accessToken,
-      multipart: fd,
-      noIdempotency: true,
-    });
+    fd.set('file', csvFile([['A', 'B'], ['1', '2']]));
+    const r = await api('POST', `/v1/accounts/${A.accountId}/imports`, { token: A.accessToken, multipart: fd, noIdempotency: true });
     const body = assertStatus(r, 400, 'missing idempotency key');
     const env = assertEnvelope(body, 'missing idempotency key');
     if (!/Idempotency-Key/i.test(env.message)) {
@@ -1734,41 +1067,21 @@ async function main(): Promise<void> {
     }
   });
 
-  await check(
-    "account scoping: account B cannot read account A's import session (404)",
-    async () => {
-      const r = await api('GET', `/v1/accounts/${B.accountId}/imports/${blockedSessionId}`, {
-        token: B.accessToken,
-      });
-      const body = assertStatus(r, 404, 'cross-account session read');
-      assertEnvelope(body, 'cross-account session read');
-    },
-  );
+  await check('account scoping: account B cannot read account A\'s import session (404)', async () => {
+    const r = await api('GET', `/v1/accounts/${B.accountId}/imports/${blockedSessionId}`, { token: B.accessToken });
+    const body = assertStatus(r, 404, 'cross-account session read');
+    assertEnvelope(body, 'cross-account session read');
+  });
 
-  await check(
-    "account scoping: account B cannot preview/confirm account A's import session (404)",
-    async () => {
-      const previewR = await api(
-        'POST',
-        `/v1/accounts/${B.accountId}/imports/${blockedSessionId}/preview`,
-        { token: B.accessToken },
-      );
-      assertStatus(previewR, 404, 'cross-account preview');
-      const confirmR = await api(
-        'POST',
-        `/v1/accounts/${B.accountId}/imports/${blockedSessionId}/confirm`,
-        { token: B.accessToken },
-      );
-      assertStatus(confirmR, 404, 'cross-account confirm');
-    },
-  );
+  await check('account scoping: account B cannot preview/confirm account A\'s import session (404)', async () => {
+    const previewR = await api('POST', `/v1/accounts/${B.accountId}/imports/${blockedSessionId}/preview`, { token: B.accessToken });
+    assertStatus(previewR, 404, 'cross-account preview');
+    const confirmR = await api('POST', `/v1/accounts/${B.accountId}/imports/${blockedSessionId}/confirm`, { token: B.accessToken });
+    assertStatus(confirmR, 404, 'cross-account confirm');
+  });
 
   await check('confirm on an already-done session -> 409 conflict, standard envelope', async () => {
-    const confirmR = await api(
-      'POST',
-      `/v1/accounts/${A.accountId}/imports/${blockedSessionId}/confirm`,
-      { token: A.accessToken },
-    );
+    const confirmR = await api('POST', `/v1/accounts/${A.accountId}/imports/${blockedSessionId}/confirm`, { token: A.accessToken });
     const body = assertStatus(confirmR, 409, 'confirm already-done session');
     const env = assertEnvelope(body, 'confirm already-done session');
     if (env.code !== 'conflict') throw new Error(`expected code=conflict, got ${env.code}`);
@@ -1778,94 +1091,60 @@ async function main(): Promise<void> {
   // Hardening: boundary validation, requirements truthfulness, health probe
   // =========================================================================
   await check('PATCH mapping with an unknown entity_type -> 400, standard envelope', async () => {
-    __setAnthropicForTests(
-      fakeAnthropic({
-        recognition: [
-          {
-            region_index: 0,
-            importable: true,
-            summary: 'a unit list',
-            entity_types: [{ entity_type: 'area', confidence: 0.9 }],
-          },
-        ],
-        mappings: {
-          area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }],
-        },
-      }),
-    );
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a unit list',
+        entity_types: [{ entity_type: 'area', confidence: 0.9 }],
+      }],
+      mappings: { area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }] },
+    }));
     const session = await uploadCsv(A, [['Unit'], ['101']]);
     const r = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${session.id}/mapping`, {
       token: A.accessToken,
       body: {
-        mapping: [
-          {
-            region_index: 0,
-            entity_type: 'charge',
-            fields: [{ target_field: 'amount', source_column: 'Unit' }],
-          },
-        ],
+        mapping: [{ region_index: 0, entity_type: 'charge', fields: [{ target_field: 'amount', source_column: 'Unit' }] }],
       },
     });
     // The executor's catalog is the closed vocabulary; anything outside it is
     // rejected at the boundary instead of being silently ignored at run time.
     const body = assertStatus(r, 400, 'unknown entity_type');
     const env = assertEnvelope(body, 'unknown entity_type');
-    if (env.code !== 'invalid_request')
-      throw new Error(`expected code=invalid_request, got ${env.code}`);
+    if (env.code !== 'invalid_request') throw new Error(`expected code=invalid_request, got ${env.code}`);
   });
 
   await check('property_overrides alone never satisfy the property requirement', async () => {
     // Overrides are keyed by names read FROM a mapped property column; with
     // no such column they cannot supply the parent, bound id or not.
-    __setAnthropicForTests(
-      fakeAnthropic({
-        recognition: [
-          {
-            region_index: 0,
-            importable: true,
-            summary: 'a unit list, no property column',
-            entity_types: [{ entity_type: 'area', confidence: 0.9 }],
-          },
-        ],
-        mappings: {
-          area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }],
-        },
-      }),
-    );
+    __setAnthropicForTests(fakeAnthropic({
+      recognition: [{
+        region_index: 0,
+        importable: true,
+        summary: 'a unit list, no property column',
+        entity_types: [{ entity_type: 'area', confidence: 0.9 }],
+      }],
+      mappings: { area: [{ target_field: 'name', source_column: 'Unit', constant: null, confidence: 0.9 }] },
+    }));
     const session = await uploadCsv(A, [['Unit'], ['201']]);
 
-    type ReqResp = {
-      requirements: { property: { needed: boolean; satisfied: boolean; sources: string[] } };
-    };
+    type ReqResp = { requirements: { property: { needed: boolean; satisfied: boolean; sources: string[] } } };
     const r1 = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${session.id}/parents`, {
       token: A.accessToken,
-      body: {
-        parent_resolutions: { property_overrides: { Maple: { mode: 'existing', id: null } } },
-      },
+      body: { parent_resolutions: { property_overrides: { Maple: { mode: 'existing', id: null } } } },
     });
-    const p1 = (assertStatus(r1, 200, 'patch parents (unusable override)') as ReqResp).requirements
-      .property;
+    const p1 = (assertStatus(r1, 200, 'patch parents (unusable override)') as ReqResp).requirements.property;
     if (p1.needed !== true || p1.satisfied !== false || p1.sources.length !== 0) {
-      throw new Error(
-        `expected {needed:true, satisfied:false, sources:[]} for unusable override, got ${JSON.stringify(p1)}`,
-      );
+      throw new Error(`expected {needed:true, satisfied:false, sources:[]} for unusable override, got ${JSON.stringify(p1)}`);
     }
 
     const r2 = await api('PATCH', `/v1/accounts/${A.accountId}/imports/${session.id}/parents`, {
       token: A.accessToken,
-      body: {
-        parent_resolutions: {
-          property_overrides: { Maple: { mode: 'existing', id: A.propertyId } },
-        },
-      },
+      body: { parent_resolutions: { property_overrides: { Maple: { mode: 'existing', id: A.propertyId } } } },
     });
-    const p2 = (
-      assertStatus(r2, 200, 'patch parents (override without property column)') as ReqResp
-    ).requirements.property;
+    const p2 = (assertStatus(r2, 200, 'patch parents (override without property column)') as ReqResp).requirements.property;
     if (p2.satisfied !== false || p2.sources.length !== 0) {
-      throw new Error(
-        `expected overrides-only to leave satisfied:false, got ${JSON.stringify(p2)}`,
-      );
+      throw new Error(`expected overrides-only to leave satisfied:false, got ${JSON.stringify(p2)}`);
     }
   });
 
@@ -1876,9 +1155,7 @@ async function main(): Promise<void> {
     };
     const imp = body.capabilities?.import;
     if (!imp || imp.db_url !== true || imp.db_reachable !== true) {
-      throw new Error(
-        `expected import.db_url=true and db_reachable=true, got ${JSON.stringify(imp)}`,
-      );
+      throw new Error(`expected import.db_url=true and db_reachable=true, got ${JSON.stringify(imp)}`);
     }
   });
 

@@ -71,7 +71,6 @@ const NOT_ACCOUNT_SCOPED = new Set([
 // isolation check (cross-account count == 0), but we skip the
 // "must-have-own-rows" assertion because there's no natural seed entry.
 const NO_SEED_REQUIRED = new Set([
-  'tenancy_date_records', // Created only through a reasoned correction command.
   'idempotency_keys',
   'intake_tokens',
   // Phase 9: cron-emitted; no static seed row.

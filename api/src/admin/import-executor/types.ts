@@ -38,13 +38,6 @@ export interface ExecutionResult {
     interpreted_as: string;
     ambiguous: boolean;
   }[];
-  /** Defaults applied only while creating a new tenancy and its first eras. */
-  date_defaults: {
-    field: 'lease.term_start' | 'rent_schedule.start_date';
-    value: string;
-    source: 'possession_start';
-    reason: 'new_tenancy_default';
-  }[];
 }
 
 export interface ParentResolutions {

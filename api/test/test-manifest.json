@@ -33,7 +33,6 @@
       "description": "Account rent rollup parity with tenancy ledgers."
     },
     { "script": "test:tenancy-start-date", "description": "Tenancy start-date correction guards." },
-    { "script": "test:tenancy-dates-concurrency", "description": "Date correction serialization, durable retry, permissions, and money preservation." },
     { "script": "test:tenancy-endings", "description": "Atomic tenancy-ending workflow." },
     {
       "script": "test:tenant-email-uniqueness",

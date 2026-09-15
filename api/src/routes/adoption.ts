@@ -78,17 +78,13 @@ const AdoptionBody = z
     charges: z.array(AdoptionCharge).max(120).default([]),
     payments: z.array(AdoptionPayment).max(200).default([]),
     deposit: AdoptionDeposit.optional(),
-    opening_balance_cents: z
-      .number()
-      .int()
-      .default(0)
-      .openapi({
-        description:
-          'Signed: > 0 the tenant owed money at adoption, < 0 the tenant held a credit. ' +
-          'A recorded fact, not a charge — it can never take a late fee and is never ' +
-          'part of payment-dated income exports. Mutually exclusive with itemized ' +
-          'charges/payments.',
-      }),
+    opening_balance_cents: z.number().int().default(0).openapi({
+      description:
+        'Signed: > 0 the tenant owed money at adoption, < 0 the tenant held a credit. ' +
+        'A recorded fact, not a charge — it can never take a late fee and is never ' +
+        'part of payment-dated income exports. Mutually exclusive with itemized ' +
+        'charges/payments.',
+    }),
     balance_basis: z.string().min(1).max(200).optional(),
     needs_review: z.boolean().default(false),
   })
@@ -175,7 +171,7 @@ const PatchAdoptionBody = z
   .object({
     needs_review: z.boolean().openapi({
       description:
-        'Resolve (or re-raise) the wizard\'s "save as unresolved" flag. The only ' +
+        "Resolve (or re-raise) the wizard's \"save as unresolved\" flag. The only " +
         'mutable adoption field: everything else is frozen testimony at the DB.',
     }),
   })
@@ -253,8 +249,7 @@ adoptionApp.openapi(adopt, async (c) => {
   // GraceDays/LateFeeCents are nullable in the shared schema (PATCH uses null
   // to clear); for a first schedule null and omitted both mean "not set".
   if (typeof body.rent.grace_days === 'number') params.p_grace_days = body.rent.grace_days;
-  if (typeof body.rent.late_fee_cents === 'number')
-    params.p_late_fee_cents = body.rent.late_fee_cents;
+  if (typeof body.rent.late_fee_cents === 'number') params.p_late_fee_cents = body.rent.late_fee_cents;
   if (body.deposit !== undefined) params.p_deposit = body.deposit;
   if (body.balance_basis !== undefined) params.p_balance_basis = body.balance_basis;
 
@@ -270,6 +265,7 @@ adoptionApp.openapi(adopt, async (c) => {
       [/already has a rent schedule/i, 'schedule_exists'],
       [/already has ledger activity/i, 'tenancy_has_money'],
       [/tenancy already ended/i, 'tenancy_ended'],
+      [/correct the tenancy start_date first/i, 'tenancy_start_date_conflict'],
     ]);
   }
 

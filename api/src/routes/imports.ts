@@ -24,7 +24,6 @@ import {
   computeRequirements,
   type RegionEntityMapping,
 } from '../admin/import-catalog';
-import { CalendarDate } from '../schemas/calendar-date';
 
 // Import data flow: upload -> recognize/map -> preview in a rolled-back
 // transaction -> confirm and commit. The LLM proposes mappings; only the
@@ -141,14 +140,6 @@ const ExecutionResultSchema = z
         iso: z.string(),
         interpreted_as: z.string(),
         ambiguous: z.boolean(),
-      }),
-    ),
-    date_defaults: z.array(
-      z.object({
-        field: z.enum(['lease.term_start', 'rent_schedule.start_date']),
-        value: CalendarDate,
-        source: z.literal('possession_start'),
-        reason: z.literal('new_tenancy_default'),
       }),
     ),
   })

@@ -1,5 +1,12 @@
 // ----------------------------------------------------------------------------
-// Tenancy possession-date API transition and audited correction flow.
+// Tenancy start_date correction guards:
+// - A money-free tenancy can be corrected.
+// - Any active charge or payment returns tenancy_has_money.
+// - Voiding all money rows permits correction again.
+// - A future start requires status='upcoming' in the same PATCH.
+// - start_date cannot pass the effective end_date.
+//   * PATCHes without start_date are untouched (regression).
+//   * a no-op correction (same value) skips the money guard.
 //
 // Requires the local Supabase stack (`supabase start` in db/), same as the
 // other integration suites.
@@ -52,35 +59,6 @@ const app = buildApp();
 // --- helpers ----------------------------------------------------------------
 
 interface ApiResp { status: number; body: unknown }
-interface DateFacts {
-  start_date: string;
-  start_date_basis: string;
-  status: string;
-  date_revision: number;
-}
-interface DateContextBody {
-  version: number;
-  facts: DateFacts;
-  context_fingerprint: string;
-}
-interface DatePreviewBody {
-  current: DateFacts;
-  proposed: DateFacts;
-  context_fingerprint: string;
-  blockers: string[];
-  financial_review: { live_charges: number; live_payments: number };
-}
-interface DateRecordBody {
-  tenancy: { start_date: string };
-  record: { id: string; kind: string };
-}
-interface DateHistoryBody {
-  data: Array<{ id: string; [key: string]: unknown }>;
-  next_cursor: string | null;
-}
-interface ErrorBody {
-  error?: { details?: { correction_endpoint?: string } };
-}
 
 async function api(
   method: string,
@@ -149,139 +127,104 @@ const tenancy = await post<{ id: string }>('/tenancies', {
 
 // --- tests --------------------------------------------------------------------
 
-console.info('tenancy possession-date checks');
+console.info('tenancy start_date correction checks');
 
-let context: DateContextBody;
-let preview: DatePreviewBody;
-await check('(0) creating a future actual move-in fact is rejected', async () => {
-  const r = await api('POST', `/v1/accounts/${acct}/tenancies`, {
-    token,
-    body: {
-      area_id: area.id,
-      start_date: '2027-01-01',
-      actual_move_in_date: '2027-01-01',
-      status: 'upcoming',
-    },
-  });
-  assertEq(r.status, 400, 'create status');
-  assertEq(errorCode(r), 'invalid_request', 'schema validation code');
-});
-await check('(1) changed legacy PATCH directs the caller to the audited command', async () => {
-  const r = await patchTenancy(tenancy.id, { start_date: '2026-01-15', status: 'upcoming' });
-  assertEq(r.status, 409, 'patch status');
-  assertEq(errorCode(r), 'date_correction_required', 'error code');
-  const details = (r.body as ErrorBody).error?.details;
-  if (!String(details?.correction_endpoint).endsWith(`/tenancies/${tenancy.id}/date-corrections`)) {
-    throw new Error(`missing correction endpoint: ${JSON.stringify(r.body)}`);
-  }
+await check('(1) money-free correction succeeds and persists', async () => {
+  const r = await patchTenancy(tenancy.id, { start_date: '2026-01-15' });
+  assertEq(r.status, 200, 'patch status');
   const g = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancy.id}`, { token });
-  assertEq((g.body as { status: string }).status, 'active', 'mixed PATCH must be atomic');
+  assertEq((g.body as { start_date: string }).start_date, '2026-01-15', 'persisted start_date');
 });
 
-await check('(2) unchanged legacy start and status/end-only PATCH remain compatible', async () => {
-  assertEq((await patchTenancy(tenancy.id, { start_date: '2026-01-07' })).status, 200, 'no-op start');
-  assertEq((await patchTenancy(tenancy.id, { end_date: null, status: 'active' })).status, 200, 'ordinary patch');
-});
-
-await post('/charges', {
-  tenancy_id: tenancy.id, type: 'rent', amount_cents: 100000, currency: 'USD', due_date: '2026-02-01',
-});
-await post('/payments', {
-  tenancy_id: tenancy.id, amount_cents: 5000, currency: 'USD',
-  received_at: '2026-02-02T00:00:00.000Z', method: 'cash',
-});
-
-await check('(3) context distinguishes possession from selected lease and rent dates', async () => {
-  const r = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-context`, { token });
-  assertEq(r.status, 200, 'context status');
-  context = r.body as DateContextBody;
-  assertEq(context.version, 1, 'context version');
-  assertEq(context.facts.start_date, '2026-01-07', 'possession start');
-  assertEq(context.facts.start_date_basis, 'legacy_unverified', 'basis');
-  if (!context.context_fingerprint) throw new Error('missing context fingerprint');
-});
-
-await check('(4) preview reports money for review without blocking correction', async () => {
-  const r = await api('POST', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-corrections/preview`, {
-    token, body: { changes: { start_date: '2026-01-15', start_date_basis: 'possession_entitlement' } },
+let chargeId = '';
+await check('(2) non-voided charge blocks the correction with 409 tenancy_has_money', async () => {
+  const charge = await post<{ id: string }>('/charges', {
+    tenancy_id: tenancy.id, type: 'rent', amount_cents: 100000, currency: 'USD', due_date: '2026-02-01',
   });
-  assertEq(r.status, 200, 'preview status');
-  preview = r.body as DatePreviewBody;
-  assertEq(preview.proposed.start_date, '2026-01-15', 'proposed start');
-  assertEq(preview.financial_review.live_charges, 1, 'live charges');
-  assertEq(preview.financial_review.live_payments, 1, 'live payments');
-  assertEq(preview.blockers.length, 0, 'blockers');
+  chargeId = charge.id;
+  const r = await patchTenancy(tenancy.id, { start_date: '2026-01-20' });
+  assertEq(r.status, 409, 'patch status');
+  assertEq(errorCode(r), 'tenancy_has_money', 'error code');
 });
 
-let correctionRecordId = '';
-await check('(5) correction succeeds with money and appends history', async () => {
-  const r = await api('POST', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-corrections`, {
-    token,
-    body: {
-      changes: { start_date: '2026-01-15', start_date_basis: 'possession_entitlement' },
-      expected_date_revision: preview.current.date_revision,
-      expected_context_fingerprint: preview.context_fingerprint,
-      expected_resulting_status: preview.proposed.status,
-      reason_code: 'data_entry_error',
-      reason_note: 'The possession record was entered eight days early.',
-    },
+await check('(3) no-op correction (same value) is allowed even with money', async () => {
+  const r = await patchTenancy(tenancy.id, { start_date: '2026-01-15' });
+  assertEq(r.status, 200, 'no-op patch status');
+});
+
+await check('(4) voiding the charge re-opens the correction path', async () => {
+  const v = await api('POST', `/v1/accounts/${acct}/charges/${chargeId}/void`, {
+    token, body: { void_reason: 'test void' },
   });
-  assertEq(r.status, 200, 'correction status');
-  const body = r.body as DateRecordBody;
-  assertEq(body.tenancy.start_date, '2026-01-15', 'corrected start');
-  assertEq(body.record.kind, 'correction', 'record kind');
-  correctionRecordId = body.record.id;
+  assertEq(v.status, 200, 'void status');
+  const r = await patchTenancy(tenancy.id, { start_date: '2026-01-20' });
+  assertEq(r.status, 200, 'patch after void');
 });
 
-await check('(6) stale preview fails with date_context_changed', async () => {
-  const r = await api('POST', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-corrections`, {
-    token,
-    body: {
-      changes: { start_date: '2026-01-20' },
-      expected_date_revision: preview.current.date_revision,
-      expected_context_fingerprint: preview.context_fingerprint,
-      expected_resulting_status: preview.proposed.status,
-      reason_code: 'data_entry_error', reason_note: 'Stale correction attempt.',
-    },
+await check('(5) non-voided unallocated payment also blocks (409)', async () => {
+  // Payment with no allocations: pure unapplied credit still anchors the timeline.
+  await post('/payments', {
+    tenancy_id: tenancy.id, amount_cents: 5000, currency: 'USD',
+    received_at: '2026-02-02T00:00:00.000Z', method: 'cash',
   });
-  assertEq(r.status, 409, 'stale status');
-  assertEq(errorCode(r), 'date_context_changed', 'stale code');
+  const r = await patchTenancy(tenancy.id, { start_date: '2026-01-21' });
+  assertEq(r.status, 409, 'patch status');
+  assertEq(errorCode(r), 'tenancy_has_money', 'error code');
 });
 
-await check('(7) explanation records the current selected context without mutation', async () => {
-  const current = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-context`, { token });
-  assertEq(current.status, 200, 'context status');
-  const fingerprint = (current.body as DateContextBody).context_fingerprint;
-  const r = await api('POST', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-explanations`, {
-    token,
-    body: {
-      expected_context_fingerprint: fingerprint,
-      reason_code: 'other',
-      reason_note: 'The lease and rent schedule dates are independently documented.',
-    },
+await check('(6) voiding the payment re-opens the correction path', async () => {
+  const list = await api('GET', `/v1/accounts/${acct}/payments?tenancy_id=${tenancy.id}`, { token });
+  const payments = (list.body as { data: { id: string; voided_at: string | null }[] }).data;
+  const live = payments.find((p) => p.voided_at === null);
+  if (!live) throw new Error('no live payment found');
+  const v = await api('POST', `/v1/accounts/${acct}/payments/${live.id}/void`, {
+    token, body: { void_reason: 'test void' },
   });
-  assertEq(r.status, 200, 'explanation status');
-  assertEq((r.body as DateRecordBody).record.kind, 'explanation', 'record kind');
-  assertEq((r.body as DateRecordBody).tenancy.start_date, '2026-01-15', 'unchanged start');
+  assertEq(v.status, 200, 'void status');
+  const r = await patchTenancy(tenancy.id, { start_date: '2026-01-21' });
+  assertEq(r.status, 200, 'patch after void');
 });
 
-await check('(8) history is paginated and omits idempotency internals', async () => {
-  const r = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-history?limit=1`, { token });
-  assertEq(r.status, 200, 'history status');
-  const body = r.body as DateHistoryBody;
-  assertEq(body.data.length, 1, 'page size');
-  if (!body.next_cursor) throw new Error('expected next cursor');
-  const firstRecord = body.data[0];
-  if (!firstRecord) throw new Error('missing first history record');
-  if ('request_key' in firstRecord || 'request_fingerprint' in firstRecord || 'response_body' in firstRecord) {
-    throw new Error('history exposed private idempotency fields');
+await check("(7) future start_date without status='upcoming' is a 400", async () => {
+  const r = await patchTenancy(tenancy.id, { start_date: '2030-01-01' });
+  assertEq(r.status, 400, 'patch status');
+  assertEq(errorCode(r), 'invalid_request', 'error code');
+  const fields = (r.body as { error: { details?: { fieldErrors?: Record<string, unknown> } } })
+    .error.details?.fieldErrors;
+  if (!fields?.start_date || !fields?.status) {
+    throw new Error(`expected fieldErrors on start_date and status, got ${JSON.stringify(fields)}`);
   }
-  const page2 = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-history?limit=10&cursor=${encodeURIComponent(body.next_cursor)}`, { token });
-  assertEq(page2.status, 200, 'second page status');
-  const bothPages = [...body.data, ...(page2.body as DateHistoryBody).data];
-  if (!bothPages.some((record) => record.id === correctionRecordId)) {
-    throw new Error('correction missing from history');
-  }
+});
+
+await check("(8) future start_date + status='upcoming' in the same PATCH succeeds", async () => {
+  const r = await patchTenancy(tenancy.id, { start_date: '2030-01-01', status: 'upcoming' });
+  assertEq(r.status, 200, 'patch status');
+  const g = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancy.id}`, { token });
+  const body = g.body as { start_date: string; status: string };
+  assertEq(body.start_date, '2030-01-01', 'persisted start_date');
+  assertEq(body.status, 'upcoming', 'persisted status');
+});
+
+await check('(9) start_date past the effective end_date is a 400', async () => {
+  // Reset to an active past-dated tenancy with an end_date, then try to
+  // push start_date beyond it.
+  const setup = await patchTenancy(tenancy.id, {
+    start_date: '2026-01-10', status: 'active', end_date: '2026-06-30',
+  });
+  assertEq(setup.status, 200, 'setup patch');
+  // 2026-07-05 is in the past (so the future-date guard stays quiet) but
+  // beyond the 2026-06-30 end_date — only the ordering guard can fire.
+  const r = await patchTenancy(tenancy.id, { start_date: '2026-07-05' });
+  assertEq(r.status, 400, 'patch status');
+  assertEq(errorCode(r), 'invalid_request', 'error code');
+  const fields = (r.body as { error: { details?: { fieldErrors?: Record<string, unknown> } } })
+    .error.details?.fieldErrors;
+  if (!fields?.start_date) throw new Error('expected fieldErrors.start_date on ordering guard');
+});
+
+await check('(10) regression: status/end_date-only PATCH is untouched by the guards', async () => {
+  const r = await patchTenancy(tenancy.id, { end_date: null, status: 'active' });
+  assertEq(r.status, 200, 'patch status');
 });
 
 if (failures.length > 0) {
