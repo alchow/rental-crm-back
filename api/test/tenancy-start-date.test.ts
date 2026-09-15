@@ -180,7 +180,30 @@ await check('(1) changed legacy PATCH directs the caller to the audited command'
 
 await check('(2) unchanged legacy start and status/end-only PATCH remain compatible', async () => {
   assertEq((await patchTenancy(tenancy.id, { start_date: '2026-01-07' })).status, 200, 'no-op start');
-  assertEq((await patchTenancy(tenancy.id, { end_date: null, status: 'active' })).status, 200, 'ordinary patch');
+  assertEq((await patchTenancy(tenancy.id, { end_date: null, expected_end_date: null, status: 'active' })).status, 200, 'ordinary patch');
+});
+
+await check('planned end changes require the value originally reviewed', async () => {
+  assertEq((await patchTenancy(tenancy.id, { end_date: '2026-12-31' })).status, 400, 'missing expectation');
+  assertEq((await patchTenancy(tenancy.id, { expected_end_date: null })).status, 400, 'expectation without mutation');
+  const attempts = await Promise.all([
+    patchTenancy(tenancy.id, { end_date: '2026-11-30', expected_end_date: null }),
+    patchTenancy(tenancy.id, { end_date: '2026-12-31', expected_end_date: null }),
+  ]);
+  assertEq(attempts.filter((r) => r.status === 200).length, 1, 'one concurrent winner');
+  const loser = attempts.find((r) => r.status !== 200)!;
+  assertEq(loser.status, 409, 'stale writer status');
+  assertEq(errorCode(loser), 'tenancy_end_date_changed', 'stale writer code');
+  const winner = attempts.find((r) => r.status === 200)!.body as { end_date: string };
+  const staleMixed = await patchTenancy(tenancy.id, {
+    end_date: null, expected_end_date: null, status: 'upcoming',
+  });
+  assertEq(staleMixed.status, 409, 'stale mixed update');
+  const current = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancy.id}`, { token });
+  assertEq((current.body as { status: string }).status, 'active', 'status was not partially updated');
+  assertEq((current.body as { end_date: string }).end_date, winner.end_date, 'winner retained');
+  assertEq((await patchTenancy(tenancy.id, { end_date: null, expected_end_date: winner.end_date })).status, 200, 'clear with matching expectation');
+  assertEq((await patchTenancy(crypto.randomUUID(), { end_date: null, expected_end_date: null })).status, 404, 'missing tenancy');
 });
 
 await post('/charges', {

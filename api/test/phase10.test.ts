@@ -459,7 +459,7 @@ async function main(): Promise<void> {
     endedTenancyId = body.id;
     // End it (PATCH).
     const patch = await api('PATCH', `/v1/accounts/${A.accountId}/tenancies/${endedTenancyId}`, {
-      token: A.accessToken, body: { status: 'ended', end_date: '2025-12-31' },
+      token: A.accessToken, body: { status: 'ended', end_date: '2025-12-31', expected_end_date: null },
     });
     if (patch.status !== 200) throw new Error(`patch tenancy: ${patch.status} ${JSON.stringify(patch.body)}`);
     // Soft-delete via admin client (the API may not expose tenancy delete).

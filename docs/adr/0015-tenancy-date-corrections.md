@@ -63,6 +63,11 @@ need a separate compatibility deployment; this batch does not claim to provide i
 Old date PATCH clients receive a correction-required error. Do not run only 04
 as a usable correction release: 06 is required on hosted-style auth privileges.
 
+Planned end-date PATCH callers must send the nullable `expected_end_date` captured
+when editing began. Core compares it in the UPDATE; stale values return 409
+without changing the date or any accompanying status. This is an expected-value
+check, not a full revision history or an ABA detector.
+
 Existing dates and money are preserved. New history starts at deployment;
 prior audit events are retained without inventing reasons. Rollback disables
 the new entry point or uses a forward repair while preserving history/protection.

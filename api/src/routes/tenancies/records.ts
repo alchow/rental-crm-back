@@ -20,6 +20,9 @@ import { AccountAndIdParam, AccountParam, Tenancy } from './schemas';
 const PatchTenancyBody = z
   .object({
     end_date: CalendarDate.nullable().optional(),
+    expected_end_date: CalendarDate.nullable().optional().openapi({
+      description: 'Required with end_date. The end date seen when editing began; null means no end date. A changed stored value returns 409 tenancy_end_date_changed.',
+    }),
     status: TenancyStatus.optional(),
     start_date: CalendarDate
       .optional()
@@ -31,6 +34,10 @@ const PatchTenancyBody = z
   })
   .refine((b) => Object.keys(b).length > 0, {
     message: 'at least one field is required',
+  })
+  .refine((b) => (b.end_date !== undefined) === (b.expected_end_date !== undefined), {
+    message: 'end_date and expected_end_date must be supplied together',
+    path: ['expected_end_date'],
   })
   .openapi('PatchTenancyBody');
 
@@ -222,21 +229,34 @@ tenancyRecordsApp.openapi(patch, async (c) => {
   const update: DbTableUpdate<'tenancies'> = { updated_at: new Date().toISOString() };
   if (body.end_date !== undefined) update.end_date = body.end_date;
   if (body.status !== undefined) update.status = body.status;
-  const { data, error } = await sb
+  let query = sb
     .from('tenancies')
     .update(update)
     .eq('account_id', accountId)
     .eq('id', id)
-    .is('deleted_at', null)
-    .select('*')
-    .maybeSingle();
+    .is('deleted_at', null);
+  // Compare in the UPDATE itself so a concurrent writer cannot slip between a read and write.
+  if (body.expected_end_date !== undefined) {
+    query = body.expected_end_date === null
+      ? query.is('end_date', null)
+      : query.eq('end_date', body.expected_end_date);
+  }
+  const { data, error } = await query.select('*').maybeSingle();
   if (error) {
     if (error.code === '23514') {
       throw new ApiError(400, 'invalid_request', error.message);
     }
     throw new ApiError(500, 'database_error', error.message);
   }
-  if (!data) throw new ApiError(404, 'not_found', 'not found');
+  if (!data) {
+    if (body.expected_end_date !== undefined) {
+      const { data: current, error: readError } = await sb.from('tenancies').select('id')
+        .eq('account_id', accountId).eq('id', id).is('deleted_at', null).maybeSingle();
+      if (readError) throw new ApiError(500, 'database_error', readError.message);
+      if (current) throw new ApiError(409, 'tenancy_end_date_changed', 'The tenancy end date changed. Review the latest value before saving.');
+    }
+    throw new ApiError(404, 'not_found', 'not found');
+  }
   return c.json(data as z.infer<typeof Tenancy>, 200);
 });
 

@@ -299,7 +299,7 @@ An **occupancy period** — who occupied which unit, when. This is the operation
 | `GET`    | `/tenancies`      | Supports `?area_id=` and `?status=` filters. `status` accepts a single value **or** a comma-separated set (e.g. `?status=active,holdover`) — a single value behaves exactly as before; an unknown member is a 400 with `error.details.fieldErrors.status`. |
 | `POST`   | `/tenancies`      | `area_id` (required), `start_date` (required, YYYY-MM-DD), `end_date` (optional), `status` (required, see below). |
 | `GET`    | `/tenancies/{id}` |                                                                                                                   |
-| `PATCH`  | `/tenancies/{id}` | `end_date`, `status`; changed `start_date` returns `date_correction_required`. |
+| `PATCH`  | `/tenancies/{id}` | `end_date` requires `expected_end_date` (nullable original value); stale values return `409 tenancy_end_date_changed`. `status`; changed `start_date` returns `date_correction_required`. |
 | `DELETE` | `/tenancies/{id}` | Soft-delete.                                                                                                      |
 
 `status` values: `upcoming` → `active` → `holdover` / `ended`.
@@ -1343,6 +1343,7 @@ await post(`/v1/accounts/${accountId}/inspections/${inspection.id}/complete`, {}
 await patch(`/v1/accounts/${accountId}/tenancies/${tenancy.id}`, {
   status: 'ended',
   end_date: '2026-08-31',
+  expected_end_date: tenancy.end_date,
 });
 
 const exp = await post(`/v1/accounts/${accountId}/evidence-exports`, { tenancy_id: tenancy.id });
