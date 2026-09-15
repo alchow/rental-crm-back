@@ -33,10 +33,14 @@ const MUTATING = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 // response flush. Well under the 25s app request budget.
 const COMPLETE_TIMEOUT_MS = 2500;
 
+export function isIdempotencyExempt(method: string, path: string): boolean {
+  return method.toUpperCase() === 'POST' && path.endsWith('/rent-adjustments/preview');
+}
+
 export function requireIdempotency(): MiddlewareHandler {
   return async (c, next) => {
     const method = c.req.method.toUpperCase();
-    if (!MUTATING.has(method)) {
+    if (!MUTATING.has(method) || isIdempotencyExempt(method, c.req.path)) {
       return next();
     }
 

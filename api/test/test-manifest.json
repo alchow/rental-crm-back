@@ -97,6 +97,10 @@
     { "script": "test:auto-charge", "description": "Automatic rent charging." },
     { "script": "test:rent-changes", "description": "Instrument-anchored rent changes." },
     {
+      "script": "test:rent-adjustments",
+      "description": "Atomic lease corrections and rent changes, durable recovery, payment carryover, and account isolation."
+    },
+    {
       "script": "test:lease-lifecycle",
       "description": "Lease lifecycle: draft edits, executed freeze, void, replace."
     },

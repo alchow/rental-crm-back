@@ -4,6 +4,7 @@
 // every mutating account-scoped operation using the middleware's same rule.
 
 import type { OpenAPIHono } from '@hono/zod-openapi';
+import { isIdempotencyExempt } from '../middleware/idempotency';
 
 // Single source for the document metadata. Both callers pass this to
 // app.getOpenAPI31Document so title/version/servers never disagree.
@@ -72,7 +73,7 @@ export function injectIdempotencyContract<T extends { paths?: unknown }>(doc: T)
   for (const [path, item] of Object.entries(paths)) {
     if (!ACCOUNT_SCOPED.test(path)) continue;
     for (const [method, op] of Object.entries(item)) {
-      if (!MUTATING.has(method)) continue;
+      if (!MUTATING.has(method) || isIdempotencyExempt(method, path)) continue;
 
       op.parameters ??= [];
       const hasHeader = op.parameters.some(
