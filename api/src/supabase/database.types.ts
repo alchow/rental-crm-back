@@ -577,6 +577,7 @@ export type Database = {
         Row: {
           account_id: string;
           amount_cents: number;
+          corrects_charge_id: string | null;
           created_at: string;
           currency: string;
           deleted_at: string | null;
@@ -596,6 +597,7 @@ export type Database = {
         Insert: {
           account_id: string;
           amount_cents: number;
+          corrects_charge_id?: string | null;
           created_at?: string;
           currency: string;
           deleted_at?: string | null;
@@ -615,6 +617,7 @@ export type Database = {
         Update: {
           account_id?: string;
           amount_cents?: number;
+          corrects_charge_id?: string | null;
           created_at?: string;
           currency?: string;
           deleted_at?: string | null;
@@ -632,6 +635,13 @@ export type Database = {
           voided_at?: string | null;
         };
         Relationships: [
+          {
+            foreignKeyName: 'charges_account_id_corrects_charge_id_fkey';
+            columns: ['account_id', 'corrects_charge_id'];
+            isOneToOne: false;
+            referencedRelation: 'charges';
+            referencedColumns: ['account_id', 'id'];
+          },
           {
             foreignKeyName: 'charges_account_id_source_schedule_id_fkey';
             columns: ['account_id', 'source_schedule_id'];
@@ -3122,6 +3132,7 @@ export type Database = {
           account_id: string;
           amount_cents: number;
           charge_id: string;
+          corrects_allocation_id: string | null;
           created_at: string;
           deleted_at: string | null;
           id: string;
@@ -3136,6 +3147,7 @@ export type Database = {
           account_id: string;
           amount_cents: number;
           charge_id: string;
+          corrects_allocation_id?: string | null;
           created_at?: string;
           deleted_at?: string | null;
           id?: string;
@@ -3150,6 +3162,7 @@ export type Database = {
           account_id?: string;
           amount_cents?: number;
           charge_id?: string;
+          corrects_allocation_id?: string | null;
           created_at?: string;
           deleted_at?: string | null;
           id?: string;
@@ -3166,6 +3179,13 @@ export type Database = {
             columns: ['account_id', 'charge_id'];
             isOneToOne: false;
             referencedRelation: 'charges';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'payment_allocations_account_id_corrects_allocation_id_fkey';
+            columns: ['account_id', 'corrects_allocation_id'];
+            isOneToOne: false;
+            referencedRelation: 'payment_allocations';
             referencedColumns: ['account_id', 'id'];
           },
           {
@@ -3331,11 +3351,63 @@ export type Database = {
           },
         ];
       };
+      rent_adjustments: {
+        Row: {
+          account_id: string;
+          created_at: string;
+          created_by: string;
+          id: string;
+          kind: string;
+          request_fingerprint: string;
+          request_key: string;
+          response_body: Json;
+          tenancy_id: string;
+        };
+        Insert: {
+          account_id: string;
+          created_at?: string;
+          created_by: string;
+          id?: string;
+          kind: string;
+          request_fingerprint: string;
+          request_key: string;
+          response_body: Json;
+          tenancy_id: string;
+        };
+        Update: {
+          account_id?: string;
+          created_at?: string;
+          created_by?: string;
+          id?: string;
+          kind?: string;
+          request_fingerprint?: string;
+          request_key?: string;
+          response_body?: Json;
+          tenancy_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'rent_adjustments_account_id_fkey';
+            columns: ['account_id'];
+            isOneToOne: false;
+            referencedRelation: 'accounts';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'rent_adjustments_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
       rent_schedules: {
         Row: {
           account_id: string;
           amount_cents: number;
           change_reason: string | null;
+          corrects_schedule_id: string | null;
           created_at: string;
           currency: string;
           deleted_at: string | null;
@@ -3355,6 +3427,7 @@ export type Database = {
           account_id: string;
           amount_cents: number;
           change_reason?: string | null;
+          corrects_schedule_id?: string | null;
           created_at?: string;
           currency: string;
           deleted_at?: string | null;
@@ -3374,6 +3447,7 @@ export type Database = {
           account_id?: string;
           amount_cents?: number;
           change_reason?: string | null;
+          corrects_schedule_id?: string | null;
           created_at?: string;
           currency?: string;
           deleted_at?: string | null;
@@ -3390,6 +3464,13 @@ export type Database = {
           updated_at?: string;
         };
         Relationships: [
+          {
+            foreignKeyName: 'rent_schedules_account_id_corrects_schedule_id_fkey';
+            columns: ['account_id', 'corrects_schedule_id'];
+            isOneToOne: false;
+            referencedRelation: 'rent_schedules';
+            referencedColumns: ['account_id', 'id'];
+          },
           {
             foreignKeyName: 'rent_schedules_account_id_tenancy_id_fkey';
             columns: ['account_id', 'tenancy_id'];
@@ -4252,6 +4333,34 @@ export type Database = {
       };
     };
     Functions: {
+      _adjustment_replace_lease: {
+        Args: {
+          p_account_id: string;
+          p_lease_id: string;
+          p_reason: string;
+          p_terms: Json;
+        };
+        Returns: string;
+      };
+      _carry_rent_change_waivers: {
+        Args: {
+          p_account_id: string;
+          p_old_ids: string[];
+          p_plans: Json;
+          p_schedule_id: string;
+        };
+        Returns: undefined;
+      };
+      _carry_rent_correction_waivers: {
+        Args: {
+          p_account_id: string;
+          p_end: string;
+          p_new_id: string;
+          p_old_id: string;
+          p_start: string;
+        };
+        Returns: undefined;
+      };
       _comm_choose_persona_route: {
         Args: {
           p_account_id: string;
@@ -4344,6 +4453,10 @@ export type Database = {
         Args: { p_candidates: string[] };
         Returns: string[];
       };
+      _lock_rent_writer: {
+        Args: { p_tenancy_id: string; p_wait?: boolean };
+        Returns: undefined;
+      };
       _party_display_name: {
         Args: { p_account_id: string; p_party_id: string; p_party_type: string };
         Returns: string;
@@ -4390,6 +4503,19 @@ export type Database = {
         Returns: string;
       };
       _phone_to_e164: { Args: { raw: string }; Returns: string };
+      _plan_rent_adjustment: {
+        Args: { p_account_id: string; p_payload: Json; p_tenancy_id: string };
+        Returns: Json;
+      };
+      _rent_adjustment_terms: {
+        Args: { p_lease: Database['public']['Tables']['leases']['Row'] };
+        Returns: Json;
+      };
+      _rent_billing_slot: {
+        Args: { p_basis: string; p_due_day: number };
+        Returns: string;
+      };
+      _request_actor: { Args: never; Returns: string };
       _storage_path_account_id: { Args: { p_name: string }; Returns: string };
       _tenant_email_conflicts: {
         Args: {
@@ -4549,6 +4675,17 @@ export type Database = {
         }[];
       };
       comm_persona_routing_version: { Args: never; Returns: number };
+      commit_rent_adjustment: {
+        Args: {
+          p_account_id: string;
+          p_payload: Json;
+          p_preview_token: string;
+          p_request_fingerprint: string;
+          p_request_key: string;
+          p_tenancy_id: string;
+        };
+        Returns: Json;
+      };
       complete_evidence_export: {
         Args: {
           p_attachment_id: string;
@@ -5016,6 +5153,10 @@ export type Database = {
         };
       };
       normalize_search_text: { Args: { p_text: string }; Returns: string };
+      preview_rent_adjustment: {
+        Args: { p_account_id: string; p_payload: Json; p_tenancy_id: string };
+        Returns: Json;
+      };
       prune_idempotency_keys: {
         Args: {
           p_completed_ttl_seconds?: number;

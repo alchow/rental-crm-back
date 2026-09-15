@@ -5,7 +5,7 @@
 -- In CI we run against a stock postgres:16 service container, so we have to
 -- create the minimum needed by our migrations and by RLS:
 --
---   1. the `auth` schema and a minimal `auth.users` table our FKs target
+--   1. the `auth`/`extensions` schemas and a minimal `auth.users` table our FKs target
 --   2. the `authenticated` and `anon` roles (the test client SETs ROLE to
 --      `authenticated`; this is the same role PostgREST sets in production
 --      when verifying a non-service-role JWT)
@@ -18,6 +18,8 @@
 -- ----------------------------------------------------------------------------
 
 create schema if not exists auth;
+create schema if not exists extensions;
+create extension if not exists pgcrypto with schema extensions;
 
 -- Roles. Defensive about prior state — CREATE ROLE has no IF NOT EXISTS.
 do $$
@@ -60,6 +62,7 @@ $$;
 -- Grants so the authenticated role can speak to public.
 grant usage on schema public to anon, authenticated;
 grant usage on schema auth   to anon, authenticated;
+grant usage on schema extensions to anon, authenticated, service_role;
 alter default privileges in schema public grant select, insert, update, delete on tables to authenticated;
 alter default privileges in schema public grant usage, select on sequences to authenticated;
 

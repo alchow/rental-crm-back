@@ -116,3 +116,7 @@ DATABASE_URL="$DATABASE_URL" pnpm --filter ./db test:audit
 echo ""
 echo ">> run money-spine DoD checks"
 DATABASE_URL="$DATABASE_URL" pnpm --filter ./db test:money
+
+echo ""
+echo ">> run rent-adjustment concurrency checks"
+DATABASE_URL="$DATABASE_URL" pnpm --filter ./db test:rent-adjustment-concurrency

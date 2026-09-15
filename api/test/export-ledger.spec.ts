@@ -85,6 +85,52 @@ function twoMonths(paidCents: number): {
 }
 
 describe('deriveLedger', () => {
+  it('keeps a backdated correction out of statements before it was recorded', () => {
+    const original = charge({
+      id: 'original',
+      amount_cents: 150000,
+      due_date: '2026-09-01',
+      created_at: '2026-09-01T08:00:00Z',
+      voided_at: '2026-09-14T15:00:00Z',
+      void_reason: 'Rent entered incorrectly',
+    });
+    const replacement = charge({
+      id: 'replacement',
+      amount_cents: 180000,
+      due_date: '2026-09-01',
+      created_at: '2026-09-14T15:00:00Z',
+      corrects_charge_id: 'original',
+    });
+    const pay = payment({ id: 'payment', amount_cents: 150000, received_at: '2026-09-02' });
+    const oldApplication = {
+      ...alloc('original', 'payment', 150000),
+      id: 'original-allocation',
+      created_at: '2026-09-02T10:00:00Z',
+      voided_at: '2026-09-14T15:00:00Z',
+      void_reason: 'Rent entered incorrectly',
+    };
+    const carriedApplication = {
+      ...alloc('replacement', 'payment', 150000),
+      created_at: '2026-09-14T15:00:00Z',
+      corrects_allocation_id: 'original-allocation',
+    };
+    const data = exportData({
+      charges: [original, replacement],
+      payments: [pay],
+      allocations: [oldApplication, carriedApplication],
+    });
+
+    const before = deriveLedger(data, null, '2026-09-13');
+    expect(before.rent_charges_in_range_cents).toBe(150000);
+    expect(before.rent_payments_in_range_cents).toBe(150000);
+    expect(before.closing_balance_cents).toBe(0);
+
+    const onCorrection = deriveLedger(data, null, '2026-09-14');
+    expect(onCorrection.rent_charges_in_range_cents).toBe(180000);
+    expect(onCorrection.rent_payments_in_range_cents).toBe(150000);
+    expect(onCorrection.closing_balance_cents).toBe(30000);
+  });
+
   it('honors application and reversal dates without changing the receipt date', () => {
     const bill = charge({ id: 'rent', amount_cents: 476800, due_date: '2026-09-01' });
     const pay = payment({ id: 'payment', amount_cents: 30000, received_at: '2026-08-10' });

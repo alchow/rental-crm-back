@@ -86,6 +86,9 @@ export type ErrorCode =
   // Atomic inspection setup used an older template schema hash. Refresh and
   // review the Create-screen scratchpad before submitting it again.
   | 'template_changed'
+  | 'preview_stale'
+  | 'adjustment_scope_required'
+  | 'adjustment_not_supported'
   // correcting/retracting an interaction that is not the current head of
   // its chain (already superseded, or the chain is closed by a retraction)
   | 'invalid_correction_target'
@@ -255,6 +258,9 @@ export function schemaCacheMiss(error: { code?: string }): ApiError | null {
  * database_error 500.
  */
 export function dbError(error: { code?: string; message: string }): ApiError {
+  if (error.code === '40001') {
+    return new ApiError(409, 'conflict', 'the tenancy changed concurrently; retry this request');
+  }
   const transient = classifyTransient(error);
   if (transient) return transient;
   if (error.code === '42501') {

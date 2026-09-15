@@ -24,6 +24,7 @@ const LedgerCharge = z.object({
   // fetch is select('*'), so against a database that predates the migration the
   // field is simply absent rather than a fabricated null, and no read 500s.
   parent_charge_id: z.string().uuid().nullable().optional(),
+  corrects_charge_id: z.string().uuid().nullable().optional(),
   source: z.enum(['manual', 'rent_schedule']),
   // When the charge row was RECORDED — the payment entry always had this
   // pair. A backfilled charge (created_at far after due_date, e.g. tenancy
@@ -62,6 +63,7 @@ const LedgerPayment = z.object({
     z.object({
       id: z.string().uuid(),
       charge_id: z.string().uuid(),
+      corrects_allocation_id: z.string().uuid().nullable().optional(),
       amount_cents: z.number().int(),
       note: z.string().nullable(),
       voided_at: z.string().nullable(),
@@ -226,6 +228,7 @@ interface ChargeRow {
   // 20260801000007; select('*') tolerates that, an explicit column list
   // would not.
   parent_charge_id?: string | null;
+  corrects_charge_id?: string | null;
   description: string | null;
   voided_at: string | null;
   void_reason: string | null;
@@ -249,6 +252,7 @@ interface AllocationRow {
   account_id: string;
   payment_id: string;
   charge_id: string;
+  corrects_allocation_id?: string | null;
   amount_cents: number;
   created_at: string;
   note?: string | null;
@@ -443,6 +447,7 @@ ledgerApp.openapi(get, async (c) => {
       period_end: cr.period_end,
       source_schedule_id: cr.source_schedule_id,
       parent_charge_id: cr.parent_charge_id,
+      corrects_charge_id: cr.corrects_charge_id,
       source: cr.source_schedule_id === null ? 'manual' : 'rent_schedule',
       created_at: cr.created_at,
       type: cr.type,
@@ -468,6 +473,7 @@ ledgerApp.openapi(get, async (c) => {
       allocations: (allocByPayment.get(pr.id) ?? []).map((a) => ({
         id: a.id,
         charge_id: a.charge_id,
+        corrects_allocation_id: a.corrects_allocation_id,
         amount_cents: a.amount_cents,
         created_at: a.created_at,
         note: a.note ?? null,

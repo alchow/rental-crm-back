@@ -27,6 +27,7 @@ ADR-0007 is the current outbox-first, journal-on-confirmed-send invariant.
 ADR-0009 supersedes the single-account identity portions of ADR-0006.
 ADR-0014 supersedes ADR-0012's lease PATCH freeze and its lease correction
 path; the rest of ADR-0012 stands.
+ADR-0016 defines reviewed lease/rent adjustments, retained payments, and correction history.
 
 ## Historical Plans and Replies
 
