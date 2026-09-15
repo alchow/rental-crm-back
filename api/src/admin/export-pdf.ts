@@ -4,6 +4,7 @@ import { renderExportPdf } from './export-pdf/render';
 import { idChunks } from './export-pdf/chunks';
 import { loadIncidents } from './export-pdf/incidents';
 import type { IncidentEntry } from './export-pdf/incidents';
+import { loadTenancyDateHistory, type DateHistoryRecord } from './export-pdf/tenancy-dates';
 import {
   MAX_BYTES as UPLOAD_MAX_BYTES,
   MAX_GENERATED_BYTES as GENERATED_ARTIFACT_MAX_BYTES,
@@ -285,6 +286,7 @@ const ATTACHMENT_COLS =
 export interface ExportData {
   account_name: string;
   tenancy: Record<string, unknown> | null;
+  dateHistory?: DateHistoryRecord[];
   area: Record<string, unknown> | null;
   property: Record<string, unknown> | null;
   occupants: Array<Record<string, unknown>>;
@@ -537,6 +539,9 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
 
   // Tenancy-scoped rows.
   const tenancyId = scope.tenancyId ?? null;
+  const dateHistory = tenancyId
+    ? await loadTenancyDateHistory(admin, scope.accountId, tenancyId)
+    : [];
 
   // INVARIANT: Date-range filtering applies ONLY to
   // activity sections. Standing context -- leases, occupants, rent
@@ -736,6 +741,11 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   for (const r of payments) eventEntityIds.add(r.id as string);
   for (const r of notices) eventEntityIds.add(r.id as string);
   for (const r of leases) eventEntityIds.add(r.id as string);
+  for (const r of rentSchedules) eventEntityIds.add(r.id as string);
+  for (const r of dateHistory) {
+    eventEntityIds.add(r.id);
+    if (r.source_document_id) eventEntityIds.add(r.source_document_id);
+  }
   for (const r of workOrders) eventEntityIds.add(r.id as string);
   if (eventEntityIds.size > 0) {
     events = await loadEventsForEntityIds(admin, scope.accountId, eventEntityIds);
@@ -846,6 +856,7 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   return {
     account_name: accountName,
     tenancy,
+    dateHistory,
     area,
     property,
     occupants,

@@ -10,6 +10,7 @@ import {
   retractedInteractionMarker,
 } from './interactions';
 import { renderIncidentsSection } from './incidents';
+import { renderTenancyDateHistory } from './tenancy-dates';
 
 // ---- PDF rendering ----------------------------------------------------------
 
@@ -88,8 +89,12 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
   if (data.tenancy) {
     doc.text(`Tenancy:       ${data.tenancy.id as string}`);
     doc.text(
-      `Tenancy span:  ${data.tenancy.start_date as string} → ${(data.tenancy.end_date as string) ?? 'open'}`,
+      `Possession span (current record): ${data.tenancy.start_date as string} -> ${(data.tenancy.end_date as string) ?? 'open'}`,
     );
+    doc.text(
+      `Date meaning: ${data.tenancy.start_date_basis === 'possession_entitlement' ? 'possession entitlement' : 'legacy meaning unverified'}`,
+    );
+    doc.text(`Actual move-in: ${data.tenancy.actual_move_in_date ?? 'not recorded'}`);
     doc.text(
       `Tenancy state: ${data.tenancy.status as string}${data.tenancy.deleted_at ? ' (soft-deleted)' : ''}`,
     );
@@ -118,6 +123,7 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
   doc.fillColor('#000').y = bannerY + 50;
 
   // ----- Lease(s) -----------------------------------------------------------
+  renderTenancyDateHistory(doc, data.dateHistory ?? []);
   section(doc, 'Lease(s)');
   if (data.leases.length === 0) {
     italicNote(doc, '(no leases recorded for this tenancy)');

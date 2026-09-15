@@ -262,7 +262,10 @@ await check('ending is readable, audited, immutable, and repeat-safe', async () 
     .from('tenancies')
     .update({ start_date: '2025-08-15', end_date: '2025-08-15' })
     .eq('id', cancelledTenancyId);
-  if (!rewriteBothDirectly.error || rewriteBothDirectly.error.code !== '23514') {
+  if (
+    rewriteBothDirectly.error?.code !== '42501' ||
+    !rewriteBothDirectly.error.message.includes('date_correction_required')
+  ) {
     throw new Error(
       `rewriting both cancelled-tenancy dates should hit the DB guard: ${rewriteBothDirectly.error?.code}`,
     );
@@ -276,9 +279,9 @@ await check('ending is readable, audited, immutable, and repeat-safe', async () 
       body: { status: 'ended', start_date: '2025-08-15', end_date: '2025-08-15' },
     },
   );
-  if (rewriteBothViaApi.status !== 400) {
+  if (rewriteBothViaApi.status !== 409) {
     throw new Error(
-      `API rewrite of both cancelled-tenancy dates expected 400, got ${rewriteBothViaApi.status}`,
+      `API rewrite of both cancelled-tenancy dates expected 409, got ${rewriteBothViaApi.status}`,
     );
   }
   const unchanged = await admin
@@ -295,25 +298,32 @@ await check('ending is readable, audited, immutable, and repeat-safe', async () 
   }
 });
 
-await check('impossible and future normal ending dates are rejected before lifecycle mutation', async () => {
-  const tenancy = await createTenancy('2026-01-01', 'active');
-  const impossible = await api('POST', `/v1/accounts/${accountId}/tenancies/${tenancy.id}/end`, {
-    token,
-    body: { kind: 'ended', effective_date: '2026-99-99' },
-  });
-  if (impossible.status !== 400) {
-    throw new Error(`impossible date expected 400, got ${impossible.status}`);
-  }
-  const future = await api('POST', `/v1/accounts/${accountId}/tenancies/${tenancy.id}/end`, {
-    token,
-    body: { kind: 'ended', effective_date: '2099-01-01' },
-  });
-  if (future.status !== 400) throw new Error(`future ending expected 400, got ${future.status}`);
-  const current = await admin.from('tenancies').select('status, end_date').eq('id', tenancy.id).single();
-  if (current.error || current.data?.status !== 'active' || current.data.end_date !== null) {
-    throw new Error(`rejected ending mutated tenancy: ${JSON.stringify(current.data)}`);
-  }
-});
+await check(
+  'impossible and future normal ending dates are rejected before lifecycle mutation',
+  async () => {
+    const tenancy = await createTenancy('2026-01-01', 'active');
+    const impossible = await api('POST', `/v1/accounts/${accountId}/tenancies/${tenancy.id}/end`, {
+      token,
+      body: { kind: 'ended', effective_date: '2026-99-99' },
+    });
+    if (impossible.status !== 400) {
+      throw new Error(`impossible date expected 400, got ${impossible.status}`);
+    }
+    const future = await api('POST', `/v1/accounts/${accountId}/tenancies/${tenancy.id}/end`, {
+      token,
+      body: { kind: 'ended', effective_date: '2099-01-01' },
+    });
+    if (future.status !== 400) throw new Error(`future ending expected 400, got ${future.status}`);
+    const current = await admin
+      .from('tenancies')
+      .select('status, end_date')
+      .eq('id', tenancy.id)
+      .single();
+    if (current.error || current.data?.status !== 'active' || current.data.end_date !== null) {
+      throw new Error(`rejected ending mutated tenancy: ${JSON.stringify(current.data)}`);
+    }
+  },
+);
 
 await check(
   'normal ending truncates current schedules and soft-deletes unbilled future schedules',
@@ -398,7 +408,11 @@ await check('an immutable ending cannot be erased by reopening the tenancy', asy
     body: { status: 'active', end_date: null },
   });
   if (reopen.status !== 400) throw new Error(`reopen expected 400, got ${reopen.status}`);
-  const current = await admin.from('tenancies').select('status, end_date').eq('id', tenancy.id).single();
+  const current = await admin
+    .from('tenancies')
+    .select('status, end_date')
+    .eq('id', tenancy.id)
+    .single();
   if (current.error || current.data?.status !== 'ended' || current.data.end_date !== '2026-07-01') {
     throw new Error(`reopen changed immutable ending: ${JSON.stringify(current.data)}`);
   }

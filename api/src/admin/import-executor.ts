@@ -67,6 +67,7 @@ export async function runImport(
 
     const ctx = new ExecCtx(client, accountId, sessionId, mapping, parents);
     await ctx.prefetch();
+    await ctx.preAcquireTenancyIdentityLocks(activeRows);
     for (const row of activeRows) {
       await ctx.processRow(row);
     }

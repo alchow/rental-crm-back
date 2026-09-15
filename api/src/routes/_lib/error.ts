@@ -86,6 +86,14 @@ export type ErrorCode =
   // Atomic inspection setup used an older template schema hash. Refresh and
   // review the Create-screen scratchpad before submitting it again.
   | 'template_changed'
+  | 'date_context_changed'
+  | 'date_correction_required'
+  | 'no_date_change'
+  | 'invalid_date_order'
+  | 'date_status_conflict'
+  | 'date_fixed_by_cancellation'
+  | 'source_scope_invalid'
+  | 'actual_move_in_in_future'
   // correcting/retracting an interaction that is not the current head of
   // its chain (already superseded, or the chain is closed by a retraction)
   | 'invalid_correction_target'
@@ -132,9 +140,7 @@ export type ErrorCode =
   | 'schedule_has_charges' // DELETE of a schedule with non-voided charges: void them first
   | 'property_requires_area' // property scope has zero/multiple live units: caller must choose area_id
   | 'tenancy_already_ended' // POST /tenancies/{id}/end was already applied: do not retry
-  | 'tenancy_has_money' // PATCH start_date once non-voided charges/payments exist:
-  // the money rows anchor the timeline — void them first
-  // (ADR-0012 recipes) or leave start_date alone
+  | 'tenancy_has_money' // adoption requires a virgin money timeline
   | 'late_fee_exists' // a live late fee already names this parent charge: show
   // the existing fee, do not re-post; voiding it frees the slot
   | 'parent_charge_voided' // parent_charge_id names a VOIDED charge: the bill the

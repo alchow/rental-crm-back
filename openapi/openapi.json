@@ -1323,13 +1323,34 @@
             "format": "uuid"
           },
           "start_date": {
-            "type": "string"
+            "type": "string",
+            "format": "date",
+            "description": "Possession start. This is independent of lease terms and rent schedules."
+          },
+          "start_date_basis": {
+            "type": "string",
+            "enum": [
+              "legacy_unverified",
+              "possession_entitlement"
+            ]
+          },
+          "actual_move_in_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "date_revision": {
+            "type": "integer",
+            "minimum": 0
           },
           "end_date": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date"
           },
           "status": {
             "type": "string",
@@ -1358,6 +1379,9 @@
           "account_id",
           "area_id",
           "start_date",
+          "start_date_basis",
+          "actual_move_in_date",
+          "date_revision",
           "end_date",
           "status",
           "created_at",
@@ -1395,14 +1419,31 @@
           },
           "start_date": {
             "type": "string",
-            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            "format": "date",
+            "description": "Possession start: when the tenant is entitled or scheduled to become entitled to occupy. It is not a billing instruction."
+          },
+          "start_date_basis": {
+            "type": "string",
+            "enum": [
+              "legacy_unverified",
+              "possession_entitlement"
+            ],
+            "description": "Omit for legacy/unverified data; confirmed creation flows send possession_entitlement."
+          },
+          "actual_move_in_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "Optional physical arrival date. It must describe an event that has occurred and never drives rent billing or tenancy activation."
           },
           "end_date": {
             "type": [
               "string",
               "null"
             ],
-            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            "format": "date"
           },
           "status": {
             "type": "string",
@@ -1442,7 +1483,8 @@
           "start_date": {
             "type": "string",
             "format": "date",
-            "description": "Correction path for a wrong move-in date. Allowed only while the tenancy has no non-voided charges or payments (409 tenancy_has_money otherwise). A future date requires status='upcoming' in the same PATCH."
+            "description": "Deprecated compatibility field. The current value is accepted as a no-op. A changed value returns date_correction_required; use POST /date-corrections.",
+            "deprecated": true
           }
         }
       },
@@ -1647,6 +1689,626 @@
               "effective_date"
             ]
           }
+        ]
+      },
+      "TenancyDateFacts": {
+        "type": "object",
+        "properties": {
+          "start_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "start_date_basis": {
+            "type": "string",
+            "enum": [
+              "legacy_unverified",
+              "possession_entitlement"
+            ]
+          },
+          "actual_move_in_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "upcoming",
+              "active",
+              "ended",
+              "holdover"
+            ]
+          },
+          "end_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "date_revision": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "start_date",
+          "start_date_basis",
+          "actual_move_in_date",
+          "status",
+          "end_date",
+          "date_revision"
+        ]
+      },
+      "TenancyDateRecord": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenancy_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "correction",
+              "explanation"
+            ]
+          },
+          "before_facts": {
+            "$ref": "#/components/schemas/TenancyDateFacts"
+          },
+          "after_facts": {
+            "$ref": "#/components/schemas/TenancyDateFacts"
+          },
+          "context_snapshot": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "context_fingerprint": {
+            "type": "string"
+          },
+          "reason_code": {
+            "type": "string",
+            "enum": [
+              "data_entry_error",
+              "possession_delayed",
+              "concession",
+              "renewal",
+              "early_access",
+              "other"
+            ]
+          },
+          "reason_note": {
+            "type": "string"
+          },
+          "source_document_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "source_document_snapshot": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "versions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "content_hash": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "version_no": {
+                      "type": "integer"
+                    },
+                    "attachment_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "content_hash",
+                    "version_no",
+                    "attachment_id",
+                    "created_at"
+                  ]
+                }
+              },
+              "reference_kind": {
+                "type": "string",
+                "enum": [
+                  "content_hashes",
+                  "unversioned_reference"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "versions",
+              "reference_kind"
+            ]
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "tenancy_id",
+          "kind",
+          "before_facts",
+          "after_facts",
+          "context_snapshot",
+          "context_fingerprint",
+          "reason_code",
+          "reason_note",
+          "source_document_id",
+          "source_document_snapshot",
+          "created_by",
+          "created_at"
+        ]
+      },
+      "TenancyDateContext": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "number",
+            "enum": [
+              1
+            ]
+          },
+          "facts": {
+            "$ref": "#/components/schemas/TenancyDateFacts"
+          },
+          "lease": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "term_start": {
+                "type": "string"
+              },
+              "term_end": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": "string"
+              },
+              "voided_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "term_start",
+              "term_end",
+              "status",
+              "voided_at",
+              "updated_at"
+            ]
+          },
+          "schedule": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "start_date": {
+                "type": "string"
+              },
+              "end_date": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "due_day": {
+                "type": "integer"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "start_date",
+              "end_date",
+              "due_day",
+              "updated_at"
+            ]
+          },
+          "ending": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "ended",
+                  "cancelled_before_move_in"
+                ]
+              },
+              "effective_date": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "effective_date"
+            ]
+          },
+          "context_fingerprint": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "information": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "date_values_differ",
+                "legacy_date_unverified",
+                "charges_in_changed_interval",
+                "billing_precedes_possession",
+                "legacy_ending_incomplete"
+              ]
+            }
+          },
+          "applicable_explanation": {
+            "$ref": "#/components/schemas/TenancyDateRecord"
+          },
+          "can_correct_start": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "version",
+          "facts",
+          "lease",
+          "schedule",
+          "ending",
+          "context_fingerprint",
+          "information",
+          "applicable_explanation",
+          "can_correct_start"
+        ]
+      },
+      "TenancyDateCorrectionPreview": {
+        "type": "object",
+        "properties": {
+          "current": {
+            "$ref": "#/components/schemas/TenancyDateFacts"
+          },
+          "proposed": {
+            "$ref": "#/components/schemas/TenancyDateFacts"
+          },
+          "context_fingerprint": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "invalid_date_order",
+                "date_status_conflict",
+                "date_fixed_by_cancellation",
+                "source_scope_invalid",
+                "actual_move_in_in_future",
+                "no_date_change"
+              ]
+            }
+          },
+          "information": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "date_values_differ",
+                "legacy_date_unverified",
+                "charges_in_changed_interval",
+                "billing_precedes_possession",
+                "legacy_ending_incomplete"
+              ]
+            }
+          },
+          "financial_review": {
+            "type": "object",
+            "properties": {
+              "live_charges": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "live_payments": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "charges_in_changed_interval": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "due_date_fallback_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "sampled_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "live_charges",
+              "live_payments",
+              "charges_in_changed_interval",
+              "due_date_fallback_count",
+              "sampled_at"
+            ]
+          }
+        },
+        "required": [
+          "current",
+          "proposed",
+          "context_fingerprint",
+          "blockers",
+          "information",
+          "financial_review"
+        ]
+      },
+      "TenancyDateChanges": {
+        "type": "object",
+        "properties": {
+          "start_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "start_date_basis": {
+            "type": "string",
+            "enum": [
+              "legacy_unverified",
+              "possession_entitlement"
+            ]
+          },
+          "actual_move_in_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          }
+        }
+      },
+      "PreviewTenancyDateCorrectionBody": {
+        "type": "object",
+        "properties": {
+          "changes": {
+            "$ref": "#/components/schemas/TenancyDateChanges"
+          },
+          "lease_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "rent_schedule_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "changes"
+        ]
+      },
+      "TenancyDateCommandResponse": {
+        "type": "object",
+        "properties": {
+          "tenancy": {
+            "$ref": "#/components/schemas/Tenancy"
+          },
+          "record": {
+            "$ref": "#/components/schemas/TenancyDateRecord"
+          }
+        },
+        "required": [
+          "tenancy",
+          "record"
+        ]
+      },
+      "CorrectTenancyDatesBody": {
+        "type": "object",
+        "properties": {
+          "changes": {
+            "$ref": "#/components/schemas/TenancyDateChanges"
+          },
+          "expected_date_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "expected_context_fingerprint": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "expected_resulting_status": {
+            "type": "string",
+            "enum": [
+              "upcoming",
+              "active",
+              "ended",
+              "holdover"
+            ]
+          },
+          "lease_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "rent_schedule_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason_code": {
+            "type": "string",
+            "enum": [
+              "data_entry_error",
+              "possession_delayed",
+              "concession",
+              "renewal",
+              "early_access",
+              "other"
+            ]
+          },
+          "reason_note": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "source_document_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "changes",
+          "expected_date_revision",
+          "expected_context_fingerprint",
+          "expected_resulting_status",
+          "reason_code",
+          "reason_note"
+        ]
+      },
+      "RecordTenancyDateExplanationBody": {
+        "type": "object",
+        "properties": {
+          "expected_context_fingerprint": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "lease_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "rent_schedule_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason_code": {
+            "type": "string",
+            "enum": [
+              "data_entry_error",
+              "possession_delayed",
+              "concession",
+              "renewal",
+              "early_access",
+              "other"
+            ]
+          },
+          "reason_note": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "source_document_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "expected_context_fingerprint",
+          "reason_code",
+          "reason_note"
+        ]
+      },
+      "TenancyDateHistoryResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TenancyDateRecord"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "data",
+          "next_cursor"
         ]
       },
       "TenancyMember": {
@@ -10935,6 +11597,7 @@
           "missing_parent_area",
           "parent_not_found",
           "ambiguous_match",
+          "ambiguous_tenancy",
           "unmapped_required_field",
           "missing_required_field",
           "unparseable_value",
@@ -11081,6 +11744,43 @@
                 "ambiguous"
               ]
             }
+          },
+          "date_defaults": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "enum": [
+                    "lease.term_start",
+                    "rent_schedule.start_date"
+                  ]
+                },
+                "value": {
+                  "type": "string",
+                  "format": "date"
+                },
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "possession_start"
+                  ]
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "new_tenancy_default"
+                  ]
+                }
+              },
+              "required": [
+                "field",
+                "value",
+                "source",
+                "reason"
+              ]
+            }
           }
         },
         "required": [
@@ -11094,7 +11794,8 @@
           "counts",
           "created_ids",
           "blockers",
-          "date_interpretations"
+          "date_interpretations",
+          "date_defaults"
         ]
       },
       "ImportRequirements": {
@@ -16252,8 +16953,8 @@
         "tags": [
           "tenancies"
         ],
-        "summary": "Update a tenancy (status / end_date / guarded start_date; area_id is immutable)",
-        "description": "start_date is a correction path for a mis-entered move-in date and is refused with 409 tenancy_has_money once any non-voided charge or payment exists. A future start_date requires status='upcoming' in the same PATCH (this guards the correction path only; it is not a table-wide invariant). Two documented side effects of a correction: evidence-export PDFs show the corrected span from then on, and re-running an import sheet created before the correction can duplicate the tenancy (import dedupe keys on start_date).",
+        "summary": "Update tenancy status or end date (area and possession facts are immutable here)",
+        "description": "start_date remains for one compatibility release. Supplying the current value is a no-op; a changed value returns 409 date_correction_required with the audited correction endpoint.",
         "parameters": [
           {
             "schema": {
@@ -16588,7 +17289,7 @@
           "tenancies"
         ],
         "summary": "End or cancel a tenancy atomically",
-        "description": "Creates an immutable ending fact, marks the tenancy ended, and safely stops future rent generation in one transaction. cancelled_before_move_in is valid only for an upcoming tenancy and preserves its actual cancellation effective_date separately from tenancies.end_date. Schedules with live charges are retained for explicit void/correction. Repeated calls return 409 tenancy_already_ended. The generic tenancy PATCH remains a compatibility path during frontend migration but does not create an ending fact.",
+        "description": "Creates an immutable ending fact, marks the tenancy ended, and safely stops future rent generation in one transaction.",
         "parameters": [
           {
             "schema": {
@@ -16675,6 +17376,619 @@
           },
           "409": {
             "description": "conflict — error.code carries a fine-grained reason (see the route description)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/date-context": {
+      "get": {
+        "tags": [
+          "tenancies"
+        ],
+        "summary": "Read possession, selected lease, and selected rent dates",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "tenancyId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": false,
+            "name": "lease_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": false,
+            "name": "rent_schedule_id",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "date context",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenancyDateContext"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/date-corrections/preview": {
+      "post": {
+        "tags": [
+          "tenancies"
+        ],
+        "summary": "Preview a reasoned possession-date correction",
+        "description": "Reports informational financial counts. Previewing and correcting never changes charges, payments, allocations, leases, or rent schedules.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "tenancyId",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewTenancyDateCorrectionBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "preview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenancyDateCorrectionPreview"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/date-corrections": {
+      "post": {
+        "tags": [
+          "tenancies"
+        ],
+        "summary": "Correct possession facts and append immutable history",
+        "description": "Atomically validates the preview context, changes only tenancy possession facts/status, and records the supplied reason. Existing money is retained.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "tenancyId",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectTenancyDatesBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "corrected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenancyDateCommandResponse"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/date-explanations": {
+      "post": {
+        "tags": [
+          "tenancies"
+        ],
+        "summary": "Explain the selected tenancy dates without changing them",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "tenancyId",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordTenancyDateExplanationBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenancyDateCommandResponse"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/date-history": {
+      "get": {
+        "tags": [
+          "tenancies"
+        ],
+        "summary": "List immutable tenancy date corrections and explanations",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "tenancyId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 100,
+              "default": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenancyDateHistoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
             "content": {
               "application/json": {
                 "schema": {

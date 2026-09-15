@@ -299,18 +299,48 @@ An **occupancy period** — who occupied which unit, when. This is the operation
 | `GET`    | `/tenancies`      | Supports `?area_id=` and `?status=` filters. `status` accepts a single value **or** a comma-separated set (e.g. `?status=active,holdover`) — a single value behaves exactly as before; an unknown member is a 400 with `error.details.fieldErrors.status`. |
 | `POST`   | `/tenancies`      | `area_id` (required), `start_date` (required, YYYY-MM-DD), `end_date` (optional), `status` (required, see below). |
 | `GET`    | `/tenancies/{id}` |                                                                                                                   |
-| `PATCH`  | `/tenancies/{id}` | `end_date`, `status`, `start_date` (guarded — see below).                                                         |
+| `PATCH`  | `/tenancies/{id}` | `end_date`, `status`; changed `start_date` returns `date_correction_required`. |
 | `DELETE` | `/tenancies/{id}` | Soft-delete.                                                                                                      |
 
 `status` values: `upcoming` → `active` → `holdover` / `ended`.
 
-**Correcting `start_date`.** A mis-entered move-in date can be PATCHed while the tenancy has no
-non-voided charges or payments; once money exists the timeline is anchored and the PATCH answers
-`409 {code: "tenancy_has_money"}` (void the money rows first — the ADR-0012 correction recipes —
-or leave the date alone). A future `start_date` must be paired with `status: "upcoming"` in the
-same PATCH; the nightly sweep re-activates the tenancy on the new date. Two side effects to know:
-evidence-export PDFs show the corrected span from then on, and re-running an import sheet created
-before the correction can duplicate the tenancy (import dedupe keys on `start_date`).
+**Independent date facts.** `tenancies.start_date` records possession entitlement;
+`leases.term_start` records one lease term; `rent_schedules.start_date` records one
+rent era's effective start. They need not match. The generator follows the rent
+schedule and its due day. Optional `actual_move_in_date` records physical arrival
+and never controls billing or activation. Creation accepts `start_date_basis`:
+`legacy_unverified` (default, including existing records) or `possession_entitlement`.
+The latter records the meaning asserted by the user, not legal certification.
+
+| Method | Path | Body / Notes |
+| --- | --- | --- |
+| `GET` | `/tenancies/{tenancyId}/date-context` | Optional `lease_id` and `rent_schedule_id`; explicit selected context, information codes and fingerprint. |
+| `POST` | `/tenancies/{tenancyId}/date-corrections/preview` | `changes` plus optional selections; returns proposed facts/status, blockers and sampled money review counts. |
+| `POST` | `/tenancies/{tenancyId}/date-corrections` | Changes, expected revision/context/resulting status, reason code/note and optional source document. |
+| `POST` | `/tenancies/{tenancyId}/date-explanations` | Expected context, selections, reason code/note and optional source document; dates stay unchanged. |
+| `GET` | `/tenancies/{tenancyId}/date-history` | Keyset page (`cursor`, `limit` up to 100) of immutable corrections/explanations. |
+
+All POSTs require the normal `Idempotency-Key`, including previews. Refreshing a
+preview requires a new key. Correction/explanation commits and response storage
+are atomic; retries replay the original result. A changed context returns
+`409 date_context_changed`. A no-op correction returns `400 no_date_change`.
+Use an explanation to document an intentional difference. An explanation
+applies only to its captured context; later changes leave it visible as history.
+
+Correction changes possession facts/status only. Charges, payments, allocations,
+lease terms and schedules are retained even when money exists. Financial preview
+counts are sampled information, not a finding of invalid charges. Future starts
+move active/upcoming tenancies to upcoming; today/past starts move them to active.
+Holdover cannot move into the future. Ordinary ended tenancies retain their end
+boundary and ended status. Cancelled-before-move-in tenancies cannot change their
+start or acquire an actual-move-in assertion through this workflow.
+
+A mixed legacy PATCH with a changed start applies nothing and returns
+`date_correction_required`. Supplying the unchanged start is tolerated; clients
+must not use money voiding to enable date edits. Imports match historical start
+aliases to stable tenancy IDs and block ambiguous matches. New evidence exports
+show current date context plus correction history; existing export bytes remain
+unchanged. Activity cutoffs do not imply historical reconstruction of all metadata.
 
 ### Tenancy members
 

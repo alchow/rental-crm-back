@@ -61,12 +61,48 @@ export const ENTITY_CATALOG: Record<EntityType, EntitySpec> = {
     label: 'Property',
     description: 'A building or parcel the landlord manages.',
     fields: [
-      { field: 'name', label: 'Property name', type: 'string', required: true, description: 'Building/property name or street address used as its label.' },
-      { field: 'address_line1', label: 'Address line 1', type: 'string', required: false, description: 'Street address line 1.' },
-      { field: 'address_line2', label: 'Address line 2', type: 'string', required: false, description: 'Unit/suite/floor line, if separate from the unit number.' },
-      { field: 'address_city', label: 'City', type: 'string', required: false, description: 'City.' },
-      { field: 'address_state', label: 'State/region', type: 'string', required: false, description: 'State, province, or region.' },
-      { field: 'address_zip', label: 'Postal code', type: 'string', required: false, description: 'ZIP / postal code.' },
+      {
+        field: 'name',
+        label: 'Property name',
+        type: 'string',
+        required: true,
+        description: 'Building/property name or street address used as its label.',
+      },
+      {
+        field: 'address_line1',
+        label: 'Address line 1',
+        type: 'string',
+        required: false,
+        description: 'Street address line 1.',
+      },
+      {
+        field: 'address_line2',
+        label: 'Address line 2',
+        type: 'string',
+        required: false,
+        description: 'Unit/suite/floor line, if separate from the unit number.',
+      },
+      {
+        field: 'address_city',
+        label: 'City',
+        type: 'string',
+        required: false,
+        description: 'City.',
+      },
+      {
+        field: 'address_state',
+        label: 'State/region',
+        type: 'string',
+        required: false,
+        description: 'State, province, or region.',
+      },
+      {
+        field: 'address_zip',
+        label: 'Postal code',
+        type: 'string',
+        required: false,
+        description: 'ZIP / postal code.',
+      },
     ],
   },
   area: {
@@ -74,7 +110,14 @@ export const ENTITY_CATALOG: Record<EntityType, EntitySpec> = {
     label: 'Unit / common area',
     description: 'A rentable unit or a shared/common space within a property.',
     fields: [
-      { field: 'name', label: 'Area label', type: 'string', required: true, description: 'Unit number/label or area name, e.g. "1A", "Apt 203", "Front lawn", "Laundry room".' },
+      {
+        field: 'name',
+        label: 'Area label',
+        type: 'string',
+        required: true,
+        description:
+          'Unit number/label or area name, e.g. "1A", "Apt 203", "Front lawn", "Laundry room".',
+      },
       {
         field: 'kind',
         label: 'Area kind',
@@ -92,9 +135,27 @@ export const ENTITY_CATALOG: Record<EntityType, EntitySpec> = {
     label: 'Unit details',
     description: 'Optional physical attributes of a unit.',
     fields: [
-      { field: 'bedrooms', label: 'Bedrooms', type: 'int', required: false, description: 'Number of bedrooms.' },
-      { field: 'bathrooms', label: 'Bathrooms', type: 'decimal', required: false, description: 'Number of bathrooms (may be fractional, e.g. 1.5).' },
-      { field: 'sqft', label: 'Square feet', type: 'int', required: false, description: 'Interior area in square feet.' },
+      {
+        field: 'bedrooms',
+        label: 'Bedrooms',
+        type: 'int',
+        required: false,
+        description: 'Number of bedrooms.',
+      },
+      {
+        field: 'bathrooms',
+        label: 'Bathrooms',
+        type: 'decimal',
+        required: false,
+        description: 'Number of bathrooms (may be fractional, e.g. 1.5).',
+      },
+      {
+        field: 'sqft',
+        label: 'Square feet',
+        type: 'int',
+        required: false,
+        description: 'Interior area in square feet.',
+      },
     ],
   },
   tenant: {
@@ -102,9 +163,27 @@ export const ENTITY_CATALOG: Record<EntityType, EntitySpec> = {
     label: 'Tenant',
     description: 'A person on the tenancy.',
     fields: [
-      { field: 'full_name', label: 'Full name', type: 'string', required: true, description: "Tenant's full name." },
-      { field: 'email', label: 'Email', type: 'string', required: false, description: 'Primary email address.' },
-      { field: 'phone', label: 'Phone', type: 'string', required: false, description: 'Primary phone number.' },
+      {
+        field: 'full_name',
+        label: 'Full name',
+        type: 'string',
+        required: true,
+        description: "Tenant's full name.",
+      },
+      {
+        field: 'email',
+        label: 'Email',
+        type: 'string',
+        required: false,
+        description: 'Primary email address.',
+      },
+      {
+        field: 'phone',
+        label: 'Phone',
+        type: 'string',
+        required: false,
+        description: 'Primary phone number.',
+      },
     ],
   },
   tenancy: {
@@ -112,8 +191,44 @@ export const ENTITY_CATALOG: Record<EntityType, EntitySpec> = {
     label: 'Tenancy',
     description: 'An occupancy of a unit over a date range.',
     fields: [
-      { field: 'start_date', label: 'Start date', type: 'date', required: true, description: 'Move-in / lease start date.' },
-      { field: 'end_date', label: 'End date', type: 'date', required: false, description: 'Move-out / lease end date, if any.' },
+      {
+        field: 'existing_tenancy_id',
+        label: 'Existing tenancy ID',
+        type: 'string',
+        required: false,
+        description:
+          'Stable tenancy UUID. Use this to resolve an ambiguous historical start-date match.',
+      },
+      {
+        field: 'start_date',
+        label: 'Possession start',
+        type: 'date',
+        required: true,
+        description:
+          'Recorded date the tenant is entitled or scheduled to become entitled to occupy. This is not a billing instruction or lease-term date.',
+      },
+      {
+        field: 'start_date_basis',
+        label: 'Possession date meaning',
+        type: 'string',
+        required: false,
+        description:
+          'One of legacy_unverified or possession_entitlement. Defaults to legacy_unverified for imported records.',
+      },
+      {
+        field: 'actual_move_in_date',
+        label: 'Actual move-in',
+        type: 'date',
+        required: false,
+        description: 'Optional date the tenant physically moved in. It never controls billing.',
+      },
+      {
+        field: 'end_date',
+        label: 'Occupancy end',
+        type: 'date',
+        required: false,
+        description: 'Recorded end of the occupancy, if any.',
+      },
     ],
   },
   tenancy_member: {
@@ -121,7 +236,13 @@ export const ENTITY_CATALOG: Record<EntityType, EntitySpec> = {
     label: 'Tenancy member',
     description: 'Links a tenant to a tenancy with a role.',
     fields: [
-      { field: 'role', label: 'Role', type: 'string', required: false, description: "One of 'primary', 'occupant', 'guarantor'. Defaults to 'primary'." },
+      {
+        field: 'role',
+        label: 'Role',
+        type: 'string',
+        required: false,
+        description: "One of 'primary', 'occupant', 'guarantor'. Defaults to 'primary'.",
+      },
     ],
   },
   lease: {
@@ -129,11 +250,41 @@ export const ENTITY_CATALOG: Record<EntityType, EntitySpec> = {
     label: 'Lease',
     description: 'An optional lease document/term for a tenancy.',
     fields: [
-      { field: 'term_start', label: 'Lease term start', type: 'date', required: false, description: 'Lease term start date.' },
-      { field: 'term_end', label: 'Lease term end', type: 'date', required: false, description: 'Lease term end date.' },
-      { field: 'rent_amount', label: 'Lease rent', type: 'money', required: false, description: 'Contractual rent amount on the lease.' },
-      { field: 'rent_currency', label: 'Lease rent currency', type: 'currency', required: false, description: '3-letter currency code; defaults to USD.' },
-      { field: 'deposit_amount', label: 'Security deposit', type: 'money', required: false, description: 'Security deposit amount held.' },
+      {
+        field: 'term_start',
+        label: 'Lease term start',
+        type: 'date',
+        required: false,
+        description: 'Lease term start date.',
+      },
+      {
+        field: 'term_end',
+        label: 'Lease term end',
+        type: 'date',
+        required: false,
+        description: 'Lease term end date.',
+      },
+      {
+        field: 'rent_amount',
+        label: 'Lease rent',
+        type: 'money',
+        required: false,
+        description: 'Contractual rent amount on the lease.',
+      },
+      {
+        field: 'rent_currency',
+        label: 'Lease rent currency',
+        type: 'currency',
+        required: false,
+        description: '3-letter currency code; defaults to USD.',
+      },
+      {
+        field: 'deposit_amount',
+        label: 'Security deposit',
+        type: 'money',
+        required: false,
+        description: 'Security deposit amount held.',
+      },
     ],
   },
   rent_schedule: {
@@ -141,10 +292,35 @@ export const ENTITY_CATALOG: Record<EntityType, EntitySpec> = {
     label: 'Rent schedule',
     description: 'The recurring rent owed for a tenancy (structural — NOT a charge or payment).',
     fields: [
-      { field: 'amount', label: 'Monthly rent', type: 'money', required: true, description: 'Recurring rent amount per period.' },
-      { field: 'currency', label: 'Currency', type: 'currency', required: false, description: '3-letter currency code; defaults to USD.' },
-      { field: 'due_day', label: 'Due day of month', type: 'int', required: false, description: 'Day of month rent is due (1–28); defaults to 1.' },
-      { field: 'start_date', label: 'Effective from', type: 'date', required: false, description: 'When this rent amount took effect; defaults to the tenancy start date.' },
+      {
+        field: 'amount',
+        label: 'Monthly rent',
+        type: 'money',
+        required: true,
+        description: 'Recurring rent amount per period.',
+      },
+      {
+        field: 'currency',
+        label: 'Currency',
+        type: 'currency',
+        required: false,
+        description: '3-letter currency code; defaults to USD.',
+      },
+      {
+        field: 'due_day',
+        label: 'Due day of month',
+        type: 'int',
+        required: false,
+        description: 'Day of month rent is due (1–28); defaults to 1.',
+      },
+      {
+        field: 'start_date',
+        label: 'Rent effective from',
+        type: 'date',
+        required: false,
+        description:
+          'When this recurring rent amount took effect. For a newly created tenancy only, an omitted value defaults to possession start.',
+      },
     ],
   },
   interaction: {
@@ -240,6 +416,7 @@ export const BLOCKER_CODES = [
   'missing_parent_area', // tenancy row has no unit/area
   'parent_not_found', // a bound parent id does not resolve in this account
   'ambiguous_match', // name matches more than one existing entity
+  'ambiguous_tenancy', // current/historical start identifies multiple occupancies in one unit
   'unmapped_required_field', // region-level: a required field has no column/constant mapped
   'missing_required_field', // row-level: the mapped cell is empty
   'unparseable_value', // cell present but not coercible (date, money, ...)
@@ -296,7 +473,9 @@ export function computeRequirements(
     (m) =>
       m.entity_type === 'property' &&
       m.fields.some(
-        (f) => f.target_field === 'name' && (f.source_column || (f.constant != null && f.constant !== '')),
+        (f) =>
+          f.target_field === 'name' &&
+          (f.source_column || (f.constant != null && f.constant !== '')),
       ),
   );
   if (propertyMapped) sources.push('mapped_column');
@@ -308,7 +487,10 @@ export function computeRequirements(
   // 'existing' entry whose id was never picked) must not flip `satisfied`.
   const usableOverride = Object.values(parents?.property_overrides ?? {}).some((o) => {
     const ov = o as { mode?: unknown; id?: unknown } | null;
-    return ov?.mode === 'create' || (ov?.mode === 'existing' && typeof ov.id === 'string' && ov.id !== '');
+    return (
+      ov?.mode === 'create' ||
+      (ov?.mode === 'existing' && typeof ov.id === 'string' && ov.id !== '')
+    );
   });
   if (propertyMapped && usableOverride) sources.push('property_overrides');
   return { property: { needed, satisfied: !needed || sources.length > 0, sources } };

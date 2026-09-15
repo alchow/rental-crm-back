@@ -159,6 +159,21 @@ late fee or enter income exports. The generator still never backfills.
 
 ## Imports and Background Work
 
+Tenancy possession facts, lease terms, and rent-effective eras are independent.
+`tenancies.start_date` retains its wire name; `start_date_basis` distinguishes
+legacy unverified meaning from asserted possession entitlement. Optional actual
+move-in is separate. Date corrections and explanations go through the tenancy
+date RPCs and append `tenancy_date_records`. Correction and idempotency response
+commit together. A dedicated function-owner role authorizes protected date
+updates; caller-set flags cannot bypass the guard. See ADR-0015.
+
+The context fingerprint captures the selected lease/schedule and possession
+facts. Stale edits conflict; an old explanation remains historical when its
+context changes. Date corrections never mutate the subledger. Evidence exports
+include complete date history alongside current metadata, even when financial
+activity has a cutoff. Import resolution considers old-start correction aliases
+under the same per-unit identity lock used by corrections.
+
 Imports separate recognition/mapping from execution. Preview and commit share
 the same executor semantics. In-process jobs use persisted status rows as the
 truth; boot recovery marks orphaned work honestly rather than leaving it

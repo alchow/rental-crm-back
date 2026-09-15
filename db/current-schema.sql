@@ -1780,7 +1780,7 @@ ALTER FUNCTION "public"."_guard_attachment_insert_path"() OWNER TO "postgres";
 --
 
 CREATE OR REPLACE FUNCTION "public"."_guard_recorded_tenancy_ending"() RETURNS "trigger"
-    LANGUAGE "plpgsql" SECURITY DEFINER
+    LANGUAGE "plpgsql"
     SET "search_path" TO 'public'
     AS $$
 declare
@@ -1802,7 +1802,9 @@ begin
   -- scheduled start. Deriving this from NEW.start_date would let a caller
   -- rewrite both dates together and preserve the equality while changing
   -- history.
-  if NEW.start_date is distinct from OLD.start_date then
+  if NEW.start_date is distinct from OLD.start_date
+    and not (current_user = 'tenancy_date_writer' and v_ending.kind = 'ended'
+      and NEW.start_date <= v_ending.effective_date) then
     raise exception 'conflict: start_date is fixed by the immutable tenancy ending'
       using errcode = 'check_violation';
   end if;
@@ -1828,6 +1830,49 @@ $$;
 
 
 ALTER FUNCTION "public"."_guard_recorded_tenancy_ending"() OWNER TO "postgres";
+
+--
+-- Name: _guard_tenancy_date_record(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_guard_tenancy_date_record"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  if TG_OP <> 'INSERT' or current_user <> 'tenancy_date_writer' then
+    raise exception 'date_history_immutable' using errcode = '42501';
+  end if;
+  return NEW;
+end $$;
+
+
+ALTER FUNCTION "public"."_guard_tenancy_date_record"() OWNER TO "postgres";
+
+--
+-- Name: _guard_tenancy_date_write(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_guard_tenancy_date_write"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  if TG_OP = 'INSERT' then
+    if NEW.date_revision <> 0 then raise exception 'date_revision_managed' using errcode='22023'; end if;
+    if NEW.actual_move_in_date > (now() at time zone 'UTC')::date then
+      raise exception 'actual_move_in_in_future' using errcode='22023';
+    end if;
+  elsif (NEW.start_date,NEW.start_date_basis,NEW.actual_move_in_date,NEW.date_revision)
+    is distinct from (OLD.start_date,OLD.start_date_basis,OLD.actual_move_in_date,OLD.date_revision)
+    and current_user <> 'tenancy_date_writer' then
+    raise exception 'date_correction_required' using errcode='42501';
+  end if;
+  return NEW;
+end $$;
+
+
+ALTER FUNCTION "public"."_guard_tenancy_date_write"() OWNER TO "postgres";
 
 --
 -- Name: _guard_tenancy_ending_insert(); Type: FUNCTION; Schema: public; Owner: postgres
@@ -3026,6 +3071,93 @@ $$;
 ALTER FUNCTION "public"."_tenancy_adoptions_guard"() OWNER TO "postgres";
 
 --
+-- Name: _tenancy_calendar_date("text"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_tenancy_calendar_date"("p_value" "text") RETURNS "date"
+    LANGUAGE "plpgsql" IMMUTABLE
+    SET "search_path" TO 'public'
+    AS $_$
+declare v date;
+begin
+  if p_value is null or p_value !~ '^\d{4}-\d{2}-\d{2}$' then
+    raise exception 'invalid_calendar_date' using errcode = '22023';
+  end if;
+  begin v := p_value::date;
+  exception when datetime_field_overflow or invalid_datetime_format then
+    raise exception 'invalid_calendar_date' using errcode = '22023';
+  end;
+  if not isfinite(v) or to_char(v, 'YYYY-MM-DD') <> p_value then
+    raise exception 'invalid_calendar_date' using errcode = '22023';
+  end if;
+  return v;
+end $_$;
+
+
+ALTER FUNCTION "public"."_tenancy_calendar_date"("p_value" "text") OWNER TO "postgres";
+
+--
+-- Name: _tenancy_date_actor(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_tenancy_date_actor"() RETURNS "uuid"
+    LANGUAGE "sql" STABLE
+    BEGIN ATOMIC
+ SELECT "auth"."uid"() AS "uid";
+END;
+
+
+ALTER FUNCTION "public"."_tenancy_date_actor"() OWNER TO "postgres";
+
+SET default_tablespace = '';
+
+SET default_table_access_method = "heap";
+
+--
+-- Name: tenancies; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."tenancies" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "account_id" "uuid" NOT NULL,
+    "area_id" "uuid" NOT NULL,
+    "start_date" "date" NOT NULL,
+    "end_date" "date",
+    "status" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "deleted_at" timestamp with time zone,
+    "start_date_basis" "text" DEFAULT 'legacy_unverified'::"text" NOT NULL,
+    "actual_move_in_date" "date",
+    "date_revision" bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT "tenancies_check" CHECK ((("end_date" IS NULL) OR ("end_date" >= "start_date"))),
+    CONSTRAINT "tenancies_date_revision_check" CHECK (("date_revision" >= 0)),
+    CONSTRAINT "tenancies_start_date_basis_check" CHECK (("start_date_basis" = ANY (ARRAY['legacy_unverified'::"text", 'possession_entitlement'::"text"]))),
+    CONSTRAINT "tenancies_status_check" CHECK (("status" = ANY (ARRAY['upcoming'::"text", 'active'::"text", 'ended'::"text", 'holdover'::"text"])))
+);
+
+ALTER TABLE ONLY "public"."tenancies" FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."tenancies" OWNER TO "postgres";
+
+--
+-- Name: _tenancy_date_facts("public"."tenancies"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_tenancy_date_facts"("p_t" "public"."tenancies") RETURNS "jsonb"
+    LANGUAGE "sql" IMMUTABLE
+    SET "search_path" TO 'public'
+    AS $$
+  select jsonb_build_object('start_date', p_t.start_date,
+    'start_date_basis', p_t.start_date_basis, 'actual_move_in_date', p_t.actual_move_in_date,
+    'status', p_t.status, 'end_date', p_t.end_date, 'date_revision', p_t.date_revision)
+$$;
+
+
+ALTER FUNCTION "public"."_tenancy_date_facts"("p_t" "public"."tenancies") OWNER TO "postgres";
+
+--
 -- Name: _tenant_email_conflicts("uuid", "text"[], "uuid"); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -3199,6 +3331,120 @@ $$;
 ALTER FUNCTION "public"."_thread_binding_stamp_mode"() OWNER TO "postgres";
 
 --
+-- Name: _write_tenancy_date_record("uuid", "uuid", "text", "text", "jsonb", "text"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_write_tenancy_date_record"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb", "p_kind" "text") RETURNS "jsonb"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  t public.tenancies; v_area uuid; ctx jsonb; preview jsonb; facts jsonb;
+  history public.tenancy_date_records; idem public.idempotency_keys; result jsonb;
+  source_doc public.documents; source_snapshot jsonb; source_files jsonb;
+  v_id uuid := gen_random_uuid(); v_time timestamptz := clock_timestamp(); public_record jsonb;
+begin
+  if current_user <> 'tenancy_date_writer' or public._tenancy_date_actor() is null
+    or not public.is_account_member(p_account_id) then
+    raise exception 'not_found' using errcode = 'P0002';
+  end if;
+  select * into idem from public.idempotency_keys
+    where account_id=p_account_id and key=p_idempotency_key for update;
+  if not found or idem.request_fingerprint is distinct from p_request_fingerprint then
+    raise exception 'idempotency_fingerprint_mismatch';
+  end if;
+  select * into history from public.tenancy_date_records
+    where account_id=p_account_id and request_key=p_idempotency_key;
+  if found then
+    if history.request_fingerprint is distinct from p_request_fingerprint or history.created_by <> public._tenancy_date_actor() then
+      raise exception 'idempotency_fingerprint_mismatch';
+    end if;
+    result := history.response_body;
+  else
+    if idem.completed_at is not null or idem.status_code is not null then
+      raise exception 'idempotency_key_not_in_flight';
+    end if;
+    if jsonb_typeof(p_payload) is distinct from 'object' or p_kind not in ('correction','explanation')
+      or p_payload - array['changes','expected_date_revision','expected_context_fingerprint',
+        'expected_resulting_status','lease_id','rent_schedule_id','reason_code','reason_note','source_document_id'] <> '{}'::jsonb
+      or length(btrim(coalesce(p_payload->>'reason_note',''))) not between 1 and 2000
+      or coalesce(p_payload->>'reason_code','') not in
+        ('data_entry_error','possession_delayed','concession','renewal','early_access','other') then
+      raise exception 'invalid_request' using errcode = '22023';
+    end if;
+    select area_id into v_area from public.tenancies where account_id=p_account_id
+      and id=p_tenancy_id and deleted_at is null;
+    if not found then raise exception 'not_found' using errcode='P0002'; end if;
+    -- Import resolution takes this same identity lock before looking up date aliases.
+    perform pg_advisory_xact_lock(hashtextextended('tenancy_identity:'||p_account_id::text||':'||v_area::text,0));
+    select * into t from public.tenancies where account_id=p_account_id and id=p_tenancy_id
+      and area_id=v_area and deleted_at is null for update;
+    if not found then raise exception 'not_found' using errcode='P0002'; end if;
+    ctx := public.get_tenancy_date_context(p_account_id,p_tenancy_id,
+      (p_payload->>'lease_id')::uuid,(p_payload->>'rent_schedule_id')::uuid);
+    if p_payload->>'expected_context_fingerprint' is distinct from ctx->>'context_fingerprint' then
+      raise exception 'date_context_changed';
+    end if;
+    facts := ctx->'facts';
+    if p_kind = 'correction' then
+      if (p_payload->>'expected_date_revision')::bigint is distinct from t.date_revision then
+        raise exception 'date_context_changed';
+      end if;
+      preview := public.preview_tenancy_date_correction(p_account_id,p_tenancy_id,p_payload);
+      if jsonb_array_length(preview->'blockers') > 0 then
+        raise exception '%',preview->'blockers'->>0 using errcode='22023';
+      end if;
+      facts := preview->'proposed';
+      if p_payload->>'expected_resulting_status' is distinct from facts->>'status' then
+        raise exception 'date_context_changed';
+      end if;
+    elsif p_payload ? 'changes' then
+      raise exception 'invalid_request' using errcode='22023';
+    end if;
+    if p_payload->>'source_document_id' is not null then
+      select * into source_doc from public.documents where account_id=p_account_id
+        and tenancy_id=p_tenancy_id and id=(p_payload->>'source_document_id')::uuid and deleted_at is null;
+      if not found then raise exception 'not_found' using errcode='P0002'; end if;
+      select coalesce(jsonb_agg(jsonb_build_object('id',id,'content_hash',content_hash,
+        'version_no',version_no,'attachment_id',attachment_id,'created_at',created_at)
+        order by version_no),'[]'::jsonb)
+        into source_files from public.document_versions where account_id=p_account_id
+          and document_id=source_doc.id and deleted_at is null;
+      source_snapshot := jsonb_build_object('id',source_doc.id,'title',source_doc.title,
+        'versions',source_files,'reference_kind',case when jsonb_array_length(source_files)>0
+          then 'content_hashes' else 'unversioned_reference' end);
+    end if;
+    if p_kind='correction' then
+      update public.tenancies set start_date=(facts->>'start_date')::date,
+        start_date_basis=facts->>'start_date_basis', actual_move_in_date=(facts->>'actual_move_in_date')::date,
+        date_revision=(facts->>'date_revision')::bigint,status=facts->>'status',updated_at=v_time
+        where account_id=p_account_id and id=p_tenancy_id returning * into t;
+    end if;
+    public_record := jsonb_build_object('id',v_id,'account_id',p_account_id,'tenancy_id',p_tenancy_id,
+      'kind',p_kind,'before_facts',ctx->'facts','after_facts',facts,
+      'context_snapshot',ctx - array['applicable_explanation','information','can_correct_start'],
+      'context_fingerprint',ctx->>'context_fingerprint',
+      'reason_code',p_payload->>'reason_code','reason_note',btrim(p_payload->>'reason_note'),
+      'source_document_id',source_doc.id,'source_document_snapshot',source_snapshot,
+      'created_by',public._tenancy_date_actor(),'created_at',v_time);
+    result := jsonb_build_object('tenancy',to_jsonb(t),'record',public_record);
+    insert into public.tenancy_date_records(id,account_id,tenancy_id,kind,before_facts,after_facts,
+      context_snapshot,context_fingerprint,reason_code,reason_note,source_document_id,source_document_snapshot,
+      created_by,created_at,request_key,request_fingerprint,response_body)
+    values(v_id,p_account_id,p_tenancy_id,p_kind,ctx->'facts',facts,public_record->'context_snapshot',
+      ctx->>'context_fingerprint',p_payload->>'reason_code',btrim(p_payload->>'reason_note'),source_doc.id,
+      source_snapshot,public._tenancy_date_actor(),v_time,p_idempotency_key,p_request_fingerprint,result);
+  end if;
+  update public.idempotency_keys set status_code=200,body=result,completed_at=now()
+    where account_id=p_account_id and key=p_idempotency_key and request_fingerprint=p_request_fingerprint;
+  if not found then raise exception 'idempotency_completion_lost'; end if;
+  return result;
+end $$;
+
+
+ALTER FUNCTION "public"."_write_tenancy_date_record"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb", "p_kind" "text") OWNER TO "postgres";
+
+--
 -- Name: adopt_tenancy_history("uuid", "uuid", "date", "text", bigint, integer, "date", integer, bigint, "jsonb", "jsonb", "jsonb", bigint, "text", boolean); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -3342,15 +3588,7 @@ begin
   ) then
     raise exception 'conflict: tenancy already has ledger activity';
   end if;
-  -- Checked AFTER the virgin conflicts (those name the more actionable
-  -- problem). Adoption money would otherwise permanently trip the PATCH
-  -- /tenancies start_date guard (409 tenancy_has_money) while the ledger
-  -- contradicts the recorded move-in date. Correcting start_date FIRST is
-  -- cheap now — the timeline is still virgin — and impossible later.
-  if p_schedule_start_date < v_tenancy.start_date then
-    raise exception 'conflict: schedule starts % but the tenancy''s recorded start_date is %; correct the tenancy start_date first',
-      p_schedule_start_date, v_tenancy.start_date;
-  end if;
+  -- Possession and rent effective dates are independent facts.
 
   -- 5. The adoption row FIRST: its BEFORE INSERT guard re-asserts the virgin
   --    timeline at the database (nothing is written yet, so the RPC's own
@@ -5871,6 +6109,21 @@ $$;
 ALTER FUNCTION "public"."confirm_unverified_sender"("p_account_id" "uuid", "p_interaction_id" "uuid") OWNER TO "postgres";
 
 --
+-- Name: correct_tenancy_dates("uuid", "uuid", "text", "text", "jsonb"); Type: FUNCTION; Schema: public; Owner: tenancy_date_writer
+--
+
+CREATE OR REPLACE FUNCTION "public"."correct_tenancy_dates"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "sql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+  select public._write_tenancy_date_record(p_account_id,p_tenancy_id,p_idempotency_key,
+    p_request_fingerprint,p_payload,'correction')
+$$;
+
+
+ALTER FUNCTION "public"."correct_tenancy_dates"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb") OWNER TO "tenancy_date_writer";
+
+--
 -- Name: create_account_for_new_user("text", "text"); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -6901,10 +7154,6 @@ $$;
 
 ALTER FUNCTION "public"."detect_rent_drift"("p_account_id" "uuid") OWNER TO "postgres";
 
-SET default_tablespace = '';
-
-SET default_table_access_method = "heap";
-
 --
 -- Name: comm_unmatched_inbound; Type: TABLE; Schema: public; Owner: postgres
 --
@@ -7504,6 +7753,67 @@ $$;
 ALTER FUNCTION "public"."generate_scheduled_task_runs"("p_account_id" "uuid", "p_as_of" timestamp with time zone) OWNER TO "postgres";
 
 --
+-- Name: get_tenancy_date_context("uuid", "uuid", "uuid", "uuid"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."get_tenancy_date_context"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_lease_id" "uuid" DEFAULT NULL::"uuid", "p_rent_schedule_id" "uuid" DEFAULT NULL::"uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  t public.tenancies; l jsonb; s jsonb; e jsonb; v jsonb; h text;
+  info text[] := '{}'; explanation jsonb;
+begin
+  if public._tenancy_date_actor() is null or not public.is_account_member(p_account_id) then
+    raise exception 'not_found' using errcode = 'P0002';
+  end if;
+  select * into t from public.tenancies where account_id = p_account_id
+    and id = p_tenancy_id and deleted_at is null;
+  if not found then raise exception 'not_found' using errcode = 'P0002'; end if;
+  if p_lease_id is not null then
+    select jsonb_build_object('id', id, 'term_start', term_start, 'term_end', term_end,
+      'status', status, 'voided_at', voided_at, 'updated_at', updated_at) into l
+      from public.leases where account_id = p_account_id and tenancy_id = t.id
+        and id = p_lease_id and deleted_at is null;
+    if not found then raise exception 'not_found' using errcode = 'P0002'; end if;
+  end if;
+  if p_rent_schedule_id is not null then
+    select jsonb_build_object('id', id, 'start_date', start_date, 'end_date', end_date,
+      'due_day', due_day, 'updated_at', updated_at) into s
+      from public.rent_schedules where account_id = p_account_id and tenancy_id = t.id
+        and id = p_rent_schedule_id and deleted_at is null;
+    if not found then raise exception 'not_found' using errcode = 'P0002'; end if;
+  end if;
+  select jsonb_build_object('id', id, 'kind', kind, 'effective_date', effective_date)
+    into e from public.tenancy_endings where account_id = p_account_id and tenancy_id = t.id;
+  v := jsonb_build_object('version', 1, 'facts', public._tenancy_date_facts(t),
+    'lease', l, 'schedule', s, 'ending', e);
+  h := encode(sha256(convert_to(jsonb_build_object('account_id', p_account_id,
+    'tenancy_id', p_tenancy_id, 'context', v)::text, 'UTF8')), 'hex');
+  if t.start_date_basis = 'legacy_unverified' then info := array_append(info, 'legacy_date_unverified'); end if;
+  if (l is not null and (l->>'term_start')::date <> t.start_date)
+    or (s is not null and (s->>'start_date')::date <> t.start_date) then
+    info := array_append(info, 'date_values_differ');
+  end if;
+  if s is not null and (s->>'start_date')::date < t.start_date then
+    info := array_append(info, 'billing_precedes_possession');
+  end if;
+  if t.status = 'ended' and t.end_date is null and e is null then
+    info := array_append(info, 'legacy_ending_incomplete');
+  end if;
+  select to_jsonb(r) - array['request_key','request_fingerprint','response_body']
+    into explanation from public.tenancy_date_records r
+    where account_id = p_account_id and tenancy_id = t.id and kind = 'explanation'
+      and context_fingerprint = h order by created_at desc, id desc limit 1;
+  return v || jsonb_build_object('context_fingerprint', h, 'information', info,
+    'applicable_explanation', explanation,
+    'can_correct_start', coalesce(e->>'kind', '') <> 'cancelled_before_move_in');
+end $$;
+
+
+ALTER FUNCTION "public"."get_tenancy_date_context"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_lease_id" "uuid", "p_rent_schedule_id" "uuid") OWNER TO "postgres";
+
+--
 -- Name: guard_agent_membership_delete(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -7629,21 +7939,37 @@ $$;
 ALTER FUNCTION "public"."inspection_checkout_diff"("p_account_id" "uuid", "p_checkout_inspection_id" "uuid") OWNER TO "postgres";
 
 --
+-- Name: account_members; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."account_members" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "account_id" "uuid" NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "role" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "deleted_at" timestamp with time zone,
+    CONSTRAINT "account_members_role_check" CHECK (("role" = ANY (ARRAY['owner'::"text", 'manager'::"text", 'viewer'::"text", 'agent'::"text"])))
+);
+
+ALTER TABLE ONLY "public"."account_members" FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."account_members" OWNER TO "postgres";
+
+--
 -- Name: is_account_member("uuid"); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
 CREATE OR REPLACE FUNCTION "public"."is_account_member"("p_account_id" "uuid") RETURNS boolean
     LANGUAGE "sql" STABLE
     SET "search_path" TO 'public'
-    AS $$
-  select exists (
-    select 1
-    from public.account_members m
-    where m.account_id = p_account_id
-      and m.user_id    = (select auth.uid())
-      and m.deleted_at is null
-  );
-$$;
+    BEGIN ATOMIC
+ SELECT (EXISTS ( SELECT 1
+            FROM "public"."account_members" "m"
+           WHERE (("m"."account_id" = "is_account_member"."p_account_id") AND ("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL)))) AS "exists";
+END;
 
 
 ALTER FUNCTION "public"."is_account_member"("p_account_id" "uuid") OWNER TO "postgres";
@@ -8305,6 +8631,79 @@ $$;
 ALTER FUNCTION "public"."normalize_search_text"("p_text" "text") OWNER TO "postgres";
 
 --
+-- Name: preview_tenancy_date_correction("uuid", "uuid", "jsonb"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."preview_tenancy_date_correction"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  ctx jsonb; old_f jsonb; new_f jsonb; changes jsonb; info text[];
+  blockers text[] := '{}'; new_start date; actual date; new_status text;
+  today date := (now() at time zone 'UTC')::date;
+  n_charges bigint; n_payments bigint; n_review bigint; n_fallback bigint;
+begin
+  if jsonb_typeof(p_payload) is distinct from 'object' then
+    raise exception 'invalid_request' using errcode = '22023';
+  end if;
+  changes := coalesce(p_payload->'changes', '{}'::jsonb);
+  if jsonb_typeof(changes) is distinct from 'object'
+    or changes - array['start_date','start_date_basis','actual_move_in_date'] <> '{}'::jsonb then
+    raise exception 'invalid_request' using errcode = '22023';
+  end if;
+  ctx := public.get_tenancy_date_context(p_account_id, p_tenancy_id,
+    (p_payload->>'lease_id')::uuid, (p_payload->>'rent_schedule_id')::uuid);
+  old_f := ctx->'facts'; new_f := old_f || changes;
+  new_start := public._tenancy_calendar_date(new_f->>'start_date');
+  if new_f->>'start_date_basis' is null or new_f->>'start_date_basis' not in
+    ('legacy_unverified','possession_entitlement') then
+    raise exception 'invalid_request' using errcode = '22023';
+  end if;
+  if new_f->>'actual_move_in_date' is not null then
+    actual := public._tenancy_calendar_date(new_f->>'actual_move_in_date');
+    if actual > today then blockers := array_append(blockers, 'actual_move_in_in_future'); end if;
+  end if;
+  new_status := old_f->>'status';
+  if new_start > (old_f->>'end_date')::date then
+    blockers := array_append(blockers, 'invalid_date_order');
+  end if;
+  if ctx->'ending'->>'kind' = 'cancelled_before_move_in' and
+    (new_start <> (old_f->>'start_date')::date or actual is not null) then
+    blockers := array_append(blockers, 'date_fixed_by_cancellation');
+  end if;
+  if new_start <> (old_f->>'start_date')::date then
+    if new_status in ('holdover','ended') and new_start > today then
+      blockers := array_append(blockers, 'date_status_conflict');
+    elsif new_status in ('active','upcoming') then
+      new_status := case when new_start > today then 'upcoming' else 'active' end;
+    end if;
+  end if;
+  if new_f = old_f then blockers := array_append(blockers, 'no_date_change'); end if;
+  new_f := new_f || jsonb_build_object('status', new_status,
+    'date_revision', (old_f->>'date_revision')::bigint + case when new_f <> old_f then 1 else 0 end);
+  select count(*), count(*) filter (where
+      coalesce(period_start,due_date) < greatest(new_start,(old_f->>'start_date')::date)
+      and coalesce(period_end,period_start,due_date) >= least(new_start,(old_f->>'start_date')::date)
+      and new_start <> (old_f->>'start_date')::date),
+    count(*) filter (where period_start is null and due_date >= least(new_start,(old_f->>'start_date')::date)
+      and due_date < greatest(new_start,(old_f->>'start_date')::date))
+    into n_charges,n_review,n_fallback from public.charges
+    where account_id = p_account_id and tenancy_id = p_tenancy_id and deleted_at is null and voided_at is null;
+  select count(*) into n_payments from public.payments where account_id = p_account_id
+    and tenancy_id = p_tenancy_id and deleted_at is null and voided_at is null;
+  select coalesce(array_agg(value), '{}'::text[]) into info from jsonb_array_elements_text(ctx->'information');
+  if n_review > 0 then info := array_append(info,'charges_in_changed_interval'); end if;
+  return jsonb_build_object('current',old_f,'proposed',new_f,
+    'context_fingerprint',ctx->>'context_fingerprint','blockers',blockers,'information',info,
+    'financial_review',jsonb_build_object('live_charges',n_charges,'live_payments',n_payments,
+      'charges_in_changed_interval',n_review,'due_date_fallback_count',n_fallback,'sampled_at',now()));
+end $$;
+
+
+ALTER FUNCTION "public"."preview_tenancy_date_correction"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb") OWNER TO "postgres";
+
+--
 -- Name: prune_idempotency_keys(integer, integer); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -8623,6 +9022,21 @@ $$;
 
 
 ALTER FUNCTION "public"."record_platform_number"("p_account_id" "uuid", "p_number" "text", "p_provider" "text", "p_capabilities" "text"[]) OWNER TO "postgres";
+
+--
+-- Name: record_tenancy_date_explanation("uuid", "uuid", "text", "text", "jsonb"); Type: FUNCTION; Schema: public; Owner: tenancy_date_writer
+--
+
+CREATE OR REPLACE FUNCTION "public"."record_tenancy_date_explanation"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "sql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+  select public._write_tenancy_date_record(p_account_id,p_tenancy_id,p_idempotency_key,
+    p_request_fingerprint,p_payload,'explanation')
+$$;
+
+
+ALTER FUNCTION "public"."record_tenancy_date_explanation"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb") OWNER TO "tenancy_date_writer";
 
 --
 -- Name: rent_rollup("uuid", "text"[], "date"); Type: FUNCTION; Schema: public; Owner: postgres
@@ -10668,26 +11082,6 @@ ALTER TABLE ONLY "public"."account_legal_holds" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "public"."account_legal_holds" OWNER TO "postgres";
 
 --
--- Name: account_members; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE IF NOT EXISTS "public"."account_members" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "account_id" "uuid" NOT NULL,
-    "user_id" "uuid" NOT NULL,
-    "role" "text" NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "deleted_at" timestamp with time zone,
-    CONSTRAINT "account_members_role_check" CHECK (("role" = ANY (ARRAY['owner'::"text", 'manager'::"text", 'viewer'::"text", 'agent'::"text"])))
-);
-
-ALTER TABLE ONLY "public"."account_members" FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE "public"."account_members" OWNER TO "postgres";
-
---
 -- Name: accounts; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -11944,29 +12338,6 @@ ALTER TABLE ONLY "public"."scheduled_tasks" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "public"."scheduled_tasks" OWNER TO "postgres";
 
 --
--- Name: tenancies; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE IF NOT EXISTS "public"."tenancies" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "account_id" "uuid" NOT NULL,
-    "area_id" "uuid" NOT NULL,
-    "start_date" "date" NOT NULL,
-    "end_date" "date",
-    "status" "text" NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "deleted_at" timestamp with time zone,
-    CONSTRAINT "tenancies_check" CHECK ((("end_date" IS NULL) OR ("end_date" >= "start_date"))),
-    CONSTRAINT "tenancies_status_check" CHECK (("status" = ANY (ARRAY['upcoming'::"text", 'active'::"text", 'ended'::"text", 'holdover'::"text"])))
-);
-
-ALTER TABLE ONLY "public"."tenancies" FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE "public"."tenancies" OWNER TO "postgres";
-
---
 -- Name: tenancy_adoptions; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -11990,6 +12361,38 @@ ALTER TABLE ONLY "public"."tenancy_adoptions" FORCE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."tenancy_adoptions" OWNER TO "postgres";
+
+--
+-- Name: tenancy_date_records; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."tenancy_date_records" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "account_id" "uuid" NOT NULL,
+    "tenancy_id" "uuid" NOT NULL,
+    "kind" "text" NOT NULL,
+    "before_facts" "jsonb" NOT NULL,
+    "after_facts" "jsonb" NOT NULL,
+    "context_snapshot" "jsonb" NOT NULL,
+    "context_fingerprint" "text" NOT NULL,
+    "reason_code" "text" NOT NULL,
+    "reason_note" "text" NOT NULL,
+    "source_document_id" "uuid",
+    "source_document_snapshot" "jsonb",
+    "created_by" "uuid" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
+    "request_key" "text" NOT NULL,
+    "request_fingerprint" "text" NOT NULL,
+    "response_body" "jsonb" NOT NULL,
+    CONSTRAINT "tenancy_date_records_kind_check" CHECK (("kind" = ANY (ARRAY['correction'::"text", 'explanation'::"text"]))),
+    CONSTRAINT "tenancy_date_records_reason_code_check" CHECK (("reason_code" = ANY (ARRAY['data_entry_error'::"text", 'possession_delayed'::"text", 'concession'::"text", 'renewal'::"text", 'early_access'::"text", 'other'::"text"]))),
+    CONSTRAINT "tenancy_date_records_reason_note_check" CHECK ((("length"("btrim"("reason_note")) >= 1) AND ("length"("btrim"("reason_note")) <= 2000)))
+);
+
+ALTER TABLE ONLY "public"."tenancy_date_records" FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."tenancy_date_records" OWNER TO "postgres";
 
 --
 -- Name: tenancy_endings; Type: TABLE; Schema: public; Owner: postgres
@@ -13180,6 +13583,22 @@ ALTER TABLE ONLY "public"."tenancy_adoptions"
 
 ALTER TABLE ONLY "public"."tenancy_adoptions"
     ADD CONSTRAINT "tenancy_adoptions_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: tenancy_date_records tenancy_date_records_account_id_request_key_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."tenancy_date_records"
+    ADD CONSTRAINT "tenancy_date_records_account_id_request_key_key" UNIQUE ("account_id", "request_key");
+
+
+--
+-- Name: tenancy_date_records tenancy_date_records_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."tenancy_date_records"
+    ADD CONSTRAINT "tenancy_date_records_pkey" PRIMARY KEY ("id");
 
 
 --
@@ -14535,6 +14954,20 @@ CREATE UNIQUE INDEX "tenancy_adoptions_one_live_per_tenancy" ON "public"."tenanc
 
 
 --
+-- Name: tenancy_date_records_history_idx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "tenancy_date_records_history_idx" ON "public"."tenancy_date_records" USING "btree" ("account_id", "tenancy_id", "created_at", "id");
+
+
+--
+-- Name: tenancy_date_records_old_start_idx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "tenancy_date_records_old_start_idx" ON "public"."tenancy_date_records" USING "btree" ("account_id", (("before_facts" ->> 'start_date'::"text")), "tenancy_id") WHERE ("kind" = 'correction'::"text");
+
+
+--
 -- Name: tenancy_endings_account_created_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
@@ -15249,6 +15682,13 @@ CREATE OR REPLACE TRIGGER "tenancies_audit" AFTER INSERT OR DELETE OR UPDATE ON 
 
 
 --
+-- Name: tenancies tenancies_date_command_guard; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "tenancies_date_command_guard" BEFORE INSERT OR UPDATE ON "public"."tenancies" FOR EACH ROW EXECUTE FUNCTION "public"."_guard_tenancy_date_write"();
+
+
+--
 -- Name: tenancies tenancies_end_rent_schedules_on_end; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
@@ -15288,6 +15728,20 @@ CREATE OR REPLACE TRIGGER "tenancy_adoptions_freeze" BEFORE UPDATE ON "public"."
 --
 
 CREATE OR REPLACE TRIGGER "tenancy_adoptions_guard" BEFORE INSERT ON "public"."tenancy_adoptions" FOR EACH ROW EXECUTE FUNCTION "public"."_tenancy_adoptions_guard"();
+
+
+--
+-- Name: tenancy_date_records tenancy_date_records_audit; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "tenancy_date_records_audit" AFTER INSERT ON "public"."tenancy_date_records" FOR EACH ROW EXECUTE FUNCTION "public"."_emit_event"();
+
+
+--
+-- Name: tenancy_date_records tenancy_date_records_immutable; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "tenancy_date_records_immutable" BEFORE INSERT OR DELETE OR UPDATE ON "public"."tenancy_date_records" FOR EACH ROW EXECUTE FUNCTION "public"."_guard_tenancy_date_record"();
 
 
 --
@@ -16369,6 +16823,30 @@ ALTER TABLE ONLY "public"."tenancies"
 
 ALTER TABLE ONLY "public"."tenancy_adoptions"
     ADD CONSTRAINT "tenancy_adoptions_account_id_tenancy_id_fkey" FOREIGN KEY ("account_id", "tenancy_id") REFERENCES "public"."tenancies"("account_id", "id") ON DELETE RESTRICT;
+
+
+--
+-- Name: tenancy_date_records tenancy_date_records_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."tenancy_date_records"
+    ADD CONSTRAINT "tenancy_date_records_account_id_fkey" FOREIGN KEY ("account_id") REFERENCES "public"."accounts"("id");
+
+
+--
+-- Name: tenancy_date_records tenancy_date_records_account_id_source_document_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."tenancy_date_records"
+    ADD CONSTRAINT "tenancy_date_records_account_id_source_document_id_fkey" FOREIGN KEY ("account_id", "source_document_id") REFERENCES "public"."documents"("account_id", "id");
+
+
+--
+-- Name: tenancy_date_records tenancy_date_records_account_id_tenancy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."tenancy_date_records"
+    ADD CONSTRAINT "tenancy_date_records_account_id_tenancy_id_fkey" FOREIGN KEY ("account_id", "tenancy_id") REFERENCES "public"."tenancies"("account_id", "id");
 
 
 --
@@ -17491,6 +17969,26 @@ CREATE POLICY "tenancy_adoptions_member_update" ON "public"."tenancy_adoptions" 
 
 
 --
+-- Name: tenancy_date_records; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."tenancy_date_records" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: tenancy_date_records tenancy_date_records_insert; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "tenancy_date_records_insert" ON "public"."tenancy_date_records" FOR INSERT TO "tenancy_date_writer" WITH CHECK ("public"."is_account_member"("account_id"));
+
+
+--
+-- Name: tenancy_date_records tenancy_date_records_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "tenancy_date_records_read" ON "public"."tenancy_date_records" FOR SELECT USING ("public"."is_account_member"("account_id"));
+
+
+--
 -- Name: tenancy_endings; Type: ROW SECURITY; Schema: public; Owner: postgres
 --
 
@@ -17640,6 +18138,7 @@ GRANT USAGE ON SCHEMA "public" TO "postgres";
 GRANT USAGE ON SCHEMA "public" TO "anon";
 GRANT USAGE ON SCHEMA "public" TO "authenticated";
 GRANT USAGE ON SCHEMA "public" TO "service_role";
+GRANT USAGE ON SCHEMA "public" TO "tenancy_date_writer";
 
 
 --
@@ -17906,6 +18405,20 @@ REVOKE ALL ON FUNCTION "public"."_guard_recorded_tenancy_ending"() FROM PUBLIC;
 
 
 --
+-- Name: FUNCTION "_guard_tenancy_date_record"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_guard_tenancy_date_record"() FROM PUBLIC;
+
+
+--
+-- Name: FUNCTION "_guard_tenancy_date_write"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_guard_tenancy_date_write"() FROM PUBLIC;
+
+
+--
 -- Name: FUNCTION "_guard_tenancy_ending_insert"(); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -18164,6 +18677,85 @@ REVOKE ALL ON FUNCTION "public"."_tenancy_adoptions_guard"() FROM PUBLIC;
 
 
 --
+-- Name: FUNCTION "_tenancy_calendar_date"("p_value" "text"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_tenancy_calendar_date"("p_value" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."_tenancy_calendar_date"("p_value" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."_tenancy_calendar_date"("p_value" "text") TO "tenancy_date_writer";
+
+
+--
+-- Name: FUNCTION "_tenancy_date_actor"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_tenancy_date_actor"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."_tenancy_date_actor"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."_tenancy_date_actor"() TO "tenancy_date_writer";
+
+
+--
+-- Name: TABLE "tenancies"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."tenancies" TO "anon";
+GRANT ALL ON TABLE "public"."tenancies" TO "authenticated";
+GRANT ALL ON TABLE "public"."tenancies" TO "service_role";
+GRANT SELECT ON TABLE "public"."tenancies" TO "tenancy_date_writer";
+
+
+--
+-- Name: COLUMN "tenancies"."start_date"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT UPDATE("start_date") ON TABLE "public"."tenancies" TO "tenancy_date_writer";
+
+
+--
+-- Name: COLUMN "tenancies"."status"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT UPDATE("status") ON TABLE "public"."tenancies" TO "tenancy_date_writer";
+
+
+--
+-- Name: COLUMN "tenancies"."updated_at"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT UPDATE("updated_at") ON TABLE "public"."tenancies" TO "tenancy_date_writer";
+
+
+--
+-- Name: COLUMN "tenancies"."start_date_basis"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT UPDATE("start_date_basis") ON TABLE "public"."tenancies" TO "tenancy_date_writer";
+
+
+--
+-- Name: COLUMN "tenancies"."actual_move_in_date"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT UPDATE("actual_move_in_date") ON TABLE "public"."tenancies" TO "tenancy_date_writer";
+
+
+--
+-- Name: COLUMN "tenancies"."date_revision"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT UPDATE("date_revision") ON TABLE "public"."tenancies" TO "tenancy_date_writer";
+
+
+--
+-- Name: FUNCTION "_tenancy_date_facts"("p_t" "public"."tenancies"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_tenancy_date_facts"("p_t" "public"."tenancies") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."_tenancy_date_facts"("p_t" "public"."tenancies") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."_tenancy_date_facts"("p_t" "public"."tenancies") TO "tenancy_date_writer";
+
+
+--
 -- Name: FUNCTION "_tenant_email_conflicts"("p_account_id" "uuid", "p_emails" "text"[], "p_exclude_tenant_id" "uuid"); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -18201,6 +18793,14 @@ GRANT ALL ON FUNCTION "public"."_tenants_phone_e164_guard"() TO "service_role";
 GRANT ALL ON FUNCTION "public"."_thread_binding_stamp_mode"() TO "anon";
 GRANT ALL ON FUNCTION "public"."_thread_binding_stamp_mode"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."_thread_binding_stamp_mode"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "_write_tenancy_date_record"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb", "p_kind" "text"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_write_tenancy_date_record"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb", "p_kind" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."_write_tenancy_date_record"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb", "p_kind" "text") TO "tenancy_date_writer";
 
 
 --
@@ -18315,6 +18915,14 @@ GRANT ALL ON FUNCTION "public"."complete_send"("p_outbox_id" "uuid", "p_provider
 REVOKE ALL ON FUNCTION "public"."confirm_unverified_sender"("p_account_id" "uuid", "p_interaction_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."confirm_unverified_sender"("p_account_id" "uuid", "p_interaction_id" "uuid") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."confirm_unverified_sender"("p_account_id" "uuid", "p_interaction_id" "uuid") TO "service_role";
+
+
+--
+-- Name: FUNCTION "correct_tenancy_dates"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb"); Type: ACL; Schema: public; Owner: tenancy_date_writer
+--
+
+REVOKE ALL ON FUNCTION "public"."correct_tenancy_dates"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."correct_tenancy_dates"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb") TO "authenticated";
 
 
 --
@@ -18477,6 +19085,15 @@ GRANT ALL ON FUNCTION "public"."generate_scheduled_task_runs"("p_account_id" "uu
 
 
 --
+-- Name: FUNCTION "get_tenancy_date_context"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_lease_id" "uuid", "p_rent_schedule_id" "uuid"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."get_tenancy_date_context"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_lease_id" "uuid", "p_rent_schedule_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_tenancy_date_context"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_lease_id" "uuid", "p_rent_schedule_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_tenancy_date_context"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_lease_id" "uuid", "p_rent_schedule_id" "uuid") TO "tenancy_date_writer";
+
+
+--
 -- Name: FUNCTION "guard_agent_membership_delete"(); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -18495,12 +19112,23 @@ GRANT ALL ON FUNCTION "public"."inspection_checkout_diff"("p_account_id" "uuid",
 
 
 --
+-- Name: TABLE "account_members"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."account_members" TO "anon";
+GRANT ALL ON TABLE "public"."account_members" TO "authenticated";
+GRANT ALL ON TABLE "public"."account_members" TO "service_role";
+GRANT SELECT ON TABLE "public"."account_members" TO "tenancy_date_writer";
+
+
+--
 -- Name: FUNCTION "is_account_member"("p_account_id" "uuid"); Type: ACL; Schema: public; Owner: postgres
 --
 
 GRANT ALL ON FUNCTION "public"."is_account_member"("p_account_id" "uuid") TO "anon";
 GRANT ALL ON FUNCTION "public"."is_account_member"("p_account_id" "uuid") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."is_account_member"("p_account_id" "uuid") TO "service_role";
+GRANT ALL ON FUNCTION "public"."is_account_member"("p_account_id" "uuid") TO "tenancy_date_writer";
 
 
 --
@@ -18600,6 +19228,15 @@ GRANT ALL ON FUNCTION "public"."normalize_search_text"("p_text" "text") TO "serv
 
 
 --
+-- Name: FUNCTION "preview_tenancy_date_correction"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."preview_tenancy_date_correction"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."preview_tenancy_date_correction"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."preview_tenancy_date_correction"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb") TO "tenancy_date_writer";
+
+
+--
 -- Name: FUNCTION "prune_idempotency_keys"("p_completed_ttl_seconds" integer, "p_in_flight_ttl_seconds" integer); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -18675,6 +19312,14 @@ GRANT ALL ON TABLE "public"."platform_numbers" TO "service_role";
 REVOKE ALL ON FUNCTION "public"."record_platform_number"("p_account_id" "uuid", "p_number" "text", "p_provider" "text", "p_capabilities" "text"[]) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."record_platform_number"("p_account_id" "uuid", "p_number" "text", "p_provider" "text", "p_capabilities" "text"[]) TO "authenticated";
 GRANT ALL ON FUNCTION "public"."record_platform_number"("p_account_id" "uuid", "p_number" "text", "p_provider" "text", "p_capabilities" "text"[]) TO "service_role";
+
+
+--
+-- Name: FUNCTION "record_tenancy_date_explanation"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb"); Type: ACL; Schema: public; Owner: tenancy_date_writer
+--
+
+REVOKE ALL ON FUNCTION "public"."record_tenancy_date_explanation"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."record_tenancy_date_explanation"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb") TO "authenticated";
 
 
 --
@@ -18943,6 +19588,7 @@ GRANT ALL ON FUNCTION "public"."void_inspection"("p_account_id" "uuid", "p_inspe
 GRANT ALL ON TABLE "public"."document_versions" TO "anon";
 GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."document_versions" TO "authenticated";
 GRANT ALL ON TABLE "public"."document_versions" TO "service_role";
+GRANT SELECT ON TABLE "public"."document_versions" TO "tenancy_date_writer";
 
 
 --
@@ -18952,15 +19598,6 @@ GRANT ALL ON TABLE "public"."document_versions" TO "service_role";
 GRANT ALL ON TABLE "public"."account_legal_holds" TO "anon";
 GRANT ALL ON TABLE "public"."account_legal_holds" TO "authenticated";
 GRANT ALL ON TABLE "public"."account_legal_holds" TO "service_role";
-
-
---
--- Name: TABLE "account_members"; Type: ACL; Schema: public; Owner: postgres
---
-
-GRANT ALL ON TABLE "public"."account_members" TO "anon";
-GRANT ALL ON TABLE "public"."account_members" TO "authenticated";
-GRANT ALL ON TABLE "public"."account_members" TO "service_role";
 
 
 --
@@ -19083,6 +19720,7 @@ GRANT ALL ON TABLE "public"."channel_identities" TO "service_role";
 GRANT ALL ON TABLE "public"."charges" TO "anon";
 GRANT ALL ON TABLE "public"."charges" TO "authenticated";
 GRANT ALL ON TABLE "public"."charges" TO "service_role";
+GRANT SELECT ON TABLE "public"."charges" TO "tenancy_date_writer";
 
 
 --
@@ -19145,6 +19783,7 @@ GRANT SELECT ON TABLE "public"."document_upload_receipts" TO "authenticated";
 GRANT ALL ON TABLE "public"."documents" TO "anon";
 GRANT ALL ON TABLE "public"."documents" TO "authenticated";
 GRANT ALL ON TABLE "public"."documents" TO "service_role";
+GRANT SELECT ON TABLE "public"."documents" TO "tenancy_date_writer";
 
 
 --
@@ -19163,6 +19802,28 @@ GRANT ALL ON TABLE "public"."evidence_exports" TO "service_role";
 GRANT ALL ON TABLE "public"."idempotency_keys" TO "anon";
 GRANT ALL ON TABLE "public"."idempotency_keys" TO "authenticated";
 GRANT ALL ON TABLE "public"."idempotency_keys" TO "service_role";
+GRANT SELECT ON TABLE "public"."idempotency_keys" TO "tenancy_date_writer";
+
+
+--
+-- Name: COLUMN "idempotency_keys"."status_code"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT UPDATE("status_code") ON TABLE "public"."idempotency_keys" TO "tenancy_date_writer";
+
+
+--
+-- Name: COLUMN "idempotency_keys"."body"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT UPDATE("body") ON TABLE "public"."idempotency_keys" TO "tenancy_date_writer";
+
+
+--
+-- Name: COLUMN "idempotency_keys"."completed_at"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT UPDATE("completed_at") ON TABLE "public"."idempotency_keys" TO "tenancy_date_writer";
 
 
 --
@@ -19276,6 +19937,7 @@ GRANT ALL ON TABLE "public"."ip_rate_buckets" TO "service_role";
 GRANT ALL ON TABLE "public"."leases" TO "anon";
 GRANT ALL ON TABLE "public"."leases" TO "authenticated";
 GRANT ALL ON TABLE "public"."leases" TO "service_role";
+GRANT SELECT ON TABLE "public"."leases" TO "tenancy_date_writer";
 
 
 --
@@ -19328,6 +19990,7 @@ GRANT ALL ON TABLE "public"."payment_allocations" TO "service_role";
 GRANT ALL ON TABLE "public"."payments" TO "anon";
 GRANT ALL ON TABLE "public"."payments" TO "authenticated";
 GRANT ALL ON TABLE "public"."payments" TO "service_role";
+GRANT SELECT ON TABLE "public"."payments" TO "tenancy_date_writer";
 
 
 --
@@ -19346,6 +20009,7 @@ GRANT ALL ON TABLE "public"."properties" TO "service_role";
 GRANT ALL ON TABLE "public"."rent_schedules" TO "anon";
 GRANT ALL ON TABLE "public"."rent_schedules" TO "authenticated";
 GRANT ALL ON TABLE "public"."rent_schedules" TO "service_role";
+GRANT SELECT ON TABLE "public"."rent_schedules" TO "tenancy_date_writer";
 
 
 --
@@ -19374,20 +20038,20 @@ GRANT ALL ON TABLE "public"."scheduled_tasks" TO "service_role";
 
 
 --
--- Name: TABLE "tenancies"; Type: ACL; Schema: public; Owner: postgres
---
-
-GRANT ALL ON TABLE "public"."tenancies" TO "anon";
-GRANT ALL ON TABLE "public"."tenancies" TO "authenticated";
-GRANT ALL ON TABLE "public"."tenancies" TO "service_role";
-
-
---
 -- Name: TABLE "tenancy_adoptions"; Type: ACL; Schema: public; Owner: postgres
 --
 
 GRANT SELECT,INSERT,UPDATE ON TABLE "public"."tenancy_adoptions" TO "authenticated";
 GRANT SELECT,INSERT,UPDATE ON TABLE "public"."tenancy_adoptions" TO "service_role";
+
+
+--
+-- Name: TABLE "tenancy_date_records"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT ON TABLE "public"."tenancy_date_records" TO "authenticated";
+GRANT SELECT ON TABLE "public"."tenancy_date_records" TO "service_role";
+GRANT SELECT,INSERT ON TABLE "public"."tenancy_date_records" TO "tenancy_date_writer";
 
 
 --
@@ -19397,6 +20061,7 @@ GRANT SELECT,INSERT,UPDATE ON TABLE "public"."tenancy_adoptions" TO "service_rol
 GRANT SELECT,INSERT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."tenancy_endings" TO "anon";
 GRANT SELECT,INSERT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."tenancy_endings" TO "authenticated";
 GRANT ALL ON TABLE "public"."tenancy_endings" TO "service_role";
+GRANT SELECT ON TABLE "public"."tenancy_endings" TO "tenancy_date_writer";
 
 
 --
