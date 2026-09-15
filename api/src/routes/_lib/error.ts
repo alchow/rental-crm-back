@@ -87,7 +87,6 @@ export type ErrorCode =
   // review the Create-screen scratchpad before submitting it again.
   | 'template_changed'
   | 'date_context_changed'
-  | 'tenancy_end_date_changed'
   | 'date_correction_required'
   | 'no_date_change'
   | 'invalid_date_order'

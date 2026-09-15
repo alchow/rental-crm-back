@@ -1471,14 +1471,6 @@
             ],
             "format": "date"
           },
-          "expected_end_date": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date",
-            "description": "Required with end_date. The end date seen when editing began; null means no end date. A changed stored value returns 409 tenancy_end_date_changed."
-          },
           "status": {
             "type": "string",
             "enum": [

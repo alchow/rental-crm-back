@@ -18687,11 +18687,6 @@ export interface components {
         PatchTenancyBody: {
             /** Format: date */
             end_date?: string | null;
-            /**
-             * Format: date
-             * @description Required with end_date. The end date seen when editing began; null means no end date. A changed stored value returns 409 tenancy_end_date_changed.
-             */
-            expected_end_date?: string | null;
             /** @enum {string} */
             status?: "upcoming" | "active" | "ended" | "holdover";
             /**

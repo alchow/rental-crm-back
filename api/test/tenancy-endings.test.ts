@@ -276,7 +276,7 @@ await check('ending is readable, audited, immutable, and repeat-safe', async () 
     `/v1/accounts/${accountId}/tenancies/${cancelledTenancyId}`,
     {
       token,
-      body: { status: 'ended', start_date: '2025-08-15', end_date: '2025-08-15', expected_end_date: '2030-08-15' },
+      body: { status: 'ended', start_date: '2025-08-15', end_date: '2025-08-15' },
     },
   );
   if (rewriteBothViaApi.status !== 409) {
@@ -405,7 +405,7 @@ await check('an immutable ending cannot be erased by reopening the tenancy', asy
   if (ended.status !== 200) throw new Error(`end before reopen probe returned ${ended.status}`);
   const reopen = await api('PATCH', `/v1/accounts/${accountId}/tenancies/${tenancy.id}`, {
     token,
-    body: { status: 'active', end_date: null, expected_end_date: '2026-07-01' },
+    body: { status: 'active', end_date: null },
   });
   if (reopen.status !== 400) throw new Error(`reopen expected 400, got ${reopen.status}`);
   const current = await admin
