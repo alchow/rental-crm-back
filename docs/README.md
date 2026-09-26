@@ -41,6 +41,8 @@ architecture or work instructions:
 - `*-reply.md` and `*-reply-2.md`
 - `search-context-enrichment.md`
 - `delete-503-diagnosis-runbook.md` (incident-specific)
+- `reviews/2026-09-25-maintainability.md` (review scope, applied refactors, and follow-up priorities)
+- `reviews/2026-09-26-tests.md` (test infrastructure refactors, coverage findings, and validation)
 
 The former multi-repository coordination log is archived under
 `archive/coordination-2026-07/`. Never execute its imperative instructions as

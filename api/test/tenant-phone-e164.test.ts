@@ -1,53 +1,17 @@
-// ----------------------------------------------------------------------------
-// Canonical E.164 tenant phones — integration tests (migration
-// 20260723000008 + the write-time normalization in routes/tenants.ts).
-// Same live-stack shape as tenant-email-uniqueness.test.ts: env from
-// `supabase status`, drive /v1 via app.fetch, plus a direct PostgREST write
-// to prove the DB trigger backstop.
-//
-// Covers: create normalizes every accepted spelling to E.164; two spellings
-// of one number dedupe silently; an unresolvable value 422s as invalid_phone
-// with fieldErrors.phones naming it (create AND patch); bare 10-digit input
-// is refused (no country-code guessing server-side); empty/omitted phones
-// pass through; and a member writing raw phones straight to PostgREST is
-// stopped by the tenants_phone_e164_guard trigger.
-// ----------------------------------------------------------------------------
+// Accepted phone spellings normalize to E.164 without guessing a country code.
+// Exercise HTTP validation and the direct PostgREST trigger boundary.
 
-import { execSync } from 'node:child_process';
+import {
+  configureIntegrationEnv,
+  createApiClient,
+  type ApiResponse as ApiResp,
+  createCheckHarness,
+  randomToken as rnd,
+  assertStatus,
+  assert,
+} from './helpers/integration';
 
-interface SupabaseStatus {
-  API_URL: string;
-  ANON_KEY: string;
-  SERVICE_ROLE_KEY: string;
-}
-
-function readSupabaseStatus(): SupabaseStatus {
-  const out = execSync('supabase status --output env --workdir db', {
-    cwd: process.cwd().endsWith('/api') ? '..' : '.',
-    encoding: 'utf8',
-  });
-  const lines = out.split('\n');
-  const get = (k: string): string => {
-    const line = lines.find((l) => l.startsWith(k + '='));
-    if (!line) throw new Error(`supabase status missing: ${k}`);
-    return line.slice(k.length + 1).replace(/^"|"$/g, '');
-  };
-  return {
-    API_URL: get('API_URL'),
-    ANON_KEY: get('ANON_KEY'),
-    SERVICE_ROLE_KEY: get('SERVICE_ROLE_KEY'),
-  };
-}
-
-const status = readSupabaseStatus();
-process.env.NODE_ENV = 'test';
-process.env.PORT = '8807';
-process.env.SUPABASE_URL = status.API_URL;
-process.env.SUPABASE_ANON_KEY = status.ANON_KEY;
-process.env.SUPABASE_SERVICE_ROLE_KEY = status.SERVICE_ROLE_KEY;
-process.env.SUPABASE_JWKS_URL = `${status.API_URL}/auth/v1/.well-known/jwks.json`;
-process.env.SUPABASE_JWT_ISSUER = `${status.API_URL}/auth/v1`;
-process.env.SUPABASE_JWT_AUDIENCE = 'authenticated';
+const status = configureIntegrationEnv('8807');
 
 const { _resetEnvCacheForTests } = await import('../src/env');
 _resetEnvCacheForTests();
@@ -58,30 +22,7 @@ const app = buildApp();
 
 // --- helpers (same idiom as tenant-email-uniqueness.test.ts) ----------------
 
-interface ApiResp {
-  status: number;
-  body: unknown;
-}
-
-async function api(
-  method: string,
-  path: string,
-  opts: { token?: string; body?: unknown } = {},
-): Promise<ApiResp> {
-  const headers: Record<string, string> = { accept: 'application/json' };
-  if (opts.token) headers.authorization = `Bearer ${opts.token}`;
-  const mutating = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase());
-  if (mutating && path.startsWith('/v1/accounts/'))
-    headers['idempotency-key'] = `t-${crypto.randomUUID()}`;
-  let init: RequestInit = { method, headers };
-  if (opts.body !== undefined) {
-    headers['content-type'] = 'application/json';
-    init = { ...init, body: JSON.stringify(opts.body) };
-  }
-  const res = await app.fetch(new Request(`http://test${path}`, init));
-  const text = await res.text();
-  return { status: res.status, body: text ? JSON.parse(text) : null };
-}
+const api = createApiClient(app);
 
 async function pgrest(
   method: string,
@@ -103,33 +44,8 @@ async function pgrest(
   return { status: res.status, body: text ? JSON.parse(text) : null };
 }
 
-function rnd(): string {
-  return Math.random().toString(36).slice(2, 10);
-}
+const { check, failures } = createCheckHarness();
 
-interface Failure {
-  name: string;
-  detail: string;
-}
-const failures: Failure[] = [];
-async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try {
-    await fn();
-    console.info(`  PASS  ${name}`);
-  } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
-    failures.push({ name, detail });
-    console.error(`  FAIL  ${name}: ${detail}`);
-  }
-}
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
-function assertStatus(r: ApiResp, expected: number, ctx: string): void {
-  if (r.status !== expected) {
-    throw new Error(`${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`);
-  }
-}
 function errCode(r: ApiResp): string {
   return (r.body as { error?: { code?: string } })?.error?.code ?? '';
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* global console, process */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -42,12 +42,25 @@ const scripts = Object.keys(pkg.scripts)
   .sort();
 const missing = scripts.filter((name) => !classified.has(name));
 const stale = [...classified.keys()].filter((name) => !scripts.includes(name)).sort();
+// Vitest discovers *.spec.ts; each standalone *.test.ts needs a classified script.
+const testFiles = readdirSync(path.join(ROOT, 'api/test'), { recursive: true })
+  .filter((file) => file.endsWith('.test.ts'))
+  .map((file) => `test/${file.replaceAll(path.sep, '/')}`);
+const scriptFiles = scripts.flatMap((name) =>
+  [...pkg.scripts[name].matchAll(/\btest\/[^\s'";]+\.test\.ts\b/g)].map(([file]) => file),
+);
+const unregistered = testFiles.filter((file) => !scriptFiles.includes(file)).sort();
+const missingFiles = scriptFiles.filter((file) => !testFiles.includes(file)).sort();
 
-if (missing.length > 0 || stale.length > 0) {
+if (missing.length || stale.length || unregistered.length || missingFiles.length) {
   if (missing.length > 0)
     console.error(`FAIL: unclassified API test scripts: ${missing.join(', ')}`);
   if (stale.length > 0)
     console.error(`FAIL: manifest entries without package scripts: ${stale.join(', ')}`);
+  if (unregistered.length > 0)
+    console.error(`FAIL: API test files without package scripts: ${unregistered.join(', ')}`);
+  if (missingFiles.length > 0)
+    console.error(`FAIL: package scripts reference missing test files: ${missingFiles.join(', ')}`);
   console.error(
     'Classify each test as unit, integration, or manual in api/test/test-manifest.json.',
   );

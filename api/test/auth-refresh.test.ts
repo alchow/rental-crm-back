@@ -1,71 +1,19 @@
-// ----------------------------------------------------------------------------
-// POST /v1/auth/refresh regression test. Exercised against a real Supabase
-// stack (GoTrue token endpoint), in-process via buildApp() + app.fetch.
-//
-// WHY THIS EXISTS — prod incident 2026-07-17 (cross-account session cross-talk).
-// The refresh handler USED to call the shared anon supabase-js client's
-// refreshSession(). gotrue-js collapses every concurrent _callRefreshToken on
-// ONE client instance into a single in-flight promise, REGARDLESS of which
-// refresh_token each caller passed ("refreshing is already in progress" →
-// returns the winner's promise). This proxy serves many sessions at once — the
-// agent transport refreshes one session per granted account, and those all land
-// on the same tick because they were minted together at agent boot. Under the
-// shared client, N concurrent refreshes of N DIFFERENT refresh_tokens all got
-// the SAME winner's session, so every non-winning account received a token for
-// the wrong user and its calls 404'd under RLS. The fix (api/src/routes/auth.ts)
-// is a stateless fetch to GoTrue REST /auth/v1/token?grant_type=refresh_token —
-// no shared client state to collapse on. The refresh route previously had ZERO
-// direct coverage; this is that direct regression.
-//
-//   * Two fresh users signed up via the API; their two refresh_tokens are
-//     refreshed CONCURRENTLY (Promise.all). BOTH must 200, and each returned
-//     access_token's `sub` must match ITS OWN user id. Cross-talk (both subs
-//     identical, i.e. one winner) is the incident and FAILS the test. The two
-//     access_tokens must also differ.
-//   * A garbage refresh_token → 401 with error.code 'unauthenticated' (GoTrue
-//     4xx maps to a logout signal, not a retryable 503).
-// ----------------------------------------------------------------------------
+// Concurrent refreshes must return each caller's own session.
+// DATA FLOW: two users → two refresh tokens → concurrent refresh → distinct, correctly owned JWTs.
 
-import { execSync } from 'node:child_process';
+import {
+  configureIntegrationEnv,
+  createApiClient,
+  type ApiResponse as ApiResp,
+  createCheckHarness,
+  randomToken as rnd,
+  assertStatus,
+  assert,
+} from './helpers/integration';
 
-interface SupabaseStatus {
-  API_URL: string;
-  DB_URL: string;
-  ANON_KEY: string;
-  SERVICE_ROLE_KEY: string;
-}
+configureIntegrationEnv('8799');
 
-function readSupabaseStatus(): SupabaseStatus {
-  const out = execSync('supabase status --output env --workdir db', {
-    cwd: process.cwd().endsWith('/api') ? '..' : '.',
-    encoding: 'utf8',
-  });
-  const lines = out.split('\n');
-  const get = (k: string) => {
-    const line = lines.find((l) => l.startsWith(k + '='));
-    if (!line) throw new Error(`supabase status missing: ${k}`);
-    return line.slice(k.length + 1).replace(/^"|"$/g, '');
-  };
-  return {
-    API_URL: get('API_URL'),
-    DB_URL: get('DB_URL'),
-    ANON_KEY: get('ANON_KEY'),
-    SERVICE_ROLE_KEY: get('SERVICE_ROLE_KEY'),
-  };
-}
-
-const status = readSupabaseStatus();
-process.env.NODE_ENV = 'test';
-process.env.PORT = '8799';
-process.env.SUPABASE_URL = status.API_URL;
-process.env.SUPABASE_ANON_KEY = status.ANON_KEY;
-process.env.SUPABASE_SERVICE_ROLE_KEY = status.SERVICE_ROLE_KEY;
-process.env.SUPABASE_JWKS_URL = `${status.API_URL}/auth/v1/.well-known/jwks.json`;
-process.env.SUPABASE_JWT_ISSUER = `${status.API_URL}/auth/v1`;
-process.env.SUPABASE_JWT_AUDIENCE = 'authenticated';
-
-// Same boot ritual as accounts-branding.test.ts: reset the lazy singletons so
-// they snapshot the test env set above, THEN import buildApp.
+// Reset cached clients before loading the app with this suite's environment.
 const { _resetAdminClientForTests } = await import('../src/admin/supabase-admin');
 _resetAdminClientForTests();
 
@@ -79,53 +27,15 @@ const app = buildApp();
 
 // --- helpers ----------------------------------------------------------------
 
-interface ApiResp { status: number; body: unknown }
+const api = createApiClient(app);
 
-async function api(
-  method: string,
-  path: string,
-  opts: { token?: string; body?: unknown } = {},
-): Promise<ApiResp> {
-  const headers: Record<string, string> = { accept: 'application/json' };
-  if (opts.token) headers.authorization = `Bearer ${opts.token}`;
-  let init: RequestInit = { method, headers };
-  if (opts.body !== undefined) {
-    headers['content-type'] = 'application/json';
-    init = { ...init, body: JSON.stringify(opts.body) };
-  }
-  const res = await app.fetch(new Request(`http://test${path}`, init));
-  const text = await res.text();
-  return { status: res.status, body: text ? JSON.parse(text) : null };
-}
+const { check, failures } = createCheckHarness();
 
-function rnd(): string { return Math.random().toString(36).slice(2, 10); }
-
-interface Failure { name: string; detail: string }
-const failures: Failure[] = [];
-async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try { await fn(); console.info(`  PASS  ${name}`); }
-  catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
-    failures.push({ name, detail });
-    console.error(`  FAIL  ${name}: ${detail}`);
-  }
-}
-function assertStatus(r: ApiResp, expected: number, ctx: string): unknown {
-  if (r.status !== expected) throw new Error(
-    `${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`,
-  );
-  return r.body;
-}
 function errCode(r: ApiResp): string {
   return ((r.body as { error?: { code?: string } })?.error?.code) ?? '';
 }
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
 
-// Decode a JWT payload without verifying the signature — we only need the
-// `sub` claim to prove the refreshed session belongs to the right user. The
-// middle segment is base64url; Buffer handles the url-alphabet + padding.
+// Compare ownership claims; auth.spec.ts separately verifies JWT signatures.
 function jwtSub(accessToken: string): string {
   const seg = accessToken.split('.')[1];
   if (!seg) throw new Error(`not a JWT: ${accessToken.slice(0, 16)}…`);
@@ -138,9 +48,7 @@ function jwtSub(accessToken: string): string {
 interface Session { access_token: string; refresh_token: string }
 interface Signup { userId: string; refreshToken: string; email: string }
 
-// Sign a fresh user up via the public API and collect their session's
-// refresh_token (the harness pattern — the local stack has email confirmation
-// disabled, so signup returns a live session directly).
+// Local email confirmation is disabled, so signup returns a usable refresh token.
 async function signup(): Promise<Signup> {
   const email = `auth-refresh-${rnd()}@example.test`;
   const password = `correct-horse-${rnd()}`;
@@ -165,8 +73,7 @@ async function main(): Promise<void> {
     assert(a.userId !== b.userId, 'the two signups must be different users');
     assert(a.refreshToken !== b.refreshToken, 'the two refresh tokens must differ');
 
-    // Fire BOTH refreshes on the same tick — the exact shape that collapsed
-    // onto a single winner under the old shared-client refreshSession().
+    // Start both refreshes together to expose accidental sharing of an in-flight result.
     const [ra, rb] = await Promise.all([
       api('POST', '/v1/auth/refresh', { body: { refresh_token: a.refreshToken } }),
       api('POST', '/v1/auth/refresh', { body: { refresh_token: b.refreshToken } }),
@@ -178,7 +85,6 @@ async function main(): Promise<void> {
     const subA = jwtSub(ba.session.access_token);
     const subB = jwtSub(bb.session.access_token);
 
-    // The incident, precisely: cross-talk makes BOTH subs equal the winner's.
     assert(
       subA === a.userId,
       `session A belongs to the wrong user: sub=${subA} expected=${a.userId} (cross-talk: subB=${subB})`,
