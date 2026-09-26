@@ -141,7 +141,7 @@ async function main(): Promise<void> {
             'payload',     v_payload,
             'prev',        encode(v_prev, 'hex')
           );
-          v_hash := digest(v_canonical::text, 'sha256');
+          v_hash := extensions.digest(v_canonical::text, 'sha256');
           insert into public.events (
             account_id, account_seq, actor, entity_type, entity_id, event_type,
             payload, occurred_at, prev_event_hash, event_hash
