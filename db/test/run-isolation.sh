@@ -62,6 +62,9 @@ for f in $(ls "$MIGRATIONS"/*.sql | sort); do
 done
 shopt -u nullglob
 
+echo ">> check SECURITY DEFINER grants"
+run_sql "$DB/test/check_definer_grants.sql"
+
 echo ">> seed two-account fixture"
 run_sql "$SEED"
 
@@ -89,8 +92,15 @@ set -e
 docker exec -i "${CONTAINER}" psql -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 drop policy properties_leak on public.properties;
 create policy properties_member_all on public.properties
-  for all using (public.is_account_member(account_id))
-  with check (public.is_account_member(account_id));
+  for all
+  using (account_id in (
+    select m.account_id from public.account_members m
+    where m.user_id = (select auth.uid()) and m.deleted_at is null
+  ))
+  with check (account_id in (
+    select m.account_id from public.account_members m
+    where m.user_id = (select auth.uid()) and m.deleted_at is null
+  ));
 SQL
 
 if [ "$leak_rc" -eq 0 ]; then
