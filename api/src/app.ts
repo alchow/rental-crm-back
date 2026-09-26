@@ -76,56 +76,31 @@ export function usesLargeBodyLimit(path: string): boolean {
   return LARGE_BODY_PATH_RE.test(path);
 }
 
-// Configured Hono app; index.ts listens while tests call app.fetch directly.
-// SECURITY: Public routes are mounted outside the user stack; account routes
-// pass through auth and caller-scoped membership before handlers. RLS remains
-// the backstop, and lint quarantines admin-client construction to src/admin.
+// Tests use app.fetch; index.ts owns the listener.
+// SECURITY: Account routes share one JWT stack; token routes derive their own scope.
 export function buildApp(): OpenAPIHono {
-  // newApiApp wires the centralised validation-failure hook (zod errors ->
-  // the 400 envelope). Every sub-app comes from the same factory because
-  // defaultHook does not inherit across `.route()` mounts.
+  // Sub-apps need their own validation hook; Hono does not inherit it across mounts.
   const app = newApiApp();
 
-  // Fire-and-forget at boot: probe the hosted Storage HEIC rendition path.
-  // If it fails the probe logs a loud warning to
-  // stderr -- it does NOT throw, because non-HEIC workloads still work.
-  // The /healthz endpoint surfaces the result so an external monitor can
-  // alert on degraded evidence-rendering capability.
+  // Probe HEIC asynchronously; failure degrades /healthz without blocking other workloads.
   void assertImageStackAtBoot();
 
-  // Fire-and-forget at boot: the in-process job queue does not survive a
-  // restart, so evidence exports still queued/running -- and import sessions
-  // still parsing -- are unfinishable. Mark them failed with a retry message.
-  // Never throws (unit tests build the app with no DB configured).
+  // The in-process queue cannot resume after restart; mark orphaned jobs failed for retry.
   void recoverOrphanedEvidenceExports();
   void recoverOrphanedImportSessions();
 
-  // Correlation id + one summary log line per request, before everything
-  // else so even CORS-rejected and 413-rejected requests are visible.
+  // Log even CORS and body-limit rejections.
   app.use('*', requestId());
   app.use('*', requestLog());
 
-  // Mounted before any routes (incl. /v1/auth) so browser preflight
-  // (OPTIONS) requests are answered -- and Access-Control-Allow-Origin is
-  // set on actual responses -- for every endpoint, authenticated or not.
+  // CORS must handle preflight before authentication.
   app.use('*', corsMiddleware());
 
-  // Bound total in-app time below Render's ~30s edge timeout so a slow request
-  // becomes a typed, retryable 503 from the APP (carrying the error envelope)
-  // instead of a bodyless 503 synthesised by the edge. Mounted high -- below
-  // requestId/requestLog (so the 503 is logged with its `ms`) and cors, above
-  // the account stack -- so it covers every leg (auth, idempotency, downloads).
-  // It bounds server compute + the storage fetch, NOT client transfer time
-  // (see middleware/timeout.ts), so large mobile downloads are unaffected.
+  // Return a typed 503 before the edge timeout; streamed client transfer time is excluded.
   app.use('*', requestTimeout(25_000));
 
-  // Body-size guard, mounted on EVERYTHING (including the unauthenticated
-  // auth + intake legs -- those are exactly where an unbounded body is a
-  // memory-DoS). parseBody()/json() buffer the whole body before any
-  // application-level size check can run, so the cap must sit here in the
-  // middleware stack. Large upload/capture endpoints get headroom above their
-  // route-level caps (20 MiB files or 10 MiB decoded comm attachments);
-  // everything else is JSON and gets 1 MiB.
+  // Bound buffering before body parsing, including public routes. Uploads need
+  // headroom above their file limits; ordinary JSON requests get 1 MiB.
   const payloadTooLarge = (c: Context) =>
     c.json(
       { error: { code: 'payload_too_large', message: 'request body exceeds the allowed size' } },
@@ -137,29 +112,20 @@ export function buildApp(): OpenAPIHono {
     (usesLargeBodyLimit(c.req.path) ? uploadBodyLimit : defaultBodyLimit)(c, next),
   );
 
-  // Liveness probe: "the process is up", nothing more. No auth, no DB, no
-  // capability probes -- deliberately cheaper than /healthz so a keep-alive
-  // pinger (e.g. a scheduled curl to stop the host idling) doesn't trigger a
-  // DB round-trip on every hit. Use /healthz when you need dependency health.
+  // Keep liveness free of dependency checks; /healthz reports capabilities.
   app.get('/livez', (c) => c.text('ok'));
 
   app.get('/healthz', async (c) => {
     const heic = heicSupported();
     return c.json({
       status: 'ok',
-      // null = boot probe still pending. Thereafter this tracks the latest
-      // real HEVC Storage rendition, so request-time outage/recovery changes
-      // the signal instead of leaving a stale boot snapshot.
+      // null means the probe is pending; later renditions update this signal.
       capabilities: {
         heic_decode: heic,
-        // Onboarding import needs ANTHROPIC_API_KEY (LLM) + SUPABASE_DB_URL
-        // (executor), and the DB must actually answer (db_reachable -- cached
-        // live probe). Reported here so a monitor catches a misconfigured env
-        // instead of the user hitting a 502 on first preview.
+        // Report missing import configuration and cached database reachability.
         import: await importCapability(),
       },
-      // Last in-process daily job runs: null = not yet run since boot, ok null =
-      // running, {} = scheduler off. The only place a failed job shows besides logs.
+      // null = not run, ok: null = running, {} = scheduler disabled.
       jobs: jobStatus(),
     });
   });
@@ -171,15 +137,8 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', meRoutes);
   app.route('/v1', profileRoutes);
 
-  // ----- Account-scoped middleware stack ---------------------------------
-  // Mounted ONCE at the v1 level rather than per-resource-sub-app. With
-  // per-sub-app `.use('/accounts/:accountId/*', ...)` each sub-app's
-  // middleware fired for EVERY account-scoped URL, so an /areas POST would
-  // run propertiesApp's and areasApp's idempotency middleware in series and
-  // claim the same key twice. One mount = one execution.
-  //
-  // Order matters: auth -> membership -> principal -> immediate-parent
-  // (specific sub-paths only) -> idempotency.
+  // Mount once: auth -> membership -> principal -> immediate parent -> idempotency.
+  // Per-resource middleware mounts would claim the same idempotency key repeatedly.
 
   app.use(
     '/v1/accounts/:accountId/*',
@@ -188,9 +147,7 @@ export function buildApp(): OpenAPIHono {
     resolvePrincipal(),
   );
 
-  // Sub-resources whose URL has an extra path-parent (tenancyId / areaId)
-  // get an immediate-parent resolver scoped to that sub-path. The narrower
-  // pattern fires only when the URL actually has the additional segment.
+  // Resolve additional path parents before handlers or idempotency claims.
   app.use(
     '/v1/accounts/:accountId/tenancies/:tenancyId/*',
     requireImmediateParent({ table: 'tenancies', paramName: 'tenancyId' }),
@@ -200,13 +157,10 @@ export function buildApp(): OpenAPIHono {
     requireImmediateParent({ table: 'areas', paramName: 'areaId' }),
   );
 
-  // Idempotency last so a request that fails account-membership or
-  // immediate-parent doesn't even claim a key.
+  // Rejected account or parent scope must not claim a key.
   app.use('/v1/accounts/:accountId/*', requireIdempotency());
 
-  // Account-scoped sub-apps. They no longer carry their own `.use(...)`
-  // (the stack above handles it). They simply expose the OpenAPIHono
-  // routes; mounting at '/v1' inherits the v1-level middleware.
+  // Account routes inherit the single middleware stack above.
   app.route('/v1', accountsApp);
   app.route('/v1', propertiesApp);
   app.route('/v1', vendorsApp);
@@ -228,15 +182,12 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', rentRollupApp);
   app.route('/v1', rentAdjustmentsApp);
   app.route('/v1', eventsApp);
-  // Read-only, account-scoped, ranked search across all entity kinds.
   app.route('/v1', searchApp);
   app.route('/v1', intakeTokensApp);
   app.route('/v1', agentGrantsApp);
   app.route('/v1', maintenanceRequestsApp);
   app.route('/v1', interactionsApp);
-  // Communications ledger (threads, outbox, opt-outs, policies). Core owns
-  // the STATE only: the provider-calling transport lives in the agent repo
-  // and drives these endpoints; no provider SDK or webhook exists here.
+  // Core records communications state; external transport drives provider calls.
   app.route('/v1', commsApp);
   app.route('/v1', ownerPhoneApp);
   app.route('/v1', settingsApp);
@@ -248,32 +199,17 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', evidenceExportsApp);
   app.route('/v1', importsApp);
 
-  // PUBLIC, UNAUTHENTICATED. Lives in src/admin/ because it uses the
-  // service-role client (RLS is bypassed; the handler is the sole guard).
-  // Token verification + per-token + per-IP rate limits are inside the
-  // handler. Mounted OUTSIDE the v1-level auth/idempotency stack since
-  // it can't pass requireAuth (there is no JWT) and account-id comes from
-  // the verified token, not the URL.
+  // SECURITY: Public handlers derive scope from verified tokens and enforce rate limits.
   app.route('/v1', intakeApp);
   app.route('/v1', documentAccessApp);
   app.route('/v1', inspectionCaptureApp);
-  // PUBLIC email unsubscribe (CAN-SPAM / RFC 8058). No JWT: the signed HMAC
-  // token is the auth. Service-role work is quarantined in admin/unsubscribe.
+  // Unsubscribe authenticates with an HMAC token; privileged work stays in admin/.
   app.route('/v1', unsubscribeApp);
 
-  // ROOT-AUTHED agent token exchange (ADR-0009). In src/admin/ because
-  // it mints per-account sessions with the service-role client. Authenticated
-  // by the X-Agent-Secret header (a hashed bearer secret), NOT a user JWT --
-  // so, like intakeApp, it is mounted OUTSIDE the v1 account stack
-  // (/v1/agent/* never matches /v1/accounts/:accountId/*).
+  // Agent exchange uses X-Agent-Secret and per-account session minting (ADR-0009).
   app.route('/v1', agentTokensApp);
 
-  // Emitted OpenAPI document, served at runtime for clients that fetch the
-  // spec live (e.g. to regenerate a typed client). Post-processed through the
-  // SAME injector as the committed openapi/openapi.json (openapi/emit.ts), so
-  // the live spec and the file the SDK is generated from are byte-identical --
-  // in particular both declare the app-level Idempotency-Key contract that the
-  // per-route definitions can't express. Computed once, lazily, on first hit.
+  // Use the emitter's injectors so the live spec and generated SDK share one contract.
   let openApiDocument: ReturnType<typeof app.getOpenAPI31Document> | undefined;
   app.get('/openapi.json', (c) => {
     if (!openApiDocument) {
@@ -292,21 +228,14 @@ export function buildApp(): OpenAPIHono {
 
   app.onError((err, c) => {
     if (err instanceof ApiError) {
-      // Expected, route-thrown errors. Handlers throw these in lieu of
-      // returning typed error responses (which fight zod-openapi's response
-      // inference) so this is the single place error envelopes are formatted.
-      // A 503 is retryable -- tell the client when to come back. (5s is a
-      // conservative default; the header's presence matters more than the value.)
+      // Format route errors centrally; clients may retry a 503 after five seconds.
       if (err.status === 503) c.header('Retry-After', '5');
       return c.json(
         { error: { code: err.code, message: err.message, details: err.details } },
         err.status,
       );
     }
-    // A raw throw that reached here unwrapped (an undici socket error, a pg pool
-    // failure) is usually a transient dependency blip, not a code bug. Classify
-    // it as a retryable 503 so cold-start / brief-outage windows are recoverable
-    // by the client rather than surfacing as a hard 500.
+    // Classify known dependency failures as retryable; other exceptions remain 500s.
     const transient = classifyTransient(err);
     if (transient) {
       c.header('Retry-After', '5');

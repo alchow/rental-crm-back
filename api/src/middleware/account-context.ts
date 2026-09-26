@@ -28,15 +28,8 @@ function notFound(): Response {
   );
 }
 
-// Positive-hit TTL cache: saves one PostgREST round trip on
-// every account-scoped request. SAFE BY CONSTRUCTION: RLS is the actual
-// guard -- a stale entry cannot read or write anything the DB refuses, it
-// only delays the 404-on-revocation convenience by at most the TTL.
-// Negative results are NEVER cached (a just-added member must not be locked
-// out for the TTL). Bounded LRU eviction: on overflow the single oldest
-// (least-recently-used) entry is evicted — never the entire cache — so
-// multi-tenant agent fan-out cannot cause a thundering-herd cliff where one
-// overflow forces every concurrent request back to a PostgREST round trip.
+// Cache positive membership only; RLS still enforces current row access.
+// Bounded LRU eviction avoids clearing every account when the cache fills.
 const MEMBERSHIP_CACHE_MAX = 10_000;
 const membershipCache = createLruTtlCache<{ role: string }>(MEMBERSHIP_CACHE_MAX);
 
@@ -48,9 +41,7 @@ export function requireAccountMembership(): MiddlewareHandler {
   return async (c, next) => {
     const accountId = c.req.param('accountId');
     if (!accountId || !UUID_RE.test(accountId)) {
-      // Don't even hit the DB for garbage input. The 404 is intentional:
-      // an attacker probing for account ids gets no information about
-      // whether ids in the right shape exist.
+      // Use the same 404 for malformed, absent, and inaccessible accounts.
       return notFound();
     }
 
@@ -59,7 +50,6 @@ export function requireAccountMembership(): MiddlewareHandler {
     if (ttl > 0) {
       const hit = membershipCache.get(cacheKey);
       if (hit) {
-        // Cache enforces TTL internally; no manual expiresAt check needed.
         c.set('account', { accountId, role: hit.role });
         return next();
       }
@@ -80,8 +70,6 @@ export function requireAccountMembership(): MiddlewareHandler {
       );
     }
     if (!data) {
-      // RLS returned zero rows -- the caller is not a member of this
-      // account (or the account doesn't exist; we don't distinguish).
       return notFound();
     }
 
