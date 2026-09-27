@@ -36,6 +36,12 @@ describe('classifyTransient', () => {
 });
 
 describe('dbError', () => {
+  it('maps serialization failure to a retryable conflict', () => {
+    const e = dbError({ code: '40001', message: 'serialization failure' });
+    expect(e.status).toBe(409);
+    expect(e.code).toBe('conflict');
+  });
+
   it('upgrades a transient code to 503 service_unavailable (before the 42501 check)', () => {
     const e = dbError({ code: '57P03', message: 'the database system is starting up' });
     expect(e.status).toBe(503);

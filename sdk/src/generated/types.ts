@@ -7615,6 +7615,435 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/rent-adjustments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List rent-adjustment receipts newest first */
+        get: {
+            parameters: {
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    accountId: string;
+                    tenancyId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description receipt page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RentAdjustmentList"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Commit a reviewed lease correction or rent change
+         * @description Replans under lock and commits the adjustment, receipt, and idempotency outcome atomically.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    tenancyId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CommitRentAdjustmentBody"];
+                };
+            };
+            responses: {
+                /** @description durable receipt */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RentAdjustmentReceipt"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description adjustment_not_supported: the requested correction cannot be planned safely */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/rent-adjustments/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview a lease correction or rent change
+         * @description Read-only. Returns canonical financial effects and an opaque token for atomic commit.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    accountId: string;
+                    tenancyId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RentAdjustmentInput"];
+                };
+            };
+            responses: {
+                /** @description preview */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RentAdjustmentPreview"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description adjustment_not_supported: the requested correction cannot be planned safely */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/rent-adjustments/by-request-key/{requestKey}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Resolve an uncertain adjustment by request key */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    accountId: string;
+                    tenancyId: string;
+                    requestKey: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description receipt, or null if no durable adjustment exists */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RentAdjustmentRecovery"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/rent-adjustments/{adjustmentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a rent-adjustment receipt */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    accountId: string;
+                    tenancyId: string;
+                    adjustmentId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RentAdjustmentReceipt"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/accounts/{accountId}/events": {
         parameters: {
             query?: never;
@@ -18935,6 +19364,8 @@ export interface components {
                 source_schedule_id: string | null;
                 /** Format: uuid */
                 parent_charge_id?: string | null;
+                /** Format: uuid */
+                corrects_charge_id?: string | null;
                 /** @enum {string} */
                 source: "manual" | "rent_schedule";
                 created_at: string;
@@ -18964,6 +19395,8 @@ export interface components {
                     id: string;
                     /** Format: uuid */
                     charge_id: string;
+                    /** Format: uuid */
+                    corrects_allocation_id?: string | null;
                     amount_cents: number;
                     note: string | null;
                     voided_at: string | null;
@@ -19089,6 +19522,183 @@ export interface components {
             /** @description UTC date used to classify overdue, due-today, and upcoming balances. */
             as_of: string;
             data: components["schemas"]["RentRollupRow"][];
+        };
+        RentAdjustmentLeaseTerms: {
+            term_start: string;
+            term_end: string | null;
+            rent_amount_cents: number;
+            rent_currency: string;
+            deposit_amount_cents: number;
+            deposit_currency: string | null;
+        };
+        RentAdjustmentInput: {
+            /** @enum {string} */
+            kind: "edit_details";
+            /** Format: uuid */
+            lease_id: string;
+            terms: components["schemas"]["RentAdjustmentLeaseTerms"];
+            reason: string;
+        } | {
+            /** @enum {string} */
+            kind: "correct_rent";
+            /** Format: uuid */
+            lease_id: string;
+            terms: components["schemas"]["RentAdjustmentLeaseTerms"];
+            reason: string;
+            scope: {
+                schedules: {
+                    /** Format: uuid */
+                    schedule_id: string;
+                    start_date?: string;
+                    end_date?: string;
+                }[];
+                charges?: {
+                    /** Format: uuid */
+                    charge_id: string;
+                    amount_cents: number;
+                }[];
+            };
+        } | {
+            /** @enum {string} */
+            kind: "change_rent";
+            amount_cents: number;
+            currency: string;
+            effective_date: string;
+            due_day?: number;
+            source: {
+                /** @enum {string} */
+                kind: "existing_lease";
+                /** Format: uuid */
+                lease_id: string;
+            } | {
+                /** @enum {string} */
+                kind: "existing_notice";
+                /** Format: uuid */
+                notice_id: string;
+            } | {
+                /** @enum {string} */
+                kind: "new_lease";
+                terms: components["schemas"]["RentAdjustmentLeaseTerms"];
+                document?: {
+                    [key: string]: unknown;
+                };
+            } | {
+                /** @enum {string} */
+                kind: "new_notice";
+                notice_label: string;
+                /** Format: date-time */
+                served_at: string;
+                served_method?: string;
+                body?: string;
+                document?: {
+                    [key: string]: unknown;
+                };
+            };
+            details_correction?: {
+                /** Format: uuid */
+                lease_id: string;
+                terms: components["schemas"]["RentAdjustmentLeaseTerms"];
+                reason: string;
+            };
+            reason?: string;
+        };
+        RentAdjustmentPreview: {
+            /** @enum {string} */
+            kind: "edit_details" | "correct_rent" | "change_rent";
+            currency: string;
+            input: components["schemas"]["RentAdjustmentInput"];
+            lease: {
+                /** Format: uuid */
+                id: string;
+                before: components["schemas"]["RentAdjustmentLeaseTerms"];
+                after: components["schemas"]["RentAdjustmentLeaseTerms"];
+            } | null;
+            schedules: {
+                /** Format: uuid */
+                id: string;
+                start_date: string;
+                end_date: string | null;
+                due_day: number;
+                selected: boolean;
+                before_amount_cents: number;
+                after_amount_cents: number;
+            }[];
+            bills: {
+                /** Format: uuid */
+                id: string;
+                due_date: string;
+                after_due_date?: string | null;
+                period_start: string;
+                after_period_start?: string | null;
+                before_amount_cents: number;
+                after_amount_cents: number;
+                applied_cents: number;
+                carried_cents: number;
+                credit_cents: number;
+                balance_before_cents: number;
+                balance_after_cents: number;
+                /** @enum {string} */
+                action: "replace" | "void";
+            }[];
+            applications: {
+                /** Format: uuid */
+                id: string;
+                /** Format: uuid */
+                payment_id: string;
+                /** Format: uuid */
+                charge_id: string;
+                before_amount_cents: number;
+                after_amount_cents: number;
+            }[];
+            first_bill: {
+                due_date: string;
+                period_start: string;
+                amount_cents: number;
+            } | null;
+            totals: {
+                currency: string;
+                billed_before_cents: number;
+                billed_after_cents: number;
+                applied_before_cents: number;
+                applied_after_cents: number;
+                credit_released_cents: number;
+                balance_before_cents: number;
+                balance_after_cents: number;
+            }[];
+            blockers: {
+                code: string;
+                message: string;
+                field?: string;
+            }[];
+            information: string[];
+            preview_token: string;
+        };
+        RentAdjustmentReceipt: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "edit_details" | "correct_rent" | "change_rent";
+            created_at: string;
+            preview: components["schemas"]["RentAdjustmentPreview"];
+            /** Format: uuid */
+            replacement_lease_id: string | null;
+            /** Format: uuid */
+            source_lease_id: string | null;
+            /** Format: uuid */
+            source_notice_id: string | null;
+            schedule_ids: string[];
+            charge_ids: string[];
+        };
+        RentAdjustmentList: {
+            items: components["schemas"]["RentAdjustmentReceipt"][];
+            next_cursor: string | null;
+        };
+        CommitRentAdjustmentBody: {
+            input: components["schemas"]["RentAdjustmentInput"];
+            preview_token: string;
+        };
+        RentAdjustmentRecovery: {
+            receipt: components["schemas"]["RentAdjustmentReceipt"] | null;
         };
         EventFeedItem: {
             account_seq: number;

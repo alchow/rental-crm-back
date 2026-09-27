@@ -117,6 +117,8 @@ const NO_SEED_REQUIRED = new Set([
   // still get the cross-tenant == 0 isolation check.
   'inbound_provenance',
   'account_legal_holds',
+  // Atomic rent-correction receipts are created only by the correction RPC.
+  'rent_adjustments',
 ]);
 
 interface ColumnInfo {

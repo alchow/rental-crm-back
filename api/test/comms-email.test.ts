@@ -1,66 +1,20 @@
-// ----------------------------------------------------------------------------
-// Comms email-channel slice-1 integration tests (work item E1-A, core side).
-//
-// The email channel reuses the whole outbox->complete pipeline; this slice adds
-// only what email needs that sms didn't. Exercised against a real Supabase
-// stack, alongside the existing sms/group surface:
-//   * comm_outbox.subject: email-only (1..998), frozen at intent time, echoed
-//     on create + read; an sms row with a subject is rejected (400).
-//   * the full send cycle for email: claim (sending) -> complete (resend) ->
-//     the journal records the honest content 'Subject: <s>\n\n<body>', channel
-//     'email', direction 'outbound'.
-//   * system:<flow> provenance is fenced to core's service tier: an API caller
-//     (agent 403, landlord 4xx) can never mint one, and a raw-PostgREST forge
-//     with author_type='system' is rejected by the capacity trigger.
-//   * HMAC unsubscribe (public, no auth, RFC 8058 one-click): POST parks the
-//     queued intent (undeliverable/opted_out) + refuses new sends (422),
-//     GET registers + returns the confirmation page, POST replay is idempotent,
-//     tampered / garbage tokens 404.
-//   * dispatch-scan channel filter: ?channel=email|sms partitions the queue.
-//   * the inspection-capture renewal email (rides the comms ledger
-//     unconditionally): the renewal writes a system:capture_renewal email intent
-//     to the tenant's on-file address, and an opt-out on that address suppresses
-//     the write (logged, not thrown) while the route stays a uniform 202.
-// ----------------------------------------------------------------------------
+// Email intents freeze their subject and recipients before provider completion.
+// SECURITY: Only the service tier may mint system provenance; raw JWT writes test the DB boundary.
+// Unsubscribe suppresses sends, including capture-renewal intents.
 
-import { execSync } from 'node:child_process';
+import {
+  configureIntegrationEnv,
+  createApiClient,
+  type ApiResponse as ApiResp,
+  createCheckHarness,
+  randomToken as rnd,
+  assertStatus,
+  assert,
+} from './helpers/integration';
 import { createHmac } from 'node:crypto';
 
-interface SupabaseStatus {
-  API_URL: string;
-  DB_URL: string;
-  ANON_KEY: string;
-  SERVICE_ROLE_KEY: string;
-}
+const status = configureIntegrationEnv('8797');
 
-function readSupabaseStatus(): SupabaseStatus {
-  const out = execSync('supabase status --output env --workdir db', {
-    cwd: process.cwd().endsWith('/api') ? '..' : '.',
-    encoding: 'utf8',
-  });
-  const lines = out.split('\n');
-  const get = (k: string) => {
-    const line = lines.find((l) => l.startsWith(k + '='));
-    if (!line) throw new Error(`supabase status missing: ${k}`);
-    return line.slice(k.length + 1).replace(/^"|"$/g, '');
-  };
-  return {
-    API_URL: get('API_URL'),
-    DB_URL: get('DB_URL'),
-    ANON_KEY: get('ANON_KEY'),
-    SERVICE_ROLE_KEY: get('SERVICE_ROLE_KEY'),
-  };
-}
-
-const status = readSupabaseStatus();
-process.env.NODE_ENV = 'test';
-process.env.PORT = '8797';
-process.env.SUPABASE_URL = status.API_URL;
-process.env.SUPABASE_ANON_KEY = status.ANON_KEY;
-process.env.SUPABASE_SERVICE_ROLE_KEY = status.SERVICE_ROLE_KEY;
-process.env.SUPABASE_JWKS_URL = `${status.API_URL}/auth/v1/.well-known/jwks.json`;
-process.env.SUPABASE_JWT_ISSUER = `${status.API_URL}/auth/v1`;
-process.env.SUPABASE_JWT_AUDIENCE = 'authenticated';
 // E1-A: the HMAC unsubscribe secret (mint + verify must share it) must be set
 // at BOOT, before the env/app modules snapshot it.
 // Deliberately repetitive (low-entropy) so the gitleaks pre-commit scan
@@ -95,30 +49,7 @@ const app = buildApp();
 
 // --- helpers ----------------------------------------------------------------
 
-interface ApiResp { status: number; body: unknown; headers: Record<string, string> }
-
-async function api(
-  method: string,
-  path: string,
-  opts: { token?: string; body?: unknown; idempotencyKey?: string } = {},
-): Promise<ApiResp> {
-  const headers: Record<string, string> = { accept: 'application/json' };
-  if (opts.token) headers.authorization = `Bearer ${opts.token}`;
-  const mutating = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase());
-  if (mutating && path.startsWith('/v1/accounts/')) {
-    headers['idempotency-key'] = opts.idempotencyKey ?? `t-${crypto.randomUUID()}`;
-  }
-  let init: RequestInit = { method, headers };
-  if (opts.body !== undefined) {
-    headers['content-type'] = 'application/json';
-    init = { ...init, body: JSON.stringify(opts.body) };
-  }
-  const res = await app.fetch(new Request(`http://test${path}`, init));
-  const responseHeaders: Record<string, string> = {};
-  res.headers.forEach((v, k) => { responseHeaders[k] = v; });
-  const text = await res.text();
-  return { status: res.status, body: text ? JSON.parse(text) : null, headers: responseHeaders };
-}
+const api = createApiClient(app);
 
 // Raw response (no JSON.parse) — the unsubscribe GET returns an HTML page.
 async function raw(
@@ -134,30 +65,12 @@ async function raw(
   };
 }
 
-function rnd(): string { return Math.random().toString(36).slice(2, 10); }
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-interface Failure { name: string; detail: string }
-const failures: Failure[] = [];
-async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try { await fn(); console.info(`  PASS  ${name}`); }
-  catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
-    failures.push({ name, detail });
-    console.error(`  FAIL  ${name}: ${detail}`);
-  }
-}
-function assertStatus(r: ApiResp, expected: number, ctx: string): unknown {
-  if (r.status !== expected) throw new Error(
-    `${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`,
-  );
-  return r.body;
-}
+const { check, failures } = createCheckHarness();
+
 function errCode(r: ApiResp): string {
   return ((r.body as { error?: { code?: string } })?.error?.code) ?? '';
-}
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
 }
 
 async function login(email: string, password: string): Promise<string> {
@@ -377,7 +290,9 @@ async function main(): Promise<void> {
       approval_ref: 'system:forge',
       author_type: 'system',
     });
-    assert(r.status >= 400, `forged system row accepted: ${r.status} ${JSON.stringify(r.body)}`);
+    const error = assertStatus(r, 400, 'forged system row') as { code: string; message: string };
+    assert(error.code === '23514', `expected check violation: ${JSON.stringify(error)}`);
+    assert(error.message === 'system provenance is reserved for core-originated sends', error.message);
   });
 
   // =========================================================================

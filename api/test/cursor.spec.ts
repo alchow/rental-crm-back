@@ -1,6 +1,3 @@
-// Unit spec for keysetPage ascending vs descending (Theme 4). Drives a stub of
-// the supabase query-builder slice the helper uses -- no env, no DB.
-
 import { describe, expect, it } from 'vitest';
 import { decodeCursor, encodeCursor, keysetPage, type KeysetQuery } from '../src/routes/_lib/cursor';
 
@@ -12,12 +9,13 @@ interface Row extends Record<string, unknown> {
 interface Recorded {
   or: string[];
   orders: Array<{ column: string; ascending: boolean }>;
+  limits: number[];
 }
 
 // Records the .or() filter strings and .order() flags, then resolves to a fixed
 // page. Cast to KeysetQuery because we only implement the slice keysetPage uses.
 function stub(rows: Row[]): { q: KeysetQuery; calls: Recorded } {
-  const calls: Recorded = { or: [], orders: [] };
+  const calls: Recorded = { or: [], orders: [], limits: [] };
   const q = {
     or(f: string) {
       calls.or.push(f);
@@ -27,7 +25,8 @@ function stub(rows: Row[]): { q: KeysetQuery; calls: Recorded } {
       calls.orders.push({ column, ascending: opts.ascending });
       return q;
     },
-    limit(_n: number) {
+    limit(n: number) {
+      calls.limits.push(n);
       return q;
     },
     then(onfulfilled: (v: { data: unknown[]; error: null }) => unknown) {
@@ -59,6 +58,7 @@ describe('keysetPage', () => {
     expect(calls.or[0]).toContain('created_at.gt.');
     expect(calls.or[0]).toContain('id.gt.');
     expect(page.items).toHaveLength(2);
+    expect(calls.limits).toEqual([3]);
     expect(page.next_cursor).not.toBeNull();
     expect(decodeCursor(page.next_cursor as string)?.id).toBe(rows[1]!.id);
   });
@@ -79,6 +79,7 @@ describe('keysetPage', () => {
     expect(calls.or[0]).toContain('id.lt.');
     expect(page.items).toHaveLength(2);
     expect(page.next_cursor).toBeNull();
+    expect(calls.limits).toEqual([6]);
   });
 
   it('honours a custom keyset column', async () => {

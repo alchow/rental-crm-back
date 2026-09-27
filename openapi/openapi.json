@@ -4158,6 +4158,13 @@
                       ],
                       "format": "uuid"
                     },
+                    "corrects_charge_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
                     "source": {
                       "type": "string",
                       "enum": [
@@ -4274,6 +4281,13 @@
                           },
                           "charge_id": {
                             "type": "string",
+                            "format": "uuid"
+                          },
+                          "corrects_allocation_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
                             "format": "uuid"
                           },
                           "amount_cents": {
@@ -4736,6 +4750,789 @@
         "required": [
           "as_of",
           "data"
+        ]
+      },
+      "RentAdjustmentLeaseTerms": {
+        "type": "object",
+        "properties": {
+          "term_start": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "term_end": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "rent_amount_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "rent_currency": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 3
+          },
+          "deposit_amount_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "deposit_currency": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 3,
+            "maxLength": 3
+          }
+        },
+        "required": [
+          "term_start",
+          "term_end",
+          "rent_amount_cents",
+          "rent_currency",
+          "deposit_amount_cents",
+          "deposit_currency"
+        ],
+        "additionalProperties": false
+      },
+      "RentAdjustmentInput": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "edit_details"
+                ]
+              },
+              "lease_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "terms": {
+                "$ref": "#/components/schemas/RentAdjustmentLeaseTerms"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "required": [
+              "kind",
+              "lease_id",
+              "terms",
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "correct_rent"
+                ]
+              },
+              "lease_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "terms": {
+                "$ref": "#/components/schemas/RentAdjustmentLeaseTerms"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "scope": {
+                "type": "object",
+                "properties": {
+                  "schedules": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "schedule_id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "start_date": {
+                          "type": "string",
+                          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                        },
+                        "end_date": {
+                          "type": "string",
+                          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                        }
+                      },
+                      "required": [
+                        "schedule_id"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "charges": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "charge_id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "amount_cents": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "charge_id",
+                        "amount_cents"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "schedules"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "kind",
+              "lease_id",
+              "terms",
+              "reason",
+              "scope"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "change_rent"
+                ]
+              },
+              "amount_cents": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "currency": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 3
+              },
+              "effective_date": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+              },
+              "due_day": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 28
+              },
+              "source": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "existing_lease"
+                        ]
+                      },
+                      "lease_id": {
+                        "type": "string",
+                        "format": "uuid"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "lease_id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "existing_notice"
+                        ]
+                      },
+                      "notice_id": {
+                        "type": "string",
+                        "format": "uuid"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "notice_id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "new_lease"
+                        ]
+                      },
+                      "terms": {
+                        "$ref": "#/components/schemas/RentAdjustmentLeaseTerms"
+                      },
+                      "document": {
+                        "type": "object",
+                        "additionalProperties": {}
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "terms"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "new_notice"
+                        ]
+                      },
+                      "notice_label": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100
+                      },
+                      "served_at": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "served_method": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100
+                      },
+                      "body": {
+                        "type": "string",
+                        "maxLength": 10000
+                      },
+                      "document": {
+                        "type": "object",
+                        "additionalProperties": {}
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "notice_label",
+                      "served_at"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "details_correction": {
+                "type": "object",
+                "properties": {
+                  "lease_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "terms": {
+                    "$ref": "#/components/schemas/RentAdjustmentLeaseTerms"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "lease_id",
+                  "terms",
+                  "reason"
+                ],
+                "additionalProperties": false
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "required": [
+              "kind",
+              "amount_cents",
+              "currency",
+              "effective_date",
+              "source"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "RentAdjustmentPreview": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "edit_details",
+              "correct_rent",
+              "change_rent"
+            ]
+          },
+          "currency": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 3
+          },
+          "input": {
+            "$ref": "#/components/schemas/RentAdjustmentInput"
+          },
+          "lease": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "before": {
+                "$ref": "#/components/schemas/RentAdjustmentLeaseTerms"
+              },
+              "after": {
+                "$ref": "#/components/schemas/RentAdjustmentLeaseTerms"
+              }
+            },
+            "required": [
+              "id",
+              "before",
+              "after"
+            ]
+          },
+          "schedules": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "start_date": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                "end_date": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                "due_day": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 28
+                },
+                "selected": {
+                  "type": "boolean"
+                },
+                "before_amount_cents": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "after_amount_cents": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "id",
+                "start_date",
+                "end_date",
+                "due_day",
+                "selected",
+                "before_amount_cents",
+                "after_amount_cents"
+              ]
+            }
+          },
+          "bills": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "due_date": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                "after_due_date": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                "period_start": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                "after_period_start": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                "before_amount_cents": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "after_amount_cents": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "applied_cents": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "carried_cents": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "credit_cents": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "balance_before_cents": {
+                  "type": "integer"
+                },
+                "balance_after_cents": {
+                  "type": "integer"
+                },
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "replace",
+                    "void"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "due_date",
+                "period_start",
+                "before_amount_cents",
+                "after_amount_cents",
+                "applied_cents",
+                "carried_cents",
+                "credit_cents",
+                "balance_before_cents",
+                "balance_after_cents",
+                "action"
+              ]
+            }
+          },
+          "applications": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "payment_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "charge_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "before_amount_cents": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "after_amount_cents": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "id",
+                "payment_id",
+                "charge_id",
+                "before_amount_cents",
+                "after_amount_cents"
+              ]
+            }
+          },
+          "first_bill": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "due_date": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+              },
+              "period_start": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+              },
+              "amount_cents": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "due_date",
+              "period_start",
+              "amount_cents"
+            ]
+          },
+          "totals": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "currency": {
+                  "type": "string",
+                  "minLength": 3,
+                  "maxLength": 3
+                },
+                "billed_before_cents": {
+                  "type": "integer"
+                },
+                "billed_after_cents": {
+                  "type": "integer"
+                },
+                "applied_before_cents": {
+                  "type": "integer"
+                },
+                "applied_after_cents": {
+                  "type": "integer"
+                },
+                "credit_released_cents": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "balance_before_cents": {
+                  "type": "integer"
+                },
+                "balance_after_cents": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "currency",
+                "billed_before_cents",
+                "billed_after_cents",
+                "applied_before_cents",
+                "applied_after_cents",
+                "credit_released_cents",
+                "balance_before_cents",
+                "balance_after_cents"
+              ]
+            }
+          },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "field": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message"
+              ]
+            }
+          },
+          "information": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "preview_token": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "kind",
+          "currency",
+          "input",
+          "lease",
+          "schedules",
+          "bills",
+          "applications",
+          "first_bill",
+          "totals",
+          "blockers",
+          "information",
+          "preview_token"
+        ]
+      },
+      "RentAdjustmentReceipt": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "edit_details",
+              "correct_rent",
+              "change_rent"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "preview": {
+            "$ref": "#/components/schemas/RentAdjustmentPreview"
+          },
+          "replacement_lease_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "source_lease_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "source_notice_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "schedule_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "charge_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "created_at",
+          "preview",
+          "replacement_lease_id",
+          "source_lease_id",
+          "source_notice_id",
+          "schedule_ids",
+          "charge_ids"
+        ]
+      },
+      "RentAdjustmentList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RentAdjustmentReceipt"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ]
+      },
+      "CommitRentAdjustmentBody": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "$ref": "#/components/schemas/RentAdjustmentInput"
+          },
+          "preview_token": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "input",
+          "preview_token"
+        ],
+        "additionalProperties": false
+      },
+      "RentAdjustmentRecovery": {
+        "type": "object",
+        "properties": {
+          "receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RentAdjustmentReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "receipt"
         ]
       },
       "EventFeedItem": {
@@ -22708,6 +23505,571 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RentRollupResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/rent-adjustments": {
+      "get": {
+        "tags": [
+          "rent-adjustments"
+        ],
+        "summary": "List rent-adjustment receipts newest first",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "tenancyId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 100,
+              "default": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "receipt page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RentAdjustmentList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "rent-adjustments"
+        ],
+        "summary": "Commit a reviewed lease correction or rent change",
+        "description": "Replans under lock and commits the adjustment, receipt, and idempotency outcome atomically.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "tenancyId",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommitRentAdjustmentBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "durable receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RentAdjustmentReceipt"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "adjustment_not_supported: the requested correction cannot be planned safely",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/rent-adjustments/preview": {
+      "post": {
+        "tags": [
+          "rent-adjustments"
+        ],
+        "summary": "Preview a lease correction or rent change",
+        "description": "Read-only. Returns canonical financial effects and an opaque token for atomic commit.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "tenancyId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RentAdjustmentInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "preview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RentAdjustmentPreview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "adjustment_not_supported: the requested correction cannot be planned safely",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/rent-adjustments/by-request-key/{requestKey}": {
+      "get": {
+        "tags": [
+          "rent-adjustments"
+        ],
+        "summary": "Resolve an uncertain adjustment by request key",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "tenancyId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            },
+            "required": true,
+            "name": "requestKey",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "receipt, or null if no durable adjustment exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RentAdjustmentRecovery"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/rent-adjustments/{adjustmentId}": {
+      "get": {
+        "tags": [
+          "rent-adjustments"
+        ],
+        "summary": "Read a rent-adjustment receipt",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "tenancyId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "adjustmentId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RentAdjustmentReceipt"
                 }
               }
             }

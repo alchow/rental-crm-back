@@ -50,6 +50,9 @@ DECLARE
   violations   text[] := '{}';
   allowlist    text[] := ARRAY[
     'create_account_for_new_user',
+    -- Rent adjustments verify auth.uid() plus live account membership before
+    -- the role-owned atomic correction writes any tenancy-scoped row.
+    'commit_rent_adjustment',
     'create_payment_with_allocations',
     'set_owner_phone_verified',
     'is_approver_member',

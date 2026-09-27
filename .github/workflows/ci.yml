@@ -166,6 +166,9 @@ jobs:
         # is idempotent, and honours the interval parameter (service-role-only).
         run: pnpm --filter ./db test:comms-retention
 
+      - name: Run rent-adjustment concurrency checks
+        run: pnpm --filter ./db test:rent-adjustment-concurrency
+
   integration:
     # Higher-fidelity tier: real GoTrue token issuance + real PostgREST claim
     # handling. This is the test that catches drift between our hand-minted
@@ -208,9 +211,7 @@ jobs:
         run: pnpm check:db-generated
 
       - name: Run classified API integration suite
-        # api/test/test-manifest.json is the source of truth. A fast preflight
-        # guard fails if a new test:* script is not classified, so CI cannot
-        # silently omit a newly added integration suite.
+        # The manifest guard checks both standalone test files and their classified scripts.
         run: pnpm --filter ./api ci:integration
 
       - name: Stop Supabase stack

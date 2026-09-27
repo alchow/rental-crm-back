@@ -1,13 +1,7 @@
 import { z } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 
-/**
- * Format a zod validation failure as the standard envelope. Every OpenAPIHono
- * `defaultHook` (the root app's and any sub-app's) should delegate here --
- * hooks do NOT inherit across `.route()` mounts, so a sub-app constructed
- * without one answers validation failures in zod-openapi's default shape
- * instead of ours.
- */
+/** Shared validation envelope; each app installs its own hook through newApiApp. */
 export function validationFailure(c: Context, error: { flatten(): unknown }): Response {
   return c.json(
     {
@@ -86,6 +80,9 @@ export type ErrorCode =
   // Atomic inspection setup used an older template schema hash. Refresh and
   // review the Create-screen scratchpad before submitting it again.
   | 'template_changed'
+  | 'preview_stale'
+  | 'adjustment_scope_required'
+  | 'adjustment_not_supported'
   // correcting/retracting an interaction that is not the current head of
   // its chain (already superseded, or the chain is closed by a retraction)
   | 'invalid_correction_target'
@@ -220,19 +217,8 @@ export function classifyTransient(e: unknown): ApiError | null {
   return null;
 }
 
-/**
- * The deploy-window signature: code naming a column or function the database
- * does not have yet. PostgREST answers PGRST204 (column missing from the schema
- * cache) or PGRST202 (no such function). Schema-first is the deploy policy, but
- * applying a production migration is a MANUAL step, so between merge and apply
- * this is expected and temporary -- a retryable 503 is the honest answer, where
- * a 500 database_error reads as "the server is broken" and sends an operator
- * hunting a fault that does not exist.
- *
- * Deliberately narrow: these two codes only, and called only from the write
- * paths that name columns a pending migration adds. Applied blanket it would
- * dress a genuine "this column will never exist" bug up as a transient blip.
- */
+/** Use only for paths expecting a pending migration: missing functions/columns
+ * become retryable 503s. Blanket use would hide permanent schema mistakes. */
 export function schemaCacheMiss(error: { code?: string }): ApiError | null {
   if (error.code === 'PGRST202' || error.code === 'PGRST204') {
     return new ApiError(
@@ -244,17 +230,11 @@ export function schemaCacheMiss(error: { code?: string }): ApiError | null {
   return null;
 }
 
-/**
- * Map a PostgREST/Postgres write error to an ApiError. Use on user-scoped
- * write paths where a blanket 500 would mask an authorization outcome: a row
- * RLS refuses surfaces as Postgres 42501 (insufficient_privilege) -- map it to
- * a clean 403 rather than 500. This closes the ADR-0009 window where a
- * just-revoked agent still passes the cached membership
- * middleware but the live RLS check denies the write. A transient dependency
- * blip surfaces as a retryable 503. Unrecognised codes keep the generic
- * database_error 500.
- */
+/** Map write failures to concurrency 409, RLS 403, dependency 503, or database 500. */
 export function dbError(error: { code?: string; message: string }): ApiError {
+  if (error.code === '40001') {
+    return new ApiError(409, 'conflict', 'the tenancy changed concurrently; retry this request');
+  }
   const transient = classifyTransient(error);
   if (transient) return transient;
   if (error.code === '42501') {
@@ -263,21 +243,8 @@ export function dbError(error: { code?: string; message: string }): ApiError {
   return new ApiError(500, 'database_error', error.message);
 }
 
-/**
- * The one home for the RPC error ladder. Domain RPCs RAISE with a stable
- * prefix on the message -- `not_found:` / `conflict:` / `invalid:` -- and this
- * maps prefix -> status, strips the prefix, and resolves fine-grained 409
- * codes from the caller's regex table (branch-on-code-never-message, per the
- * FE contract; the route's integration suite pins each pairing so a reworded
- * RAISE fails loudly there).
- *
- * DATA FLOW: RPC RAISE -> prefix map -> conflict-code table -> SQLSTATE
- * fallbacks (CHECK/cast violations that slipped past pre-validation are still
- * the CALLER's malformed input -> 400; duplicate key -> 409; then dbError for
- * 42501/transient/500). Before this helper each RPC route carried its own
- * diverging copy, so the same DB condition could be a clean 4xx on one money
- * route and a 500 on its sibling.
- */
+/** DATA FLOW: RPC message prefix -> domain conflict code -> SQLSTATE fallback.
+ * Keep domain regexes aligned with RPC messages; integration tests pin the mapping. */
 export function mapPrefixedRpcError(
   error: { code?: string; message?: string },
   conflictCodes: ReadonlyArray<readonly [RegExp, ErrorCode]> = [],

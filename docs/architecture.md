@@ -189,6 +189,12 @@ curated and its endpoint-table check is intentionally guide-to-spec only.
 
 ## Database Pipeline
 
+Reviewed rent changes and corrections use one database planner for preview and
+atomic commit, with immutable receipts and stable-key recovery. Money remains
+integer cents; payment applications are replaced without rewriting cash receipts.
+The shared tenancy writer lock also governs generation and direct-write guards.
+See [ADR-0016](adr/0016-reviewed-rent-adjustments.md).
+
 ```text
 forward-only migrations
   -> fully migrated local database

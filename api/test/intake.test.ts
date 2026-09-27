@@ -22,44 +22,14 @@
 // because the audit trigger sets actor from the live request GUC.
 // ----------------------------------------------------------------------------
 
-import { execSync } from 'node:child_process';
+import {
+  configureIntegrationEnv,
+  createCheckHarness,
+  randomToken as rnd,
+  assertStatus,
+} from './helpers/integration';
 
-interface SupabaseStatus {
-  API_URL: string;
-  DB_URL: string;
-  ANON_KEY: string;
-  SERVICE_ROLE_KEY: string;
-}
-
-function readSupabaseStatus(): SupabaseStatus {
-  const out = execSync('supabase status --output env --workdir db', {
-    cwd: process.cwd().endsWith('/api') ? '..' : '.',
-    encoding: 'utf8',
-  });
-  const lines = out.split('\n');
-  const get = (k: string) => {
-    const line = lines.find((l) => l.startsWith(k + '='));
-    if (!line) throw new Error(`supabase status missing: ${k}`);
-    return line.slice(k.length + 1).replace(/^"|"$/g, '');
-  };
-  return {
-    API_URL: get('API_URL'),
-    DB_URL: get('DB_URL'),
-    ANON_KEY: get('ANON_KEY'),
-    SERVICE_ROLE_KEY: get('SERVICE_ROLE_KEY'),
-  };
-}
-
-const status = readSupabaseStatus();
-
-process.env.NODE_ENV = 'test';
-process.env.PORT = '8787';
-process.env.SUPABASE_URL = status.API_URL;
-process.env.SUPABASE_ANON_KEY = status.ANON_KEY;
-process.env.SUPABASE_SERVICE_ROLE_KEY = status.SERVICE_ROLE_KEY;
-process.env.SUPABASE_JWKS_URL = `${status.API_URL}/auth/v1/.well-known/jwks.json`;
-process.env.SUPABASE_JWT_ISSUER = `${status.API_URL}/auth/v1`;
-process.env.SUPABASE_JWT_AUDIENCE = 'authenticated';
+const status = configureIntegrationEnv('8787');
 
 const { _resetEnvCacheForTests } = await import('../src/env');
 _resetEnvCacheForTests();
@@ -100,10 +70,6 @@ async function api(
   const text = await res.text();
   const body = text ? JSON.parse(text) : null;
   return { status: res.status, body };
-}
-
-function rnd(): string {
-  return Math.random().toString(36).slice(2, 10);
 }
 
 interface UserFixture {
@@ -192,31 +158,7 @@ async function submitIntake(
   return api('POST', `/v1/intake/${tokenSecret}`, { body });
 }
 
-interface Failure {
-  name: string;
-  detail: string;
-}
-const failures: Failure[] = [];
-
-async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try {
-    await fn();
-    console.info(`  PASS  ${name}`);
-  } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
-    failures.push({ name, detail });
-    console.error(`  FAIL  ${name}: ${detail}`);
-  }
-}
-
-function assertStatus(r: ApiCall, expected: number, ctx: string): unknown {
-  if (r.status !== expected) {
-    throw new Error(
-      `${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`,
-    );
-  }
-  return r.body;
-}
+const { check, failures } = createCheckHarness();
 
 // --- tests ------------------------------------------------------------------
 

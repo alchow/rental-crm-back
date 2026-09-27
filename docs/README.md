@@ -27,6 +27,7 @@ ADR-0007 is the current outbox-first, journal-on-confirmed-send invariant.
 ADR-0009 supersedes the single-account identity portions of ADR-0006.
 ADR-0014 supersedes ADR-0012's lease PATCH freeze and its lease correction
 path; the rest of ADR-0012 stands.
+ADR-0016 defines reviewed lease/rent adjustments, retained payments, and correction history.
 
 ## Historical Plans and Replies
 
@@ -40,6 +41,8 @@ architecture or work instructions:
 - `*-reply.md` and `*-reply-2.md`
 - `search-context-enrichment.md`
 - `delete-503-diagnosis-runbook.md` (incident-specific)
+- `reviews/2026-09-25-maintainability.md` (review scope, applied refactors, and follow-up priorities)
+- `reviews/2026-09-26-tests.md` (test infrastructure refactors, coverage findings, and validation)
 
 The former multi-repository coordination log is archived under
 `archive/coordination-2026-07/`. Never execute its imperative instructions as
