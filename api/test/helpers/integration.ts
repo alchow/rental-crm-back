@@ -1,4 +1,5 @@
 import { execSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 export interface SupabaseStatus {
   API_URL: string;
@@ -8,8 +9,8 @@ export interface SupabaseStatus {
 }
 
 export function readSupabaseStatus(): SupabaseStatus {
-  const output = execSync('supabase status --output env --workdir db', {
-    cwd: process.cwd().endsWith('/api') ? '..' : '.',
+  const output = execSync('supabase status --output env', {
+    cwd: fileURLToPath(new URL('../../../db/', import.meta.url)),
     encoding: 'utf8',
   });
   const values = new Map<string, string>();
@@ -59,8 +60,10 @@ export interface ApiRequestOptions {
   token?: string;
   body?: unknown;
   multipart?: FormData;
-  idempotencyKey?: string;
+  /** null leaves the key absent for middleware rejection tests. */
+  idempotencyKey?: string | null;
   headers?: Record<string, string>;
+  responseType?: 'json' | 'bytes';
 }
 
 interface FetchApp {
@@ -79,7 +82,7 @@ export function createApiClient(app: FetchApp) {
     };
     if (options.token) headers.authorization = `Bearer ${options.token}`;
     const mutating = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase());
-    if (mutating && path.startsWith('/v1/accounts/')) {
+    if (mutating && path.startsWith('/v1/accounts/') && options.idempotencyKey !== null) {
       headers['idempotency-key'] = options.idempotencyKey ?? `t-${crypto.randomUUID()}`;
     }
 
@@ -96,15 +99,15 @@ export function createApiClient(app: FetchApp) {
     response.headers.forEach((value, key) => {
       responseHeaders[key] = value;
     });
-    const text = await response.text();
-    let body: unknown = null;
-    if (text) {
-      try {
-        body = JSON.parse(text);
-      } catch {
-        body = text;
-      }
+    if (options.responseType === 'bytes') {
+      return {
+        status: response.status,
+        body: new Uint8Array(await response.arrayBuffer()),
+        headers: responseHeaders,
+      };
     }
+    const text = await response.text();
+    const body: unknown = text ? JSON.parse(text) : null;
     return { status: response.status, body, headers: responseHeaders };
   };
 }
@@ -134,7 +137,11 @@ export function createCheckHarness(): {
   };
 }
 
-export function assertStatus(response: ApiResponse, expected: number, context: string): unknown {
+export function assertStatus(
+  response: Pick<ApiResponse, 'status' | 'body'>,
+  expected: number,
+  context: string,
+): unknown {
   if (response.status !== expected) {
     throw new Error(
       `${context}: expected ${expected}, got ${response.status} body=${JSON.stringify(response.body)}`,

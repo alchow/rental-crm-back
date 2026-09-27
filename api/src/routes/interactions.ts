@@ -6,13 +6,14 @@ import { ApiError, dbError, ErrorEnvelope, errorResponses } from './_lib/error';
 import { decodeCursor, encodeCursor, keysetPage } from './_lib/cursor';
 import { withResolvedAuthorship } from './_lib/authorship';
 import { assertAgentJournalWrite } from './_lib/agent-firewall';
+import { assertClassifyFillOnly, assertCoherentShape } from './interactions/corrections';
+import { resolveInteractionScope } from './interactions/scope';
 import {
-  CreateInteractionBody,
-  Direction,
-  Interaction,
-  PartyType,
-  type InteractionParticipantRow,
-} from '../schemas/importable';
+  deriveSingleParticipant,
+  loadInteractionParticipants,
+  type CastParticipant,
+} from './interactions/participants';
+import { CreateInteractionBody, Direction, Interaction, PartyType } from '../schemas/importable';
 
 // Append-only contact journal for offline, intake, and communications evidence.
 // INVARIANT: logged_at is server-set and immutable. Amend, retract, classify,
@@ -69,34 +70,6 @@ const ListResponse = z
   .object({ data: z.array(Interaction), next_cursor: z.string().nullable() })
   .openapi('InteractionListResponse');
 
-/** Batched cast loader: ONE query for a page of journal rows, bucketed by
- *  interaction id — the same embed pattern comms thread participants use
- *  (comms.ts loadParticipants). The cast belongs to the ROOT entry of a
- *  correction chain (the event record); correction rows read back with an
- *  empty cast of their own. */
-export async function loadInteractionParticipants(
-  sb: ReturnType<typeof getSb>,
-  accountId: string,
-  interactionIds: string[],
-): Promise<Map<string, InteractionParticipantRow[]>> {
-  const map = new Map<string, InteractionParticipantRow[]>();
-  if (interactionIds.length === 0) return map;
-  const { data, error } = await sb
-    .from('interaction_participants')
-    .select('interaction_id, role, party_type, party_id, address, label, source')
-    .eq('account_id', accountId)
-    .in('interaction_id', interactionIds)
-    .order('created_at', { ascending: true });
-  if (error) throw new ApiError(500, 'database_error', error.message);
-  for (const row of (data ?? []) as (InteractionParticipantRow & { interaction_id: string })[]) {
-    const { interaction_id, ...entry } = row;
-    const list = map.get(interaction_id) ?? [];
-    list.push(entry);
-    map.set(interaction_id, list);
-  }
-  return map;
-}
-
 const list = createRoute({
   method: 'get',
   path: '/accounts/{accountId}/interactions',
@@ -111,7 +84,7 @@ const list = createRoute({
     'entries such as a party-carrying note or a correction head that inherited ' +
     'the party from the entry it corrects. Combine it with party_type to narrow ' +
     "the matched leg to that person's tenant vs. vendor role. CAVEAT: with " +
-    'latest_only=true, a person named ONLY in a superseded entry\'s cast (a cc ' +
+    "latest_only=true, a person named ONLY in a superseded entry's cast (a cc " +
     'on a corrected message) does not match — the correction head inherits just ' +
     'the headline party. Omit latest_only for the complete involving-them set.',
   request: { params: AccountParam, query: ListQuery },
@@ -171,20 +144,12 @@ interactionsApp.openapi(list, async (c) => {
   } = c.req.valid('query');
   const sb = getSb(c);
 
-  // Both read paths converge on the same cast-load + map tail. When party_id is
-  // present the person is resolved by a SQL function that matches the CAST
-  // (interaction_participants) OR the row's own party slot (20260801000004) and
-  // reimplements this page's (occurred_at, id) keyset — the PostgREST view embed
-  // is ambiguous on interactions_with_chain (see 20260716000001). The rows it
-  // returns ARE interactions_with_chain rows, so there is no embedded key to
-  // strip. When party_id is absent the view query keeps its exact prior
-  // behaviour (row-slot party_type filter included).
+  // The party RPC filters participant rows and the headline party before pagination;
+  // the view handles requests without party_id. Both return chain-view rows.
   let items: Array<Record<string, unknown> & { id: string }>;
   let nextCursor: string | null;
 
   if (party_id) {
-    // Decode the shared opaque cursor here (keysetPage owns it on the other
-    // path); garbage -> 400, the same contract as everywhere else.
     let beforeOccurredAt: string | null = null;
     let beforeId: string | null = null;
     if (cursor !== undefined) {
@@ -226,13 +191,7 @@ interactionsApp.openapi(list, async (c) => {
       .is('deleted_at', null);
     if (tenancy_id) q = q.eq('tenancy_id', tenancy_id);
     if (maintenance_request_id) q = q.eq('maintenance_request_id', maintenance_request_id);
-    // area_id is a direct column on the row. Deliberately UNINDEXED:
-    // interactions is the highest-write table and this is a low-frequency
-    // filter, so it rides the per-account scan rather than paying write cost on
-    // every insert. Ready-made partial index if that ever changes:
-    //   create index interactions_area_idx
-    //     on public.interactions (account_id, area_id, occurred_at, id)
-    //     where deleted_at is null;
+    // Keep this low-frequency filter on the account scan to avoid another write index.
     if (area_id) q = q.eq('area_id', area_id);
     if (property_id) q = q.eq('property_id', property_id);
     if (latest_only === 'true') q = q.eq('is_head', true);
@@ -281,307 +240,6 @@ interactionsApp.openapi(get, async (c) => {
   );
 });
 
-// An amend may re-state context fields (it WAS a phone call, not in-person);
-// the merged row must still be a coherent shape. The DB checks would also
-// catch these, but as opaque 500s -- validate here so the client gets a 400
-// it can act on.
-function assertCoherentShape(row: {
-  kind: string;
-  channel: string;
-  direction: string;
-  party_type: string;
-  party_id: unknown;
-  party_label: unknown;
-}): void {
-  if (row.kind === 'agent_event') {
-    if (
-      row.channel !== 'agent_event' ||
-      row.direction !== 'none' ||
-      row.party_type !== 'none' ||
-      row.party_id !== null ||
-      row.party_label !== null
-    ) {
-      throw new ApiError(
-        400,
-        'invalid_request',
-        'an agent_event correction cannot change the event shape (channel/direction/party fields)',
-      );
-    }
-    return;
-  }
-  if (row.channel === 'agent_event') {
-    throw new ApiError(
-      400,
-      'invalid_request',
-      "channel 'agent_event' is reserved for kind='agent_event'",
-    );
-  }
-  if (row.kind === 'note') {
-    // channel/direction stay note-shaped; the party MAY be filled or changed
-    // (campaign-4 §12) -- this is what lets a classify add a who to a note.
-    // Party coherence mirrors the communication rules below.
-    if (row.channel !== 'note' || row.direction !== 'none') {
-      throw new ApiError(
-        400,
-        'invalid_request',
-        'a note correction cannot change channel or direction',
-      );
-    }
-    if (row.party_type === 'unspecified') {
-      throw new ApiError(
-        400,
-        'invalid_request',
-        "party_type 'unspecified' is for communications; a note carries a concrete role or none",
-      );
-    }
-    if (row.party_id !== null && (row.party_type === 'none' || row.party_type === undefined)) {
-      throw new ApiError(
-        400,
-        'invalid_request',
-        'party_id on a note needs a resolved role (party_type tenant/vendor/inspector/other)',
-      );
-    }
-    return;
-  }
-  if (row.channel === 'note') {
-    throw new ApiError(400, 'invalid_request', "channel 'note' is reserved for kind='note'");
-  }
-  if (row.party_type === 'none') {
-    throw new ApiError(400, 'invalid_request', "party_type 'none' is reserved for kind='note'");
-  }
-  if (row.direction === 'none' && row.channel !== 'import') {
-    throw new ApiError(
-      400,
-      'invalid_request',
-      "direction 'none' is only valid for channel 'import'",
-    );
-  }
-  if (row.party_type === 'unspecified' && row.party_id !== null) {
-    throw new ApiError(
-      400,
-      'invalid_request',
-      "party_type 'unspecified' cannot carry a party_id (resolve the role, or clear party_id)",
-    );
-  }
-}
-
-// classify is fill-only: it may populate a context field that was EMPTY on the
-// corrected row, but must never overwrite a value already recorded there
-// (overwriting a stated fact is a substantive change -> amend). 'unspecified'
-// (party_type) / 'unspecified'|'none' (direction) / null all count as empty.
-// This is the app-side clean 400; the DB trigger interactions_classify_fill_only
-// is the evidence-grade backstop for direct writes.
-function assertClassifyFillOnly(
-  original: Record<string, unknown>,
-  row: Record<string, unknown>,
-): void {
-  const fieldError = (f: string, msg: string) =>
-    new ApiError(400, 'invalid_request', msg, { fieldErrors: { [f]: [msg] } });
-
-  const nullable = [
-    'party_id',
-    'party_label',
-    'tenancy_id',
-    'maintenance_request_id',
-    'area_id',
-    'work_order_id',
-    'vendor_id',
-    'references_interaction_id',
-  ] as const;
-  for (const f of nullable) {
-    if (original[f] != null && row[f] !== original[f]) {
-      throw fieldError(
-        f,
-        `classify cannot overwrite ${f} (already set; use correction_kind='amend' to change a recorded value)`,
-      );
-    }
-  }
-  // party_type: 'unspecified'/'none' are empty (fillable); a concrete role is locked.
-  if (
-    original.party_type !== 'unspecified' &&
-    original.party_type !== 'none' &&
-    row.party_type !== original.party_type
-  ) {
-    throw fieldError(
-      'party_type',
-      "classify cannot overwrite party_type (use correction_kind='amend')",
-    );
-  }
-  // direction: 'unspecified'/'none' are empty (fillable); a stated direction is locked.
-  if (
-    original.direction !== 'unspecified' &&
-    original.direction !== 'none' &&
-    row.direction !== original.direction
-  ) {
-    throw fieldError(
-      'direction',
-      "classify cannot overwrite direction (use correction_kind='amend')",
-    );
-  }
-  // channel is never empty on a communication -> effectively immutable here.
-  if (row.channel !== original.channel) {
-    throw fieldError('channel', "classify cannot change channel (use correction_kind='amend')");
-  }
-  // atomic resolve: naming a party_id requires resolving the role too.
-  if (row.party_id != null && row.party_type === 'unspecified') {
-    throw fieldError(
-      'party_type',
-      'classify must resolve party_type (tenant/vendor/inspector/other) when setting party_id',
-    );
-  }
-}
-
-// The atomic-cast participant shape journal_with_participants consumes.
-interface CastParticipant {
-  role: string;
-  party_type: string;
-  party_id: string | null;
-  address: string | null;
-  label: string | null;
-}
-
-// COMPAT: Derive one cast participant from a landlord's legacy counterparty
-// slot so party filters include hand-logged contacts. Use the plain insert for
-// agents, unresolved/no-party rows, imports, or referenced interactions because
-// journal_with_participants cannot preserve those semantics. Role mapping:
-// inbound -> sender, outbound -> recipient, otherwise attendee. Party-carrying
-// notes use the row-slot filter and still write no cast.
-function deriveSingleParticipant(
-  body: {
-    channel?: string;
-    direction?: string;
-    party_type?: string;
-    party_id?: string;
-    party_label?: string;
-    references_interaction_id?: string;
-  },
-  principalType: string,
-): CastParticipant[] | null {
-  if (principalType === 'agent') return null;
-  if (body.channel === 'import') return null;
-  if (body.references_interaction_id !== undefined) return null;
-  const pt = body.party_type;
-  if (pt !== 'tenant' && pt !== 'vendor' && pt !== 'inspector' && pt !== 'other') return null;
-  if (body.party_id === undefined && body.party_label === undefined) return null;
-  const role =
-    body.direction === 'inbound'
-      ? 'sender'
-      : body.direction === 'outbound'
-        ? 'recipient'
-        : 'attendee';
-  return [
-    {
-      role,
-      party_type: pt,
-      party_id: body.party_id ?? null,
-      address: null,
-      label: body.party_label ?? null,
-    },
-  ];
-}
-
-interface ResolvedInteractionScope {
-  areaId: string | null;
-  propertyId: string | null;
-}
-
-/**
- * Resolve a client-facing property selection to the one canonical place key we
- * store: interactions.area_id.
- *
- * property with one live unit -> that unit
- * property with zero/multiple live units -> typed 422; caller chooses area_id
- * property + area -> validate that they belong together
- */
-async function resolveInteractionScope(
-  sb: ReturnType<typeof getSb>,
-  accountId: string,
-  propertyId: string | undefined,
-  explicitAreaId: string | undefined,
-  fallback: ResolvedInteractionScope = { areaId: null, propertyId: null },
-): Promise<ResolvedInteractionScope> {
-  // An explicit area remains the canonical input. We still resolve its
-  // property once so POST responses carry the same derived shape as GET/list.
-  if (propertyId === undefined && explicitAreaId !== undefined) {
-    const { data: area, error } = await sb
-      .from('areas')
-      .select('id, property_id')
-      .eq('account_id', accountId)
-      .eq('id', explicitAreaId)
-      .is('deleted_at', null)
-      .maybeSingle();
-    if (error) throw new ApiError(500, 'database_error', error.message);
-    if (!area) throw new ApiError(404, 'not_found', 'area_id does not belong to this account');
-    return { areaId: area.id, propertyId: area.property_id };
-  }
-
-  if (propertyId === undefined) return fallback;
-
-  const { data: property, error: propertyError } = await sb
-    .from('properties')
-    .select('id')
-    .eq('account_id', accountId)
-    .eq('id', propertyId)
-    .is('deleted_at', null)
-    .maybeSingle();
-  if (propertyError) throw new ApiError(500, 'database_error', propertyError.message);
-  if (!property)
-    throw new ApiError(404, 'not_found', 'property_id does not belong to this account');
-
-  // A correction that deliberately changes property must not inherit the old
-  // property's area. Resolve the new property from scratch unless its area is
-  // also supplied explicitly.
-  const candidateAreaId =
-    explicitAreaId ?? (fallback.propertyId === propertyId ? fallback.areaId : null);
-  if (candidateAreaId !== null && candidateAreaId !== undefined) {
-    let query = sb
-      .from('areas')
-      .select('id, property_id')
-      .eq('account_id', accountId)
-      .eq('id', candidateAreaId);
-    // A newly selected area must be live. A correction may retain the original
-    // historical area after that area was soft-deleted.
-    if (explicitAreaId !== undefined) query = query.is('deleted_at', null);
-    const { data: area, error } = await query.maybeSingle();
-    if (error) throw new ApiError(500, 'database_error', error.message);
-    if (!area) throw new ApiError(404, 'not_found', 'area_id does not belong to this account');
-    if (area.property_id !== propertyId) {
-      throw new ApiError(422, 'property_requires_area', 'area_id does not belong to property_id', {
-        fieldErrors: {
-          property_id: ['does not contain area_id'],
-          area_id: ['does not belong to property_id'],
-        },
-      });
-    }
-    return { areaId: area.id, propertyId };
-  }
-
-  const { data: units, error: unitsError } = await sb
-    .from('areas')
-    .select('id')
-    .eq('account_id', accountId)
-    .eq('property_id', propertyId)
-    .eq('kind', 'unit')
-    .is('deleted_at', null)
-    .order('created_at', { ascending: true })
-    .limit(2);
-  if (unitsError) throw new ApiError(500, 'database_error', unitsError.message);
-  if ((units ?? []).length !== 1) {
-    throw new ApiError(
-      422,
-      'property_requires_area',
-      'property_id cannot be resolved to exactly one live unit; supply area_id',
-      {
-        fieldErrors: {
-          property_id: ['property has zero or multiple live units'],
-          area_id: ['choose a unit or common area explicitly'],
-        },
-      },
-    );
-  }
-  return { areaId: units![0]!.id, propertyId };
-}
-
 interactionsApp.openapi(create, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
@@ -589,16 +247,10 @@ interactionsApp.openapi(create, async (c) => {
   const auth = c.get('auth');
   const principal = c.get('principal');
 
-  // Firewall: enforce the write vocabulary permitted to each principal type.
-  // Landlord checks are fast path (no DB). Agent checks may also be fast.
-  // Both run before any DB write so violations never touch the journal.
+  // Apply principal-specific write rules before any journal mutation.
   assertAgentJournalWrite(principal, body);
 
-  // The manual cast path is landlord-only BY DESIGN: an agent's
-  // communications are journaled (with their cast) by the verified comms
-  // transport paths, and an agent's notes carry no cast — so an agent
-  // supplying participants here could only be fabricating an unverifiable
-  // record of who was contacted.
+  // SECURITY: Only landlords may supply manual participants; agent casts come from transport.
   if (principal.type === 'agent' && body.participants !== undefined) {
     throw new ApiError(
       400,
@@ -608,18 +260,12 @@ interactionsApp.openapi(create, async (c) => {
     );
   }
 
-  // actor is derived from the authenticated user; the audit chain records the
-  // same value via auth.uid(). Agent-authored rows use actor='user:<agent-uuid>'
-  // (truthful -- it IS that principal); author_type is the capacity signal
-  // (ADR-0006/0008). No 'agent:' prefix here.
+  // PROVENANCE: actor identifies the caller; author_type records their capacity (ADR-0008).
   const actor = `user:${auth.userId}`;
 
-  // author_type is stamped from the resolved principal, never client-supplied.
   const authorType = principal.type === 'agent' ? 'agent' : 'landlord';
 
-  // When approved_by is supplied (agent paths only, post-firewall), verify
-  // the target is a real, non-agent member of this account. The RPC uses
-  // security definer so it can see other members despite self-only RLS.
+  // Validate approval against a non-agent account member through the scoped definer RPC.
   if (body.approved_by !== undefined) {
     const { data: ok, error: approverErr } = await sb.rpc('is_approver_member', {
       p_account_id: accountId,
@@ -635,27 +281,14 @@ interactionsApp.openapi(create, async (c) => {
     }
   }
 
-  // NOTE: a `grant:`-prefixed approval_ref on this direct journaling path is
-  // NOT validated against comm_policies here -- deliberately. This path RECORDS
-  // a send that already happened (the agent transport's confirmed-send journal,
-  // per landlord-agent/docs/agent-sends-core-records.md); refusing the record
-  // because the cited grant is (now) revoked would suppress the evidence of a
-  // real send, violating ADR-0007's "a message is never sent without a record".
-  // Grant existence/scope is enforced at INTENT-CREATION time on POST
-  // /comms/outbox instead. (Open item raised to the coordinator: whether to
-  // additionally reject a truly-nonexistent grant id here without the ADR-0007
-  // suppression risk -- pending confirmation of the grant-ref format Plan B
-  // emits.)
+  // Do not revalidate grant revocation when recording a completed send (ADR-0007).
+  // Outbox creation validates intent; rejecting the later record would hide evidence.
 
   let row: Record<string, unknown>;
   let responsePropertyId: string | null = null;
 
   if (body.corrects_id !== undefined) {
-    // A correction NEVER writes to the original -- it only reads it, to
-    // validate the target and inherit context fields. Read through the
-    // chain view: superseded_by_id tells us head-ness in the same query.
-    // RLS hides other accounts' rows, so cross-account targets 404 here
-    // without leaking existence (the composite FK is the DB backstop).
+    // Read the current chain head under caller RLS; corrections append rather than update.
     const { data: original, error: origErr } = await sb
       .from('interactions_with_chain')
       .select('*')
@@ -667,8 +300,7 @@ interactionsApp.openapi(create, async (c) => {
     if (!original) throw new ApiError(404, 'not_found', 'not found');
 
     if (original.correction_kind === 'retract') {
-      // A retracted head closes its chain: to re-state something after a
-      // retraction, log a fresh entry.
+      // Retraction closes a chain; a later statement starts a new entry.
       throw new ApiError(
         409,
         'invalid_correction_target',
@@ -692,10 +324,7 @@ interactionsApp.openapi(create, async (c) => {
 
     const isAmend = body.correction_kind === 'amend';
     const isClassify = body.correction_kind === 'classify';
-    // amend and classify may both set context fields; retract inherits all.
-    // amend may also rewrite body/occurred_at; classify may not (superRefine
-    // rejects them) and is fill-only (assertClassifyFillOnly + the DB trigger):
-    // it fills an empty field but never overwrites a recorded one.
+    // Amend can replace facts; classify only fills empty context; retract inherits context.
     const mayCorrectContext = isAmend || isClassify;
     const correctedScope = mayCorrectContext
       ? await resolveInteractionScope(sb, accountId, body.property_id, body.area_id, {
@@ -707,11 +336,7 @@ interactionsApp.openapi(create, async (c) => {
     row = {
       account_id: accountId,
       actor,
-      // The CORRECTOR's capacity, not the original author's: a landlord
-      // retracting an agent entry is a landlord-authored row. approval and
-      // external_ref stay with the original row they attest to; entry_type
-      // is inherited (DB pairing: an agent_event correction is an
-      // agent_event and must carry its type).
+      // The corrector owns this row; approval and external_ref remain on the original.
       author_type: authorType,
       approved_by: null,
       approval_ref: null,
@@ -727,10 +352,8 @@ interactionsApp.openapi(create, async (c) => {
         : original.party_label,
       channel: mayCorrectContext ? (body.channel ?? original.channel) : original.channel,
       direction: mayCorrectContext ? (body.direction ?? original.direction) : original.direction,
-      // classify inherits body (substantive -> amend-only); amend/retract carry it.
       body: isClassify ? original.body : body.body,
-      // Same event -> same timeline position, unless an amend explicitly
-      // re-dates it. classify always inherits. logged_at stays server-set.
+      // Keep the event's timeline position unless an amend explicitly changes it.
       occurred_at: isAmend ? (body.occurred_at ?? original.occurred_at) : original.occurred_at,
       corrects_id: body.corrects_id,
       correction_kind: body.correction_kind,
@@ -755,12 +378,25 @@ interactionsApp.openapi(create, async (c) => {
     const scope = await resolveInteractionScope(sb, accountId, body.property_id, body.area_id);
     responsePropertyId = scope.propertyId;
 
+    const common = {
+      account_id: accountId,
+      actor,
+      author_type: authorType,
+      body: body.body ?? null,
+      occurred_at: body.occurred_at,
+      corrects_id: null,
+      correction_kind: null,
+      tenancy_id: body.tenancy_id ?? null,
+      maintenance_request_id: body.maintenance_request_id ?? null,
+      area_id: scope.areaId,
+      work_order_id: body.work_order_id ?? null,
+      vendor_id: body.vendor_id ?? null,
+      references_interaction_id: body.references_interaction_id ?? null,
+    };
+
     if ((body.kind ?? 'communication') === 'agent_event') {
-      // Agent exhaust entry: structured machine event with sentinel shape.
       row = {
-        account_id: accountId,
-        actor,
-        author_type: authorType,
+        ...common,
         approved_by: body.approved_by ?? null,
         approval_ref: body.approval_ref ?? null,
         entry_type: body.entry_type ?? null,
@@ -771,56 +407,26 @@ interactionsApp.openapi(create, async (c) => {
         party_label: null,
         channel: 'agent_event',
         direction: 'none',
-        body: body.body ?? null,
-        occurred_at: body.occurred_at,
-        corrects_id: null,
-        correction_kind: null,
-        tenancy_id: body.tenancy_id ?? null,
-        maintenance_request_id: body.maintenance_request_id ?? null,
-        area_id: scope.areaId,
-        work_order_id: body.work_order_id ?? null,
-        vendor_id: body.vendor_id ?? null,
-        references_interaction_id: body.references_interaction_id ?? null,
       };
     } else if ((body.kind ?? 'communication') === 'note') {
       row = {
-        account_id: accountId,
-        actor,
-        author_type: authorType,
+        ...common,
         // Agent notes carry approval fields; landlord notes always null.
         approved_by: principal.type === 'agent' ? (body.approved_by ?? null) : null,
         approval_ref: principal.type === 'agent' ? (body.approval_ref ?? null) : null,
         entry_type: null,
         external_ref: null,
         kind: 'note',
-        // A note MAY name a counterparty (campaign-4 §12); default to the
-        // party-less shape when none is supplied. channel/direction stay pinned.
+        // Notes may identify a party but retain note channel/direction.
         party_type: body.party_type ?? 'none',
         party_id: body.party_id ?? null,
         party_label: body.party_label ?? null,
         channel: 'note',
         direction: 'none',
-        body: body.body ?? null,
-        occurred_at: body.occurred_at,
-        corrects_id: null,
-        correction_kind: null,
-        tenancy_id: body.tenancy_id ?? null,
-        maintenance_request_id: body.maintenance_request_id ?? null,
-        area_id: scope.areaId,
-        work_order_id: body.work_order_id ?? null,
-        vendor_id: body.vendor_id ?? null,
-        references_interaction_id: body.references_interaction_id ?? null,
       };
     } else {
-      // Cast-carrying create: the row and its cast are written atomically by
-      // the journal_with_participants RPC (no window where a valid-but-castless
-      // entry exists), which also stamps attestation='attested' and derives
-      // actor/author_type from the caller — same values this handler computes.
-      // Landlord-only at this point (agent guard above). TWO inputs converge
-      // here: an EXPLICIT cast (body.participants), or a single DERIVED
-      // participant when the body names a counterparty in the legacy
-      // slot but supplies no cast. Both keep the plain insert below for the
-      // no-counterparty case and the agent principal.
+      // INVARIANT: Explicit or derived landlord participants and their journal entry
+      // commit together. Agents and entries without participants use the plain insert.
       const explicitCast: CastParticipant[] | undefined = body.participants?.map((p) => ({
         role: p.role,
         party_type: p.party_type,
@@ -881,12 +487,8 @@ interactionsApp.openapi(create, async (c) => {
         );
       }
       row = {
-        account_id: accountId,
-        actor,
-        author_type: authorType,
-        // Agent communications carry their authorization provenance (the
-        // firewall has already required approval_ref + approved_by-or-grant);
-        // landlord communications never carry approval fields.
+        ...common,
+        // Only agent communications retain approval and provider provenance.
         approved_by: principal.type === 'agent' ? (body.approved_by ?? null) : null,
         approval_ref: principal.type === 'agent' ? (body.approval_ref ?? null) : null,
         entry_type: null,
@@ -896,19 +498,8 @@ interactionsApp.openapi(create, async (c) => {
         party_id: body.party_id ?? null,
         party_label: body.party_label ?? null,
         channel: body.channel,
-        // Optional now: an omitted direction is stored as the 'unspecified'
-        // sentinel rather than forcing the landlord to fabricate inbound/outbound.
+        // An unknown direction must not imply an invented inbound/outbound fact.
         direction: body.direction ?? 'unspecified',
-        body: body.body ?? null,
-        occurred_at: body.occurred_at,
-        corrects_id: null,
-        correction_kind: null,
-        tenancy_id: body.tenancy_id ?? null,
-        maintenance_request_id: body.maintenance_request_id ?? null,
-        area_id: scope.areaId,
-        work_order_id: body.work_order_id ?? null,
-        vendor_id: body.vendor_id ?? null,
-        references_interaction_id: body.references_interaction_id ?? null,
       };
     }
   }
@@ -921,8 +512,7 @@ interactionsApp.openapi(create, async (c) => {
     .single();
   if (error) {
     if (error.code === '23505') {
-      // interactions_corrects_id_uniq: we lost a race to correct the same
-      // head. Chains stay linear by DB invariant, not just the check above.
+      // The unique correction target prevents concurrent forks in the evidence chain.
       throw new ApiError(
         409,
         'invalid_correction_target',
@@ -932,15 +522,10 @@ interactionsApp.openapi(create, async (c) => {
     if (error.code === '23503') {
       throw new ApiError(404, 'not_found', 'a referenced row does not belong to this account');
     }
-    // 42501 (RLS denial) -> 403. Defensive: for mutating
-    // requests the idempotency middleware claims a key FIRST and a revoked
-    // agent is denied there, so this branch fires only if a write ever reaches
-    // the handler without that claim. Else 500.
+    // RLS can reject a revoked member even after cached membership passed.
     throw dbError(error);
   }
-  // Derived fields, true by construction for a row that did not exist a
-  // moment ago: nothing can reference it yet, and (on this castless path)
-  // no participants exist for it.
+  // New entries start as chain heads; this insert path creates no participants.
   return c.json(
     withResolvedAuthorship({
       ...data,

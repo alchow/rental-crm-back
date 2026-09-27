@@ -1366,7 +1366,7 @@ async function main(): Promise<void> {
     const dl = await api(
       'GET',
       `/v1/accounts/${A.accountId}/evidence-exports/${row.id}/download`,
-      { token: A.token },
+      { token: A.token, responseType: 'bytes' },
     );
     assertStatus(dl, 200, 'download export');
     // compress:false keeps content streams uncompressed, but pdfkit 0.15

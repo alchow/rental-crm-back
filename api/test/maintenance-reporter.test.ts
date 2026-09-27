@@ -1,39 +1,11 @@
-import { execSync } from 'node:child_process';
+import {
+  configureIntegrationEnv,
+  createCheckHarness,
+  randomToken as rnd,
+  assertStatus,
+} from './helpers/integration';
 
-interface SupabaseStatus {
-  API_URL: string;
-  DB_URL: string;
-  ANON_KEY: string;
-  SERVICE_ROLE_KEY: string;
-}
-
-function readSupabaseStatus(): SupabaseStatus {
-  const out = execSync('supabase status --output env --workdir db', {
-    cwd: process.cwd().endsWith('/api') ? '..' : '.',
-    encoding: 'utf8',
-  });
-  const get = (key: string) => {
-    const line = out.split('\n').find((candidate) => candidate.startsWith(`${key}=`));
-    if (!line) throw new Error(`supabase status missing: ${key}`);
-    return line.slice(key.length + 1).replace(/^"|"$/g, '');
-  };
-  return {
-    API_URL: get('API_URL'),
-    DB_URL: get('DB_URL'),
-    ANON_KEY: get('ANON_KEY'),
-    SERVICE_ROLE_KEY: get('SERVICE_ROLE_KEY'),
-  };
-}
-
-const status = readSupabaseStatus();
-process.env.NODE_ENV = 'test';
-process.env.PORT = '8790';
-process.env.SUPABASE_URL = status.API_URL;
-process.env.SUPABASE_ANON_KEY = status.ANON_KEY;
-process.env.SUPABASE_SERVICE_ROLE_KEY = status.SERVICE_ROLE_KEY;
-process.env.SUPABASE_JWKS_URL = `${status.API_URL}/auth/v1/.well-known/jwks.json`;
-process.env.SUPABASE_JWT_ISSUER = `${status.API_URL}/auth/v1`;
-process.env.SUPABASE_JWT_AUDIENCE = 'authenticated';
+const status = configureIntegrationEnv('8790');
 
 const { _resetEnvCacheForTests } = await import('../src/env');
 _resetEnvCacheForTests();
@@ -69,18 +41,6 @@ async function api(
   const response = await app.fetch(new Request(`http://test${path}`, init));
   const text = await response.text();
   return { status: response.status, body: text ? JSON.parse(text) : null };
-}
-
-function rnd(): string {
-  return Math.random().toString(36).slice(2, 10);
-}
-function assertStatus(response: ApiResp, expected: number, context: string): unknown {
-  if (response.status !== expected) {
-    throw new Error(
-      `${context}: expected ${expected}, got ${response.status} ${JSON.stringify(response.body)}`,
-    );
-  }
-  return response.body;
 }
 
 interface UserFixture {
@@ -164,21 +124,7 @@ interface MaintenanceRow {
   reported_by: ReportedBy | null;
 }
 
-interface Failure {
-  name: string;
-  detail: string;
-}
-const failures: Failure[] = [];
-async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try {
-    await fn();
-    console.info(`  PASS  ${name}`);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    failures.push({ name, detail });
-    console.error(`  FAIL  ${name}: ${detail}`);
-  }
-}
+const { check, failures } = createCheckHarness();
 
 console.info('Maintenance reporter provenance checks');
 const A = await setupUser('A');

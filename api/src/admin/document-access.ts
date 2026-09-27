@@ -54,17 +54,8 @@ const DOC_ACCESS_IP_WINDOW_S = 10 * 60;
 const DOC_ACCESS_IP_LIMIT = 120;
 const TOKEN_TOUCH_MIN_INTERVAL_MS = 60 * 1000;
 
-/**
- * Per-IP sliding-window rate limit for the public document-access endpoints.
- *
- * Fails OPEN (unlike intake.ts, which fails closed): these endpoints serve a
- * tenant READING their own documents, authenticated by the magic-link token.
- * The IP cap is a soft abuse backstop, not an authz control, so a limiter
- * hiccup (DB blip, bucket-table contention, function missing in an env) must
- * never lock a tenant out of their lease. Write-amplification is bounded
- * structurally by the once-per-(token,document) viewed dedupe regardless of
- * this limiter, so failing open here costs nothing on the write side.
- */
+/** The IP limiter fails open so a limiter outage cannot block token-authenticated reads.
+ * First-view writes are independently deduplicated per token/document. */
 export async function bumpDocAccessIpRate(ip: string): Promise<{ ok: boolean }> {
   const admin = getAdminClient();
   const { data, error } = await admin.rpc('bump_ip_rate_bucket', {

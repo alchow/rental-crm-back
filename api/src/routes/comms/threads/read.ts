@@ -4,7 +4,7 @@ import { getSb } from '../../../supabase/request-client';
 import { ApiError, errorResponses } from '../../_lib/error';
 import { keysetPage } from '../../_lib/cursor';
 import { withResolvedAuthorship } from '../../_lib/authorship';
-import { loadInteractionParticipants } from '../../interactions';
+import { loadInteractionParticipants } from '../../interactions/participants';
 import {
   AccountAndIdParam,
   AccountParam,

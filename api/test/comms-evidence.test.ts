@@ -8,46 +8,19 @@
 // Legal holds block retention; purge removes blobs but preserves provenance.
 // ----------------------------------------------------------------------------
 
-import { execSync } from 'node:child_process';
+import {
+  configureIntegrationEnv,
+  createApiClient,
+  createCheckHarness,
+  randomToken as rnd,
+  assertStatus,
+  assert,
+} from './helpers/integration';
 import { createHash } from 'node:crypto';
 
-interface SupabaseStatus {
-  API_URL: string;
-  DB_URL: string;
-  ANON_KEY: string;
-  SERVICE_ROLE_KEY: string;
-}
-
-function readSupabaseStatus(): SupabaseStatus {
-  const out = execSync('supabase status --output env --workdir db', {
-    cwd: process.cwd().endsWith('/api') ? '..' : '.',
-    encoding: 'utf8',
-  });
-  const lines = out.split('\n');
-  const get = (k: string) => {
-    const line = lines.find((l) => l.startsWith(k + '='));
-    if (!line) throw new Error(`supabase status missing: ${k}`);
-    return line.slice(k.length + 1).replace(/^"|"$/g, '');
-  };
-  return {
-    API_URL: get('API_URL'),
-    DB_URL: get('DB_URL'),
-    ANON_KEY: get('ANON_KEY'),
-    SERVICE_ROLE_KEY: get('SERVICE_ROLE_KEY'),
-  };
-}
-
-const status = readSupabaseStatus();
+const status = configureIntegrationEnv('8799');
 const SUFFIX = String(Math.floor(Math.random() * 10_000_000)).padStart(7, '0');
 
-process.env.NODE_ENV = 'test';
-process.env.PORT = '8799';
-process.env.SUPABASE_URL = status.API_URL;
-process.env.SUPABASE_ANON_KEY = status.ANON_KEY;
-process.env.SUPABASE_SERVICE_ROLE_KEY = status.SERVICE_ROLE_KEY;
-process.env.SUPABASE_JWKS_URL = `${status.API_URL}/auth/v1/.well-known/jwks.json`;
-process.env.SUPABASE_JWT_ISSUER = `${status.API_URL}/auth/v1`;
-process.env.SUPABASE_JWT_AUDIENCE = 'authenticated';
 // Unique per run so a persistent local stack's email token routing never
 // collides across runs (same convention as comms-email-threads).
 process.env.EMAIL_REPLY_DOMAIN = `ev-${SUFFIX}.example.test`;
@@ -84,64 +57,9 @@ const app = buildApp();
 
 // --- helpers ----------------------------------------------------------------
 
-interface ApiResp {
-  status: number;
-  body: unknown;
-  headers: Record<string, string>;
-}
+const api = createApiClient(app);
 
-async function api(
-  method: string,
-  path: string,
-  opts: { token?: string; body?: unknown; idempotencyKey?: string } = {},
-): Promise<ApiResp> {
-  const headers: Record<string, string> = { accept: 'application/json' };
-  if (opts.token) headers.authorization = `Bearer ${opts.token}`;
-  const mutating = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase());
-  if (mutating && path.startsWith('/v1/accounts/')) {
-    headers['idempotency-key'] = opts.idempotencyKey ?? `t-${crypto.randomUUID()}`;
-  }
-  let init: RequestInit = { method, headers };
-  if (opts.body !== undefined) {
-    headers['content-type'] = 'application/json';
-    init = { ...init, body: JSON.stringify(opts.body) };
-  }
-  const res = await app.fetch(new Request(`http://test${path}`, init));
-  const responseHeaders: Record<string, string> = {};
-  res.headers.forEach((v, k) => {
-    responseHeaders[k] = v;
-  });
-  const text = await res.text();
-  return { status: res.status, body: text ? JSON.parse(text) : null, headers: responseHeaders };
-}
-
-function rnd(): string {
-  return Math.random().toString(36).slice(2, 10);
-}
-
-interface Failure {
-  name: string;
-  detail: string;
-}
-const failures: Failure[] = [];
-async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try {
-    await fn();
-    console.info(`  PASS  ${name}`);
-  } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
-    failures.push({ name, detail });
-    console.error(`  FAIL  ${name}: ${detail}`);
-  }
-}
-function assertStatus(r: ApiResp, expected: number, ctx: string): unknown {
-  if (r.status !== expected)
-    throw new Error(`${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`);
-  return r.body;
-}
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+const { check, failures } = createCheckHarness();
 
 async function login(email: string, password: string): Promise<string> {
   const r = await api('POST', '/v1/auth/login', { body: { email, password } });
@@ -1011,7 +929,8 @@ async function main(): Promise<void> {
         active: true,
         reason: 'forged',
       });
-      assert(raw.status >= 400, `raw insert should be denied, got ${raw.status}`);
+      const error = assertStatus(raw, 403, 'raw agent legal-hold write') as { code: string };
+      assert(error.code === '42501', `expected permission denial: ${JSON.stringify(error)}`);
     },
   );
 

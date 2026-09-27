@@ -60,15 +60,24 @@ async function check(name: string, fn: () => Promise<void>): Promise<void> {
   }
 }
 
-async function expectBlocked<T>(promise: Promise<T>, label: string): Promise<void> {
-  const state = await Promise.race([
-    promise.then(
-      () => 'settled',
-      () => 'settled',
-    ),
-    new Promise<'blocked'>((resolve) => setTimeout(() => resolve('blocked'), 150)),
-  ]);
-  if (state !== 'blocked') throw new Error(`${label} did not wait for the tenancy lock`);
+async function expectBlocked(
+  promise: Promise<unknown>,
+  holder: pg.Client,
+  waiterPid: number,
+  label: string,
+): Promise<void> {
+  let settled = false;
+  void promise.then(() => { settled = true; }, () => { settled = true; });
+  const deadline = Date.now() + 5_000;
+  while (!settled && Date.now() < deadline) {
+    const result = await holder.query<{ blocked: boolean }>(
+      'select pg_backend_pid() = any(pg_blocking_pids($1)) as blocked',
+      [waiterPid],
+    );
+    if (result.rows[0]?.blocked) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`${label} did not wait for the correction transaction`);
 }
 
 interface Fixture {
@@ -181,13 +190,14 @@ async function main(): Promise<void> {
          where account_id=$1 and id=$2`,
         [ACCOUNT_ID, f.manualSchedule],
       );
+      const backend = await writer.query<{ pid: number }>('select pg_backend_pid() as pid');
       const insertion = writer.query(
         `insert into public.charges(account_id,tenancy_id,type,amount_cents,currency,due_date,
            period_start,period_end,source_schedule_id)
          values($1,$2,'rent',100000,'USD','2026-09-01','2026-09-01','2026-09-30',$3)`,
         [ACCOUNT_ID, f.manualTenancy, f.manualSchedule],
       );
-      await expectBlocked(insertion, 'manual charge insert');
+      await expectBlocked(insertion, correction, backend.rows[0]!.pid, 'manual charge insert');
       await finish(correction);
       const error = await insertion.then(
         () => null,
@@ -449,11 +459,12 @@ async function main(): Promise<void> {
          values($1,$2,$3,'rent',180000,'USD',1,'2040-09-01')`,
         [successor, ACCOUNT_ID, f.generatorTenancy],
       );
+      const backend = await generator.query<{ pid: number }>('select pg_backend_pid() as pid');
       const generation = generator.query<{ o_schedule_id: string }>(
         `select * from public.generate_rent_charges($1,'2040-09-01T00:00:00Z')`,
         [ACCOUNT_ID],
       );
-      await expectBlocked(generation, 'rent generator');
+      await expectBlocked(generation, correction, backend.rows[0]!.pid, 'rent generator');
       await finish(correction);
       const generated = await generation;
       const ours = generated.rows.filter(

@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# Local runner for the Phase 2 isolation test. CI runs the same steps but
-# uses GitHub Actions' `services:` block to host Postgres; here we spin up
-# our own ephemeral container so the loop is fast on a dev machine.
-#
-# Usage:  bash db/test/run-isolation.sh
-#         (run from anywhere — script normalises CWD)
+# Run the CI database checks in a temporary local Postgres container.
+# Usage: bash db/test/run-isolation.sh
 
 set -euo pipefail
 
@@ -14,7 +10,6 @@ DB="$ROOT/db"
 MIGRATIONS="$DB/supabase/migrations"
 COMPAT="$DB/test/supabase_compat.sql"
 SEED="$DB/test/seed_two_accounts.sql"
-TEST="$DB/test/isolation.test.ts"
 
 # Use a non-standard port so we don't fight whatever's already on 5432.
 PORT="${TEST_PG_PORT:-5499}"
@@ -67,6 +62,9 @@ for f in $(ls "$MIGRATIONS"/*.sql | sort); do
 done
 shopt -u nullglob
 
+echo ">> check SECURITY DEFINER grants"
+run_sql "$DB/test/check_definer_grants.sql"
+
 echo ">> seed two-account fixture"
 run_sql "$SEED"
 
@@ -94,8 +92,15 @@ set -e
 docker exec -i "${CONTAINER}" psql -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 drop policy properties_leak on public.properties;
 create policy properties_member_all on public.properties
-  for all using (public.is_account_member(account_id))
-  with check (public.is_account_member(account_id));
+  for all
+  using (account_id in (
+    select m.account_id from public.account_members m
+    where m.user_id = (select auth.uid()) and m.deleted_at is null
+  ))
+  with check (account_id in (
+    select m.account_id from public.account_members m
+    where m.user_id = (select auth.uid()) and m.deleted_at is null
+  ));
 SQL
 
 if [ "$leak_rc" -eq 0 ]; then
@@ -105,18 +110,8 @@ if [ "$leak_rc" -eq 0 ]; then
 fi
 echo ">> meaningfulness check PASS: planted leak was detected"
 
-# Phase 3 audit-spine DoD checks. Same DB; runs after the seed so the events
-# table already has the seed-derived chain populated.
-echo ""
-echo ">> run audit-spine DoD checks"
-DATABASE_URL="$DATABASE_URL" pnpm --filter ./db test:audit
-
-# Phase 6 money-spine DoD: derived balance, reversal, allocation integrity,
-# concurrent allocations, deposit segregation.
-echo ""
-echo ">> run money-spine DoD checks"
-DATABASE_URL="$DATABASE_URL" pnpm --filter ./db test:money
-
-echo ""
-echo ">> run rent-adjustment concurrency checks"
-DATABASE_URL="$DATABASE_URL" pnpm --filter ./db test:rent-adjustment-concurrency
+# Keep this order aligned with the CI isolation job.
+for suite in audit chain-mixed-era money tenancy-status comms-retention rent-adjustment-concurrency; do
+  echo ">> run ${suite} checks"
+  DATABASE_URL="$DATABASE_URL" pnpm --filter ./db "test:${suite}"
+done
