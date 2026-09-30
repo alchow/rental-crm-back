@@ -53,6 +53,8 @@ const NOT_ACCOUNT_SCOPED = new Set([
   // ADR-0009 (agent principals): principal registry, not account-scoped by
   // design. Deny-all via RLS-without-policies + REVOKE on authenticated.
   'agent_principals',
+  // Dedicated verifier credentials are service-only, with no account visibility.
+  'phone_verifier_keys',
   // Comms ledger (20260701000002): the opt-out register is keyed by
   // (channel, address) — NOT account — so a member-readable table would be a
   // cross-account address oracle; inbound_raw is the service-tier capture of

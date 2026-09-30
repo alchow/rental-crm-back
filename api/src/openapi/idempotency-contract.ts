@@ -1,3 +1,4 @@
+import { isIdempotencyExempt } from '../middleware/idempotency';
 // Shared build-time/runtime OpenAPI transforms prevent the committed SDK spec
 // from drifting from `/openapi.json`. App-level idempotency middleware is
 // invisible to route-derived OpenAPI, so inject Idempotency-Key centrally for
@@ -72,7 +73,7 @@ export function injectIdempotencyContract<T extends { paths?: unknown }>(doc: T)
   for (const [path, item] of Object.entries(paths)) {
     if (!ACCOUNT_SCOPED.test(path)) continue;
     for (const [method, op] of Object.entries(item)) {
-      if (!MUTATING.has(method)) continue;
+      if (!MUTATING.has(method) || isIdempotencyExempt(method, path)) continue;
 
       op.parameters ??= [];
       const hasHeader = op.parameters.some(

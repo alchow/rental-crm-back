@@ -3117,6 +3117,47 @@ export type Database = {
           },
         ];
       };
+      owner_phone_verification_receipts: {
+        Row: {
+          account_id: string;
+          correlation_id: string;
+          expires_at: string;
+          phone: string;
+          phone_verified_at: string;
+          user_id: string;
+          verification_id: string;
+          verifier_id: string;
+        };
+        Insert: {
+          account_id: string;
+          correlation_id: string;
+          expires_at: string;
+          phone: string;
+          phone_verified_at: string;
+          user_id: string;
+          verification_id: string;
+          verifier_id: string;
+        };
+        Update: {
+          account_id?: string;
+          correlation_id?: string;
+          expires_at?: string;
+          phone?: string;
+          phone_verified_at?: string;
+          user_id?: string;
+          verification_id?: string;
+          verifier_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'owner_phone_verification_receipts_account_id_user_id_fkey';
+            columns: ['account_id', 'user_id'];
+            isOneToOne: false;
+            referencedRelation: 'account_members';
+            referencedColumns: ['account_id', 'user_id'];
+          },
+        ];
+      };
       payment_allocations: {
         Row: {
           account_id: string;
@@ -3251,6 +3292,33 @@ export type Database = {
             referencedColumns: ['account_id', 'id'];
           },
         ];
+      };
+      phone_verifier_keys: {
+        Row: {
+          capability: string;
+          created_at: string;
+          disabled_at: string | null;
+          key_id: string;
+          secret_hash: string;
+          verifier_id: string;
+        };
+        Insert: {
+          capability?: string;
+          created_at?: string;
+          disabled_at?: string | null;
+          key_id: string;
+          secret_hash: string;
+          verifier_id: string;
+        };
+        Update: {
+          capability?: string;
+          created_at?: string;
+          disabled_at?: string | null;
+          key_id?: string;
+          secret_hash?: string;
+          verifier_id?: string;
+        };
+        Relationships: [];
       };
       platform_numbers: {
         Row: {
@@ -4579,6 +4647,19 @@ export type Database = {
           p_rfc822_message_id?: string;
         };
         Returns: string;
+      };
+      confirm_owner_phone_verification: {
+        Args: {
+          p_account_id: string;
+          p_correlation_id: string;
+          p_expires_at: string;
+          p_key_id: string;
+          p_phone: string;
+          p_secret_hash: string;
+          p_user_id: string;
+          p_verification_id: string;
+        };
+        Returns: Json;
       };
       confirm_unverified_sender: {
         Args: { p_account_id: string; p_interaction_id: string };

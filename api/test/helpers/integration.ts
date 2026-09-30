@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 export interface SupabaseStatus {
   API_URL: string;
@@ -8,7 +8,7 @@ export interface SupabaseStatus {
 }
 
 export function readSupabaseStatus(): SupabaseStatus {
-  const output = execSync('supabase status --output env --workdir db', {
+  const output = execFileSync('supabase', ['status', '--output', 'env', '--workdir', process.env.SUPABASE_TEST_WORKDIR ?? 'db'], {
     cwd: process.cwd().endsWith('/api') ? '..' : '.',
     encoding: 'utf8',
   });

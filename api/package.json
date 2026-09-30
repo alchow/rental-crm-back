@@ -58,7 +58,8 @@
     "test:imports-live": "tsx test/imports-live.test.ts",
     "bench:import": "tsx test/bench-import.ts",
     "test:unit": "vitest run",
-    "ci:integration": "node test/run-test-group.mjs integration"
+    "ci:integration": "node test/run-test-group.mjs integration",
+    "test:owner-phone-verifier": "tsx test/owner-phone-verifier.test.ts"
   },
   "tsup": {
     "entry": [

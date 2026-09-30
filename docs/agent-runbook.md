@@ -110,3 +110,31 @@ set deleted_at = now()
 where user_id = '<legacy-agent-user-uuid>' and role = 'agent' and deleted_at is null;
 ```
 
+
+## Dedicated phone verifier (independent of agent access)
+
+After applying `20260929000001_owner_phone_verifier.sql`, provision a dedicated
+random secret of at least 32 characters through the Core admin environment.
+Keep the plaintext in your secret manager; do not put it in shell history or
+command arguments. The provisioning script reads `PHONE_VERIFIER_SECRET` from
+the environment, stores its SHA-256 hash, and prints only the key id:
+
+```sh
+# Supply PHONE_VERIFIER_SECRET and the usual Core admin environment securely.
+pnpm --filter ./api exec tsx scripts/provision-phone-verifier.ts phone-verifier-v1 <logical-verifier-uuid>
+```
+
+Copy the plaintext into the agent's `CORE_PHONE_VERIFIER_SECRET` secret and set
+`CORE_PHONE_VERIFIER_KEY_ID=phone-verifier-v1`. The sole capability is
+`owner_phone_verification:record`; the credential cannot list agent accounts,
+mint sessions, or grant account access. Never reuse an agent root secret.
+
+Rotation: insert a new key id with a new secret and the **same logical verifier
+UUID**, switch the agent secret/key id, then disable the old key. This preserves
+receipt identity across rotation. Disable a key with an operator-authorized
+DB update to `phone_verifier_keys.disabled_at`; do not delete receipts. Even
+previously successful requests fail with a disabled key. Use different logical
+UUIDs for unrelated verifier services. Keys have no general permission scope.
+
+The agent defaults to legacy persistence until its pause/drain cutover is
+complete; see the agent repository's `docs/deployment.md`. Deploy Core first.
