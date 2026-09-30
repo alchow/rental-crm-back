@@ -74,6 +74,16 @@ begin
     (v_acc_a, v_user_a, 'owner'),
     (v_acc_b, v_user_b, 'owner');
 
+  -- Receipt visibility must remain scoped to the verified human and account.
+  insert into public.owner_phone_verification_receipts (
+    verifier_id, user_id, verification_id, account_id, phone,
+    expires_at, phone_verified_at, correlation_id
+  ) values
+    (gen_random_uuid(), v_user_a, gen_random_uuid(), v_acc_a, '+14155550101',
+      now() + interval '10 minutes', now(), 'isolation-phone-a'),
+    (gen_random_uuid(), v_user_b, gen_random_uuid(), v_acc_b, '+14155550102',
+      now() + interval '10 minutes', now(), 'isolation-phone-b');
+
   -- Places
   v_prop_a := gen_random_uuid(); v_prop_b := gen_random_uuid();
   insert into public.properties (id, account_id, name) values
