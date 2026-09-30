@@ -5751,6 +5751,63 @@ $$;
 ALTER FUNCTION "public"."complete_send"("p_outbox_id" "uuid", "p_provider" "text", "p_provider_sid" "text", "p_rfc822_message_id" "text") OWNER TO "postgres";
 
 --
+-- Name: confirm_owner_phone_verification("text", "text", "uuid", "uuid", "uuid", "text", timestamp with time zone, "text"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."confirm_owner_phone_verification"("p_key_id" "text", "p_secret_hash" "text", "p_user_id" "uuid", "p_account_id" "uuid", "p_verification_id" "uuid", "p_phone" "text", "p_expires_at" timestamp with time zone, "p_correlation_id" "text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'pg_temp'
+    AS $_$
+declare
+  v_verifier uuid;
+  v_receipt public.owner_phone_verification_receipts%rowtype;
+  v_verified_at timestamptz;
+begin
+  -- The API supplies the user id only after validating the human JWT. This RPC
+  -- is executable only by the service role, never by a user or agent JWT.
+  select verifier_id into v_verifier from public.phone_verifier_keys
+    where key_id = p_key_id and secret_hash = p_secret_hash and disabled_at is null
+      and capability = 'owner_phone_verification:record' for share;
+  if not found then raise exception 'invalid verifier' using errcode = '42501'; end if;
+  perform 1 from public.account_members m join public.accounts a on a.id = m.account_id
+    where m.account_id = p_account_id and m.user_id = p_user_id
+      and m.role in ('owner', 'manager') and m.deleted_at is null and a.deleted_at is null
+    for share of m, a;
+  if not found then raise exception 'not authorized' using errcode = '42501'; end if;
+  -- Serializes both duplicate receipts and different challenges for this user.
+  perform 1 from public.users where id = p_user_id and deleted_at is null for update;
+  if not found then raise exception 'user not found' using errcode = 'P0002'; end if;
+  select * into v_receipt from public.owner_phone_verification_receipts
+    where verifier_id = v_verifier and user_id = p_user_id and verification_id = p_verification_id;
+  if found then
+    if v_receipt.account_id is distinct from p_account_id or v_receipt.phone is distinct from p_phone
+        or v_receipt.expires_at is distinct from p_expires_at then
+      raise exception 'verification conflict' using errcode = '23505';
+    end if;
+    -- Replay authenticates again but never overwrites a newer profile number.
+    return jsonb_build_object('user_id', p_user_id, 'phone', v_receipt.phone,
+      'phone_verified_at', v_receipt.phone_verified_at, 'replayed', true);
+  end if;
+  if p_expires_at is null or p_expires_at <= clock_timestamp()
+      or p_expires_at > clock_timestamp() + interval '10 minutes 30 seconds'
+      or p_phone is null or p_phone !~ '^\+[1-9][0-9]{6,14}$' then
+    raise exception 'invalid verification proof' using errcode = '22023';
+  end if;
+  v_verified_at := clock_timestamp();
+  update public.users set phone = p_phone, phone_verified_at = v_verified_at,
+    updated_at = v_verified_at where id = p_user_id;
+  insert into public.owner_phone_verification_receipts
+    values (v_verifier, p_user_id, p_verification_id, p_account_id, p_phone,
+      p_expires_at, v_verified_at, p_correlation_id);
+  return jsonb_build_object('user_id', p_user_id, 'phone', p_phone,
+    'phone_verified_at', v_verified_at, 'replayed', false);
+end;
+$_$;
+
+
+ALTER FUNCTION "public"."confirm_owner_phone_verification"("p_key_id" "text", "p_secret_hash" "text", "p_user_id" "uuid", "p_account_id" "uuid", "p_verification_id" "uuid", "p_phone" "text", "p_expires_at" timestamp with time zone, "p_correlation_id" "text") OWNER TO "postgres";
+
+--
 -- Name: confirm_unverified_sender("uuid", "uuid"); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -7530,6 +7587,31 @@ $$;
 
 
 ALTER FUNCTION "public"."guard_agent_membership_delete"() OWNER TO "postgres";
+
+--
+-- Name: guard_user_phone_verification(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."guard_user_phone_verification"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public', 'pg_temp'
+    AS $$
+begin
+  if current_user in ('authenticated', 'anon') then
+    if new.phone_verified_at is not null and
+      (tg_op = 'INSERT' or new.phone_verified_at is distinct from old.phone_verified_at) then
+      raise exception 'verification requires SMS proof' using errcode = '42501';
+    end if;
+    if tg_op = 'UPDATE' and new.phone is distinct from old.phone then
+      new.phone_verified_at := null;
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."guard_user_phone_verification"() OWNER TO "postgres";
 
 --
 -- Name: inspection_checkout_diff("uuid", "uuid"); Type: FUNCTION; Schema: public; Owner: postgres
@@ -11724,6 +11806,26 @@ COMMENT ON COLUMN "public"."notices"."notice_class" IS 'Machine-readable functio
 
 
 --
+-- Name: owner_phone_verification_receipts; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."owner_phone_verification_receipts" (
+    "verifier_id" "uuid" NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "verification_id" "uuid" NOT NULL,
+    "account_id" "uuid" NOT NULL,
+    "phone" "text" NOT NULL,
+    "expires_at" timestamp with time zone NOT NULL,
+    "phone_verified_at" timestamp with time zone NOT NULL,
+    "correlation_id" "text" NOT NULL
+);
+
+ALTER TABLE ONLY "public"."owner_phone_verification_receipts" FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."owner_phone_verification_receipts" OWNER TO "postgres";
+
+--
 -- Name: payment_allocations; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -11781,6 +11883,27 @@ ALTER TABLE ONLY "public"."payments" FORCE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."payments" OWNER TO "postgres";
+
+--
+-- Name: phone_verifier_keys; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."phone_verifier_keys" (
+    "key_id" "text" NOT NULL,
+    "verifier_id" "uuid" NOT NULL,
+    "secret_hash" "text" NOT NULL,
+    "capability" "text" DEFAULT 'owner_phone_verification:record'::"text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "disabled_at" timestamp with time zone,
+    CONSTRAINT "phone_verifier_keys_capability_check" CHECK (("capability" = 'owner_phone_verification:record'::"text")),
+    CONSTRAINT "phone_verifier_keys_key_id_check" CHECK (("key_id" ~ '^[A-Za-z0-9_-]{1,100}$'::"text")),
+    CONSTRAINT "phone_verifier_keys_secret_hash_check" CHECK (("secret_hash" ~ '^[a-f0-9]{64}$'::"text"))
+);
+
+ALTER TABLE ONLY "public"."phone_verifier_keys" FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."phone_verifier_keys" OWNER TO "postgres";
 
 --
 -- Name: properties; Type: TABLE; Schema: public; Owner: postgres
@@ -13007,6 +13130,14 @@ ALTER TABLE ONLY "public"."notices"
 
 
 --
+-- Name: owner_phone_verification_receipts owner_phone_verification_receipts_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."owner_phone_verification_receipts"
+    ADD CONSTRAINT "owner_phone_verification_receipts_pkey" PRIMARY KEY ("verifier_id", "user_id", "verification_id");
+
+
+--
 -- Name: payment_allocations payment_allocations_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -13036,6 +13167,14 @@ ALTER TABLE ONLY "public"."payments"
 
 ALTER TABLE ONLY "public"."payments"
     ADD CONSTRAINT "payments_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: phone_verifier_keys phone_verifier_keys_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."phone_verifier_keys"
+    ADD CONSTRAINT "phone_verifier_keys_pkey" PRIMARY KEY ("key_id");
 
 
 --
@@ -14906,6 +15045,13 @@ CREATE OR REPLACE TRIGGER "evidence_exports_audit" AFTER INSERT OR DELETE OR UPD
 
 
 --
+-- Name: users guard_user_phone_verification; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "guard_user_phone_verification" BEFORE INSERT OR UPDATE ON "public"."users" FOR EACH ROW EXECUTE FUNCTION "public"."guard_user_phone_verification"();
+
+
+--
 -- Name: inbound_provenance inbound_provenance_audit; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
@@ -16260,6 +16406,14 @@ ALTER TABLE ONLY "public"."notices"
 
 
 --
+-- Name: owner_phone_verification_receipts owner_phone_verification_receipts_account_id_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."owner_phone_verification_receipts"
+    ADD CONSTRAINT "owner_phone_verification_receipts_account_id_user_id_fkey" FOREIGN KEY ("account_id", "user_id") REFERENCES "public"."account_members"("account_id", "user_id");
+
+
+--
 -- Name: payment_allocations payment_allocations_account_id_charge_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -17316,6 +17470,19 @@ CREATE POLICY "notices_member_all" ON "public"."notices" USING (("account_id" IN
 
 
 --
+-- Name: owner_phone_verification_receipts owner_phone_receipts_self_select; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "owner_phone_receipts_self_select" ON "public"."owner_phone_verification_receipts" FOR SELECT TO "authenticated" USING ((("user_id" = ( SELECT "auth"."uid"() AS "uid")) AND "public"."is_account_member"("account_id")));
+
+
+--
+-- Name: owner_phone_verification_receipts; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."owner_phone_verification_receipts" ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: payment_allocations; Type: ROW SECURITY; Schema: public; Owner: postgres
 --
 
@@ -17348,6 +17515,12 @@ CREATE POLICY "payments_member_all" ON "public"."payments" USING (("account_id" 
    FROM "public"."account_members" "m"
   WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL)))));
 
+
+--
+-- Name: phone_verifier_keys; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."phone_verifier_keys" ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: platform_numbers; Type: ROW SECURITY; Schema: public; Owner: postgres
@@ -18309,6 +18482,14 @@ GRANT ALL ON FUNCTION "public"."complete_send"("p_outbox_id" "uuid", "p_provider
 
 
 --
+-- Name: FUNCTION "confirm_owner_phone_verification"("p_key_id" "text", "p_secret_hash" "text", "p_user_id" "uuid", "p_account_id" "uuid", "p_verification_id" "uuid", "p_phone" "text", "p_expires_at" timestamp with time zone, "p_correlation_id" "text"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."confirm_owner_phone_verification"("p_key_id" "text", "p_secret_hash" "text", "p_user_id" "uuid", "p_account_id" "uuid", "p_verification_id" "uuid", "p_phone" "text", "p_expires_at" timestamp with time zone, "p_correlation_id" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."confirm_owner_phone_verification"("p_key_id" "text", "p_secret_hash" "text", "p_user_id" "uuid", "p_account_id" "uuid", "p_verification_id" "uuid", "p_phone" "text", "p_expires_at" timestamp with time zone, "p_correlation_id" "text") TO "service_role";
+
+
+--
 -- Name: FUNCTION "confirm_unverified_sender"("p_account_id" "uuid", "p_interaction_id" "uuid"); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -18483,6 +18664,15 @@ GRANT ALL ON FUNCTION "public"."generate_scheduled_task_runs"("p_account_id" "uu
 GRANT ALL ON FUNCTION "public"."guard_agent_membership_delete"() TO "anon";
 GRANT ALL ON FUNCTION "public"."guard_agent_membership_delete"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."guard_agent_membership_delete"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "guard_user_phone_verification"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON FUNCTION "public"."guard_user_phone_verification"() TO "anon";
+GRANT ALL ON FUNCTION "public"."guard_user_phone_verification"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."guard_user_phone_verification"() TO "service_role";
 
 
 --
@@ -19313,6 +19503,14 @@ GRANT ALL ON TABLE "public"."notices" TO "service_role";
 
 
 --
+-- Name: TABLE "owner_phone_verification_receipts"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."owner_phone_verification_receipts" TO "service_role";
+GRANT SELECT ON TABLE "public"."owner_phone_verification_receipts" TO "authenticated";
+
+
+--
 -- Name: TABLE "payment_allocations"; Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -19328,6 +19526,13 @@ GRANT ALL ON TABLE "public"."payment_allocations" TO "service_role";
 GRANT ALL ON TABLE "public"."payments" TO "anon";
 GRANT ALL ON TABLE "public"."payments" TO "authenticated";
 GRANT ALL ON TABLE "public"."payments" TO "service_role";
+
+
+--
+-- Name: TABLE "phone_verifier_keys"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."phone_verifier_keys" TO "service_role";
 
 
 --

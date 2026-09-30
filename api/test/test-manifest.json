@@ -6,6 +6,7 @@
     }
   ],
   "integration": [
+    { "script": "test:owner-phone-verifier", "description": "Dual-credential phone verification and atomic replay." },
     { "script": "test:api-isolation", "description": "API-level cross-account RLS isolation." },
     { "script": "test:auth-refresh", "description": "Concurrent auth refresh isolation." },
     { "script": "test:profile", "description": "Authenticated landlord profile behavior." },

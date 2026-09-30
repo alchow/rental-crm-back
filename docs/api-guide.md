@@ -1403,3 +1403,19 @@ A typical run: upload → review `recognition`/`mapping` → adjust with `PATCH 
 ---
 
 _Build against `/v1` and the generated types. The OpenAPI spec at `GET /openapi.json` is the authoritative contract. If something you need isn't expressible through this API, request it here rather than working around it — the invariants above only hold because all writes go through the contract._
+
+## Owner phone confirmation
+
+| Method | Path | Behavior |
+|---|---|---|
+| `POST` | `/v1/accounts/{accountId}/owner-phone-verifications/confirm` | Current human bearer plus dedicated verifier key; record that caller's verified phone without an assistant grant. |
+
+The body is `{verification_id, phone, expires_at}`; no target user is accepted.
+`phone` must already be E.164 and `expires_at` is the immutable SMS challenge
+expiry. Required headers are `X-Phone-Verifier-Key-Id`,
+`X-Phone-Verifier-Secret`, `X-Correlation-Id`, and
+`Idempotency-Key: owner-phone-<verification_id>`. Core rechecks both credentials
+and live owner/manager membership before first commit or replay. A changed
+account/phone/expiry for the same receipt returns 409. Success returns
+`{user_id, phone, phone_verified_at}`; replay includes `Idempotency-Replay: true`.
+See `architecture.md` for the atomic receipt and proof-expiry rules.

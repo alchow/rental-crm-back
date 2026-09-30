@@ -18,24 +18,25 @@ if [[ "$MODE" != "write" && "$MODE" != "--check" ]]; then
   exit 2
 fi
 
+DB_WORKDIR="${DB_ARTIFACT_WORKDIR:-db}"
 TYPE_TARGET="api/src/supabase/database.types.ts"
 SCHEMA_TARGET="db/current-schema.sql"
 ARTIFACT_TMP="$(mktemp -d)"
 trap 'rm -rf "$ARTIFACT_TMP"' EXIT
 
-if ! supabase --workdir db status >/dev/null 2>&1; then
+if ! supabase --workdir "$DB_WORKDIR" status >/dev/null 2>&1; then
   echo "FAIL: the local Supabase stack is not running." >&2
   echo "Start it with: (cd db && supabase start)" >&2
   exit 1
 fi
 
-supabase --workdir db db dump \
+supabase --workdir "$DB_WORKDIR" db dump \
   --local \
   --schema public \
   --keep-comments \
   --file "$ARTIFACT_TMP/schema.raw.sql" >/dev/null
 
-supabase --workdir db gen types --local --schema public > "$ARTIFACT_TMP/types.raw.ts"
+supabase --workdir "$DB_WORKDIR" gen types --local --schema public > "$ARTIFACT_TMP/types.raw.ts"
 node scripts/normalize-database-types.mjs \
   "$ARTIFACT_TMP/types.raw.ts" \
   "$ARTIFACT_TMP/schema.raw.sql" \

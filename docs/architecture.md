@@ -212,3 +212,39 @@ several historical definitions across the migration chain.
 
 `api/test/test-manifest.json` classifies every API `test:*` script so adding a
 test without adding it to CI is a checked failure.
+
+## Phone verification authorization
+
+The agent service owns SMS challenges; Core owns `users.phone` and
+`phone_verified_at`. The dedicated confirmation path is:
+
+```text
+Current human JWT + dedicated verifier key + immutable challenge proof
+  → normal JWT/membership middleware
+  → owner-phone confirmation route (human principal only)
+  → admin owner-phone-verifier capability
+  → atomic key/live-role check + receipt + profile write
+```
+
+`POST /v1/accounts/{accountId}/owner-phone-verifications/confirm` derives the
+user from the JWT. The request carries `verification_id`, E.164 `phone`, and
+original `expires_at`, plus `X-Phone-Verifier-Key-Id`, `X-Phone-Verifier-Secret`,
+`X-Correlation-Id`, and `Idempotency-Key: owner-phone-<verification_id>`.
+It requires live owner/manager membership and an enabled dedicated verifier
+key. It does not consult, create, or restore agent grants.
+
+Generic idempotency middleware exempts this exact route because it would replay
+before verifier authentication. The privileged RPC owns the atomic receipt,
+keyed by logical verifier identity, user, and challenge UUID; account, phone,
+and expiry cannot change on replay. Both credentials and live membership are
+checked before returning a receipt. An expired proof cannot first commit, but an
+authenticated retry may replay the original result without overwriting a newer
+phone. First-commit expiry is at most 10 minutes plus 30 seconds in the future.
+Receipts are retained indefinitely (any future cleanup must retain 30 days).
+
+`phone_verifier_keys` is inaccessible to user JWTs; only hashed secrets are
+stored. The RPC is executable only through the admin boundary. The profile
+trigger blocks raw user writes to the verified column and clears verification
+when a raw user changes the phone. The legacy agent-principal endpoint remains
+for the agent service's explicit rollout mode. Agent access still gates
+assistant messaging and optional automatic SMS linking after verification.
