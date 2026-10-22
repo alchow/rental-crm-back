@@ -11720,6 +11720,87 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/accounts/{accountId}/comms/tenants/{tenantId}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Captured person history across threads, newest first. Corrections remain explicit records. */
+        get: {
+            parameters: {
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                    snapshot?: string;
+                };
+                header?: never;
+                path: {
+                    accountId: string;
+                    tenantId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["TenantHistoryPage"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/accounts/{accountId}/owner-phone-verifications": {
         parameters: {
             query?: never;
@@ -20120,6 +20201,15 @@ export interface components {
             provider: string;
             capabilities?: ("sms" | "mms" | "voice")[];
         };
+        TenantHistoryMessage: components["schemas"]["CommThreadMessage"] & {
+            thread: components["schemas"]["CommThread"] | null;
+        };
+        TenantHistoryPage: {
+            data: components["schemas"]["TenantHistoryMessage"][];
+            next_cursor: string | null;
+            /** Format: date-time */
+            snapshot: string;
+        };
         OwnerPhoneResponse: {
             /** Format: uuid */
             user_id: string;
@@ -20618,6 +20708,9 @@ export interface components {
             status: components["schemas"]["EvidenceExportStatus"];
             error: string | null;
             /** Format: uuid */
+            tenant_id: string | null;
+            timezone: string;
+            /** Format: uuid */
             tenancy_id: string | null;
             /** Format: uuid */
             area_id: string | null;
@@ -20635,6 +20728,9 @@ export interface components {
             deleted_at: string | null;
         };
         EvidenceExportRequest: {
+            /** Format: uuid */
+            tenant_id?: string;
+            timezone?: string;
             /** Format: uuid */
             tenancy_id?: string;
             /** Format: uuid */

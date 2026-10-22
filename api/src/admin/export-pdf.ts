@@ -1,3 +1,4 @@
+import { renderTenantCommunications } from './export-pdf/tenant-communications';
 import { getLogger } from '../log';
 import { getAdminClient } from './supabase-admin';
 import { renderExportPdf } from './export-pdf/render';
@@ -26,6 +27,8 @@ export const MAX_GENERATED_BYTES = GENERATED_ARTIFACT_MAX_BYTES;
 export interface ExportScope {
   accountId: string;
   tenancyId?: string | null;
+  tenantId?: string | null;
+  timezone?: string;
   areaId?: string | null;
   fromDate?: string | null; // ISO date
   toDate?: string | null; // ISO date
@@ -89,7 +92,9 @@ export async function buildEvidenceExport(evidenceExportId: string): Promise<voi
   const admin = getAdminClient();
   const { data: row, error: rowErr } = await admin
     .from('evidence_exports')
-    .select('id, account_id, tenancy_id, area_id, from_date, to_date, exporter, status')
+    .select(
+      'id, account_id, tenancy_id, tenant_id, timezone, area_id, from_date, to_date, exporter, status',
+    )
     .eq('id', evidenceExportId)
     .is('deleted_at', null)
     .maybeSingle();
@@ -111,6 +116,8 @@ export async function buildEvidenceExport(evidenceExportId: string): Promise<voi
       evidenceExportId,
       scope: {
         accountId: row.account_id as string,
+        tenantId: row.tenant_id,
+        timezone: row.timezone,
         tenancyId: (row.tenancy_id as string | null) ?? null,
         areaId: (row.area_id as string | null) ?? null,
         fromDate: (row.from_date as string | null) ?? null,
@@ -144,7 +151,7 @@ async function renderAndComplete(args: {
   const admin = getAdminClient();
   const generatedAt = new Date();
 
-  if (!scope.tenancyId && !scope.areaId) {
+  if (!scope.tenancyId && !scope.areaId && !scope.tenantId) {
     throw new Error('export scope must include at least tenancy_id or area_id');
   }
 
@@ -177,15 +184,9 @@ async function renderAndComplete(args: {
   // 2. Load every entity in scope. These queries use the admin client; the
   //    caller (the route handler) is responsible for verifying the user is
   //    a member of `accountId` before invoking this builder.
-  const data = await loadExportData(scope);
-
-  // 3. Render PDF.
-  const pdfBytes = await renderExportPdf({
-    scope,
-    generatedAt,
-    chain,
-    data,
-  });
+  const pdfBytes = scope.tenantId
+    ? await renderTenantCommunications(scope, generatedAt, chain)
+    : await renderExportPdf({ scope, generatedAt, chain, data: await loadExportData(scope) });
 
   // 4. Hash + immutable store. Generated artifacts use the separate 200 MiB
   // cap, and duplicate paths are byte-verified before they are accepted.

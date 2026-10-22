@@ -1419,3 +1419,15 @@ and live owner/manager membership before first commit or replay. A changed
 account/phone/expiry for the same receipt returns 409. Success returns
 `{user_id, phone, phone_verified_at}`; replay includes `Idempotency-Replay: true`.
 See `architecture.md` for the atomic receipt and proof-expiry rules.
+
+### Tenant communication history
+
+`GET /v1/accounts/{accountId}/comms/tenants/{tenantId}/messages` returns captured
+SMS/email across homes and closed threads, newest first. `limit` is at most 100.
+Pass both `next_cursor` as `cursor` and the returned `snapshot` for subsequent
+pages. Refresh without either to include new arrivals. Corrections remain explicit
+records; original message identity is not rewritten. Account owners/managers only.
+
+Evidence export requests may specify `tenant_id` with an optional `tenancy_id`,
+date range and IANA `timezone`. These exports combine captured communications and
+landlord-entered records for that person, including full correction history.

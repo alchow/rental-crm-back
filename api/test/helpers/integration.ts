@@ -8,10 +8,14 @@ export interface SupabaseStatus {
 }
 
 export function readSupabaseStatus(): SupabaseStatus {
-  const output = execFileSync('supabase', ['status', '--output', 'env', '--workdir', process.env.SUPABASE_TEST_WORKDIR ?? 'db'], {
-    cwd: process.cwd().endsWith('/api') ? '..' : '.',
-    encoding: 'utf8',
-  });
+  const output = execFileSync(
+    'supabase',
+    ['status', '--output', 'env', '--workdir', process.env.SUPABASE_TEST_WORKDIR ?? 'db'],
+    {
+      cwd: process.cwd().endsWith('/api') ? '..' : '.',
+      encoding: 'utf8',
+    },
+  );
   const values = new Map<string, string>();
   for (const line of output.split('\n')) {
     const match = /^([A-Z0-9_]+)=(.*)$/.exec(line);
@@ -61,6 +65,7 @@ export interface ApiRequestOptions {
   multipart?: FormData;
   idempotencyKey?: string;
   headers?: Record<string, string>;
+  responseType?: 'json' | 'bytes';
 }
 
 interface FetchApp {
@@ -96,6 +101,13 @@ export function createApiClient(app: FetchApp) {
     response.headers.forEach((value, key) => {
       responseHeaders[key] = value;
     });
+    if (options.responseType === 'bytes') {
+      return {
+        status: response.status,
+        body: new Uint8Array(await response.arrayBuffer()),
+        headers: responseHeaders,
+      };
+    }
     const text = await response.text();
     let body: unknown = null;
     if (text) {

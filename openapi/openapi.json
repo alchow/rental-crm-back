@@ -8648,6 +8648,57 @@
           "provider"
         ]
       },
+      "TenantHistoryMessage": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CommThreadMessage"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "thread": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CommThread"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "thread"
+            ]
+          }
+        ]
+      },
+      "TenantHistoryPage": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TenantHistoryMessage"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "snapshot": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "data",
+          "next_cursor",
+          "snapshot"
+        ]
+      },
       "OwnerPhoneResponse": {
         "type": "object",
         "properties": {
@@ -10642,6 +10693,16 @@
               "null"
             ]
           },
+          "tenant_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "timezone": {
+            "type": "string"
+          },
           "tenancy_id": {
             "type": [
               "string",
@@ -10715,6 +10776,8 @@
           "account_id",
           "status",
           "error",
+          "tenant_id",
+          "timezone",
           "tenancy_id",
           "area_id",
           "from_date",
@@ -10732,6 +10795,13 @@
       "EvidenceExportRequest": {
         "type": "object",
         "properties": {
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "timezone": {
+            "type": "string"
+          },
           "tenancy_id": {
             "type": "string",
             "format": "uuid"
@@ -28503,6 +28573,123 @@
           },
           "409": {
             "description": "idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/comms/tenants/{tenantId}/messages": {
+      "get": {
+        "tags": [
+          "comms"
+        ],
+        "summary": "Captured person history across threads, newest first. Corrections remain explicit records.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "tenantId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 100,
+              "default": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": false,
+            "name": "snapshot",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantHistoryPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
             "content": {
               "application/json": {
                 "schema": {

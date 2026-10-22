@@ -14,22 +14,48 @@ import { downloadAttachment } from '../admin/storage';
 
 const ExportBody = z
   .object({
+    tenant_id: z.string().uuid().optional(),
+    timezone: z
+      .string()
+      .refine((v) => {
+        try {
+          new Intl.DateTimeFormat('en', { timeZone: v });
+          return true;
+        } catch {
+          return false;
+        }
+      }, 'invalid timezone')
+      .optional(),
     tenancy_id: z.string().uuid().optional(),
     area_id: z.string().uuid().optional(),
-    from_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-    to_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    from_date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
+    to_date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
   })
   .refine(
-    (v) => v.tenancy_id !== undefined || v.area_id !== undefined,
-    { message: 'must include tenancy_id and/or area_id (blank-scope exports rejected)' },
+    (v) => v.tenant_id !== undefined || v.tenancy_id !== undefined || v.area_id !== undefined,
+    { message: 'include tenant_id, tenancy_id or area_id' },
   )
+  .refine((v) => !(v.tenant_id && v.area_id), {
+    message: 'person exports cannot also select an area',
+  })
+  .refine((v) => !v.from_date || !v.to_date || v.from_date <= v.to_date, {
+    message: 'end date must not precede start date',
+  })
   .openapi('EvidenceExportRequest');
 
 // DATA FLOW: The row is created queued, a background
 // job renders the bundle, and the artifact fields (attachment_id,
 // chain_verified, chain_message, the real generated_at) are null/provisional
 // until status='done'. Clients poll GET until status is done or failed.
-const ExportStatus = z.enum(['queued', 'running', 'done', 'failed']).openapi('EvidenceExportStatus');
+const ExportStatus = z
+  .enum(['queued', 'running', 'done', 'failed'])
+  .openapi('EvidenceExportStatus');
 
 const ExportRow = z
   .object({
@@ -38,6 +64,8 @@ const ExportRow = z
     status: ExportStatus,
     /** Set when status='failed'; human-readable cause. Retry by POSTing a new export. */
     error: z.string().nullable(),
+    tenant_id: z.string().uuid().nullable(),
+    timezone: z.string(),
     tenancy_id: z.string().uuid().nullable(),
     area_id: z.string().uuid().nullable(),
     from_date: z.string().nullable(),
@@ -62,11 +90,20 @@ const ListQuery = z.object({
 });
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 const AccountAndIdParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
 });
 
 const create = createRoute({
@@ -119,6 +156,16 @@ evidenceExportsApp.openapi(create, async (c) => {
   // deleted_at -- the export specifically must work for ended/soft-deleted
   // tenancies (that's when disputes happen).
   const sb = getSb(c);
+  if (body.tenant_id) {
+    const t = await sb
+      .from('tenants')
+      .select('id')
+      .eq('account_id', accountId)
+      .eq('id', body.tenant_id)
+      .maybeSingle();
+    if (t.error) throw new ApiError(500, 'database_error', t.error.message);
+    if (!t.data) throw new ApiError(404, 'not_found', 'tenant not found in this account');
+  }
   if (body.tenancy_id) {
     const t = await sb
       .from('tenancies')
@@ -149,6 +196,8 @@ evidenceExportsApp.openapi(create, async (c) => {
     .from('evidence_exports')
     .insert({
       account_id: accountId,
+      tenant_id: body.tenant_id ?? null,
+      timezone: body.timezone ?? 'UTC',
       tenancy_id: body.tenancy_id ?? null,
       area_id: body.area_id ?? null,
       from_date: body.from_date ?? null,
