@@ -1589,6 +1589,8 @@ export type Database = {
           id: string;
           status: string;
           tenancy_id: string | null;
+          tenant_id: string | null;
+          timezone: string;
           to_date: string | null;
           updated_at: string;
         };
@@ -1607,6 +1609,8 @@ export type Database = {
           id?: string;
           status?: string;
           tenancy_id?: string | null;
+          tenant_id?: string | null;
+          timezone?: string;
           to_date?: string | null;
           updated_at?: string;
         };
@@ -1625,6 +1629,8 @@ export type Database = {
           id?: string;
           status?: string;
           tenancy_id?: string | null;
+          tenant_id?: string | null;
+          timezone?: string;
           to_date?: string | null;
           updated_at?: string;
         };
@@ -1655,6 +1661,13 @@ export type Database = {
             columns: ['account_id', 'tenancy_id'];
             isOneToOne: false;
             referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'evidence_exports_tenant_account_fkey';
+            columns: ['account_id', 'tenant_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenants';
             referencedColumns: ['account_id', 'id'];
           },
         ];
@@ -5443,6 +5456,59 @@ export type Database = {
           attachment_id: string;
           derivative_id: string;
         }[];
+      };
+      tenant_communication_records: {
+        Args: {
+          p_account_id: string;
+          p_captured_only?: boolean;
+          p_snapshot: string;
+          p_tenant_id: string;
+        };
+        Returns: {
+          account_id: string | null;
+          actor: string | null;
+          approval_ref: string | null;
+          approved_by: string | null;
+          area_id: string | null;
+          attestation: string | null;
+          author_type: string | null;
+          body: string | null;
+          channel: string | null;
+          correction_kind: string | null;
+          corrects_id: string | null;
+          created_at: string | null;
+          deleted_at: string | null;
+          delivered_at: string | null;
+          delivery_status: string | null;
+          direction: string | null;
+          entry_type: string | null;
+          external_ref: string | null;
+          id: string | null;
+          is_head: boolean | null;
+          kind: string | null;
+          logged_at: string | null;
+          maintenance_request_id: string | null;
+          occurred_at: string | null;
+          outbox_id: string | null;
+          party_id: string | null;
+          party_label: string | null;
+          party_type: string | null;
+          property_id: string | null;
+          references_interaction_id: string | null;
+          rfc822_message_id: string | null;
+          superseded_by_id: string | null;
+          tenancy_id: string | null;
+          thread_id: string | null;
+          updated_at: string | null;
+          vendor_id: string | null;
+          work_order_id: string | null;
+        }[];
+        SetofOptions: {
+          from: '*';
+          to: 'interactions_with_chain';
+          isOneToOne: false;
+          isSetofReturn: true;
+        };
       };
       tenant_confirm_inspection_room: {
         Args: {

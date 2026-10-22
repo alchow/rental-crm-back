@@ -151,6 +151,7 @@ export function buildApp(): OpenAPIHono {
       // the signal instead of leaving a stale boot snapshot.
       capabilities: {
         heic_decode: heic,
+        tenant_messages: { version: 1 },
         // Onboarding import needs ANTHROPIC_API_KEY (LLM) + SUPABASE_DB_URL
         // (executor), and the DB must actually answer (db_reachable -- cached
         // live probe). Reported here so a monitor catches a misconfigured env

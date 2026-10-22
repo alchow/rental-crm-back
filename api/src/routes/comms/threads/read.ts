@@ -1,5 +1,5 @@
+import { loadRelayLegs } from './delivery';
 import { createRoute, z } from '@hono/zod-openapi';
-import type { Context } from 'hono';
 import { getSb } from '../../../supabase/request-client';
 import { ApiError, errorResponses } from '../../_lib/error';
 import { keysetPage } from '../../_lib/cursor';
@@ -12,8 +12,7 @@ import {
   ThreadListQuery,
   ThreadListResponse,
 } from '../schemas';
-import type { CommOutboxStatus, CommRelayLeg, CommThread ,
-  CommThreadBinding} from '../schemas';
+import type { CommThread, CommThreadBinding } from '../schemas';
 import {
   BINDING_COLS,
   commDbError,
@@ -84,46 +83,6 @@ export function registerThreadReadRoutes(app: CommsApp): void {
     const data = items.map((t) => ({ ...t, participants: participants.get(t.id) ?? [] }));
     return c.json({ data, next_cursor } as z.infer<typeof ThreadListResponse>, 200);
   });
-
-  // Attach per-leg relay delivery states to a page of journal rows.
-  async function loadRelayLegs(
-    c: Context,
-    accountId: string,
-    interactionIds: string[],
-  ): Promise<Map<string, z.infer<typeof CommRelayLeg>[]>> {
-    const map = new Map<string, z.infer<typeof CommRelayLeg>[]>();
-    if (interactionIds.length === 0) return map;
-    const { data, error } = await getSb(c)
-      .from('comm_outbox')
-      .select(
-        'id, relay_of_interaction_id, participant_id, to_address, status, interaction_id, delivered_at',
-      )
-      .eq('account_id', accountId)
-      .in('relay_of_interaction_id', interactionIds);
-    if (error) throw commDbError(error);
-    for (const o of (data ?? []) as {
-      id: string;
-      relay_of_interaction_id: string;
-      participant_id: string | null;
-      to_address: string | null;
-      status: z.infer<typeof CommOutboxStatus>;
-      interaction_id: string | null;
-      delivered_at: string | null;
-    }[]) {
-      const leg = {
-        outbox_id: o.id,
-        participant_id: o.participant_id,
-        to_address: o.to_address,
-        status: o.status,
-        interaction_id: o.interaction_id,
-        delivered_at: o.delivered_at,
-      };
-      const list = map.get(o.relay_of_interaction_id) ?? [];
-      list.push(leg);
-      map.set(o.relay_of_interaction_id, list);
-    }
-    return map;
-  }
 
   app.openapi(getThread, async (c) => {
     // Transport + landlord: the transport reads bindings/participants (and the

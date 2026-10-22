@@ -248,3 +248,14 @@ trigger blocks raw user writes to the verified column and clears verification
 when a raw user changes the phone. The legacy agent-principal endpoint remains
 for the agent service's explicit rollout mode. Agent access still gates
 assistant messaging and optional automatic SMS linking after verification.
+
+## Person communication history
+
+`tenant_communication_records` is a security-invoker read function over the journal
+and its immutable participant cast. It selects person-attributed roots and their
+explicit correction chains; it never treats current thread membership as history.
+The captured Messages feed filters to SMS/email thread roots and pages on
+`(occurred_at, id)` under a creation-time snapshot. Tenant communication exports
+reuse the same selection with landlord-entered records included, then render all
+pages with the requested timezone. Account authorization remains JWT/RLS for
+interactive reads and validated account/tenant scope before the export worker.

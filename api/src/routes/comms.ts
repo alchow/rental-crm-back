@@ -1,3 +1,4 @@
+import { registerTenantHistoryRoute } from './comms/tenant-history';
 import { newApiApp } from './_lib/app';
 import { registerAttachmentRoutes } from './comms/attachments';
 import { registerInboundRoutes } from './comms/inbound';
@@ -16,3 +17,5 @@ registerThreadRoutes(commsApp);
 registerAttachmentRoutes(commsApp);
 registerPolicyRoutes(commsApp);
 registerPlatformNumberRoutes(commsApp);
+
+registerTenantHistoryRoute(commsApp);

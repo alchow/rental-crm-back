@@ -9860,6 +9860,36 @@ $$;
 ALTER FUNCTION "public"."tenant_attach_inspection_item_photo"("p_account_id" "uuid", "p_token_id" "uuid", "p_inspection_id" "uuid", "p_item_id" "uuid", "p_attachment_hash" "text", "p_attachment_mime" "text", "p_attachment_size" bigint, "p_attachment_path" "text", "p_derivative_hash" "text", "p_derivative_mime" "text", "p_derivative_size" bigint, "p_derivative_path" "text") OWNER TO "postgres";
 
 --
+-- Name: tenant_communication_records("uuid", "uuid", timestamp with time zone, boolean); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."tenant_communication_records"("p_account_id" "uuid", "p_tenant_id" "uuid", "p_snapshot" timestamp with time zone, "p_captured_only" boolean DEFAULT true) RETURNS SETOF "public"."interactions_with_chain"
+    LANGUAGE "sql" STABLE
+    SET "search_path" TO 'public'
+    AS $$
+  with recursive selected(id) as (
+    select i.id from public.interactions i
+    where i.account_id = p_account_id and i.corrects_id is null
+      and not exists (select 1 from public.comm_outbox o where o.account_id = i.account_id
+        and o.interaction_id = i.id and o.relay_of_interaction_id is not null)
+      and i.created_at <= p_snapshot
+      and (not p_captured_only or (i.thread_id is not null and i.channel in ('sms', 'email') and i.kind = 'communication'))
+      and (i.party_type = 'tenant' and i.party_id = p_tenant_id
+        or exists (select 1 from public.interaction_participants p
+          where p.account_id = i.account_id and p.interaction_id = i.id
+            and p.party_type = 'tenant' and p.party_id = p_tenant_id))
+    union
+    select i.id from public.interactions i join selected s on i.corrects_id = s.id
+    where i.account_id = p_account_id and i.created_at <= p_snapshot
+  )
+  select v.* from public.interactions_with_chain v join selected s on s.id = v.id
+  where v.account_id = p_account_id;
+$$;
+
+
+ALTER FUNCTION "public"."tenant_communication_records"("p_account_id" "uuid", "p_tenant_id" "uuid", "p_snapshot" timestamp with time zone, "p_captured_only" boolean) OWNER TO "postgres";
+
+--
 -- Name: tenant_confirm_inspection_room("uuid", "uuid", "uuid", "text"); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -11276,9 +11306,11 @@ CREATE TABLE IF NOT EXISTS "public"."evidence_exports" (
     "deleted_at" timestamp with time zone,
     "status" "text" DEFAULT 'done'::"text" NOT NULL,
     "error" "text",
+    "tenant_id" "uuid",
+    "timezone" "text" DEFAULT 'UTC'::"text" NOT NULL,
     CONSTRAINT "evidence_exports_check" CHECK ((("from_date" IS NULL) OR ("to_date" IS NULL) OR ("to_date" >= "from_date"))),
-    CONSTRAINT "evidence_exports_check1" CHECK ((("tenancy_id" IS NOT NULL) OR ("area_id" IS NOT NULL))),
     CONSTRAINT "evidence_exports_done_is_complete" CHECK ((("status" <> 'done'::"text") OR (("attachment_id" IS NOT NULL) AND ("chain_verified" IS NOT NULL) AND ("chain_message" IS NOT NULL)))),
+    CONSTRAINT "evidence_exports_scope_check" CHECK ((("tenancy_id" IS NOT NULL) OR ("area_id" IS NOT NULL) OR ("tenant_id" IS NOT NULL))),
     CONSTRAINT "evidence_exports_status_check" CHECK (("status" = ANY (ARRAY['queued'::"text", 'running'::"text", 'done'::"text", 'failed'::"text"])))
 );
 
@@ -16014,6 +16046,14 @@ ALTER TABLE ONLY "public"."evidence_exports"
 
 
 --
+-- Name: evidence_exports evidence_exports_tenant_account_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."evidence_exports"
+    ADD CONSTRAINT "evidence_exports_tenant_account_fkey" FOREIGN KEY ("account_id", "tenant_id") REFERENCES "public"."tenants"("account_id", "id");
+
+
+--
 -- Name: idempotency_keys idempotency_keys_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -18988,6 +19028,15 @@ GRANT ALL ON FUNCTION "public"."sync_agent_membership_from_grant"() TO "service_
 
 REVOKE ALL ON FUNCTION "public"."tenant_attach_inspection_item_photo"("p_account_id" "uuid", "p_token_id" "uuid", "p_inspection_id" "uuid", "p_item_id" "uuid", "p_attachment_hash" "text", "p_attachment_mime" "text", "p_attachment_size" bigint, "p_attachment_path" "text", "p_derivative_hash" "text", "p_derivative_mime" "text", "p_derivative_size" bigint, "p_derivative_path" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."tenant_attach_inspection_item_photo"("p_account_id" "uuid", "p_token_id" "uuid", "p_inspection_id" "uuid", "p_item_id" "uuid", "p_attachment_hash" "text", "p_attachment_mime" "text", "p_attachment_size" bigint, "p_attachment_path" "text", "p_derivative_hash" "text", "p_derivative_mime" "text", "p_derivative_size" bigint, "p_derivative_path" "text") TO "service_role";
+
+
+--
+-- Name: FUNCTION "tenant_communication_records"("p_account_id" "uuid", "p_tenant_id" "uuid", "p_snapshot" timestamp with time zone, "p_captured_only" boolean); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."tenant_communication_records"("p_account_id" "uuid", "p_tenant_id" "uuid", "p_snapshot" timestamp with time zone, "p_captured_only" boolean) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."tenant_communication_records"("p_account_id" "uuid", "p_tenant_id" "uuid", "p_snapshot" timestamp with time zone, "p_captured_only" boolean) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."tenant_communication_records"("p_account_id" "uuid", "p_tenant_id" "uuid", "p_snapshot" timestamp with time zone, "p_captured_only" boolean) TO "service_role";
 
 
 --
