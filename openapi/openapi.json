@@ -5348,6 +5348,46 @@
           "revoked_at"
         ]
       },
+      "CaptureMetadata": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "method": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "tenant_submission",
+              "provider",
+              "import",
+              "unknown"
+            ]
+          },
+          "time_basis": {
+            "type": "string",
+            "enum": [
+              "supplied",
+              "provider",
+              "recorded_default",
+              "unknown"
+            ]
+          },
+          "text_basis": {
+            "type": "string",
+            "enum": [
+              "summary",
+              "source_text",
+              "unknown"
+            ]
+          }
+        },
+        "required": [
+          "method",
+          "time_basis",
+          "text_basis"
+        ]
+      },
       "MaintenanceReportedBy": {
         "type": [
           "object",
@@ -5410,6 +5450,18 @@
           "reported_at": {
             "type": "string"
           },
+          "logged_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "capture_metadata": {
+            "$ref": "#/components/schemas/CaptureMetadata"
+          },
+          "withdrawn": {
+            "type": "boolean"
+          },
           "attestation": {
             "type": [
               "string",
@@ -5434,7 +5486,7 @@
           "reported_at",
           "attestation"
         ],
-        "description": "Derived from the earliest linked inbound root interaction and its immutable sender cast. Null means no structured report interaction exists."
+        "description": "Identifies the immutable original report and sender snapshot. Capture facts distinguish manual summary and defaulted time. Null means no structured report interaction exists."
       },
       "MaintenanceRequest": {
         "type": "object",
@@ -5817,6 +5869,9 @@
           },
           "logged_at": {
             "type": "string"
+          },
+          "capture_metadata": {
+            "$ref": "#/components/schemas/CaptureMetadata"
           },
           "kind": {
             "type": "string",

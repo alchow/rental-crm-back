@@ -238,6 +238,36 @@ $$;
 ALTER FUNCTION "public"."_assert_inspection_coherence"() OWNER TO "postgres";
 
 --
+-- Name: _capture_known_source(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_capture_known_source"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  if current_user in ('authenticated', 'anon') then
+    if new.capture_metadata is not null then
+      raise exception 'capture metadata requires a trusted write path' using errcode = '42501';
+    end if;
+    return new;
+  end if;
+  if new.capture_metadata is not null or new.corrects_id is not null then return new; end if;
+  if new.attestation = 'provider_verified' then
+    new.capture_metadata := jsonb_build_object('method', 'provider', 'time_basis', 'unknown', 'text_basis', 'source_text');
+  elsif new.author_type = 'tenant' and new.actor like 'tenant:%' then
+    new.capture_metadata := jsonb_build_object('method', 'tenant_submission', 'time_basis', 'unknown', 'text_basis', 'source_text');
+  elsif new.attestation = 'imported' then
+    new.capture_metadata := jsonb_build_object('method', 'import', 'time_basis', 'unknown', 'text_basis', 'unknown');
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."_capture_known_source"() OWNER TO "postgres";
+
+--
 -- Name: _capture_maintenance_request_report(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -2374,6 +2404,25 @@ $$;
 
 
 ALTER FUNCTION "public"."_reject_attachment_on_completed_inspection"() OWNER TO "postgres";
+
+--
+-- Name: _reject_capture_metadata_change(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_reject_capture_metadata_change"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  if new.capture_metadata is distinct from old.capture_metadata then
+    raise exception 'interaction capture metadata is immutable' using errcode = 'check_violation';
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."_reject_capture_metadata_change"() OWNER TO "postgres";
 
 --
 -- Name: _reject_check_update_on_completed_inspection(); Type: FUNCTION; Schema: public; Owner: postgres
@@ -6450,6 +6499,69 @@ COMMENT ON FUNCTION "public"."create_inspection_from_template"("p_account_id" "u
 
 
 --
+-- Name: create_maintenance_request_idempotent("uuid", "text", "text", "jsonb"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."create_maintenance_request_idempotent"("p_account_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  receipt record;
+  request_id uuid;
+  report jsonb := p_payload->'report';
+  row_data jsonb;
+  result jsonb;
+begin
+  select * into receipt from public.idempotency_keys
+   where account_id = p_account_id and key = p_idempotency_key for update;
+  if not found then raise exception 'idempotency_key_not_claimed' using errcode = 'P0002'; end if;
+  if receipt.request_fingerprint is distinct from p_request_fingerprint then
+    raise exception 'idempotency_fingerprint_mismatch' using errcode = '23514';
+  end if;
+  if receipt.completed_at is not null then return receipt.body; end if;
+
+  if report is not null and report <> 'null'::jsonb then
+    select (public.create_maintenance_request_with_report(
+      p_account_id, (p_payload->>'area_id')::uuid, (p_payload->>'asset_id')::uuid,
+      p_payload->>'title', p_payload->>'description', p_payload->>'severity',
+      report->>'party_type', (report->>'party_id')::uuid, report->>'label',
+      report->>'address', report->>'channel', (report->>'reported_at')::timestamptz,
+      report->>'body'
+    )->>'maintenance_request_id')::uuid into request_id;
+  else
+    insert into public.maintenance_requests(account_id, area_id, asset_id, opened_by, title, description, severity, status)
+    values (p_account_id, (p_payload->>'area_id')::uuid, (p_payload->>'asset_id')::uuid,
+      auth.uid(), p_payload->>'title', p_payload->>'description', p_payload->>'severity', 'open')
+    returning id into request_id;
+  end if;
+
+  select to_jsonb(mr) into row_data from public.maintenance_requests_with_reporter mr
+   where account_id = p_account_id and id = request_id;
+  if row_data is null then raise exception 'created request is not readable'; end if;
+  result := (row_data - array['reporter_interaction_id', 'reporter_party_type', 'reporter_party_id',
+    'reporter_label', 'reporter_address', 'reporter_channel', 'reported_at', 'reporter_attestation',
+    'reporter_logged_at', 'reporter_capture_metadata', 'reporter_withdrawn']) || jsonb_build_object(
+    'reported_by', case when row_data->>'reporter_interaction_id' is null then null else jsonb_build_object(
+      'source', 'interaction', 'interaction_id', row_data->'reporter_interaction_id',
+      'party_type', row_data->'reporter_party_type', 'party_id', row_data->'reporter_party_id',
+      'label', row_data->'reporter_label', 'address', row_data->'reporter_address',
+      'channel', row_data->'reporter_channel', 'reported_at', row_data->'reported_at',
+      'attestation', row_data->'reporter_attestation', 'logged_at', row_data->'reporter_logged_at',
+      'capture_metadata', row_data->'reporter_capture_metadata', 'withdrawn', row_data->'reporter_withdrawn'
+    ) end);
+  update public.idempotency_keys set status_code = 201, body = result, completed_at = now()
+   where account_id = p_account_id and key = p_idempotency_key
+     and request_fingerprint = p_request_fingerprint and completed_at is null;
+  if not found then raise exception 'idempotency_completion_lost' using errcode = '23514'; end if;
+  return result;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."create_maintenance_request_idempotent"("p_account_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb") OWNER TO "postgres";
+
+--
 -- Name: create_maintenance_request_with_report("uuid", "uuid", "uuid", "text", "text", "text", "text", "uuid", "text", "text", "text", timestamp with time zone, "text"); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -6497,6 +6609,8 @@ begin
       p_account_id,
       jsonb_build_object(
         'channel', p_report_channel,
+        'report_time_supplied', p_reported_at is not null,
+        'report_source_text', p_report_body is not null,
         'direction', 'inbound',
         'party_type', v_headline_party_type,
         'party_id', p_report_party_id,
@@ -7813,6 +7927,7 @@ CREATE TABLE IF NOT EXISTS "public"."interactions" (
     "deleted_reason" "text",
     "confirmed_by" "uuid",
     "confirmed_at" timestamp with time zone,
+    "capture_metadata" "jsonb",
     CONSTRAINT "interactions_actor_check" CHECK ((("length"("actor") >= 1) AND ("length"("actor") <= 200))),
     CONSTRAINT "interactions_agent_event_body_bound" CHECK ((("kind" <> 'agent_event'::"text") OR ("body" IS NULL) OR ("length"("body") <= 1000))),
     CONSTRAINT "interactions_agent_event_fields" CHECK ((("channel" <> 'agent_event'::"text") OR (("direction" = 'none'::"text") AND ("party_type" = 'none'::"text") AND ("party_id" IS NULL) AND ("party_label" IS NULL)))),
@@ -7822,6 +7937,7 @@ CREATE TABLE IF NOT EXISTS "public"."interactions" (
     CONSTRAINT "interactions_attestation_check" CHECK ((("attestation" IS NULL) OR ("attestation" = ANY (ARRAY['provider_verified'::"text", 'attested'::"text", 'imported'::"text", 'unverified'::"text"])))),
     CONSTRAINT "interactions_attestation_kind_check" CHECK ((("kind" <> 'agent_event'::"text") OR ("attestation" IS NULL))),
     CONSTRAINT "interactions_author_type_check" CHECK (("author_type" = ANY (ARRAY['landlord'::"text", 'tenant'::"text", 'agent'::"text", 'system'::"text", 'vendor'::"text"]))),
+    CONSTRAINT "interactions_capture_metadata_shape" CHECK ((("capture_metadata" IS NULL) OR COALESCE((("jsonb_typeof"("capture_metadata") = 'object'::"text") AND ("capture_metadata" ?& ARRAY['method'::"text", 'time_basis'::"text", 'text_basis'::"text"]) AND (("capture_metadata" ->> 'method'::"text") = ANY (ARRAY['manual'::"text", 'tenant_submission'::"text", 'provider'::"text", 'import'::"text", 'unknown'::"text"])) AND (("capture_metadata" ->> 'time_basis'::"text") = ANY (ARRAY['supplied'::"text", 'provider'::"text", 'recorded_default'::"text", 'unknown'::"text"])) AND (("capture_metadata" ->> 'text_basis'::"text") = ANY (ARRAY['summary'::"text", 'source_text'::"text", 'unknown'::"text"]))), false))),
     CONSTRAINT "interactions_channel_check" CHECK (("channel" = ANY (ARRAY['in_person'::"text", 'phone'::"text", 'voicemail'::"text", 'sms'::"text", 'email'::"text", 'letter'::"text", 'in_app'::"text", 'import'::"text", 'note'::"text", 'agent_event'::"text"]))),
     CONSTRAINT "interactions_comm_party_named" CHECK ((("kind" <> 'communication'::"text") OR ("party_type" <> 'none'::"text"))),
     CONSTRAINT "interactions_confirm_pairing" CHECK ((("confirmed_by" IS NULL) = ("confirmed_at" IS NULL))),
@@ -7909,7 +8025,7 @@ begin
   insert into public.interactions (
     account_id, actor, author_type, kind, channel, direction,
     party_type, party_id, party_label, body, occurred_at, attestation,
-    tenancy_id, maintenance_request_id, area_id, work_order_id, vendor_id
+    tenancy_id, maintenance_request_id, area_id, work_order_id, vendor_id, capture_metadata
   ) values (
     p_account_id,
     'user:' || auth.uid(),
@@ -7927,7 +8043,14 @@ begin
     nullif(p_entry->>'maintenance_request_id', '')::uuid,
     nullif(p_entry->>'area_id', '')::uuid,
     nullif(p_entry->>'work_order_id', '')::uuid,
-    nullif(p_entry->>'vendor_id', '')::uuid
+    nullif(p_entry->>'vendor_id', '')::uuid,
+    jsonb_build_object(
+      'method', 'manual',
+      'time_basis', case when p_entry ? 'report_time_supplied' then
+        case when (p_entry->>'report_time_supplied')::boolean then 'supplied' else 'recorded_default' end
+        when p_entry ? 'occurred_at' then 'supplied' else 'recorded_default' end,
+      'text_basis', case when coalesce((p_entry->>'report_source_text')::boolean, false) then 'source_text' else 'summary' end
+    )
   )
   returning * into v_interaction;
 
@@ -8277,47 +8400,86 @@ ALTER TABLE "public"."areas" OWNER TO "postgres";
 --
 
 CREATE OR REPLACE VIEW "public"."interactions_with_chain" WITH ("security_invoker"='true') AS
- SELECT "i"."id",
-    "i"."account_id",
-    "i"."actor",
-    "i"."party_type",
-    "i"."party_id",
-    "i"."party_label",
-    "i"."channel",
-    "i"."direction",
-    "i"."body",
-    "i"."occurred_at",
-    "i"."logged_at",
-    "i"."tenancy_id",
-    "i"."maintenance_request_id",
-    "i"."area_id",
-    "i"."work_order_id",
-    "i"."vendor_id",
-    "i"."created_at",
-    "i"."updated_at",
-    "i"."deleted_at",
-    "i"."kind",
-    "i"."corrects_id",
-    "i"."correction_kind",
-    "i"."author_type",
-    "i"."approved_by",
-    "i"."approval_ref",
-    "i"."entry_type",
-    "i"."external_ref",
-    "i"."references_interaction_id",
-    "i"."thread_id",
-    "i"."attestation",
-    "i"."rfc822_message_id",
-    "c"."id" AS "superseded_by_id",
-    ("c"."id" IS NULL) AS "is_head",
-    "o"."id" AS "outbox_id",
-    "o"."status" AS "delivery_status",
-    "o"."delivered_at",
-    "a"."property_id"
-   FROM ((("public"."interactions" "i"
-     LEFT JOIN "public"."interactions" "c" ON (("c"."corrects_id" = "i"."id")))
-     LEFT JOIN "public"."comm_outbox" "o" ON ((("o"."interaction_id" = "i"."id") AND ("o"."relay_of_interaction_id" IS NULL))))
-     LEFT JOIN "public"."areas" "a" ON ((("a"."account_id" = "i"."account_id") AND ("a"."id" = "i"."area_id"))));
+ SELECT "previous"."id",
+    "previous"."account_id",
+    "previous"."actor",
+    "previous"."party_type",
+    "previous"."party_id",
+    "previous"."party_label",
+    "previous"."channel",
+    "previous"."direction",
+    "previous"."body",
+    "previous"."occurred_at",
+    "previous"."logged_at",
+    "previous"."tenancy_id",
+    "previous"."maintenance_request_id",
+    "previous"."area_id",
+    "previous"."work_order_id",
+    "previous"."vendor_id",
+    "previous"."created_at",
+    "previous"."updated_at",
+    "previous"."deleted_at",
+    "previous"."kind",
+    "previous"."corrects_id",
+    "previous"."correction_kind",
+    "previous"."author_type",
+    "previous"."approved_by",
+    "previous"."approval_ref",
+    "previous"."entry_type",
+    "previous"."external_ref",
+    "previous"."references_interaction_id",
+    "previous"."thread_id",
+    "previous"."attestation",
+    "previous"."rfc822_message_id",
+    "previous"."superseded_by_id",
+    "previous"."is_head",
+    "previous"."outbox_id",
+    "previous"."delivery_status",
+    "previous"."delivered_at",
+    "previous"."property_id",
+    "origin"."capture_metadata"
+   FROM (( SELECT "i"."id",
+            "i"."account_id",
+            "i"."actor",
+            "i"."party_type",
+            "i"."party_id",
+            "i"."party_label",
+            "i"."channel",
+            "i"."direction",
+            "i"."body",
+            "i"."occurred_at",
+            "i"."logged_at",
+            "i"."tenancy_id",
+            "i"."maintenance_request_id",
+            "i"."area_id",
+            "i"."work_order_id",
+            "i"."vendor_id",
+            "i"."created_at",
+            "i"."updated_at",
+            "i"."deleted_at",
+            "i"."kind",
+            "i"."corrects_id",
+            "i"."correction_kind",
+            "i"."author_type",
+            "i"."approved_by",
+            "i"."approval_ref",
+            "i"."entry_type",
+            "i"."external_ref",
+            "i"."references_interaction_id",
+            "i"."thread_id",
+            "i"."attestation",
+            "i"."rfc822_message_id",
+            "c"."id" AS "superseded_by_id",
+            ("c"."id" IS NULL) AS "is_head",
+            "o"."id" AS "outbox_id",
+            "o"."status" AS "delivery_status",
+            "o"."delivered_at",
+            "a"."property_id"
+           FROM ((("public"."interactions" "i"
+             LEFT JOIN "public"."interactions" "c" ON (("c"."corrects_id" = "i"."id")))
+             LEFT JOIN "public"."comm_outbox" "o" ON ((("o"."interaction_id" = "i"."id") AND ("o"."relay_of_interaction_id" IS NULL))))
+             LEFT JOIN "public"."areas" "a" ON ((("a"."account_id" = "i"."account_id") AND ("a"."id" = "i"."area_id"))))) "previous"
+     JOIN "public"."interactions" "origin" ON ((("origin"."account_id" = "previous"."account_id") AND ("origin"."id" = "previous"."id"))));
 
 
 ALTER VIEW "public"."interactions_with_chain" OWNER TO "postgres";
@@ -11781,8 +11943,11 @@ CREATE OR REPLACE VIEW "public"."maintenance_requests_with_reporter" WITH ("secu
     "sender"."address" AS "reporter_address",
     "i"."channel" AS "reporter_channel",
     "i"."occurred_at" AS "reported_at",
-    "i"."attestation" AS "reporter_attestation"
-   FROM ((("public"."maintenance_requests" "mr"
+    "i"."attestation" AS "reporter_attestation",
+    "i"."logged_at" AS "reporter_logged_at",
+    "i"."capture_metadata" AS "reporter_capture_metadata",
+    COALESCE(("current_report"."correction_kind" = 'retract'::"text"), false) AS "reporter_withdrawn"
+   FROM (((("public"."maintenance_requests" "mr"
      LEFT JOIN "public"."maintenance_request_reports" "report" ON ((("report"."account_id" = "mr"."account_id") AND ("report"."maintenance_request_id" = "mr"."id"))))
      LEFT JOIN "public"."interactions" "i" ON ((("i"."account_id" = "report"."account_id") AND ("i"."id" = "report"."interaction_id"))))
      LEFT JOIN LATERAL ( SELECT "ip"."party_type",
@@ -11792,7 +11957,24 @@ CREATE OR REPLACE VIEW "public"."maintenance_requests_with_reporter" WITH ("secu
            FROM "public"."interaction_participants" "ip"
           WHERE (("ip"."account_id" = "report"."account_id") AND ("ip"."interaction_id" = "report"."interaction_id") AND ("ip"."role" = 'sender'::"text"))
           ORDER BY "ip"."created_at", "ip"."id"
-         LIMIT 1) "sender" ON (true));
+         LIMIT 1) "sender" ON (true))
+     LEFT JOIN LATERAL ( WITH RECURSIVE "revisions" AS (
+                 SELECT "original"."id",
+                    "original"."correction_kind"
+                   FROM "public"."interactions" "original"
+                  WHERE (("original"."account_id" = "report"."account_id") AND ("original"."id" = "report"."interaction_id"))
+                UNION ALL
+                 SELECT "child"."id",
+                    "child"."correction_kind"
+                   FROM ("public"."interactions" "child"
+                     JOIN "revisions" "parent" ON (("child"."corrects_id" = "parent"."id")))
+                  WHERE ("child"."account_id" = "report"."account_id")
+                )
+         SELECT "revision"."correction_kind"
+           FROM "revisions" "revision"
+          WHERE (NOT (EXISTS ( SELECT 1
+                   FROM "public"."interactions" "child"
+                  WHERE (("child"."account_id" = "report"."account_id") AND ("child"."corrects_id" = "revision"."id")))))) "current_report" ON (true));
 
 
 ALTER VIEW "public"."maintenance_requests_with_reporter" OWNER TO "postgres";
@@ -15266,6 +15448,20 @@ CREATE OR REPLACE TRIGGER "interactions_capture_maintenance_request_report" AFTE
 
 
 --
+-- Name: interactions interactions_capture_metadata_immutable; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "interactions_capture_metadata_immutable" BEFORE UPDATE ON "public"."interactions" FOR EACH ROW EXECUTE FUNCTION "public"."_reject_capture_metadata_change"();
+
+
+--
+-- Name: interactions interactions_capture_metadata_source; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "interactions_capture_metadata_source" BEFORE INSERT ON "public"."interactions" FOR EACH ROW EXECUTE FUNCTION "public"."_capture_known_source"();
+
+
+--
 -- Name: interactions interactions_classify_fill_only; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
@@ -17883,6 +18079,13 @@ GRANT ALL ON FUNCTION "public"."_assert_inspection_coherence"() TO "service_role
 
 
 --
+-- Name: FUNCTION "_capture_known_source"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_capture_known_source"() FROM PUBLIC;
+
+
+--
 -- Name: FUNCTION "_capture_maintenance_request_report"(); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -18210,6 +18413,13 @@ GRANT ALL ON FUNCTION "public"."_reject_anchored_notice_mutation"() TO "service_
 GRANT ALL ON FUNCTION "public"."_reject_attachment_on_completed_inspection"() TO "anon";
 GRANT ALL ON FUNCTION "public"."_reject_attachment_on_completed_inspection"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."_reject_attachment_on_completed_inspection"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "_reject_capture_metadata_change"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_reject_capture_metadata_change"() FROM PUBLIC;
 
 
 --
@@ -18553,6 +18763,14 @@ GRANT ALL ON FUNCTION "public"."create_account_for_new_user"("p_account_name" "t
 
 REVOKE ALL ON FUNCTION "public"."create_inspection_from_template"("p_account_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."create_inspection_from_template"("p_account_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb") TO "authenticated";
+
+
+--
+-- Name: FUNCTION "create_maintenance_request_idempotent"("p_account_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."create_maintenance_request_idempotent"("p_account_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."create_maintenance_request_idempotent"("p_account_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb") TO "authenticated";
 
 
 --

@@ -64,6 +64,22 @@ row.account_id
 
 ## Evidence and Events
 
+New journal records can carry immutable `capture_metadata` describing capture
+method, time basis and text basis. The manual maintenance RPC records omitted
+report dates as `recorded_default` and copied repair wording as `summary`.
+`maintenance_requests_with_reporter` projects these facts and the original
+journal `logged_at` through the immutable report link. Its `reporter_withdrawn`
+projection follows the original report’s correction chain to its current head.
+Direct authenticated inserts cannot supply capture metadata; trusted journal and
+capture writers assign it. Historical rows remain
+unknown; no capture metadata, text or timestamps are backfilled. Journal and
+person-history exports label defaulted times as Recorded and retain an unknown
+legacy event time as a stored value with unspecified source.
+
+Maintenance creation commits its repair, optional report, response projection and
+idempotency receipt in one caller-JWT/RLS transaction. Retry replays that receipt;
+a failed HTTP response cannot delete an already completed receipt.
+
 The `interactions` journal is append-only. Corrections and retractions append a
 new row rather than overwriting history. The `events` spine stores immutable,
 hash-chained mutation snapshots for audited tables.

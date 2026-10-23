@@ -9,6 +9,7 @@ import {
   interactionPartyDisplay,
   retractedInteractionMarker,
 } from './interactions';
+import { captureDisplay } from './capture';
 import { renderIncidentsSection } from './incidents';
 
 // ---- PDF rendering ----------------------------------------------------------
@@ -351,8 +352,9 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
         : '';
       // Prefer the resolved counterparty name, then label, then party type.
       const party = interactionPartyDisplay(root, data.partyNames);
+      const capture = captureDisplay(root);
       doc.text(
-        `• ${root.occurred_at as string}  ${what}${party ? `  with ${party}` : ''}  ` +
+        `• ${capture.timeLabel} ${String(capture.time)}  ${what}${party ? `  with ${party}` : ''}  ` +
           `actor=${root.actor as string}${capacity}${sid}${att}${deliveryStr}  (logged ${root.logged_at as string})`,
       );
       // The cast: everyone on this event, by role, as named people. This is
@@ -369,6 +371,7 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
         ? data.provenanceShaByMsgId.get(String(root.external_ref))
         : undefined;
       if (proofSha) doc.text(`    proof: signed webhook sha256=${proofSha}`);
+      if (capture.description) doc.text(`    ${capture.description}`);
       if (root.body) doc.text(`    ${String(root.body).slice(0, 400)}`);
       for (const corr of chain.corrections) {
         // classify completes metadata only -- the body is inherited, unchanged.

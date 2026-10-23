@@ -2645,6 +2645,7 @@ export type Database = {
           attestation: string | null;
           author_type: string | null;
           body: string | null;
+          capture_metadata: Json | null;
           channel: string;
           confirmed_at: string | null;
           confirmed_by: string | null;
@@ -2682,6 +2683,7 @@ export type Database = {
           attestation?: string | null;
           author_type?: string | null;
           body?: string | null;
+          capture_metadata?: Json | null;
           channel: string;
           confirmed_at?: string | null;
           confirmed_by?: string | null;
@@ -2719,6 +2721,7 @@ export type Database = {
           attestation?: string | null;
           author_type?: string | null;
           body?: string | null;
+          capture_metadata?: Json | null;
           channel?: string;
           confirmed_at?: string | null;
           confirmed_by?: string | null;
@@ -4152,6 +4155,7 @@ export type Database = {
           attestation: string | null;
           author_type: string | null;
           body: string | null;
+          capture_metadata: Json | null;
           channel: string | null;
           correction_kind: string | null;
           corrects_id: string | null;
@@ -4304,11 +4308,14 @@ export type Database = {
           reported_at: string | null;
           reporter_address: string | null;
           reporter_attestation: string | null;
+          reporter_capture_metadata: Json | null;
           reporter_channel: string | null;
           reporter_interaction_id: string | null;
           reporter_label: string | null;
+          reporter_logged_at: string | null;
           reporter_party_id: string | null;
           reporter_party_type: string | null;
+          reporter_withdrawn: boolean | null;
           severity: string | null;
           status: string | null;
           title: string | null;
@@ -4700,6 +4707,15 @@ export type Database = {
         };
         Returns: Json;
       };
+      create_maintenance_request_idempotent: {
+        Args: {
+          p_account_id: string;
+          p_idempotency_key: string;
+          p_payload: Json;
+          p_request_fingerprint: string;
+        };
+        Returns: Json;
+      };
       create_maintenance_request_with_report: {
         Args: {
           p_account_id: string;
@@ -4979,6 +4995,7 @@ export type Database = {
           attestation: string | null;
           author_type: string | null;
           body: string | null;
+          capture_metadata: Json | null;
           channel: string;
           confirmed_at: string | null;
           confirmed_by: string | null;
@@ -5072,6 +5089,7 @@ export type Database = {
           attestation: string | null;
           author_type: string | null;
           body: string | null;
+          capture_metadata: Json | null;
           channel: string | null;
           correction_kind: string | null;
           corrects_id: string | null;
@@ -5473,6 +5491,7 @@ export type Database = {
           attestation: string | null;
           author_type: string | null;
           body: string | null;
+          capture_metadata: Json | null;
           channel: string | null;
           correction_kind: string | null;
           corrects_id: string | null;
