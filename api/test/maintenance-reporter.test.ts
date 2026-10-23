@@ -54,12 +54,12 @@ interface ApiResp {
 async function api(
   method: string,
   path: string,
-  opts: { token?: string; body?: unknown } = {},
+  opts: { token?: string; body?: unknown; key?: string } = {},
 ): Promise<ApiResp> {
   const headers: Record<string, string> = { accept: 'application/json' };
   if (opts.token) headers.authorization = `Bearer ${opts.token}`;
   if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(method) && path.startsWith('/v1/accounts/')) {
-    headers['idempotency-key'] = `maintenance-reporter-${crypto.randomUUID()}`;
+    headers['idempotency-key'] = opts.key ?? `maintenance-reporter-${crypto.randomUUID()}`;
   }
   const init: RequestInit = { method, headers };
   if (opts.body !== undefined) {
@@ -156,6 +156,9 @@ interface ReportedBy {
   channel: string;
   reported_at: string;
   attestation: string | null;
+  logged_at?: string | null;
+  withdrawn?: boolean;
+  capture_metadata?: { method: string; time_basis: string; text_basis: string } | null;
 }
 interface MaintenanceRow {
   id: string;
@@ -219,6 +222,14 @@ await check(
     if (!report) throw new Error('reported_by missing');
     firstInteractionId = report.interaction_id;
     if (
+      report.capture_metadata?.method !== 'manual' ||
+      report.capture_metadata.time_basis !== 'supplied' ||
+      report.capture_metadata.text_basis !== 'source_text' ||
+      !report.logged_at
+    ) {
+      throw new Error('explicit report time/text provenance missing');
+    }
+    if (
       report.source !== 'interaction' ||
       report.party_type !== 'tenant' ||
       report.party_id !== A.tenantId ||
@@ -255,6 +266,41 @@ await check(
     }
   },
 );
+
+await check('manual summary without a date never claims a supplied report time', async () => {
+  const created = assertStatus(
+    await api('POST', `${base}/maintenance-requests`, {
+      token: A.token,
+      body: {
+        area_id: A.areaId,
+        title: 'Extensive leaks from living room ceiling',
+        severity: 'urgent',
+        report: { party_type: 'tenant', party_id: A.tenantId, label: 'Ryan', channel: 'email' },
+      },
+    }),
+    201,
+    'manual leak',
+  ) as MaintenanceRow;
+  const facts = created.reported_by?.capture_metadata;
+  if (
+    facts?.method !== 'manual' ||
+    facts.time_basis !== 'recorded_default' ||
+    facts.text_basis !== 'summary'
+  )
+    throw new Error(`wrong manual capture facts: ${JSON.stringify(facts)}`);
+  const original = assertStatus(
+    await api('GET', `${base}/interactions/${created.reported_by!.interaction_id}`, {
+      token: A.token,
+    }),
+    200,
+    'manual report',
+  ) as { body: string; capture_metadata: unknown };
+  if (
+    original.body !== created.title ||
+    JSON.stringify(original.capture_metadata) !== JSON.stringify(facts)
+  )
+    throw new Error('manual summary or capture facts did not round-trip');
+});
 
 await check('GET, list, and PATCH derive the same immutable first report', async () => {
   const get = assertStatus(
@@ -319,6 +365,14 @@ await check('GET, list, and PATCH derive the same immutable first report', async
   const privileged = createClient(status.API_URL, status.SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
+  const changed = await privileged
+    .from('interactions')
+    .update({
+      capture_metadata: { method: 'provider', time_basis: 'provider', text_basis: 'source_text' },
+    })
+    .eq('account_id', A.accountId)
+    .eq('id', firstInteractionId);
+  if (!changed.error) throw new Error('capture metadata was mutable');
   const now = new Date().toISOString();
   const deleted = await privileged
     .from('interactions')
@@ -333,6 +387,131 @@ await check('GET, list, and PATCH derive the same immutable first report', async
   ) as MaintenanceRow;
   if (afterDelete.reported_by?.interaction_id !== firstInteractionId) {
     throw new Error(`report source changed after soft-delete: ${JSON.stringify(afterDelete)}`);
+  }
+});
+
+await check('a lost committed RPC response replays one repair and report', async () => {
+  const key = `lost-maintenance-${crypto.randomUUID()}`;
+  const title = `Lost response ${rnd()}`;
+  const body = {
+    area_id: A.areaId,
+    title,
+    severity: 'routine',
+    report: { party_type: 'tenant', party_id: A.tenantId, channel: 'email' },
+  };
+  const originalFetch = globalThis.fetch;
+  let interrupted = false;
+  globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+    const response = await originalFetch(...args);
+    const url = args[0] instanceof Request ? args[0].url : String(args[0]);
+    if (!interrupted && url.includes('/rpc/create_maintenance_request_idempotent') && response.ok) {
+      interrupted = true;
+      await response.text();
+      throw new Error('simulated lost response after database commit');
+    }
+    return response;
+  }) as typeof fetch;
+  try {
+    assertStatus(
+      await api('POST', `${base}/maintenance-requests`, { token: A.token, body, key }),
+      500,
+      'lost RPC response',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  if (!interrupted) throw new Error('fault injection did not reach committed RPC');
+  const replay = assertStatus(
+    await api('POST', `${base}/maintenance-requests`, { token: A.token, body, key }),
+    201,
+    'replay',
+  ) as MaintenanceRow;
+  const list = assertStatus(
+    await api('GET', `${base}/maintenance-requests`, { token: A.token }),
+    200,
+    'list',
+  ) as { data: MaintenanceRow[] };
+  if (list.data.filter((row) => row.title === title).length !== 1 || !replay.reported_by)
+    throw new Error('retry did not recover exactly one repair/report');
+});
+
+await check('direct member inserts cannot claim trusted capture metadata', async () => {
+  const { createClient } = await import('@supabase/supabase-js');
+  const member = createClient(status.API_URL, status.ANON_KEY, {
+    global: { headers: { Authorization: `Bearer ${A.token}` } },
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const entry = {
+    account_id: A.accountId,
+    kind: 'note',
+    channel: 'note',
+    direction: 'none',
+    party_type: 'none',
+    body: 'direct insert',
+    author_type: 'landlord',
+    actor: `user:${A.userId}`,
+    occurred_at: new Date().toISOString(),
+  };
+  const allowed = await member.from('interactions').insert(entry);
+  if (allowed.error) throw new Error(`control insert failed: ${allowed.error.message}`);
+  for (const method of ['provider', 'tenant_submission', 'manual']) {
+    const denied = await member
+      .from('interactions')
+      .insert({
+        ...entry,
+        capture_metadata: { method, time_basis: 'provider', text_basis: 'source_text' },
+      });
+    if (denied.error?.code !== '42501')
+      throw new Error(
+        `forged ${method} accepted or wrong rejection: ${JSON.stringify(denied.error)}`,
+      );
+  }
+});
+
+await check('withdrawal status follows the original report through amendments', async () => {
+  const created = assertStatus(
+    await api('POST', `${base}/maintenance-requests`, {
+      token: A.token,
+      body: {
+        area_id: A.areaId,
+        title: 'Withdrawn leak',
+        severity: 'routine',
+        report: { party_type: 'tenant', party_id: A.tenantId, channel: 'email' },
+      },
+    }),
+    201,
+    'create retractable repair',
+  ) as MaintenanceRow;
+  const original = created.reported_by!.interaction_id;
+  const amendment = assertStatus(
+    await api('POST', `${base}/interactions`, {
+      token: A.token,
+      body: { corrects_id: original, correction_kind: 'amend', body: 'Corrected leak details' },
+    }),
+    201,
+    'amend report',
+  ) as { id: string };
+  assertStatus(
+    await api('POST', `${base}/interactions`, {
+      token: A.token,
+      body: { corrects_id: amendment.id, correction_kind: 'retract', body: 'Reported in error' },
+    }),
+    201,
+    'withdraw report',
+  );
+  const detail = assertStatus(
+    await api('GET', `${base}/maintenance-requests/${created.id}`, { token: A.token }),
+    200,
+    'withdrawn detail',
+  ) as MaintenanceRow;
+  const list = assertStatus(
+    await api('GET', `${base}/maintenance-requests`, { token: A.token }),
+    200,
+    'withdrawn list',
+  ) as { data: MaintenanceRow[] };
+  for (const row of [detail, list.data.find((row) => row.id === created.id)!]) {
+    if (row.reported_by?.interaction_id !== original || row.reported_by.withdrawn !== true)
+      throw new Error('withdrawal did not preserve original link and mark it withdrawn');
   }
 });
 

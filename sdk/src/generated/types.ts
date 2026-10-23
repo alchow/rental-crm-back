@@ -19434,7 +19434,15 @@ export interface components {
             id: string;
             revoked_at: string;
         };
-        /** @description Derived from the earliest linked inbound root interaction and its immutable sender cast. Null means no structured report interaction exists. */
+        CaptureMetadata: {
+            /** @enum {string} */
+            method: "manual" | "tenant_submission" | "provider" | "import" | "unknown";
+            /** @enum {string} */
+            time_basis: "supplied" | "provider" | "recorded_default" | "unknown";
+            /** @enum {string} */
+            text_basis: "summary" | "source_text" | "unknown";
+        } | null;
+        /** @description Identifies the immutable original report and sender snapshot. Capture facts distinguish manual summary and defaulted time. Null means no structured report interaction exists. */
         MaintenanceReportedBy: {
             /** @enum {string} */
             source: "interaction";
@@ -19449,6 +19457,9 @@ export interface components {
             /** @enum {string} */
             channel: "in_person" | "phone" | "voicemail" | "sms" | "email" | "letter" | "in_app";
             reported_at: string;
+            logged_at?: string | null;
+            capture_metadata?: components["schemas"]["CaptureMetadata"];
+            withdrawn?: boolean;
             /** @enum {string|null} */
             attestation: "provider_verified" | "attested" | "imported" | null;
         } | null;
@@ -19543,6 +19554,7 @@ export interface components {
             body: string | null;
             occurred_at: string;
             logged_at: string;
+            capture_metadata?: components["schemas"]["CaptureMetadata"];
             /** @enum {string} */
             kind: "communication" | "note" | "agent_event";
             /** @enum {string} */

@@ -1,7 +1,8 @@
+import { CaptureMetadata } from '../schemas/importable';
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
-import { nullableRpcArg, type DbFunctionArgs, type DbTableUpdate } from '../supabase/db-types';
+import { asJson, type DbTableUpdate } from '../supabase/db-types';
 import { ApiError, dbError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { parseCsvEnum } from './_lib/csv-enum';
@@ -50,6 +51,9 @@ const ReportedBy = z
     address: z.string().nullable(),
     channel: ReportChannel,
     reported_at: z.string(),
+    logged_at: z.string().nullable().optional(),
+    capture_metadata: CaptureMetadata.nullable().optional(),
+    withdrawn: z.boolean().optional(),
     attestation: z.enum(['provider_verified', 'attested', 'imported']).nullable(),
   })
   .openapi('MaintenanceReportedBy');
@@ -78,7 +82,7 @@ const MaintenanceRequest = z
     status: Status,
     reported_by: ReportedBy.nullable().openapi({
       description:
-        'Derived from the earliest linked inbound root interaction and its immutable sender cast. ' +
+        'Identifies the immutable original report and sender snapshot. Capture facts distinguish manual summary and defaulted time. ' +
         'Null means no structured report interaction exists.',
     }),
     created_at: z.string(),
@@ -235,6 +239,9 @@ interface MaintenanceReadRow extends Record<string, unknown> {
   reporter_channel?: string | null;
   reported_at?: string | null;
   reporter_attestation?: string | null;
+  reporter_logged_at?: string | null;
+  reporter_capture_metadata?: unknown;
+  reporter_withdrawn?: boolean;
 }
 
 function maintenanceResponse(row: MaintenanceReadRow): z.infer<typeof MaintenanceRequest> {
@@ -247,6 +254,9 @@ function maintenanceResponse(row: MaintenanceReadRow): z.infer<typeof Maintenanc
     reporter_channel,
     reported_at,
     reporter_attestation,
+    reporter_logged_at,
+    reporter_capture_metadata,
+    reporter_withdrawn,
     ...request
   } = row;
   return {
@@ -262,6 +272,9 @@ function maintenanceResponse(row: MaintenanceReadRow): z.infer<typeof Maintenanc
             address: reporter_address ?? null,
             channel: reporter_channel,
             reported_at,
+            logged_at: reporter_logged_at ?? null,
+            capture_metadata: reporter_capture_metadata ?? null,
+            withdrawn: reporter_withdrawn ?? false,
             attestation: reporter_attestation ?? null,
           }
         : null,
@@ -320,66 +333,24 @@ maintenanceRequestsApp.openapi(create, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
-  const auth = c.get('auth');
-  let createdId: string;
-
-  if (body.report) {
-    const params: DbFunctionArgs<'create_maintenance_request_with_report'> = {
-      p_account_id: accountId,
-      p_area_id: body.area_id,
-      p_asset_id: nullableRpcArg(body.asset_id ?? null),
-      p_title: body.title,
-      p_description: nullableRpcArg(body.description ?? null),
-      p_severity: body.severity,
-      p_report_party_type: body.report.party_type,
-      p_report_party_id: nullableRpcArg(body.report.party_id ?? null),
-      p_report_label: nullableRpcArg(body.report.label ?? null),
-      p_report_address: nullableRpcArg(body.report.address ?? null),
-      p_report_channel: body.report.channel,
-      p_reported_at: nullableRpcArg(body.report.reported_at ?? null),
-      p_report_body: nullableRpcArg(body.report.body ?? null),
-    };
-    const { data, error } = await sb.rpc('create_maintenance_request_with_report', params);
-    if (error) {
-      const message = error.message ?? '';
-      if (message.startsWith('not_found:')) {
-        throw new ApiError(404, 'not_found', message.slice('not_found:'.length).trim());
-      }
-      if (message.startsWith('invalid:')) {
-        throw new ApiError(400, 'invalid_request', message.slice('invalid:'.length).trim());
-      }
-      throw dbError(error);
-    }
-    const result = data as { maintenance_request_id?: unknown } | null;
-    if (!result || typeof result.maintenance_request_id !== 'string') {
-      throw new ApiError(500, 'database_error', 'report workflow returned no request id');
-    }
-    createdId = result.maintenance_request_id;
-  } else {
-    const { data, error } = await sb
-      .from('maintenance_requests')
-      .insert({
-        account_id: accountId,
-        area_id: body.area_id,
-        asset_id: body.asset_id ?? null,
-        opened_by: auth.userId,
-        title: body.title,
-        description: body.description ?? null,
-        severity: body.severity,
-        status: 'open',
-      })
-      .select('id')
-      .single();
-    if (error) {
-      if (error.code === '23503') {
-        throw new ApiError(404, 'not_found', 'area_id or asset_id does not belong to this account');
-      }
-      throw new ApiError(500, 'database_error', error.message);
-    }
-    createdId = data.id;
+  const claim = c.get('idempotencyClaim');
+  if (!claim) throw new ApiError(500, 'database_error', 'idempotency claim is unavailable');
+  const { data, error } = await sb.rpc('create_maintenance_request_idempotent', {
+    p_account_id: accountId,
+    p_idempotency_key: claim.key,
+    p_request_fingerprint: claim.fingerprint,
+    p_payload: asJson(body),
+  });
+  if (error) {
+    const message = error.message ?? '';
+    if (message.startsWith('not_found:') || error.code === '23503')
+      throw new ApiError(404, 'not_found', message.replace(/^not_found:\s*/, ''));
+    if (message.startsWith('invalid:'))
+      throw new ApiError(400, 'invalid_request', message.replace(/^invalid:\s*/, ''));
+    throw dbError(error);
   }
-
-  return c.json(await fetchMaintenanceRequest(sb, accountId, createdId), 201);
+  c.set('idempotencyCompletedAtomically', true);
+  return c.json(data as z.infer<typeof MaintenanceRequest>, 201);
 });
 
 maintenanceRequestsApp.openapi(patch, async (c) => {

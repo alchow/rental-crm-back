@@ -241,6 +241,14 @@ export const InteractionParticipant = z
   })
   .openapi('InteractionParticipant');
 
+export const CaptureMetadata = z
+  .object({
+    method: z.enum(['manual', 'tenant_submission', 'provider', 'import', 'unknown']),
+    time_basis: z.enum(['supplied', 'provider', 'recorded_default', 'unknown']),
+    text_basis: z.enum(['summary', 'source_text', 'unknown']),
+  })
+  .openapi('CaptureMetadata');
+
 export const Interaction = z
   .object({
     id: z.string().uuid(),
@@ -254,6 +262,7 @@ export const Interaction = z
     body: z.string().nullable(),
     occurred_at: z.string(),
     logged_at: z.string(),
+    capture_metadata: CaptureMetadata.nullable().optional(),
     kind: KindOut,
     author_type: AuthorType,
     approved_by: z.string().uuid().nullable(),

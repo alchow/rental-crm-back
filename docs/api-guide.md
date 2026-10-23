@@ -613,6 +613,19 @@ curl -s https://rental-crm-api.onrender.com/v1/accounts/8a1b.../tenancies/t_1/le
 
 ## 8. Maintenance & interactions
 
+Maintenance reports retain an immutable original interaction reference in
+`reported_by.interaction_id`. Its optional `logged_at` is the server recording
+time. Read-only `capture_metadata` on the report and interaction distinguishes
+`method`, `time_basis`, and `text_basis`: the manual maintenance writer marks an
+omitted report date `recorded_default` and copied description/title text `summary`.
+A manual summary is not a provider-received email. Existing records can have null
+capture metadata and are not backfilled; clients must not infer a reported date
+from equal occurred/logged timestamps. Updates cannot alter capture metadata.
+`reported_by.withdrawn` follows the original report’s correction chain and becomes
+true when its current head is a retraction. Creating a repair stores its response
+and idempotency receipt in the same transaction, so a retry with the same key and
+body recovers the original repair after a lost response.
+
 ### Maintenance requests
 
 Repair requests. Server enforces the status state machine — invalid transitions return `409 invalid_status_transition`.

@@ -23,7 +23,7 @@ declare module 'hono' {
 // Uniform Idempotency-Key contract for account mutations. A DB row claims
 // (account_id, key) and stores a principal-bound request fingerprint. Conflict
 // outcomes: different request -> 409; in flight -> retryable 409; completed ->
-// replay status/body. Never cache 5xx; delete that claim for a fresh retry.
+// replay status/body. On 5xx, delete only unfinished claims so completed receipts survive.
 // Default completion follows handler writes, but selected RPCs may complete the
 // claim atomically with their domain transaction.
 
@@ -185,7 +185,13 @@ export function requireIdempotency(): MiddlewareHandler {
 
     if (status >= 500) {
       // 5xx: don't cache. Clean up the placeholder so a retry can proceed.
-      await sb.from('idempotency_keys').delete().eq('account_id', accountId).eq('key', key);
+      // An RPC may commit its receipt before its response is lost. Never erase that receipt.
+      await sb
+        .from('idempotency_keys')
+        .delete()
+        .eq('account_id', accountId)
+        .eq('key', key)
+        .is('completed_at', null);
       return; // c.res already set by handler / onError; let it flow
     }
 

@@ -1,3 +1,4 @@
+import { captureDisplay } from './capture';
 import PDFDocument from 'pdfkit';
 import { getAdminClient } from '../supabase-admin';
 import type { ChainStatus, ExportScope } from '../export-pdf';
@@ -165,6 +166,7 @@ export function renderTenantCommunicationLog(
         : entry.channel === 'phone'
           ? 'Call'
           : String(entry.channel).replaceAll('_', ' ');
+    const capture = captureDisplay(entry);
     const body = entry.deleted_at
       ? retractedInteractionMarker(entry, new Map())
       : [entry.subject, entry.body ?? '(No text body recorded)'].filter(Boolean).join('\n');
@@ -174,6 +176,7 @@ export function renderTenantCommunicationLog(
     const details = [
       cast || `Author: ${entry.author_type ?? entry.actor}`,
       `Logged ${stamp(entry.logged_at)}`,
+      capture.description,
       `Record ${entry.id}`,
     ];
     if (entry.corrects_id) details.push(`${entry.correction_kind}: corrects ${entry.corrects_id}`);
@@ -194,7 +197,7 @@ export function renderTenantCommunicationLog(
     const rowPage = doc.page;
     const rowY = doc.y;
     doc.font('Helvetica').fontSize(8);
-    const when = stamp(entry.occurred_at);
+    const when = `${capture.timeLabel} ${stamp(capture.time)}`;
     const sourceLabel = `${source}\n${captured ? 'system' : 'note'}`;
     const sideHeight = Math.max(
       doc.heightOfString(when, { width: 90 }),
