@@ -87,6 +87,16 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 // -----------------------------------------------------------------------
 async function setup(): Promise<void> {
   await withClient(async (c) => {
+    try {
+      await seedScenarioRows(c);
+    } catch (error) {
+      await c.query('rollback');
+      throw error;
+    }
+  });
+}
+
+async function seedScenarioRows(c: pg.Client): Promise<void> {
     await c.query('begin');
     const clock = await c.query<{ today: string }>(
       `select (statement_timestamp() at time zone 'UTC')::date::text as today`,
@@ -137,7 +147,6 @@ async function setup(): Promise<void> {
       [T_DELETED_UPCOMING],
     );
     await c.query('commit');
-  });
 }
 
 // -----------------------------------------------------------------------
