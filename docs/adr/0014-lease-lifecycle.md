@@ -2,7 +2,8 @@
 
 - **Status:** accepted, 2026-09-06. Supersedes ADR-0012 rule 4 (the blanket
   PATCH freeze on rent terms) and its "soft-delete + recreate" lease
-  correction path.
+  correction path. Current, amended by ADR-0016: executed agreement terms are
+  frozen independently of document attachment metadata and billing snapshots.
 - **Context owner:** occupancy (leases) + money subledger (docs/api-guide.md §7)
 - **Implements:** migration `20260810000002_lease_lifecycle` (columns
   `voided_at` / `void_reason` / `corrects_lease_id`, trigger `leases_guard`,
@@ -59,14 +60,15 @@ payload.
 `draft → active → expired | superseded` is unchanged; `voided_at` is
 orthogonal to it and terminal.
 
-| Field                                              | `draft`                           | `active` / `expired`              | `superseded`    | voided |
-| -------------------------------------------------- | --------------------------------- | --------------------------------- | --------------- | ------ |
-| `id`, `account_id`, `tenancy_id`, `created_at`     | frozen                            | frozen                            | frozen          | frozen |
-| `term_start`, `rent_amount_cents`, `rent_currency` | editable                          | **frozen**                        | frozen          | frozen |
-| `term_end`, `deposit_*`, `document`                | editable                          | editable                          | frozen          | frozen |
-| `status`                                           | → `active`/`expired`/`superseded` | `active` → `expired`/`superseded` | frozen          | frozen |
-| `voided_at`, `void_reason`                         | settable                          | settable                          | settable        | frozen |
-| `corrects_lease_id`                                | null → set once                   | null → set once                   | null → set once | frozen |
+| Field                                               | `draft`                           | `active` / `expired`              | `superseded`    | voided |
+| --------------------------------------------------- | --------------------------------- | --------------------------------- | --------------- | ------ |
+| `id`, `account_id`, `tenancy_id`, `created_at`      | frozen                            | frozen                            | frozen          | frozen |
+| `term_start`, `rent_amount_cents`, `rent_currency`  | editable                          | **frozen**                        | frozen          | frozen |
+| `term_end`, `deposit_*`, due/grace/fee/source terms | editable                          | **frozen**                        | frozen          | frozen |
+| `document`                                          | editable                          | editable                          | frozen          | frozen |
+| `status`                                            | → `active`/`expired`/`superseded` | `active` → `expired`/`superseded` | frozen          | frozen |
+| `voided_at`, `void_reason`                          | settable                          | settable                          | settable        | frozen |
+| `corrects_lease_id`                                 | null → set once                   | null → set once                   | null → set once | frozen |
 
 Status moves forward only. `superseded` is a historical record with one
 remaining act — voiding it. A voided lease is inert (`updated_at` /
@@ -81,15 +83,17 @@ evidence that a mistake was made and named.
 **Corrections are linked, not implied.** `corrects_lease_id` points a
 replacement at the voided lease it supersedes (same account, same tenancy,
 target must already be voided; set once, enforced by the guard).
-`POST …/leases/{id}/replace` is the atomic form: one `replace_lease` RPC
+`POST …/leases/{id}/replace` is the atomic form: one `replace_lease_terms` RPC
 (SECURITY INVOKER, per-tenancy advisory lock in the ADR-0012 idiom) inserts
 the replacement with the old lease's `tenancy_id` and `status`, re-points the
 old lease's live schedules at it, voids the old lease with the supplied
 reason, and sets the back-link — returning `voided`, `replacement`, and
 `repointed_schedule_ids`. It refuses (`schedule_conflict`) when an anchored
 schedule's rent differs from the replacement's: that is a rent change, and a
-rent change is `POST /tenancies/{tenancyId}/rent-changes` (ADR-0012), not a
-correction.
+rent change needs a new agreement and an explicitly reviewed billing transition
+(ADR-0016), not a correction. The legacy rent-changes endpoint remains available.
+Re-pointing provenance does not rewrite existing immutable schedule or charge
+snapshots, so older bills retain the basis originally confirmed.
 
 **Anchoring keeps two jobs and loses the third.** A live schedule with
 `source_lease_id = lease` still blocks voiding that lease
@@ -98,13 +102,15 @@ becoming an anchor still requires a real instrument: `_rent_schedules_guard`
 now demands the source lease be non-`draft` and non-voided. Anchoring no
 longer gates editing at all.
 
-**One enforcement point.** The `leases_guard` BEFORE INSERT/UPDATE trigger
+**Database enforcement.** The `leases_guard` BEFORE INSERT/UPDATE trigger
 computes the changed-column set by diffing `to_jsonb(NEW)` against
 `to_jsonb(OLD)` and raises with the `invalid:` / `conflict:` prefixes the
 routes already map. Routes run no pre-checks. Two properties fall out of the
 diff rather than being coded: echo-back tolerance (a read-modify-write client
 re-sending the stored rent changes nothing, so nothing raises) and uniform
-enforcement across every write path, including direct DB access.
+enforcement across every write path, including direct DB access. The additional
+`_lease_agreed_terms_guard` freezes executed end/deposit/due/grace/fee/source terms
+and validates same-tenancy predecessor relationships.
 
 | Code                  | HTTP | Raised when                                                                              | Client recovery                                                      |
 | --------------------- | ---- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |

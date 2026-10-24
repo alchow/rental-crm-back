@@ -24,19 +24,22 @@ SCHEMA_TARGET="db/current-schema.sql"
 ARTIFACT_TMP="$(mktemp -d)"
 trap 'rm -rf "$ARTIFACT_TMP"' EXIT
 
-if ! supabase --workdir "$DB_WORKDIR" status >/dev/null 2>&1; then
+DB_SOURCE=(--local)
+if [[ -n "${ARTIFACT_DATABASE_URL:-}" ]]; then
+  DB_SOURCE=(--db-url "$ARTIFACT_DATABASE_URL")
+elif ! supabase --workdir "$DB_WORKDIR" status >/dev/null 2>&1; then
   echo "FAIL: the local Supabase stack is not running." >&2
   echo "Start it with: (cd db && supabase start)" >&2
   exit 1
 fi
 
 supabase --workdir "$DB_WORKDIR" db dump \
-  --local \
+  "${DB_SOURCE[@]}" \
   --schema public \
   --keep-comments \
   --file "$ARTIFACT_TMP/schema.raw.sql" >/dev/null
 
-supabase --workdir "$DB_WORKDIR" gen types --local --schema public > "$ARTIFACT_TMP/types.raw.ts"
+supabase --workdir "$DB_WORKDIR" gen types "${DB_SOURCE[@]}" --schema public > "$ARTIFACT_TMP/types.raw.ts"
 node scripts/normalize-database-types.mjs \
   "$ARTIFACT_TMP/types.raw.ts" \
   "$ARTIFACT_TMP/schema.raw.sql" \

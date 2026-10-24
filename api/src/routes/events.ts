@@ -11,30 +11,36 @@ import { ApiError, errorResponses } from './_lib/error';
 // entity-filter index; revisit if feed p95 exceeds 200 ms or 20k events/account.
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 
 const FeedQuery = z.object({
   after_seq: z.coerce.number().int().min(0).default(0),
-  entity_type: z.string().regex(/^[a-z_]{1,63}$/).optional(),
+  entity_type: z
+    .string()
+    .regex(/^[a-z_]{1,63}$/)
+    .optional(),
   limit: z.coerce.number().int().positive().max(200).default(100),
 });
 
 const EventFeedItem = z
   .object({
-    account_seq:  z.number().int(),
-    entity_type:  z.string(),
-    entity_id:    z.string().uuid(),
-    event_type:   z.enum(['inserted', 'updated', 'deleted', 'restored', 'hard_deleted']),
-    occurred_at:  z.string(),
-    actor:        z.string(),
-    snapshot:     z.unknown().nullable(),
+    account_seq: z.number().int(),
+    entity_type: z.string(),
+    entity_id: z.string().uuid(),
+    event_type: z.enum(['inserted', 'updated', 'deleted', 'restored', 'hard_deleted']),
+    occurred_at: z.string(),
+    actor: z.string(),
+    snapshot: z.unknown().nullable(),
   })
   .openapi('EventFeedItem');
 
 const FeedResponse = z
   .object({
-    data:     z.array(EventFeedItem),
+    data: z.array(EventFeedItem),
     next_seq: z.number().int(),
   })
   .openapi('EventFeedResponse');
@@ -105,6 +111,13 @@ eventsApp.openapi(list, async (c) => {
         snapshot = r.payload['before'];
       }
     }
+    if (r.entity_type === 'tenancy_date_records' && snapshot && typeof snapshot === 'object') {
+      snapshot = Object.fromEntries(
+        Object.entries(snapshot).filter(
+          ([key]) => !['request_key', 'request_fingerprint', 'response_body'].includes(key),
+        ),
+      );
+    }
     return {
       account_seq: r.account_seq,
       entity_type: r.entity_type,
@@ -118,8 +131,7 @@ eventsApp.openapi(list, async (c) => {
 
   // next_seq: last item's account_seq, or the request's after_seq when the
   // page is empty. The caller can always pass next_seq back verbatim.
-  const next_seq =
-    items.length > 0 ? items[items.length - 1]!.account_seq : after_seq;
+  const next_seq = items.length > 0 ? items[items.length - 1]!.account_seq : after_seq;
 
   return c.json({ data: items, next_seq } satisfies z.infer<typeof FeedResponse>, 200);
 });

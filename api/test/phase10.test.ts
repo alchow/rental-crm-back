@@ -72,7 +72,12 @@ _resetJwksCacheForTests();
 const { _resetAdminClientForTests, getAdminClient } = await import('../src/admin/supabase-admin');
 _resetAdminClientForTests();
 const { _resetIntakeIpBucketsForTests } = await import('../src/admin/intake');
-const { groupInteractionChains, loadExportData, interactionPartyDisplay, retractedInteractionMarker } = await import('../src/admin/export-pdf');
+const {
+  groupInteractionChains,
+  loadExportData,
+  interactionPartyDisplay,
+  retractedInteractionMarker,
+} = await import('../src/admin/export-pdf');
 const { buildApp } = await import('../src/app');
 
 const app = buildApp();
@@ -80,7 +85,11 @@ await _resetIntakeIpBucketsForTests();
 
 // --- helpers ----------------------------------------------------------------
 
-interface ApiResp { status: number; body: unknown; headers: Record<string, string> }
+interface ApiResp {
+  status: number;
+  body: unknown;
+  headers: Record<string, string>;
+}
 
 async function api(
   method: string,
@@ -102,7 +111,9 @@ async function api(
   }
   const res = await app.fetch(new Request(`http://test${path}`, init));
   const responseHeaders: Record<string, string> = {};
-  res.headers.forEach((v, k) => { responseHeaders[k] = v; });
+  res.headers.forEach((v, k) => {
+    responseHeaders[k] = v;
+  });
   const ctype = res.headers.get('content-type') ?? '';
   if (ctype.includes('application/json') || ctype === '') {
     const text = await res.text();
@@ -112,7 +123,9 @@ async function api(
   return { status: res.status, body: buf, headers: responseHeaders };
 }
 
-function rnd(): string { return Math.random().toString(36).slice(2, 10); }
+function rnd(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
 
 interface UserFixture {
   userId: string;
@@ -137,20 +150,23 @@ async function setupUser(label: string): Promise<UserFixture> {
   };
   const post = async <T>(p: string, body: unknown): Promise<T> => {
     const r = await api('POST', p, { token: b.session.access_token, body });
-    if (r.status !== 201) throw new Error(`setup POST ${p} failed: ${r.status} ${JSON.stringify(r.body)}`);
+    if (r.status !== 201)
+      throw new Error(`setup POST ${p} failed: ${r.status} ${JSON.stringify(r.body)}`);
     return r.body as T;
   };
-  const property = await post<{ id: string }>(
-    `/v1/accounts/${b.account.id}/properties`, { name: `${label} prop` },
-  );
-  const unitArea = await post<{ id: string }>(
-    `/v1/accounts/${b.account.id}/areas`,
-    { property_id: property.id, kind: 'unit', name: `${label} unit` },
-  );
-  const tenancy = await post<{ id: string }>(
-    `/v1/accounts/${b.account.id}/tenancies`,
-    { area_id: unitArea.id, start_date: '2026-01-01', status: 'active' },
-  );
+  const property = await post<{ id: string }>(`/v1/accounts/${b.account.id}/properties`, {
+    name: `${label} prop`,
+  });
+  const unitArea = await post<{ id: string }>(`/v1/accounts/${b.account.id}/areas`, {
+    property_id: property.id,
+    kind: 'unit',
+    name: `${label} unit`,
+  });
+  const tenancy = await post<{ id: string }>(`/v1/accounts/${b.account.id}/tenancies`, {
+    area_id: unitArea.id,
+    start_date: '2026-01-01',
+    status: 'active',
+  });
   return {
     userId: b.user.id,
     accessToken: b.session.access_token,
@@ -161,20 +177,24 @@ async function setupUser(label: string): Promise<UserFixture> {
   };
 }
 
-interface Failure { name: string; detail: string }
+interface Failure {
+  name: string;
+  detail: string;
+}
 const failures: Failure[] = [];
 async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try { await fn(); console.info(`  PASS  ${name}`); }
-  catch (e) {
+  try {
+    await fn();
+    console.info(`  PASS  ${name}`);
+  } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     failures.push({ name, detail });
     console.error(`  FAIL  ${name}: ${detail}`);
   }
 }
 function assertStatus(r: ApiResp, expected: number, ctx: string): unknown {
-  if (r.status !== expected) throw new Error(
-    `${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`,
-  );
+  if (r.status !== expected)
+    throw new Error(`${ctx}: expected ${expected}, got ${r.status} body=${JSON.stringify(r.body)}`);
   return r.body;
 }
 
@@ -200,21 +220,30 @@ async function createExportAndWait(
   if (queued.status !== 'queued') throw new Error(`expected status=queued, got ${queued.status}`);
 
   let row = queued as unknown as {
-    id: string; status: string; error: string | null;
-    attachment_id: string | null; chain_verified: boolean | null; chain_message: string | null;
+    id: string;
+    status: string;
+    error: string | null;
+    attachment_id: string | null;
+    chain_verified: boolean | null;
+    chain_message: string | null;
   };
   const t0 = Date.now();
   while ((row.status === 'queued' || row.status === 'running') && Date.now() - t0 < 60_000) {
     await new Promise((res) => setTimeout(res, 200));
-    const poll = await api('GET', `/v1/accounts/${accountId}/evidence-exports/${queued.id}`, { token });
+    const poll = await api('GET', `/v1/accounts/${accountId}/evidence-exports/${queued.id}`, {
+      token,
+    });
     row = assertStatus(poll, 200, 'poll export') as typeof row;
   }
   if (row.status !== 'done' || !row.attachment_id) {
     throw new Error(`export did not complete: status=${row.status} error=${row.error ?? ''}`);
   }
-  const att = await api('GET', `/v1/accounts/${accountId}/attachments/${row.attachment_id}`, { token });
+  const att = await api('GET', `/v1/accounts/${accountId}/attachments/${row.attachment_id}`, {
+    token,
+  });
   const attRow = assertStatus(att, 200, 'export attachment metadata') as {
-    content_hash: string; size_bytes: number;
+    content_hash: string;
+    size_bytes: number;
   };
   return {
     id: row.id,
@@ -258,28 +287,42 @@ async function main(): Promise<void> {
     deposit_currency: 'USD',
     status: 'active',
   });
-  const charge = await post<{ id: string }>(
-    `/v1/accounts/${A.accountId}/charges`,
-    { tenancy_id: A.tenancyId, type: 'rent', amount_cents: 200000, currency: 'USD', due_date: '2026-02-01', period_start: '2026-02-01', period_end: '2026-02-28', description: 'February rent' },
-  );
+  const charge = await post<{ id: string }>(`/v1/accounts/${A.accountId}/charges`, {
+    tenancy_id: A.tenancyId,
+    type: 'rent',
+    amount_cents: 200000,
+    currency: 'USD',
+    due_date: '2026-02-01',
+    period_start: '2026-02-01',
+    period_end: '2026-02-28',
+    description: 'February rent',
+  });
   await post(`/v1/accounts/${A.accountId}/payments`, {
-    tenancy_id: A.tenancyId, amount_cents: 200000, currency: 'USD',
-    received_at: '2026-02-03T12:00:00Z', method: 'check', reference: '1234',
+    tenancy_id: A.tenancyId,
+    amount_cents: 200000,
+    currency: 'USD',
+    received_at: '2026-02-03T12:00:00Z',
+    method: 'check',
+    reference: '1234',
     allocations: [{ charge_id: charge.id, amount_cents: 200000 }],
   });
-  const mreq = await post<{ id: string }>(
-    `/v1/accounts/${A.accountId}/maintenance-requests`,
-    { area_id: A.unitAreaId, title: 'leaky faucet', description: 'kitchen sink dripping', severity: 'routine' },
-  );
+  const mreq = await post<{ id: string }>(`/v1/accounts/${A.accountId}/maintenance-requests`, {
+    area_id: A.unitAreaId,
+    title: 'leaky faucet',
+    description: 'kitchen sink dripping',
+    severity: 'routine',
+  });
   // Attach a photo to the maintenance request.
   const fd = new FormData();
   fd.set('entity_type', 'maintenance_requests');
   fd.set('entity_id', mreq.id);
   fd.set('file', new File([new Uint8Array(PNG_1X1)], 'leak.png', { type: 'image/png' }));
   const photo = await api('POST', `/v1/accounts/${A.accountId}/attachments`, {
-    token: A.accessToken, multipart: fd,
+    token: A.accessToken,
+    multipart: fd,
   });
-  if (photo.status !== 201) throw new Error(`photo upload failed: ${photo.status} ${JSON.stringify(photo.body)}`);
+  if (photo.status !== 201)
+    throw new Error(`photo upload failed: ${photo.status} ${JSON.stringify(photo.body)}`);
 
   // =========================================================================
   // (A) Round-trip: export, attachment, download
@@ -300,7 +343,9 @@ async function main(): Promise<void> {
     }
     if (body.size_bytes <= 0) throw new Error(`size_bytes <= 0: ${body.size_bytes}`);
     if (!body.chain_verified) {
-      throw new Error(`expected chain_verified=true on a fresh account; got message: ${body.chain_message}`);
+      throw new Error(
+        `expected chain_verified=true on a fresh account; got message: ${body.chain_message}`,
+      );
     }
   });
 
@@ -309,13 +354,22 @@ async function main(): Promise<void> {
     // deterministic, then assert the download proxy refuses it.
     const { data: pending, error } = await admin
       .from('evidence_exports')
-      .insert({ account_id: A.accountId, tenancy_id: A.tenancyId, status: 'queued', exporter: A.userId })
+      .insert({
+        account_id: A.accountId,
+        tenancy_id: A.tenancyId,
+        status: 'queued',
+        exporter: A.userId,
+      })
       .select('id')
       .single();
     if (error || !pending) throw new Error(`seed queued row: ${error?.message}`);
-    const r = await api('GET', `/v1/accounts/${A.accountId}/evidence-exports/${pending.id}/download`, {
-      token: A.accessToken,
-    });
+    const r = await api(
+      'GET',
+      `/v1/accounts/${A.accountId}/evidence-exports/${pending.id}/download`,
+      {
+        token: A.accessToken,
+      },
+    );
     if (r.status !== 409) throw new Error(`expected 409 for pending export, got ${r.status}`);
     const code = (r.body as { error?: { code?: string } }).error?.code;
     if (code !== 'conflict') throw new Error(`expected error.code=conflict, got ${code}`);
@@ -324,7 +378,12 @@ async function main(): Promise<void> {
   await check('export: boot recovery marks orphaned queued/running rows failed', async () => {
     const { data: orphan, error } = await admin
       .from('evidence_exports')
-      .insert({ account_id: A.accountId, tenancy_id: A.tenancyId, status: 'running', exporter: A.userId })
+      .insert({
+        account_id: A.accountId,
+        tenancy_id: A.tenancyId,
+        status: 'running',
+        exporter: A.userId,
+      })
       .select('id')
       .single();
     if (error || !orphan) throw new Error(`seed running row: ${error?.message}`);
@@ -342,9 +401,13 @@ async function main(): Promise<void> {
   });
 
   await check('export: download via hardened proxy returns the bundle bytes', async () => {
-    const r = await api('GET', `/v1/accounts/${A.accountId}/evidence-exports/${exportId}/download`, {
-      token: A.accessToken,
-    });
+    const r = await api(
+      'GET',
+      `/v1/accounts/${A.accountId}/evidence-exports/${exportId}/download`,
+      {
+        token: A.accessToken,
+      },
+    );
     assertStatus(r, 200, 'download');
     if (r.headers['content-type'] !== 'application/pdf') {
       throw new Error(`content-type: ${r.headers['content-type']}`);
@@ -361,7 +424,9 @@ async function main(): Promise<void> {
     if ((r.headers['cache-control'] ?? '').indexOf('no-store') === -1) {
       throw new Error(`cache-control should include no-store: ${r.headers['cache-control']}`);
     }
-    const got = createHash('sha256').update(r.body as Uint8Array).digest('hex');
+    const got = createHash('sha256')
+      .update(r.body as Uint8Array)
+      .digest('hex');
     if (got !== exportContentHash) {
       throw new Error(`downloaded bytes hash != stored content_hash`);
     }
@@ -392,20 +457,23 @@ async function main(): Promise<void> {
     }
   });
 
-  await check('export audit: the bundle attachment insert is also attributed to operator', async () => {
-    const { data } = await admin
-      .from('events')
-      .select('actor, event_type')
-      .eq('account_id', A.accountId)
-      .eq('entity_type', 'attachments')
-      .eq('entity_id', exportAttachmentId)
-      .eq('event_type', 'inserted')
-      .maybeSingle();
-    if (!data) throw new Error('no audit event for the export attachment insert');
-    if (data.actor !== `user:${A.userId}`) {
-      throw new Error(`expected actor=user:${A.userId}, got ${data.actor}`);
-    }
-  });
+  await check(
+    'export audit: the bundle attachment insert is also attributed to operator',
+    async () => {
+      const { data } = await admin
+        .from('events')
+        .select('actor, event_type')
+        .eq('account_id', A.accountId)
+        .eq('entity_type', 'attachments')
+        .eq('entity_id', exportAttachmentId)
+        .eq('event_type', 'inserted')
+        .maybeSingle();
+      if (!data) throw new Error('no audit event for the export attachment insert');
+      if (data.actor !== `user:${A.userId}`) {
+        throw new Error(`expected actor=user:${A.userId}, got ${data.actor}`);
+      }
+    },
+  );
 
   // =========================================================================
   // (G) Cross-account isolation
@@ -419,18 +487,25 @@ async function main(): Promise<void> {
   });
 
   await check("export: B cannot download A's bundle", async () => {
-    const r = await api('GET', `/v1/accounts/${B.accountId}/evidence-exports/${exportId}/download`, {
-      token: B.accessToken,
-    });
+    const r = await api(
+      'GET',
+      `/v1/accounts/${B.accountId}/evidence-exports/${exportId}/download`,
+      {
+        token: B.accessToken,
+      },
+    );
     if (r.status !== 404) throw new Error(`expected 404, got ${r.status}`);
   });
 
-  await check("export: B with A's accountId in URL is rejected by membership middleware", async () => {
-    const r = await api('GET', `/v1/accounts/${A.accountId}/evidence-exports/${exportId}`, {
-      token: B.accessToken,
-    });
-    if (r.status !== 404) throw new Error(`expected 404, got ${r.status}`);
-  });
+  await check(
+    "export: B with A's accountId in URL is rejected by membership middleware",
+    async () => {
+      const r = await api('GET', `/v1/accounts/${A.accountId}/evidence-exports/${exportId}`, {
+        token: B.accessToken,
+      });
+      if (r.status !== 404) throw new Error(`expected 404, got ${r.status}`);
+    },
+  );
 
   // =========================================================================
   // (H) Blank-scope rejected
@@ -438,9 +513,11 @@ async function main(): Promise<void> {
 
   await check('export: blank-scope (no tenancy_id and no area_id) rejected with 400', async () => {
     const r = await api('POST', `/v1/accounts/${A.accountId}/evidence-exports`, {
-      token: A.accessToken, body: {},
+      token: A.accessToken,
+      body: {},
     });
-    if (r.status !== 400) throw new Error(`expected 400, got ${r.status} ${JSON.stringify(r.body)}`);
+    if (r.status !== 400)
+      throw new Error(`expected 400, got ${r.status} ${JSON.stringify(r.body)}`);
   });
 
   // =========================================================================
@@ -449,29 +526,28 @@ async function main(): Promise<void> {
 
   let endedTenancyId = '';
   await check('setup: end and soft-delete a tenancy under A', async () => {
-    // Create a new tenancy + give it an end date and status=ended, then
-    // soft-delete it. This is the "post-eviction dispute" surface.
+    // Record an actual ending before deleting the tenancy; its evidence remains exportable.
     const r = await api('POST', `/v1/accounts/${A.accountId}/tenancies`, {
       token: A.accessToken,
       body: { area_id: A.unitAreaId, start_date: '2025-01-01', status: 'active' },
     });
     const body = assertStatus(r, 201, 'create tenancy') as { id: string };
     endedTenancyId = body.id;
-    // End it (PATCH).
-    const patch = await api('PATCH', `/v1/accounts/${A.accountId}/tenancies/${endedTenancyId}`, {
-      token: A.accessToken, body: { status: 'ended', end_date: '2025-12-31' },
+    const ended = await api('POST', `/v1/accounts/${A.accountId}/tenancies/${endedTenancyId}/end`, {
+      token: A.accessToken,
+      body: { kind: 'ended', effective_date: '2025-12-31' },
     });
-    if (patch.status !== 200) throw new Error(`patch tenancy: ${patch.status} ${JSON.stringify(patch.body)}`);
-    // Soft-delete via admin client (the API may not expose tenancy delete).
-    const { error } = await admin
-      .from('tenancies')
-      .update({ deleted_at: new Date().toISOString() })
-      .eq('id', endedTenancyId);
-    if (error) throw new Error(`soft-delete: ${error.message}`);
+    assertStatus(ended, 200, 'end tenancy');
+    const deleted = await api('DELETE', `/v1/accounts/${A.accountId}/tenancies/${endedTenancyId}`, {
+      token: A.accessToken,
+    });
+    assertStatus(deleted, 204, 'soft-delete tenancy');
   });
 
   await check('export: ended + soft-deleted tenancy is exportable (dispute case)', async () => {
-    const body = await createExportAndWait(A.accessToken, A.accountId, { tenancy_id: endedTenancyId });
+    const body = await createExportAndWait(A.accessToken, A.accountId, {
+      tenancy_id: endedTenancyId,
+    });
     if (body.size_bytes <= 0) throw new Error('size_bytes <= 0');
     if (!body.chain_verified) throw new Error('chain should still verify on an ended tenancy');
   });
@@ -570,56 +646,89 @@ async function main(): Promise<void> {
   // =========================================================================
 
   await check('export: amended + retracted interactions carry their FULL chains', async () => {
-    const mk = async (body: Record<string, unknown>): Promise<{ id: string; occurred_at: string }> => {
+    const mk = async (
+      body: Record<string, unknown>,
+    ): Promise<{ id: string; occurred_at: string }> => {
       const r = await api('POST', `/v1/accounts/${A.accountId}/interactions`, {
-        token: A.accessToken, body,
+        token: A.accessToken,
+        body,
       });
-      return assertStatus(r, 201, `interaction ${JSON.stringify(body)}`) as { id: string; occurred_at: string };
+      return assertStatus(r, 201, `interaction ${JSON.stringify(body)}`) as {
+        id: string;
+        occurred_at: string;
+      };
     };
     // One amended entry -- the amend is re-dated OUTSIDE the export window,
     // then amended again, so chain completion has to walk two links.
     const i1 = await mk({
-      tenancy_id: A.tenancyId, party_type: 'tenant', channel: 'phone', direction: 'inbound',
-      occurred_at: '2026-04-10T10:00:00.000Z', body: 'Tenant agreed to access on the 12th.',
+      tenancy_id: A.tenancyId,
+      party_type: 'tenant',
+      channel: 'phone',
+      direction: 'inbound',
+      occurred_at: '2026-04-10T10:00:00.000Z',
+      body: 'Tenant agreed to access on the 12th.',
     });
     const c1 = await mk({
-      corrects_id: i1.id, correction_kind: 'amend',
-      occurred_at: '2026-07-15T10:00:00.000Z', body: 'Access was agreed for July 15th, not April 12th.',
+      corrects_id: i1.id,
+      correction_kind: 'amend',
+      occurred_at: '2026-07-15T10:00:00.000Z',
+      body: 'Access was agreed for July 15th, not April 12th.',
     });
     const c2 = await mk({
-      corrects_id: c1.id, correction_kind: 'amend',
+      corrects_id: c1.id,
+      correction_kind: 'amend',
       body: 'Access agreed for July 15th, 9am-12pm.',
     });
     // One retracted entry.
     const i2 = await mk({
-      tenancy_id: A.tenancyId, party_type: 'tenant', channel: 'in_person', direction: 'outbound',
-      occurred_at: '2026-04-11T09:00:00.000Z', body: 'Asked tenant to clear the hallway.',
+      tenancy_id: A.tenancyId,
+      party_type: 'tenant',
+      channel: 'in_person',
+      direction: 'outbound',
+      occurred_at: '2026-04-11T09:00:00.000Z',
+      body: 'Asked tenant to clear the hallway.',
     });
     const r2 = await mk({
-      corrects_id: i2.id, correction_kind: 'retract', body: 'Wrong tenant; this was unit 2B.',
+      corrects_id: i2.id,
+      correction_kind: 'retract',
+      body: 'Wrong tenant; this was unit 2B.',
     });
 
     // Seam 1: the windowed data set still carries every chain member, even
     // the re-dated amend (July) and its follow-up outside the April window.
     const data = await loadExportData({
-      accountId: A.accountId, tenancyId: A.tenancyId,
-      fromDate: '2026-04-01', toDate: '2026-04-30', exporter: null,
+      accountId: A.accountId,
+      tenancyId: A.tenancyId,
+      fromDate: '2026-04-01',
+      toDate: '2026-04-30',
+      exporter: null,
     });
     const gotIds = new Set(data.interactions.map((x) => String(x.id)));
-    for (const [label, id] of [['original', i1.id], ['amend', c1.id], ['second amend', c2.id], ['retracted original', i2.id], ['retraction', r2.id]] as const) {
-      if (!gotIds.has(id)) throw new Error(`windowed export data is missing the ${label} (${id}) -- chain was split`);
+    for (const [label, id] of [
+      ['original', i1.id],
+      ['amend', c1.id],
+      ['second amend', c2.id],
+      ['retracted original', i2.id],
+      ['retraction', r2.id],
+    ] as const) {
+      if (!gotIds.has(id))
+        throw new Error(`windowed export data is missing the ${label} (${id}) -- chain was split`);
     }
 
     // Seam 2: chain grouping renders original-first with every correction
     // after it, in chain order; the retraction keeps its reason.
     const chains = groupInteractionChains(data.interactions);
     const chain1 = chains.find((ch) => String(ch.root.id) === i1.id);
-    if (!chain1) throw new Error('amended entry must render as a chain ROOT (original first, never collapsed)');
+    if (!chain1)
+      throw new Error(
+        'amended entry must render as a chain ROOT (original first, never collapsed)',
+      );
     if (chain1.corrections.map((x) => String(x.id)).join(',') !== `${c1.id},${c2.id}`) {
       throw new Error(`chain order wrong: ${chain1.corrections.map((x) => x.id).join(',')}`);
     }
     const chain2 = chains.find((ch) => String(ch.root.id) === i2.id);
-    if (!chain2) throw new Error('retracted entry must still render as a chain root, not be hidden');
+    if (!chain2)
+      throw new Error('retracted entry must still render as a chain root, not be hidden');
     const retr = chain2.corrections[0];
     if (!retr || retr.correction_kind !== 'retract' || !String(retr.body).includes('unit 2B')) {
       throw new Error('retraction with its reason must follow the retracted original');
@@ -628,7 +737,8 @@ async function main(): Promise<void> {
     // collapsed view sneaking in).
     const rootIds = new Set(chains.map((ch) => String(ch.root.id)));
     for (const id of [c1.id, c2.id, r2.id]) {
-      if (rootIds.has(id)) throw new Error('a correction leaked into the root set (latest-only collapse)');
+      if (rootIds.has(id))
+        throw new Error('a correction leaked into the root set (latest-only collapse)');
     }
 
     // And the real artifact still builds end-to-end with chains in scope.
@@ -640,45 +750,63 @@ async function main(): Promise<void> {
   // looks like spoliation) but render as its retraction marker alone: the
   // stamped retraction is the audit trail, and the repudiated content must not
   // pass as a genuine attributed interaction.
-  await check('export: a retracted unverified receipt is included and renders as a MARKER, never its body', async () => {
-    const deletedAt = '2026-04-20T12:00:00.000Z';
-    const { data: seeded, error } = await admin.from('interactions').insert({
-      account_id: A.accountId, actor: 'system:comm-persona', author_type: 'tenant',
-      kind: 'communication', channel: 'email', direction: 'inbound',
-      party_type: 'tenant', party_id: null,
-      body: 'FORGED-BODY-MUST-NOT-RENDER',
-      occurred_at: '2026-04-12T10:00:00.000Z', tenancy_id: A.tenancyId,
-      attestation: 'unverified',
-      deleted_at: deletedAt, deleted_by: A.userId,
-      deleted_reason: 'confirmed forgery with the tenant by phone',
-    }).select('id').single();
-    if (error) throw new Error(`retracted-unverified seed: ${error.message}`);
+  await check(
+    'export: a retracted unverified receipt is included and renders as a MARKER, never its body',
+    async () => {
+      const deletedAt = '2026-04-20T12:00:00.000Z';
+      const { data: seeded, error } = await admin
+        .from('interactions')
+        .insert({
+          account_id: A.accountId,
+          actor: 'system:comm-persona',
+          author_type: 'tenant',
+          kind: 'communication',
+          channel: 'email',
+          direction: 'inbound',
+          party_type: 'tenant',
+          party_id: null,
+          body: 'FORGED-BODY-MUST-NOT-RENDER',
+          occurred_at: '2026-04-12T10:00:00.000Z',
+          tenancy_id: A.tenancyId,
+          attestation: 'unverified',
+          deleted_at: deletedAt,
+          deleted_by: A.userId,
+          deleted_reason: 'confirmed forgery with the tenant by phone',
+        })
+        .select('id')
+        .single();
+      if (error) throw new Error(`retracted-unverified seed: ${error.message}`);
 
-    const data = await loadExportData({
-      accountId: A.accountId, tenancyId: A.tenancyId,
-      fromDate: '2026-04-01', toDate: '2026-04-30', exporter: null,
-    });
-    const got = data.interactions.find((x) => String(x.id) === seeded!.id);
-    if (!got) throw new Error('retracted row silently omitted from the export data (spoliation shape)');
+      const data = await loadExportData({
+        accountId: A.accountId,
+        tenancyId: A.tenancyId,
+        fromDate: '2026-04-01',
+        toDate: '2026-04-30',
+        exporter: null,
+      });
+      const got = data.interactions.find((x) => String(x.id) === seeded!.id);
+      if (!got)
+        throw new Error('retracted row silently omitted from the export data (spoliation shape)');
 
-    const marker = retractedInteractionMarker(got, data.uploaderNames);
-    if (!marker.includes('retracted unverified entry')) {
-      throw new Error(`marker names the trust tier: ${marker}`);
-    }
-    if (!/by .+ on 2026-04-20/.test(marker)) {
-      throw new Error(`marker names the retractor + date: ${marker}`);
-    }
-    if (!marker.includes('confirmed forgery with the tenant by phone')) {
-      throw new Error(`marker carries the reason: ${marker}`);
-    }
-    if (marker.includes('FORGED-BODY-MUST-NOT-RENDER')) {
-      throw new Error(`marker must not leak the retracted body: ${marker}`);
-    }
+      const marker = retractedInteractionMarker(got, data.uploaderNames);
+      if (!marker.includes('retracted unverified entry')) {
+        throw new Error(`marker names the trust tier: ${marker}`);
+      }
+      if (!/by .+ on 2026-04-20/.test(marker)) {
+        throw new Error(`marker names the retractor + date: ${marker}`);
+      }
+      if (!marker.includes('confirmed forgery with the tenant by phone')) {
+        throw new Error(`marker carries the reason: ${marker}`);
+      }
+      if (marker.includes('FORGED-BODY-MUST-NOT-RENDER')) {
+        throw new Error(`marker must not leak the retracted body: ${marker}`);
+      }
 
-    // And the real artifact still builds end-to-end with the retracted row
-    // in scope (the renderer takes the marker branch, not the full row).
-    await createExportAndWait(A.accessToken, A.accountId, { tenancy_id: A.tenancyId });
-  });
+      // And the real artifact still builds end-to-end with the retracted row
+      // in scope (the renderer takes the marker branch, not the full row).
+      await createExportAndWait(A.accessToken, A.accountId, { tenancy_id: A.tenancyId });
+    },
+  );
 
   // =========================================================================
   // (K) Counterparty rendering (PR 2): a communication now names WHO it was
@@ -690,188 +818,267 @@ async function main(): Promise<void> {
 
   // (K.A) Pure helper -- no DB. Every branch of the resolution ladder:
   // resolved name > party_label > party_type; none/'' -> empty.
-  await check('export: interactionPartyDisplay resolves party_id -> "<name> (<type>)"', async () => {
-    const tenantRow = { party_type: 'tenant', party_id: 'X' };
-    const tenantGot = interactionPartyDisplay(tenantRow, new Map([['X', 'Jane Doe']]));
-    if (tenantGot !== 'Jane Doe (tenant)') throw new Error(`tenant resolved: got ${JSON.stringify(tenantGot)}`);
+  await check(
+    'export: interactionPartyDisplay resolves party_id -> "<name> (<type>)"',
+    async () => {
+      const tenantRow = { party_type: 'tenant', party_id: 'X' };
+      const tenantGot = interactionPartyDisplay(tenantRow, new Map([['X', 'Jane Doe']]));
+      if (tenantGot !== 'Jane Doe (tenant)')
+        throw new Error(`tenant resolved: got ${JSON.stringify(tenantGot)}`);
 
-    const vendorRow = { party_type: 'vendor', party_id: 'V' };
-    const vendorGot = interactionPartyDisplay(vendorRow, new Map([['V', 'Acme Plumbing']]));
-    if (vendorGot !== 'Acme Plumbing (vendor)') throw new Error(`vendor resolved: got ${JSON.stringify(vendorGot)}`);
-  });
+      const vendorRow = { party_type: 'vendor', party_id: 'V' };
+      const vendorGot = interactionPartyDisplay(vendorRow, new Map([['V', 'Acme Plumbing']]));
+      if (vendorGot !== 'Acme Plumbing (vendor)')
+        throw new Error(`vendor resolved: got ${JSON.stringify(vendorGot)}`);
+    },
+  );
 
-  await check('export: interactionPartyDisplay falls back to party_type when id is unresolved', async () => {
-    const got = interactionPartyDisplay({ party_type: 'tenant', party_id: 'X' }, new Map());
-    if (got !== 'tenant') throw new Error(`unresolved id with no label should yield the type: got ${JSON.stringify(got)}`);
-  });
+  await check(
+    'export: interactionPartyDisplay falls back to party_type when id is unresolved',
+    async () => {
+      const got = interactionPartyDisplay({ party_type: 'tenant', party_id: 'X' }, new Map());
+      if (got !== 'tenant')
+        throw new Error(
+          `unresolved id with no label should yield the type: got ${JSON.stringify(got)}`,
+        );
+    },
+  );
 
-  await check('export: interactionPartyDisplay uses party_label when there is no resolved id', async () => {
-    const other = interactionPartyDisplay({ party_type: 'other', party_id: null, party_label: 'The neighbor' }, new Map());
-    if (other !== 'The neighbor (other)') throw new Error(`other+label: got ${JSON.stringify(other)}`);
+  await check(
+    'export: interactionPartyDisplay uses party_label when there is no resolved id',
+    async () => {
+      const other = interactionPartyDisplay(
+        { party_type: 'other', party_id: null, party_label: 'The neighbor' },
+        new Map(),
+      );
+      if (other !== 'The neighbor (other)')
+        throw new Error(`other+label: got ${JSON.stringify(other)}`);
 
-    const inspector = interactionPartyDisplay({ party_type: 'inspector', party_id: null, party_label: 'Gas Safe Ltd' }, new Map());
-    if (inspector !== 'Gas Safe Ltd (inspector)') throw new Error(`inspector+label: got ${JSON.stringify(inspector)}`);
-  });
+      const inspector = interactionPartyDisplay(
+        { party_type: 'inspector', party_id: null, party_label: 'Gas Safe Ltd' },
+        new Map(),
+      );
+      if (inspector !== 'Gas Safe Ltd (inspector)')
+        throw new Error(`inspector+label: got ${JSON.stringify(inspector)}`);
+    },
+  );
 
-  await check('export: interactionPartyDisplay shows the bare type for unspecified, empty for none', async () => {
-    const unspecified = interactionPartyDisplay({ party_type: 'unspecified', party_id: null }, new Map());
-    if (unspecified !== 'unspecified') throw new Error(`unspecified should render as the bare sentinel: got ${JSON.stringify(unspecified)}`);
+  await check(
+    'export: interactionPartyDisplay shows the bare type for unspecified, empty for none',
+    async () => {
+      const unspecified = interactionPartyDisplay(
+        { party_type: 'unspecified', party_id: null },
+        new Map(),
+      );
+      if (unspecified !== 'unspecified')
+        throw new Error(
+          `unspecified should render as the bare sentinel: got ${JSON.stringify(unspecified)}`,
+        );
 
-    const none = interactionPartyDisplay({ party_type: 'none' }, new Map());
-    if (none !== '') throw new Error(`party_type 'none' (note/agent_event) must render empty: got ${JSON.stringify(none)}`);
-  });
+      const none = interactionPartyDisplay({ party_type: 'none' }, new Map());
+      if (none !== '')
+        throw new Error(
+          `party_type 'none' (note/agent_event) must render empty: got ${JSON.stringify(none)}`,
+        );
+    },
+  );
 
   // (K.B) loadExportData resolves party_id -> name from tenants + vendors.
   // Scope a FRESH tenancy so the assertions are isolated from the rest of
   // the suite's interactions. The referenced tenant is deliberately NOT an
   // occupant of this tenancy, so the resolution exercises the by-type
   // tenants/vendors lookup (not the occupant pre-seed).
-  await check('export: loadExportData partyNames maps tenant id -> full_name and vendor id -> name', async () => {
-    const tenancy = await post<{ id: string }>(
-      `/v1/accounts/${A.accountId}/tenancies`,
-      { area_id: A.unitAreaId, start_date: '2026-03-01', status: 'active' },
-    );
-    const tenant = await post<{ id: string; full_name: string }>(
-      `/v1/accounts/${A.accountId}/tenants`, { full_name: 'Jane Tenant' },
-    );
-    const vendor = await post<{ id: string; name: string }>(
-      `/v1/accounts/${A.accountId}/vendors`, { name: 'Acme Plumbing' },
-    );
-    // A communication with this tenant as the resolved counterparty.
-    await post(`/v1/accounts/${A.accountId}/interactions`, {
-      tenancy_id: tenancy.id, party_type: 'tenant', party_id: tenant.id,
-      channel: 'phone', direction: 'inbound', occurred_at: '2026-03-05T10:00:00.000Z',
-      body: 'Tenant called about the boiler.',
-    });
-    // A communication with this vendor as the resolved counterparty.
-    await post(`/v1/accounts/${A.accountId}/interactions`, {
-      tenancy_id: tenancy.id, party_type: 'vendor', party_id: vendor.id,
-      channel: 'phone', direction: 'outbound', occurred_at: '2026-03-06T10:00:00.000Z',
-      body: 'Called the plumber to book the boiler repair.',
-    });
+  await check(
+    'export: loadExportData partyNames maps tenant id -> full_name and vendor id -> name',
+    async () => {
+      const tenancy = await post<{ id: string }>(`/v1/accounts/${A.accountId}/tenancies`, {
+        area_id: A.unitAreaId,
+        start_date: '2026-03-01',
+        status: 'active',
+      });
+      const tenant = await post<{ id: string; full_name: string }>(
+        `/v1/accounts/${A.accountId}/tenants`,
+        { full_name: 'Jane Tenant' },
+      );
+      const vendor = await post<{ id: string; name: string }>(
+        `/v1/accounts/${A.accountId}/vendors`,
+        { name: 'Acme Plumbing' },
+      );
+      // A communication with this tenant as the resolved counterparty.
+      await post(`/v1/accounts/${A.accountId}/interactions`, {
+        tenancy_id: tenancy.id,
+        party_type: 'tenant',
+        party_id: tenant.id,
+        channel: 'phone',
+        direction: 'inbound',
+        occurred_at: '2026-03-05T10:00:00.000Z',
+        body: 'Tenant called about the boiler.',
+      });
+      // A communication with this vendor as the resolved counterparty.
+      await post(`/v1/accounts/${A.accountId}/interactions`, {
+        tenancy_id: tenancy.id,
+        party_type: 'vendor',
+        party_id: vendor.id,
+        channel: 'phone',
+        direction: 'outbound',
+        occurred_at: '2026-03-06T10:00:00.000Z',
+        body: 'Called the plumber to book the boiler repair.',
+      });
 
-    const data = await loadExportData({
-      accountId: A.accountId, tenancyId: tenancy.id, exporter: null,
-    });
-    if (data.partyNames.get(tenant.id) !== 'Jane Tenant') {
-      throw new Error(`partyNames should map the tenant id to full_name; got ${JSON.stringify(data.partyNames.get(tenant.id))}`);
-    }
-    if (data.partyNames.get(vendor.id) !== 'Acme Plumbing') {
-      throw new Error(`partyNames should map the vendor id to name; got ${JSON.stringify(data.partyNames.get(vendor.id))}`);
-    }
-    // And the rows feed through the render seam to the human-facing string.
-    const ids = new Set([tenant.id, vendor.id]);
-    const seen = new Set<string>();
-    for (const r of data.interactions) {
-      const pid = r.party_id as string | null;
-      if (pid && ids.has(pid)) seen.add(interactionPartyDisplay(r, data.partyNames));
-    }
-    if (!seen.has('Jane Tenant (tenant)')) throw new Error("expected a row to render as 'Jane Tenant (tenant)'");
-    if (!seen.has('Acme Plumbing (vendor)')) throw new Error("expected a row to render as 'Acme Plumbing (vendor)'");
-  });
+      const data = await loadExportData({
+        accountId: A.accountId,
+        tenancyId: tenancy.id,
+        exporter: null,
+      });
+      if (data.partyNames.get(tenant.id) !== 'Jane Tenant') {
+        throw new Error(
+          `partyNames should map the tenant id to full_name; got ${JSON.stringify(data.partyNames.get(tenant.id))}`,
+        );
+      }
+      if (data.partyNames.get(vendor.id) !== 'Acme Plumbing') {
+        throw new Error(
+          `partyNames should map the vendor id to name; got ${JSON.stringify(data.partyNames.get(vendor.id))}`,
+        );
+      }
+      // And the rows feed through the render seam to the human-facing string.
+      const ids = new Set([tenant.id, vendor.id]);
+      const seen = new Set<string>();
+      for (const r of data.interactions) {
+        const pid = r.party_id as string | null;
+        if (pid && ids.has(pid)) seen.add(interactionPartyDisplay(r, data.partyNames));
+      }
+      if (!seen.has('Jane Tenant (tenant)'))
+        throw new Error("expected a row to render as 'Jane Tenant (tenant)'");
+      if (!seen.has('Acme Plumbing (vendor)'))
+        throw new Error("expected a row to render as 'Acme Plumbing (vendor)'");
+    },
+  );
 
   // (K.C) End-to-end classify chain: capture role-unknown ('unspecified', no
   // party_id), then classify it to a concrete tenant. The export must show
   // "logged unspecified -> attributed to <name>": the root still reads
   // 'unspecified', while the classify head names the resolved tenant.
-  await check('export: a classify attribution resolves to the tenant name; the root stays unspecified', async () => {
-    const tenancy = await post<{ id: string }>(
-      `/v1/accounts/${A.accountId}/tenancies`,
-      { area_id: A.unitAreaId, start_date: '2026-05-01', status: 'active' },
-    );
-    const tenant = await post<{ id: string; full_name: string }>(
-      `/v1/accounts/${A.accountId}/tenants`, { full_name: 'Sam Caller' },
-    );
-    // Capture: one-tap Log -- a real counterparty whose ROLE is not yet known.
-    const captured = await post<{ id: string }>(`/v1/accounts/${A.accountId}/interactions`, {
-      tenancy_id: tenancy.id, party_type: 'unspecified',
-      channel: 'phone', direction: 'inbound', occurred_at: '2026-05-10T10:00:00.000Z',
-      body: 'Someone phoned about a leak; took the details.',
-    });
-    // Enrich: classify completes the attribution (metadata only; body inherited).
-    const head = await post<{ id: string }>(`/v1/accounts/${A.accountId}/interactions`, {
-      corrects_id: captured.id, correction_kind: 'classify',
-      party_type: 'tenant', party_id: tenant.id,
-    });
+  await check(
+    'export: a classify attribution resolves to the tenant name; the root stays unspecified',
+    async () => {
+      const tenancy = await post<{ id: string }>(`/v1/accounts/${A.accountId}/tenancies`, {
+        area_id: A.unitAreaId,
+        start_date: '2026-05-01',
+        status: 'active',
+      });
+      const tenant = await post<{ id: string; full_name: string }>(
+        `/v1/accounts/${A.accountId}/tenants`,
+        { full_name: 'Sam Caller' },
+      );
+      // Capture: one-tap Log -- a real counterparty whose ROLE is not yet known.
+      const captured = await post<{ id: string }>(`/v1/accounts/${A.accountId}/interactions`, {
+        tenancy_id: tenancy.id,
+        party_type: 'unspecified',
+        channel: 'phone',
+        direction: 'inbound',
+        occurred_at: '2026-05-10T10:00:00.000Z',
+        body: 'Someone phoned about a leak; took the details.',
+      });
+      // Enrich: classify completes the attribution (metadata only; body inherited).
+      const head = await post<{ id: string }>(`/v1/accounts/${A.accountId}/interactions`, {
+        corrects_id: captured.id,
+        correction_kind: 'classify',
+        party_type: 'tenant',
+        party_id: tenant.id,
+      });
 
-    const data = await loadExportData({
-      accountId: A.accountId, tenancyId: tenancy.id, exporter: null,
-    });
-    // (a) the classified tenant id resolves.
-    if (data.partyNames.get(tenant.id) !== 'Sam Caller') {
-      throw new Error(`partyNames should resolve the classified tenant; got ${JSON.stringify(data.partyNames.get(tenant.id))}`);
-    }
-    // (b) the chain head (the classify) names the tenant; the root stays unspecified.
-    const chain = groupInteractionChains(data.interactions).find((ch) => String(ch.root.id) === captured.id);
-    if (!chain) throw new Error('the captured entry must render as a chain root');
-    const rootDisplay = interactionPartyDisplay(chain.root, data.partyNames);
-    if (rootDisplay !== 'unspecified') {
-      throw new Error(`the root should still read 'unspecified' (the capture truth); got ${JSON.stringify(rootDisplay)}`);
-    }
-    const headRow = chain.corrections.find((x) => String(x.id) === head.id);
-    if (!headRow) throw new Error('the classify correction must appear in the chain');
-    const headDisplay = interactionPartyDisplay(headRow, data.partyNames);
-    if (headDisplay !== 'Sam Caller (tenant)') {
-      throw new Error(`the classify head should resolve to '<full_name> (tenant)'; got ${JSON.stringify(headDisplay)}`);
-    }
-  });
+      const data = await loadExportData({
+        accountId: A.accountId,
+        tenancyId: tenancy.id,
+        exporter: null,
+      });
+      // (a) the classified tenant id resolves.
+      if (data.partyNames.get(tenant.id) !== 'Sam Caller') {
+        throw new Error(
+          `partyNames should resolve the classified tenant; got ${JSON.stringify(data.partyNames.get(tenant.id))}`,
+        );
+      }
+      // (b) the chain head (the classify) names the tenant; the root stays unspecified.
+      const chain = groupInteractionChains(data.interactions).find(
+        (ch) => String(ch.root.id) === captured.id,
+      );
+      if (!chain) throw new Error('the captured entry must render as a chain root');
+      const rootDisplay = interactionPartyDisplay(chain.root, data.partyNames);
+      if (rootDisplay !== 'unspecified') {
+        throw new Error(
+          `the root should still read 'unspecified' (the capture truth); got ${JSON.stringify(rootDisplay)}`,
+        );
+      }
+      const headRow = chain.corrections.find((x) => String(x.id) === head.id);
+      if (!headRow) throw new Error('the classify correction must appear in the chain');
+      const headDisplay = interactionPartyDisplay(headRow, data.partyNames);
+      if (headDisplay !== 'Sam Caller (tenant)') {
+        throw new Error(
+          `the classify head should resolve to '<full_name> (tenant)'; got ${JSON.stringify(headDisplay)}`,
+        );
+      }
+    },
+  );
 
   // =========================================================================
   // (C) Tampered chain surfaces as chain_verified=false
   // =========================================================================
 
-  await check('export: tampered event chain surfaces in chain_verified + chain_message', async () => {
-    // The events table is locked even from service-role -- the audit
-    // spine is meant to be immutable. To simulate a tamper, we connect
-    // as the postgres superuser directly via pg and update the row. The
-    // test point isn't "service-role can tamper" (good that it can't!)
-    // but "if SOMETHING manages to tamper, the bundle says so".
-    const c = new Client({ connectionString: status.DB_URL });
-    await c.connect();
-    try {
-      const r = await c.query<{ id: string; event_hash: string }>(
-        `select id, encode(event_hash, 'hex') as event_hash
+  await check(
+    'export: tampered event chain surfaces in chain_verified + chain_message',
+    async () => {
+      // The events table is locked even from service-role -- the audit
+      // spine is meant to be immutable. To simulate a tamper, we connect
+      // as the postgres superuser directly via pg and update the row. The
+      // test point isn't "service-role can tamper" (good that it can't!)
+      // but "if SOMETHING manages to tamper, the bundle says so".
+      const c = new Client({ connectionString: status.DB_URL });
+      await c.connect();
+      try {
+        const r = await c.query<{ id: string; event_hash: string }>(
+          `select id, encode(event_hash, 'hex') as event_hash
            from public.events
           where account_id = $1 and entity_type = 'maintenance_requests' and event_type = 'inserted'
           order by account_seq asc limit 1`,
-        [A.accountId],
-      );
-      if (r.rowCount === 0) throw new Error('no event to tamper');
-      const ev = r.rows[0]!;
-      const tampered = Buffer.from(ev.event_hash, 'hex');
-      tampered[0] = (tampered[0] ?? 0) ^ 0xff;
-      await c.query(
-        `update public.events set event_hash = $1 where id = $2`,
-        [tampered, ev.id],
-      );
-    } finally {
-      await c.end().catch(() => {});
-    }
+          [A.accountId],
+        );
+        if (r.rowCount === 0) throw new Error('no event to tamper');
+        const ev = r.rows[0]!;
+        const tampered = Buffer.from(ev.event_hash, 'hex');
+        tampered[0] = (tampered[0] ?? 0) ^ 0xff;
+        await c.query(`update public.events set event_hash = $1 where id = $2`, [tampered, ev.id]);
+      } finally {
+        await c.end().catch(() => {});
+      }
 
-    const body = await createExportAndWait(A.accessToken, A.accountId, { tenancy_id: A.tenancyId });
-    if (body.chain_verified) {
-      throw new Error('chain should NOT verify after tampering an event_hash');
-    }
-    if (!/broken/i.test(body.chain_message)) {
-      throw new Error(`chain_message should say "broken" or similar: ${body.chain_message}`);
-    }
-    // The chain_message is also persisted on the evidence_exports row so
-    // anyone reading the audit trail later sees the captured-at-export-
-    // time verdict, not a re-derivation that could be replayed against a
-    // patched-clean chain.
-    const idAfter = body.id;
-    const { data: row } = await admin
-      .from('evidence_exports')
-      .select('chain_verified, chain_message')
-      .eq('id', idAfter).single();
-    if (!row) throw new Error('evidence_exports row not found post-tamper');
-    if (row.chain_verified !== false) {
-      throw new Error('persisted chain_verified should be false');
-    }
-    if (!/broken/i.test(row.chain_message as string)) {
-      throw new Error(`persisted chain_message missing 'broken': ${row.chain_message}`);
-    }
-  });
+      const body = await createExportAndWait(A.accessToken, A.accountId, {
+        tenancy_id: A.tenancyId,
+      });
+      if (body.chain_verified) {
+        throw new Error('chain should NOT verify after tampering an event_hash');
+      }
+      if (!/broken/i.test(body.chain_message)) {
+        throw new Error(`chain_message should say "broken" or similar: ${body.chain_message}`);
+      }
+      // The chain_message is also persisted on the evidence_exports row so
+      // anyone reading the audit trail later sees the captured-at-export-
+      // time verdict, not a re-derivation that could be replayed against a
+      // patched-clean chain.
+      const idAfter = body.id;
+      const { data: row } = await admin
+        .from('evidence_exports')
+        .select('chain_verified, chain_message')
+        .eq('id', idAfter)
+        .single();
+      if (!row) throw new Error('evidence_exports row not found post-tamper');
+      if (row.chain_verified !== false) {
+        throw new Error('persisted chain_verified should be false');
+      }
+      if (!/broken/i.test(row.chain_message as string)) {
+        throw new Error(`persisted chain_message missing 'broken': ${row.chain_message}`);
+      }
+    },
+  );
 
   // --- summary ---
   if (failures.length > 0) {

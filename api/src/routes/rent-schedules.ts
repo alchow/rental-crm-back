@@ -2,6 +2,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import type { DbFunctionArgs, DbTableInsert, DbTableUpdate } from '../supabase/db-types';
+import { RentDueRule } from '../schemas/lease-terms';
 import {
   ApiError,
   errorResponses,
@@ -21,16 +22,9 @@ import {
 
 // A rent schedule is the recurring rule that EMITS periodic charges. It
 // lives on a tenancy (not on a lease) so lease-less tenancies still bill.
-// The BILLING TERMS have no PATCH: "the rent changed mid-tenancy" is recorded
-// by ending the current schedule (set end_date) and creating a new one. That
-// keeps the history honest -- nobody can edit "what the rent was"
-// retroactively. PATCH exists for the LATE-FEE POLICY alone (grace_days,
-// late_fee_cents): those describe the lease's terms rather than what was
-// billed, nothing is GENERATED from them, and a landlord recording them a
-// month late is correcting a record, not rewriting one. Editing the policy
-// cannot rewrite money that already exists either: a fee already asserted is
-// its own charge row carrying its own recorded amount, so it stands unchanged
-// whatever the policy later says.
+// Billing changes create successor schedules so existing charge snapshots stay
+// unchanged. Policy PATCH is legacy-only: version 2+ freezes the confirmed
+// terms, including fees, and the database requires a successor for changes.
 //
 // DELETE exists for exactly one purpose (ADR-0012 corrections policy): a
 // NEVER-BILLED mistaken schedule -- the typo'd rent change, the future era
@@ -49,7 +43,9 @@ const RentSchedule = z
     kind: ScheduleKind,
     amount_cents: z.number().int().nonnegative(),
     currency: CurrencyCode,
-    due_day: z.number().int().min(1).max(28),
+    due_day: z.number().int().min(1).max(31),
+    billing_due_rule: RentDueRule.nullable().optional(),
+    short_month_policy: z.enum(['last_day', 'manual']).nullable().optional(),
     start_date: z.string(),
     end_date: z.string().nullable(),
     // Provenance for an instrument-anchored rent change (migration
@@ -66,6 +62,10 @@ const RentSchedule = z
     // a fabricated null. Null means the lease terms were never recorded.
     grace_days: z.number().int().nullable().optional(),
     late_fee_cents: z.number().int().nullable().optional(),
+    period_policy_version: z.number().int(),
+    regular_anchor: z.string().nullable(),
+    terms_snapshot: z.record(z.unknown()),
+    manual_basis: z.string().nullable(),
     created_at: z.string(),
     updated_at: z.string(),
     deleted_at: z.string().nullable(),
@@ -103,17 +103,9 @@ const EndRentScheduleBody = z
   })
   .openapi('EndRentScheduleBody');
 
-// POLICY ONLY. The module comment above explains why a rent schedule has no
-// general PATCH: amount, dates, kind and due_day are what the tenancy was
-// BILLED on, and editing them would rewrite history that charges already
-// reference. grace_days and late_fee_cents are a different kind of fact — the
-// lease's own terms, recorded late or corrected, from which nothing is
-// GENERATED — so they get a narrow editor and nothing else does. A fee already
-// asserted under an earlier policy is unaffected: it is its own charge row with
-// its own recorded amount, and editing the policy neither re-prices nor voids
-// it. That is why the editor stays open even once fees exist — the alternative,
-// locking the lease's terms behind the first fee ever asserted, would leave a
-// landlord unable to correct a typo'd $850.
+// COMPAT: legacy policy corrections cannot re-price existing fee charges.
+// Version 2+ policies are immutable confirmed snapshots; the database rejects
+// this PATCH and setup creates a successor instead.
 //
 // .strict() rather than the usual silent key-stripping: a landlord who PATCHes
 // { amount_cents } here must be told no. Stripping it would answer 200 to a

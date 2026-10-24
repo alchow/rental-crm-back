@@ -90,6 +90,38 @@ export type Database = {
           },
         ];
       };
+      account_rent_defaults: {
+        Row: {
+          account_id: string;
+          grace_days: number | null;
+          id: string;
+          late_fee_policy: Json;
+          updated_at: string;
+        };
+        Insert: {
+          account_id: string;
+          grace_days?: number | null;
+          id?: string;
+          late_fee_policy?: Json;
+          updated_at?: string;
+        };
+        Update: {
+          account_id?: string;
+          grace_days?: number | null;
+          id?: string;
+          late_fee_policy?: Json;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'account_rent_defaults_account_id_fkey';
+            columns: ['account_id'];
+            isOneToOne: true;
+            referencedRelation: 'accounts';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
       accounts: {
         Row: {
           auto_charge_enabled: boolean;
@@ -579,6 +611,7 @@ export type Database = {
           amount_cents: number;
           created_at: string;
           currency: string;
+          cycle_key: string | null;
           deleted_at: string | null;
           description: string | null;
           due_date: string;
@@ -588,6 +621,7 @@ export type Database = {
           period_start: string | null;
           source_schedule_id: string | null;
           tenancy_id: string;
+          terms_snapshot: Json | null;
           type: string;
           updated_at: string;
           void_reason: string | null;
@@ -598,6 +632,7 @@ export type Database = {
           amount_cents: number;
           created_at?: string;
           currency: string;
+          cycle_key?: string | null;
           deleted_at?: string | null;
           description?: string | null;
           due_date: string;
@@ -607,6 +642,7 @@ export type Database = {
           period_start?: string | null;
           source_schedule_id?: string | null;
           tenancy_id: string;
+          terms_snapshot?: Json | null;
           type: string;
           updated_at?: string;
           void_reason?: string | null;
@@ -617,6 +653,7 @@ export type Database = {
           amount_cents?: number;
           created_at?: string;
           currency?: string;
+          cycle_key?: string | null;
           deleted_at?: string | null;
           description?: string | null;
           due_date?: string;
@@ -626,6 +663,7 @@ export type Database = {
           period_start?: string | null;
           source_schedule_id?: string | null;
           tenancy_id?: string;
+          terms_snapshot?: Json | null;
           type?: string;
           updated_at?: string;
           void_reason?: string | null;
@@ -644,6 +682,13 @@ export type Database = {
             columns: ['account_id', 'tenancy_id'];
             isOneToOne: false;
             referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'charges_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
             referencedColumns: ['account_id', 'id'];
           },
           {
@@ -880,6 +925,13 @@ export type Database = {
             referencedRelation: 'tenancies';
             referencedColumns: ['account_id', 'id'];
           },
+          {
+            foreignKeyName: 'comm_outbox_tenancy_fk';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
         ];
       };
       comm_policies: {
@@ -1065,6 +1117,13 @@ export type Database = {
             columns: ['account_id', 'tenancy_id'];
             isOneToOne: false;
             referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'comm_threads_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
             referencedColumns: ['account_id', 'id'];
           },
         ];
@@ -1270,6 +1329,13 @@ export type Database = {
             referencedColumns: ['account_id', 'id'];
           },
           {
+            foreignKeyName: 'document_access_events_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
             foreignKeyName: 'document_access_events_account_id_tenant_id_fkey';
             columns: ['account_id', 'tenant_id'];
             isOneToOne: false;
@@ -1337,6 +1403,13 @@ export type Database = {
             referencedColumns: ['account_id', 'id'];
           },
           {
+            foreignKeyName: 'document_access_tokens_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
             foreignKeyName: 'document_access_tokens_account_id_tenant_id_fkey';
             columns: ['account_id', 'tenant_id'];
             isOneToOne: false;
@@ -1353,7 +1426,9 @@ export type Database = {
           derived_from_receipt_id: string | null;
           id: string;
           mime_type: string;
+          prune_claimed_at: string | null;
           received_at: string;
+          setup_session_id: string | null;
           size_bytes: number;
           storage_path: string;
           stored_at: string | null;
@@ -1366,7 +1441,9 @@ export type Database = {
           derived_from_receipt_id?: string | null;
           id?: string;
           mime_type: string;
+          prune_claimed_at?: string | null;
           received_at?: string;
+          setup_session_id?: string | null;
           size_bytes: number;
           storage_path: string;
           stored_at?: string | null;
@@ -1379,7 +1456,9 @@ export type Database = {
           derived_from_receipt_id?: string | null;
           id?: string;
           mime_type?: string;
+          prune_claimed_at?: string | null;
           received_at?: string;
+          setup_session_id?: string | null;
           size_bytes?: number;
           storage_path?: string;
           stored_at?: string | null;
@@ -1399,6 +1478,13 @@ export type Database = {
             isOneToOne: false;
             referencedRelation: 'accounts';
             referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'document_upload_receipts_account_id_setup_session_id_fkey';
+            columns: ['account_id', 'setup_session_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_setup_sessions';
+            referencedColumns: ['account_id', 'id'];
           },
         ];
       };
@@ -1520,6 +1606,13 @@ export type Database = {
             columns: ['account_id', 'tenancy_id'];
             isOneToOne: false;
             referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'documents_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
             referencedColumns: ['account_id', 'id'];
           },
           {
@@ -1661,6 +1754,13 @@ export type Database = {
             columns: ['account_id', 'tenancy_id'];
             isOneToOne: false;
             referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'evidence_exports_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
             referencedColumns: ['account_id', 'id'];
           },
           {
@@ -2116,6 +2216,13 @@ export type Database = {
             referencedRelation: 'tenancies';
             referencedColumns: ['account_id', 'id'];
           },
+          {
+            foreignKeyName: 'incidents_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
         ];
       };
       inspection_capture_tokens: {
@@ -2505,6 +2612,13 @@ export type Database = {
             referencedRelation: 'tenancies';
             referencedColumns: ['account_id', 'id'];
           },
+          {
+            foreignKeyName: 'inspections_tenancy_fk';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
         ];
       };
       intake_tokens: {
@@ -2563,6 +2677,13 @@ export type Database = {
             columns: ['account_id', 'tenancy_id'];
             isOneToOne: false;
             referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'intake_tokens_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
             referencedColumns: ['account_id', 'id'];
           },
         ];
@@ -2787,6 +2908,13 @@ export type Database = {
             referencedColumns: ['account_id', 'id'];
           },
           {
+            foreignKeyName: 'interactions_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
             foreignKeyName: 'interactions_account_id_vendor_id_fkey';
             columns: ['account_id', 'vendor_id'];
             isOneToOne: false;
@@ -2885,57 +3013,84 @@ export type Database = {
       leases: {
         Row: {
           account_id: string;
+          agreement_kind: string;
           corrects_lease_id: string | null;
           created_at: string;
           deleted_at: string | null;
           deposit_amount_cents: number;
           deposit_currency: string | null;
+          deposit_knowledge: string;
           document: Json;
+          grace_days: number | null;
           id: string;
+          late_fee_policy: Json;
+          predecessor_lease_id: string | null;
           rent_amount_cents: number;
           rent_currency: string;
+          rent_due_rule: Json;
           status: string;
           tenancy_id: string;
           term_end: string | null;
           term_start: string;
+          terms_recorded_at: string | null;
+          terms_recorded_by: string | null;
+          terms_source: Json | null;
           updated_at: string;
           void_reason: string | null;
           voided_at: string | null;
         };
         Insert: {
           account_id: string;
+          agreement_kind?: string;
           corrects_lease_id?: string | null;
           created_at?: string;
           deleted_at?: string | null;
           deposit_amount_cents?: number;
           deposit_currency?: string | null;
+          deposit_knowledge?: string;
           document?: Json;
+          grace_days?: number | null;
           id?: string;
+          late_fee_policy?: Json;
+          predecessor_lease_id?: string | null;
           rent_amount_cents: number;
           rent_currency: string;
+          rent_due_rule?: Json;
           status: string;
           tenancy_id: string;
           term_end?: string | null;
           term_start: string;
+          terms_recorded_at?: string | null;
+          terms_recorded_by?: string | null;
+          terms_source?: Json | null;
           updated_at?: string;
           void_reason?: string | null;
           voided_at?: string | null;
         };
         Update: {
           account_id?: string;
+          agreement_kind?: string;
           corrects_lease_id?: string | null;
           created_at?: string;
           deleted_at?: string | null;
           deposit_amount_cents?: number;
           deposit_currency?: string | null;
+          deposit_knowledge?: string;
           document?: Json;
+          grace_days?: number | null;
           id?: string;
+          late_fee_policy?: Json;
+          predecessor_lease_id?: string | null;
           rent_amount_cents?: number;
           rent_currency?: string;
+          rent_due_rule?: Json;
           status?: string;
           tenancy_id?: string;
           term_end?: string | null;
           term_start?: string;
+          terms_recorded_at?: string | null;
+          terms_recorded_by?: string | null;
+          terms_source?: Json | null;
           updated_at?: string;
           void_reason?: string | null;
           voided_at?: string | null;
@@ -2949,8 +3104,22 @@ export type Database = {
             referencedColumns: ['account_id', 'id'];
           },
           {
+            foreignKeyName: 'leases_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
             foreignKeyName: 'leases_corrects_lease_fk';
             columns: ['account_id', 'corrects_lease_id'];
+            isOneToOne: false;
+            referencedRelation: 'leases';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'leases_predecessor_account_fk';
+            columns: ['account_id', 'predecessor_lease_id'];
             isOneToOne: false;
             referencedRelation: 'leases';
             referencedColumns: ['account_id', 'id'];
@@ -3131,6 +3300,13 @@ export type Database = {
             referencedRelation: 'tenancies';
             referencedColumns: ['account_id', 'id'];
           },
+          {
+            foreignKeyName: 'notices_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
         ];
       };
       owner_phone_verification_receipts: {
@@ -3241,13 +3417,15 @@ export type Database = {
           created_at: string;
           currency: string;
           deleted_at: string | null;
+          entry_source: string;
           id: string;
           idempotency_key: string | null;
           method: string;
           notes: string | null;
           payer_tenant_id: string | null;
           processor_ref: string | null;
-          received_at: string;
+          receipt_date_unknown: boolean;
+          received_at: string | null;
           reference: string | null;
           tenancy_id: string;
           updated_at: string;
@@ -3260,13 +3438,15 @@ export type Database = {
           created_at?: string;
           currency: string;
           deleted_at?: string | null;
+          entry_source?: string;
           id?: string;
           idempotency_key?: string | null;
           method: string;
           notes?: string | null;
           payer_tenant_id?: string | null;
           processor_ref?: string | null;
-          received_at: string;
+          receipt_date_unknown?: boolean;
+          received_at?: string | null;
           reference?: string | null;
           tenancy_id: string;
           updated_at?: string;
@@ -3279,13 +3459,15 @@ export type Database = {
           created_at?: string;
           currency?: string;
           deleted_at?: string | null;
+          entry_source?: string;
           id?: string;
           idempotency_key?: string | null;
           method?: string;
           notes?: string | null;
           payer_tenant_id?: string | null;
           processor_ref?: string | null;
-          received_at?: string;
+          receipt_date_unknown?: boolean;
+          received_at?: string | null;
           reference?: string | null;
           tenancy_id?: string;
           updated_at?: string;
@@ -3305,6 +3487,13 @@ export type Database = {
             columns: ['account_id', 'tenancy_id'];
             isOneToOne: false;
             referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'payments_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
             referencedColumns: ['account_id', 'id'];
           },
         ];
@@ -3415,10 +3604,78 @@ export type Database = {
           },
         ];
       };
+      rent_schedule_period_overrides: {
+        Row: {
+          account_id: string;
+          amount_cents: number;
+          created_at: string;
+          created_by: string;
+          cycle_key: string;
+          due_date: string;
+          id: string;
+          period_end: string;
+          period_start: string;
+          reason: string;
+          schedule_id: string;
+          tenancy_id: string;
+        };
+        Insert: {
+          account_id: string;
+          amount_cents: number;
+          created_at?: string;
+          created_by?: string;
+          cycle_key: string;
+          due_date: string;
+          id?: string;
+          period_end: string;
+          period_start: string;
+          reason: string;
+          schedule_id: string;
+          tenancy_id: string;
+        };
+        Update: {
+          account_id?: string;
+          amount_cents?: number;
+          created_at?: string;
+          created_by?: string;
+          cycle_key?: string;
+          due_date?: string;
+          id?: string;
+          period_end?: string;
+          period_start?: string;
+          reason?: string;
+          schedule_id?: string;
+          tenancy_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'rent_schedule_period_overrides_account_id_schedule_id_fkey';
+            columns: ['account_id', 'schedule_id'];
+            isOneToOne: false;
+            referencedRelation: 'rent_schedules';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'rent_schedule_period_overrides_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'rent_schedule_period_overrides_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
       rent_schedules: {
         Row: {
           account_id: string;
           amount_cents: number;
+          billing_due_rule: Json | null;
           change_reason: string | null;
           created_at: string;
           currency: string;
@@ -3429,15 +3686,21 @@ export type Database = {
           id: string;
           kind: string;
           late_fee_cents: number | null;
+          manual_basis: string | null;
+          period_policy_version: number;
+          regular_anchor: string | null;
+          short_month_policy: string | null;
           source_lease_id: string | null;
           source_notice_id: string | null;
           start_date: string;
           tenancy_id: string;
+          terms_snapshot: Json;
           updated_at: string;
         };
         Insert: {
           account_id: string;
           amount_cents: number;
+          billing_due_rule?: Json | null;
           change_reason?: string | null;
           created_at?: string;
           currency: string;
@@ -3448,15 +3711,21 @@ export type Database = {
           id?: string;
           kind: string;
           late_fee_cents?: number | null;
+          manual_basis?: string | null;
+          period_policy_version?: number;
+          regular_anchor?: string | null;
+          short_month_policy?: string | null;
           source_lease_id?: string | null;
           source_notice_id?: string | null;
           start_date: string;
           tenancy_id: string;
+          terms_snapshot?: Json;
           updated_at?: string;
         };
         Update: {
           account_id?: string;
           amount_cents?: number;
+          billing_due_rule?: Json | null;
           change_reason?: string | null;
           created_at?: string;
           currency?: string;
@@ -3467,10 +3736,15 @@ export type Database = {
           id?: string;
           kind?: string;
           late_fee_cents?: number | null;
+          manual_basis?: string | null;
+          period_policy_version?: number;
+          regular_anchor?: string | null;
+          short_month_policy?: string | null;
           source_lease_id?: string | null;
           source_notice_id?: string | null;
           start_date?: string;
           tenancy_id?: string;
+          terms_snapshot?: Json;
           updated_at?: string;
         };
         Relationships: [
@@ -3479,6 +3753,13 @@ export type Database = {
             columns: ['account_id', 'tenancy_id'];
             isOneToOne: false;
             referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'rent_schedules_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
             referencedColumns: ['account_id', 'id'];
           },
           {
@@ -3616,34 +3897,43 @@ export type Database = {
       tenancies: {
         Row: {
           account_id: string;
+          actual_move_in_date: string | null;
           area_id: string;
           created_at: string;
+          date_revision: number;
           deleted_at: string | null;
           end_date: string | null;
           id: string;
           start_date: string;
+          start_date_basis: string;
           status: string;
           updated_at: string;
         };
         Insert: {
           account_id: string;
+          actual_move_in_date?: string | null;
           area_id: string;
           created_at?: string;
+          date_revision?: number;
           deleted_at?: string | null;
           end_date?: string | null;
           id?: string;
           start_date: string;
+          start_date_basis?: string;
           status: string;
           updated_at?: string;
         };
         Update: {
           account_id?: string;
+          actual_move_in_date?: string | null;
           area_id?: string;
           created_at?: string;
+          date_revision?: number;
           deleted_at?: string | null;
           end_date?: string | null;
           id?: string;
           start_date?: string;
+          start_date_basis?: string;
           status?: string;
           updated_at?: string;
         };
@@ -3703,6 +3993,145 @@ export type Database = {
             columns: ['account_id', 'tenancy_id'];
             isOneToOne: false;
             referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'tenancy_adoptions_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
+      tenancy_date_records: {
+        Row: {
+          account_id: string;
+          after_facts: Json;
+          before_facts: Json;
+          context_fingerprint: string;
+          context_snapshot: Json;
+          corrects_ending_id: string | null;
+          corrects_record_id: string | null;
+          created_at: string;
+          created_by: string;
+          id: string;
+          kind: string;
+          reason_code: string;
+          reason_note: string | null;
+          relationship_snapshots: Json;
+          request_fingerprint: string;
+          request_key: string;
+          response_body: Json;
+          source_document_id: string | null;
+          source_document_snapshot: Json | null;
+          subject_ending_id: string | null;
+          subject_payment_id: string | null;
+          tenancy_id: string;
+        };
+        Insert: {
+          account_id: string;
+          after_facts: Json;
+          before_facts: Json;
+          context_fingerprint: string;
+          context_snapshot: Json;
+          corrects_ending_id?: string | null;
+          corrects_record_id?: string | null;
+          created_at?: string;
+          created_by: string;
+          id?: string;
+          kind: string;
+          reason_code: string;
+          reason_note?: string | null;
+          relationship_snapshots?: Json;
+          request_fingerprint: string;
+          request_key: string;
+          response_body: Json;
+          source_document_id?: string | null;
+          source_document_snapshot?: Json | null;
+          subject_ending_id?: string | null;
+          subject_payment_id?: string | null;
+          tenancy_id: string;
+        };
+        Update: {
+          account_id?: string;
+          after_facts?: Json;
+          before_facts?: Json;
+          context_fingerprint?: string;
+          context_snapshot?: Json;
+          corrects_ending_id?: string | null;
+          corrects_record_id?: string | null;
+          created_at?: string;
+          created_by?: string;
+          id?: string;
+          kind?: string;
+          reason_code?: string;
+          reason_note?: string | null;
+          relationship_snapshots?: Json;
+          request_fingerprint?: string;
+          request_key?: string;
+          response_body?: Json;
+          source_document_id?: string | null;
+          source_document_snapshot?: Json | null;
+          subject_ending_id?: string | null;
+          subject_payment_id?: string | null;
+          tenancy_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'date_record_ending_account_fk';
+            columns: ['account_id', 'corrects_ending_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_endings';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'date_record_predecessor_account_fk';
+            columns: ['account_id', 'corrects_record_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_date_records';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'date_warning_ending_fk';
+            columns: ['account_id', 'subject_ending_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_endings';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'date_warning_payment_fk';
+            columns: ['account_id', 'subject_payment_id'];
+            isOneToOne: false;
+            referencedRelation: 'payments';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'tenancy_date_records_account_id_fkey';
+            columns: ['account_id'];
+            isOneToOne: false;
+            referencedRelation: 'accounts';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'tenancy_date_records_account_id_source_document_id_fkey';
+            columns: ['account_id', 'source_document_id'];
+            isOneToOne: false;
+            referencedRelation: 'documents';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'tenancy_date_records_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'tenancy_date_records_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
             referencedColumns: ['account_id', 'id'];
           },
         ];
@@ -3786,6 +4215,233 @@ export type Database = {
             referencedRelation: 'tenancies';
             referencedColumns: ['account_id', 'id'];
           },
+          {
+            foreignKeyName: 'tenancy_endings_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: true;
+            referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
+      tenancy_onboarding_progress: {
+        Row: {
+          account_id: string;
+          agreement_confirmed: boolean;
+          condition_decision: string;
+          created_at: string;
+          deposit_decision: string;
+          id: string;
+          possession_confirmed_revision: number | null;
+          rent_decision: string;
+          revision: number;
+          selected_lease_id: string | null;
+          selected_lease_updated_at: string | null;
+          tenancy_id: string;
+          updated_at: string;
+        };
+        Insert: {
+          account_id: string;
+          agreement_confirmed?: boolean;
+          condition_decision?: string;
+          created_at?: string;
+          deposit_decision?: string;
+          id?: string;
+          possession_confirmed_revision?: number | null;
+          rent_decision?: string;
+          revision?: number;
+          selected_lease_id?: string | null;
+          selected_lease_updated_at?: string | null;
+          tenancy_id: string;
+          updated_at?: string;
+        };
+        Update: {
+          account_id?: string;
+          agreement_confirmed?: boolean;
+          condition_decision?: string;
+          created_at?: string;
+          deposit_decision?: string;
+          id?: string;
+          possession_confirmed_revision?: number | null;
+          rent_decision?: string;
+          revision?: number;
+          selected_lease_id?: string | null;
+          selected_lease_updated_at?: string | null;
+          tenancy_id?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'tenancy_onboarding_progress_account_id_fkey';
+            columns: ['account_id'];
+            isOneToOne: false;
+            referencedRelation: 'accounts';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'tenancy_onboarding_progress_account_id_selected_lease_id_fkey';
+            columns: ['account_id', 'selected_lease_id'];
+            isOneToOne: false;
+            referencedRelation: 'leases';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'tenancy_onboarding_progress_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: true;
+            referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'tenancy_onboarding_progress_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: true;
+            referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
+      tenancy_setup_confirmations: {
+        Row: {
+          account_id: string;
+          entered_at: string;
+          entered_by: string;
+          id: string;
+          lease_id: string;
+          review_snapshot: Json;
+          setup_session_id: string;
+          setup_snapshot: Json;
+          tenancy_id: string;
+        };
+        Insert: {
+          account_id: string;
+          entered_at?: string;
+          entered_by: string;
+          id?: string;
+          lease_id: string;
+          review_snapshot: Json;
+          setup_session_id: string;
+          setup_snapshot: Json;
+          tenancy_id: string;
+        };
+        Update: {
+          account_id?: string;
+          entered_at?: string;
+          entered_by?: string;
+          id?: string;
+          lease_id?: string;
+          review_snapshot?: Json;
+          setup_session_id?: string;
+          setup_snapshot?: Json;
+          tenancy_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'tenancy_setup_confirmations_account_id_fkey';
+            columns: ['account_id'];
+            isOneToOne: false;
+            referencedRelation: 'accounts';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'tenancy_setup_confirmations_account_id_lease_id_fkey';
+            columns: ['account_id', 'lease_id'];
+            isOneToOne: false;
+            referencedRelation: 'leases';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'tenancy_setup_confirmations_account_id_setup_session_id_fkey';
+            columns: ['account_id', 'setup_session_id'];
+            isOneToOne: true;
+            referencedRelation: 'tenancy_setup_sessions';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'tenancy_setup_confirmations_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'tenancy_setup_confirmations_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
+      tenancy_setup_sessions: {
+        Row: {
+          account_id: string;
+          area_id: string;
+          completed_at: string | null;
+          created_at: string;
+          expires_at: string;
+          id: string;
+          payload: Json;
+          result: Json | null;
+          revision: number;
+          tenancy_id: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          account_id: string;
+          area_id: string;
+          completed_at?: string | null;
+          created_at?: string;
+          expires_at?: string;
+          id?: string;
+          payload?: Json;
+          result?: Json | null;
+          revision?: number;
+          tenancy_id?: string | null;
+          updated_at?: string;
+        };
+        Update: {
+          account_id?: string;
+          area_id?: string;
+          completed_at?: string | null;
+          created_at?: string;
+          expires_at?: string;
+          id?: string;
+          payload?: Json;
+          result?: Json | null;
+          revision?: number;
+          tenancy_id?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'tenancy_setup_sessions_account_id_area_id_fkey';
+            columns: ['account_id', 'area_id'];
+            isOneToOne: false;
+            referencedRelation: 'areas';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'tenancy_setup_sessions_account_id_fkey';
+            columns: ['account_id'];
+            isOneToOne: false;
+            referencedRelation: 'accounts';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'tenancy_setup_sessions_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'tenancy_setup_sessions_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
         ];
       };
       tenancy_tenants: {
@@ -3825,6 +4481,13 @@ export type Database = {
             columns: ['account_id', 'tenancy_id'];
             isOneToOne: false;
             referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'tenancy_tenants_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
             referencedColumns: ['account_id', 'id'];
           },
           {
@@ -4223,6 +4886,13 @@ export type Database = {
             referencedColumns: ['account_id', 'id'];
           },
           {
+            foreignKeyName: 'interactions_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
             foreignKeyName: 'interactions_account_id_vendor_id_fkey';
             columns: ['account_id', 'vendor_id'];
             isOneToOne: false;
@@ -4338,8 +5008,77 @@ export type Database = {
           },
         ];
       };
+      tenancy_current: {
+        Row: {
+          account_id: string | null;
+          actual_move_in_date: string | null;
+          area_id: string | null;
+          created_at: string | null;
+          date_revision: number | null;
+          deleted_at: string | null;
+          end_date: string | null;
+          id: string | null;
+          start_date: string | null;
+          start_date_basis: string | null;
+          status: string | null;
+          updated_at: string | null;
+        };
+        Insert: {
+          account_id?: string | null;
+          actual_move_in_date?: string | null;
+          area_id?: string | null;
+          created_at?: string | null;
+          date_revision?: number | null;
+          deleted_at?: string | null;
+          end_date?: string | null;
+          id?: string | null;
+          start_date?: string | null;
+          start_date_basis?: string | null;
+          status?: never;
+          updated_at?: string | null;
+        };
+        Update: {
+          account_id?: string | null;
+          actual_move_in_date?: string | null;
+          area_id?: string | null;
+          created_at?: string | null;
+          date_revision?: number | null;
+          deleted_at?: string | null;
+          end_date?: string | null;
+          id?: string | null;
+          start_date?: string | null;
+          start_date_basis?: string | null;
+          status?: never;
+          updated_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'tenancies_account_id_area_id_fkey';
+            columns: ['account_id', 'area_id'];
+            isOneToOne: false;
+            referencedRelation: 'areas';
+            referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
     };
     Functions: {
+      _actual_date_warnings: {
+        Args: { p_context: string; p_facts: Json };
+        Returns: Json;
+      };
+      _applicable_date_findings: {
+        Args: { p_account_id: string; p_findings: Json; p_tenancy_id: string };
+        Returns: Json;
+      };
+      _billing_period: {
+        Args: { p_cycle_key: string; p_rent: Json };
+        Returns: Json;
+      };
+      _billing_period_needs_history_review: {
+        Args: { p_as_of: string; p_period: Json };
+        Returns: boolean;
+      };
       _comm_choose_persona_route: {
         Args: {
           p_account_id: string;
@@ -4428,9 +5167,48 @@ export type Database = {
           source: string;
         }[];
       };
+      _date_context_without_warning: {
+        Args: {
+          p_account_id: string;
+          p_lease_id?: string;
+          p_rent_schedule_id?: string;
+          p_tenancy_id: string;
+        };
+        Returns: Json;
+      };
+      _date_relationship_finding: {
+        Args: {
+          p_fields: string[];
+          p_message: string;
+          p_rule: string;
+          p_values: Json;
+        };
+        Returns: Json;
+      };
+      _date_warning: {
+        Args: {
+          p_context: string;
+          p_fields: string[];
+          p_message: string;
+          p_rule: string;
+          p_subject: Json;
+          p_values: Json;
+        };
+        Returns: Json;
+      };
+      _date_warning_context: { Args: { p_context: Json }; Returns: string };
+      _date_warning_message: { Args: { p_finding: Json }; Returns: string };
       _email_subdomains_taken: {
         Args: { p_candidates: string[] };
         Returns: string[];
+      };
+      _normalize_billing_setup_intent: {
+        Args: { p_intent: Json };
+        Returns: Json;
+      };
+      _normalize_setup_agreement: {
+        Args: { p_agreement: Json; p_existing: Json };
+        Returns: Json;
       };
       _party_display_name: {
         Args: { p_account_id: string; p_party_id: string; p_party_type: string };
@@ -4478,7 +5256,87 @@ export type Database = {
         Returns: string;
       };
       _phone_to_e164: { Args: { raw: string }; Returns: string };
+      _preview_tenancy_date_change: {
+        Args: {
+          p_account_id: string;
+          p_ending: boolean;
+          p_payload: Json;
+          p_tenancy_id: string;
+        };
+        Returns: Json;
+      };
+      _receipt_date_warning: {
+        Args: {
+          p_account: string;
+          p_context: string;
+          p_payment: Json;
+          p_tenancy: string;
+        };
+        Returns: Json;
+      };
+      _review_date_warnings: {
+        Args: {
+          p_account: string;
+          p_acknowledgements?: Json;
+          p_findings: Json;
+          p_tenancy: string;
+        };
+        Returns: Json;
+      };
+      _save_date_warning_confirmations: {
+        Args: {
+          p_account: string;
+          p_acknowledgements: Json;
+          p_context: Json;
+          p_ending_id?: string;
+          p_findings: Json;
+          p_payment_ids?: Json;
+          p_request_fingerprint: string;
+          p_request_key: string;
+          p_tenancy: string;
+        };
+        Returns: undefined;
+      };
+      _schedule_billing_intent: {
+        Args: {
+          p_schedule: Database['public']['Tables']['rent_schedules']['Row'];
+        };
+        Returns: Json;
+      };
+      _scope_relationship_warnings: {
+        Args: { p_context: string; p_facts: Json; p_findings: Json };
+        Returns: Json;
+      };
+      _setup_relationship_findings: {
+        Args: {
+          p_account: string;
+          p_billing: Json;
+          p_lease: Json;
+          p_setup: Json;
+          p_tenancy: Json;
+        };
+        Returns: Json;
+      };
+      _setup_tenancy_date_change: {
+        Args: { p_account: string; p_setup: Json; p_tenancy: string };
+        Returns: Json;
+      };
       _storage_path_account_id: { Args: { p_name: string }; Returns: string };
+      _tenancy_calendar_date: { Args: { p_value: string }; Returns: string };
+      _tenancy_date_actor: { Args: never; Returns: string };
+      _tenancy_date_facts: {
+        Args: { p_t: Database['public']['Tables']['tenancies']['Row'] };
+        Returns: Json;
+      };
+      _tenancy_date_findings: {
+        Args: {
+          p_deposits?: Json;
+          p_facts: Json;
+          p_lease: Json;
+          p_schedule: Json;
+        };
+        Returns: Json;
+      };
       _tenant_email_conflicts: {
         Args: {
           p_account_id: string;
@@ -4495,6 +5353,21 @@ export type Database = {
       _tenant_stamp_form_started: {
         Args: { p_account_id: string; p_inspection_id: string };
         Returns: undefined;
+      };
+      _valid_recorded_term: {
+        Args: { p_due: boolean; p_term: Json };
+        Returns: boolean;
+      };
+      _write_tenancy_date_record: {
+        Args: {
+          p_account_id: string;
+          p_idempotency_key: string;
+          p_kind: string;
+          p_payload: Json;
+          p_request_fingerprint: string;
+          p_tenancy_id: string;
+        };
+        Returns: Json;
       };
       adopt_tenancy_history: {
         Args: {
@@ -4529,6 +5402,15 @@ export type Database = {
           o_start_date: string;
           o_tenancy_id: string;
         }[];
+      };
+      bootstrap_tenancy: {
+        Args: {
+          p_account_id: string;
+          p_idempotency_key: string;
+          p_payload: Json;
+          p_request_fingerprint: string;
+        };
+        Returns: Json;
       };
       bump_ip_rate_bucket: {
         Args: { p_ip: string; p_scope: string; p_window_sec: number };
@@ -4626,6 +5508,10 @@ export type Database = {
           verdict: string;
         }[];
       };
+      claim_document_upload_orphan: {
+        Args: { p_account_id: string; p_receipt_id: string };
+        Returns: boolean;
+      };
       claim_idempotency_key: {
         Args: { p_account_id: string; p_fingerprint: string; p_key: string };
         Returns: {
@@ -4637,6 +5523,28 @@ export type Database = {
         }[];
       };
       comm_persona_routing_version: { Args: never; Returns: number };
+      commit_billing_setup: {
+        Args: {
+          p_account_id: string;
+          p_idempotency_key: string;
+          p_intent: Json;
+          p_request_fingerprint: string;
+          p_tenancy_id: string;
+        };
+        Returns: Json;
+      };
+      commit_tenancy_setup_session: {
+        Args: {
+          p_accept_warnings: boolean;
+          p_account_id: string;
+          p_expected_context: string;
+          p_id: string;
+          p_idempotency_key: string;
+          p_request_fingerprint: string;
+          p_setup: Json;
+        };
+        Returns: Json;
+      };
       complete_evidence_export: {
         Args: {
           p_attachment_id: string;
@@ -4690,6 +5598,26 @@ export type Database = {
           party_id: string;
           party_type: string;
         }[];
+      };
+      correct_tenancy_dates: {
+        Args: {
+          p_account_id: string;
+          p_idempotency_key: string;
+          p_payload: Json;
+          p_request_fingerprint: string;
+          p_tenancy_id: string;
+        };
+        Returns: Json;
+      };
+      correct_tenancy_ending: {
+        Args: {
+          p_account_id: string;
+          p_idempotency_key: string;
+          p_payload: Json;
+          p_request_fingerprint: string;
+          p_tenancy_id: string;
+        };
+        Returns: Json;
       };
       create_account_for_new_user: {
         Args: { p_account_name: string; p_display_name?: string };
@@ -4843,6 +5771,10 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      effective_tenancy_status: {
+        Args: { p_as_of?: string; p_start: string; p_status: string };
+        Returns: string;
+      };
       emit_inspection_report_document: {
         Args: {
           p_account_id: string;
@@ -4957,6 +5889,23 @@ export type Database = {
           o_run_id: string;
           o_task_id: string;
         }[];
+      };
+      get_tenancy_date_context: {
+        Args: {
+          p_account_id: string;
+          p_lease_id?: string;
+          p_rent_schedule_id?: string;
+          p_tenancy_id: string;
+        };
+        Returns: Json;
+      };
+      get_tenancy_ending_context: {
+        Args: { p_account_id: string; p_tenancy_id: string };
+        Returns: Json;
+      };
+      get_tenancy_onboarding_progress: {
+        Args: { p_account_id: string; p_tenancy_id: string };
+        Returns: Json;
       };
       inspection_checkout_diff: {
         Args: { p_account_id: string; p_checkout_inspection_id: string };
@@ -5128,6 +6077,40 @@ export type Database = {
         };
       };
       normalize_search_text: { Args: { p_text: string }; Returns: string };
+      preview_billing_setup: {
+        Args: { p_account_id: string; p_intent: Json; p_tenancy_id: string };
+        Returns: Json;
+      };
+      preview_billing_setup_facts: {
+        Args: {
+          p_account_id: string;
+          p_intent: Json;
+          p_lease: Json;
+          p_tenancy: Json;
+          p_tenancy_id: string;
+        };
+        Returns: Json;
+      };
+      preview_payment: {
+        Args: { p_account_id: string; p_payload: Json };
+        Returns: Json;
+      };
+      preview_tenancy_date_correction: {
+        Args: { p_account_id: string; p_payload: Json; p_tenancy_id: string };
+        Returns: Json;
+      };
+      preview_tenancy_ending: {
+        Args: { p_account_id: string; p_payload: Json; p_tenancy_id: string };
+        Returns: Json;
+      };
+      preview_tenancy_ending_correction: {
+        Args: { p_account_id: string; p_payload: Json; p_tenancy_id: string };
+        Returns: Json;
+      };
+      preview_tenancy_setup_session: {
+        Args: { p_account_id: string; p_id: string; p_setup: Json };
+        Returns: Json;
+      };
       prune_idempotency_keys: {
         Args: {
           p_completed_ttl_seconds?: number;
@@ -5188,6 +6171,17 @@ export type Database = {
           isSetofReturn: true;
         };
       };
+      record_billing_setup_explanations: {
+        Args: {
+          p_account_id: string;
+          p_context_fingerprint: string;
+          p_intent: Json;
+          p_request_fingerprint: string;
+          p_request_key: string;
+          p_tenancy_id: string;
+        };
+        Returns: undefined;
+      };
       record_inbound_provenance: {
         Args: {
           p_account_id: string;
@@ -5241,6 +6235,15 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      record_payment: {
+        Args: {
+          p_account_id: string;
+          p_idempotency_key: string;
+          p_payload: Json;
+          p_request_fingerprint: string;
+        };
+        Returns: Json;
+      };
       record_platform_number: {
         Args: {
           p_account_id: string;
@@ -5265,13 +6268,36 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      record_tenancy_date_explanation: {
+        Args: {
+          p_account_id: string;
+          p_idempotency_key: string;
+          p_payload: Json;
+          p_request_fingerprint: string;
+          p_tenancy_id: string;
+        };
+        Returns: Json;
+      };
+      record_tenancy_ending: {
+        Args: {
+          p_account_id: string;
+          p_idempotency_key: string;
+          p_payload: Json;
+          p_request_fingerprint: string;
+          p_tenancy_id: string;
+        };
+        Returns: Json;
+      };
       rent_rollup: {
         Args: { p_account_id: string; p_as_of?: string; p_statuses?: string[] };
         Returns: {
+          adoption: Json;
           currency: string;
+          currency_totals: Json;
           deposit_balance_cents: number;
           deposit_held_cents: number;
           deposit_owed_cents: number;
+          has_other_currency_balance: boolean;
           non_deposit_due_today_cents: number;
           non_deposit_overdue_cents: number;
           non_deposit_upcoming_cents: number;
@@ -5292,6 +6318,26 @@ export type Database = {
           p_rent_currency: string;
           p_term_end: string;
           p_term_start: string;
+          p_void_reason: string;
+        };
+        Returns: {
+          o_replacement_id: string;
+          o_repointed_schedule_ids: string[];
+          o_voided_id: string;
+        }[];
+      };
+      replace_lease_terms: {
+        Args: {
+          p_account_id: string;
+          p_deposit_amount_cents: number;
+          p_deposit_currency: string;
+          p_document: Json;
+          p_lease_id: string;
+          p_rent_amount_cents: number;
+          p_rent_currency: string;
+          p_term_end: string;
+          p_term_start: string;
+          p_terms: Json;
           p_void_reason: string;
         };
         Returns: {
@@ -5323,6 +6369,17 @@ export type Database = {
           deleted_reason: string;
           id: string;
         }[];
+      };
+      save_tenancy_setup_session: {
+        Args: {
+          p_account_id: string;
+          p_area_id: string;
+          p_id: string;
+          p_payload: Json;
+          p_revision: number;
+          p_tenancy_id: string;
+        };
+        Returns: Json;
       };
       search_entities: {
         Args: {
@@ -5729,6 +6786,10 @@ export type Database = {
           isOneToOne: true;
           isSetofReturn: false;
         };
+      };
+      update_tenancy_onboarding_progress: {
+        Args: { p_account_id: string; p_payload: Json; p_tenancy_id: string };
+        Returns: Json;
       };
       upsert_inspection_checks: {
         Args: { p_account_id: string; p_checks: Json; p_inspection_id: string };

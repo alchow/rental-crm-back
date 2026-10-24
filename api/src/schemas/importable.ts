@@ -1,4 +1,6 @@
 import { z } from '@hono/zod-openapi';
+import { CalendarDate } from './calendar-date';
+import { LeaseTermsFields } from './lease-terms';
 
 // Schemas shared by HTTP routes and the deterministic onboarding-import
 // executor. Keep them out of route modules so admin code never imports a route
@@ -62,16 +64,24 @@ export const CreateTenantBody = z
   .openapi('CreateTenantBody');
 
 export const TenancyStatus = z.enum(['upcoming', 'active', 'ended', 'holdover']);
+export const TenancyStartDateBasis = z.enum(['legacy_unverified', 'possession_entitlement']);
 
 export const CreateTenancyBody = z
   .object({
     area_id: z.string().uuid(),
-    start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    end_date: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/)
-      .nullable()
-      .optional(),
+    start_date: CalendarDate.openapi({
+      description:
+        'Possession start: when the tenant is entitled or scheduled to become entitled to occupy. It is not a billing instruction.',
+    }),
+    start_date_basis: TenancyStartDateBasis.optional().openapi({
+      description:
+        'Omit for legacy/unverified data; confirmed creation flows send possession_entitlement.',
+    }),
+    actual_move_in_date: CalendarDate.nullable().optional().openapi({
+      description:
+        'Optional landlord-reported physical arrival date. Future actual dates require explicit warning confirmation through the audited date-correction flow; this never drives billing or activation.',
+    }),
+    end_date: CalendarDate.nullable().optional(),
     status: TenancyStatus,
   })
   .openapi('CreateTenancyBody');
@@ -90,6 +100,7 @@ export const CurrencyCode = z.string().length(3);
 
 export const CreateLeaseBody = z
   .object({
+    ...LeaseTermsFields,
     tenancy_id: z.string().uuid(),
     term_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     term_end: z

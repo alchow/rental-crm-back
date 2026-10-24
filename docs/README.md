@@ -26,7 +26,24 @@ preserves historical decision context.
 ADR-0007 is the current outbox-first, journal-on-confirmed-send invariant.
 ADR-0009 supersedes the single-account identity portions of ADR-0006.
 ADR-0014 supersedes ADR-0012's lease PATCH freeze and its lease correction
-path; the rest of ADR-0012 stands.
+path. ADR-0016 supersedes its new-client billing instructions; its legacy
+rent-change and version-1 period behavior remain compatibility references.
+ADR-0015 defines independent tenancy date facts and audited date corrections.
+ADR-0016 defines the current agreement/possession/billing separation, atomic
+setup and successor instructions, immutable billing basis and currency-safe reads.
+
+## Implementation Specifications
+
+- `tenancy-onboarding-implementation-plan.md` — delivered implementation packets
+  for Sol, with the current three-stage UI amendment and historical four-stage
+  specification, including the local
+  revision for resumable leases, one full-month billing input, and date warning
+  confirmations. Baseline verification and its
+  full-check limitations remain recorded. Historical source anchors are not
+  current architecture; see ADR-0016.
+- `tenancy-dates-implementation-plan.md` — approved possession, lease, and rent
+  date build packets. Backend, frontend, and runtime agent implemented and verified locally.
+  Historical design references are not current architecture; see ADR-0015.
 
 ## Historical Plans and Replies
 

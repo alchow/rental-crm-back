@@ -21,6 +21,7 @@ import { chargesApp } from './routes/charges';
 import { paymentsApp } from './routes/payments';
 import { ledgerApp } from './routes/ledger';
 import { adoptionApp } from './routes/adoption';
+import { billingSetupApp } from './routes/billing-setup';
 import { rentRollupApp } from './routes/rent-rollup';
 import { eventsApp } from './routes/events';
 import { intakeTokensApp } from './routes/intake-tokens';
@@ -30,6 +31,7 @@ import { interactionsApp } from './routes/interactions';
 import { commsApp } from './routes/comms';
 import { ownerPhoneApp } from './routes/owner-phone';
 import { settingsApp } from './routes/settings';
+import { tenancySetupApp } from './routes/tenancy-setup';
 import { intakeApp } from './admin/intake';
 import { agentTokensApp } from './admin/agent-tokens';
 import { attachmentsApp } from './routes/attachments';
@@ -150,6 +152,8 @@ export function buildApp(): OpenAPIHono {
       // real HEVC Storage rendition, so request-time outage/recovery changes
       // the signal instead of leaving a stale boot snapshot.
       capabilities: {
+        tenancy_setup: { version: 3, clock_basis: 'UTC' },
+        billing_setup: { version: 1, clock_basis: 'UTC' },
         heic_decode: heic,
         tenant_messages: { version: 1 },
         // Onboarding import needs ANTHROPIC_API_KEY (LLM) + SUPABASE_DB_URL
@@ -193,7 +197,11 @@ export function buildApp(): OpenAPIHono {
   // pattern fires only when the URL actually has the additional segment.
   app.use(
     '/v1/accounts/:accountId/tenancies/:tenancyId/*',
-    requireImmediateParent({ table: 'tenancies', paramName: 'tenancyId' }),
+    async (c, next) => {
+      // Bootstrap has body parents validated atomically by its RPC, not an existing path tenancy.
+      if (c.req.method === 'POST' && c.req.path.endsWith('/tenancies/bootstrap')) return next();
+      return requireImmediateParent({ table: 'tenancies', paramName: 'tenancyId' })(c, next);
+    },
   );
   app.use(
     '/v1/accounts/:accountId/areas/:areaId/*',
@@ -225,6 +233,7 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', paymentsApp);
   app.route('/v1', ledgerApp);
   app.route('/v1', adoptionApp);
+  app.route('/v1', billingSetupApp);
   app.route('/v1', rentRollupApp);
   app.route('/v1', eventsApp);
   // Read-only, account-scoped, ranked search across all entity kinds.
@@ -239,6 +248,7 @@ export function buildApp(): OpenAPIHono {
   app.route('/v1', commsApp);
   app.route('/v1', ownerPhoneApp);
   app.route('/v1', settingsApp);
+  app.route('/v1', tenancySetupApp);
   app.route('/v1', attachmentsApp);
   app.route('/v1', documentsApp);
   app.route('/v1', inspectionTemplatesApp);
