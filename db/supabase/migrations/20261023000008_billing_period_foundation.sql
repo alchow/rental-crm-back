@@ -6,9 +6,10 @@ alter table public.rent_schedules
 alter table public.charges
   add column cycle_key text,
   add column terms_snapshot jsonb;
--- Legacy identities preserve exactly the occupied slots, including voided rows.
+-- Legacy invalid periods remain untouched; the schedule/period-start index still reserves their slots.
 update public.charges set cycle_key = 'legacy:'||period_start::text
-where source_schedule_id is not null and period_start is not null;
+where source_schedule_id is not null and period_start is not null
+  and period_end is not null and period_end >= period_start;
 create unique index charges_one_per_schedule_cycle on public.charges(source_schedule_id,cycle_key)
 where source_schedule_id is not null and cycle_key is not null;
 

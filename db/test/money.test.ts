@@ -43,6 +43,7 @@
 // ----------------------------------------------------------------------------
 
 import pg from 'pg';
+import { checkLegacyBillingBackfill } from './billing-period-backfill';
 
 const { Client } = pg;
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -134,6 +135,9 @@ async function chargeBalance(c: pg.Client, chargeId: string): Promise<number> {
 }
 
 async function main(): Promise<void> {
+  await check('billing migration preserves legacy partial periods and occupied slots', async () => {
+    await withClient(checkLegacyBillingBackfill);
+  });
   const { tenancyA, tenancyB } = await loadFixture();
   console.info(`Phase 6 money-spine DoD checks`);
 
