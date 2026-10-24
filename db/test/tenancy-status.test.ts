@@ -139,6 +139,7 @@ async function seedScenarioRows(c: pg.Client): Promise<void> {
         clock.rows[0]!.today,
       ],
     );
+    await c.query('set constraints all immediate');
     await c.query('alter table public.tenancies enable trigger tenancies_lifecycle');
 
     // Soft-delete (f).
