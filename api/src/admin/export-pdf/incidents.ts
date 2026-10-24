@@ -1,4 +1,5 @@
 import { idChunks } from './chunks';
+import { readAllById } from '../../lib/postgrest-pages';
 import type { ExportData } from '../export-pdf';
 import type { AppSupabaseClient, DbTableRow } from '../../supabase/db-types';
 
@@ -74,30 +75,30 @@ export async function loadIncidents(
   tenancyId: string,
 ): Promise<IncidentEntry[]> {
   // No deleted_at filter: dismissed incidents render with a DISMISSED marker.
-  const incRes = await admin
-    .from('incidents')
-    .select('*')
-    .eq('account_id', accountId)
-    .eq('tenancy_id', tenancyId)
-    .order('occurred_at', { ascending: true })
-    .order('id', { ascending: true });
-  if (incRes.error) throw new Error(`incident load failed: ${incRes.error.message}`);
-  const incidents = (incRes.data ?? []) as IncidentRow[];
+  const incidents = await readAllById(
+    () =>
+      admin.from('incidents').select('*').eq('account_id', accountId).eq('tenancy_id', tenancyId),
+    'incident export',
+  );
+  incidents.sort((a, b) => a.occurred_at.localeCompare(b.occurred_at) || a.id.localeCompare(b.id));
   if (incidents.length === 0) return [];
 
   // Unlinked (soft-deleted) citations load too -- an unlink is itself a fact
   // about what the record-keeper relied on and when they stopped relying on it.
   const items: IncidentItemRow[] = [];
   for (const chunk of idChunks(incidents.map((i) => i.id))) {
-    const { data, error } = await admin
-      .from('incident_items')
-      .select('*')
-      .eq('account_id', accountId)
-      .in('incident_id', chunk)
-      .order('created_at', { ascending: true });
-    if (error) throw new Error(`incident citation load failed: ${error.message}`);
-    items.push(...((data ?? []) as IncidentItemRow[]));
+    const data = await readAllById(
+      () =>
+        admin
+          .from('incident_items')
+          .select('*')
+          .eq('account_id', accountId)
+          .in('incident_id', chunk),
+      'incident citation export',
+    );
+    items.push(...data);
   }
+  items.sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
 
   return buildIncidentEntries(incidents, items, await loadCitedSummaries(admin, accountId, items));
 }

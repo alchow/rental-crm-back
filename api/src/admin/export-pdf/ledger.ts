@@ -34,9 +34,35 @@ export function exportLedgerAt(data: ExportData, cutoff: string | null): ExportD
   return {
     ...data,
     charges: ledgerRowsAt(data.charges, (row) => String(row.due_date), cutoff),
-    payments: ledgerRowsAt(data.payments, (row) => String(row.received_at), cutoff),
+    payments: ledgerRowsAt(
+      data.payments,
+      (row) => (typeof row.received_at === 'string' ? row.received_at : null),
+      cutoff,
+    ),
     allocations: ledgerRowsAt(data.allocations, (row) => String(row.created_at), cutoff),
   };
+}
+
+/** Money is never additive across currencies; each group retains its own testimony. */
+export function exportCurrencyGroups(data: ExportData): ExportData[] {
+  const currencies = new Set<string>();
+  for (const row of [...data.charges, ...data.payments]) currencies.add(String(row.currency));
+  if (data.adoption?.currency) currencies.add(String(data.adoption.currency));
+  return [...currencies].sort().map((currency) => {
+    const charges = data.charges.filter((row) => row.currency === currency);
+    const payments = data.payments.filter((row) => row.currency === currency);
+    const chargeIds = new Set(charges.map((row) => row.id));
+    const paymentIds = new Set(payments.map((row) => row.id));
+    return {
+      ...data,
+      charges,
+      payments,
+      allocations: data.allocations.filter(
+        (row) => chargeIds.has(row.charge_id) && paymentIds.has(row.payment_id),
+      ),
+      adoption: data.adoption?.currency === currency ? data.adoption : null,
+    };
+  });
 }
 
 export function paymentActivityInRange(
@@ -45,6 +71,7 @@ export function paymentActivityInRange(
   from: string | null,
   to: string | null,
 ): boolean {
+  if (!from && !to) return true;
   const within = (date: unknown) => typeof date === 'string' && inRangeISO(date, from, to);
   return (
     within(payment.received_at) ||

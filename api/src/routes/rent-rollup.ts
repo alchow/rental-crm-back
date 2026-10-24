@@ -4,47 +4,63 @@ import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
 import { TenancyStatus } from '../schemas/importable';
 import { CalendarDate } from '../schemas/calendar-date';
+import { readAllPages } from '../lib/postgrest-pages';
 
-// One derived ledger row per requested tenancy; defaults to active+holdover and
-// includes ended only when requested. The SECURITY INVOKER rent_rollup() RPC
-// replaces per-tenancy fan-out and must remain numerically identical to
-// GET /ledger (migration 20260715000001; rent-rollup parity test). Unpaginated
-// while portfolios remain below roughly 1k current tenancies.
+// The account-scoped RPC is read in pages without per-tenancy HTTP requests.
 
-const RentRollupRow = z
-  .object({
-    tenancy_id: z.string().uuid(),
-    status: TenancyStatus,
-    currency: z.string().nullable().openapi({
-      description: 'Read off the money rows; null when the tenancy has no charges or payments.',
+const CurrencyBalances = z.object({
+  currency: z.string().nullable().openapi({
+    description:
+      'Primary current rent-schedule currency, otherwise first recorded currency; null when none exists. Scalar amounts use only this currency.',
+  }),
+  rent_balance_cents: z.number().int().openapi({
+    description:
+      'All NON-DEPOSIT charge types minus active allocations in this currency. Opening-balance testimony is separate.',
+  }),
+  deposit_balance_cents: z.number().int(),
+  unapplied_credit_cents: z.number().int(),
+  non_deposit_overdue_cents: z.number().int().openapi({
+    description: 'Current open non-deposit balance on charges due before as_of.',
+  }),
+  non_deposit_due_today_cents: z.number().int().openapi({
+    description: 'Current open non-deposit balance on charges due on as_of.',
+  }),
+  non_deposit_upcoming_cents: z.number().int().openapi({
+    description: 'Current open non-deposit balance on billed charges due after as_of.',
+  }),
+  deposit_owed_cents: z.number().int().openapi({
+    description: 'Current open balance on live deposit charges.',
+  }),
+  deposit_held_cents: z.number().int().openapi({
+    description: 'Active payment allocations held against live deposit charges.',
+  }),
+});
+const RentRollupRow = CurrencyBalances.extend({
+  tenancy_id: z.string().uuid(),
+  status: TenancyStatus,
+  currency_totals: z
+    .array(CurrencyBalances.extend({ currency: z.string() }).openapi('RentRollupCurrencyTotals'))
+    .optional(),
+  has_other_currency_balance: z.boolean().optional().openapi({
+    description:
+      'A different currency has a live positive rent or deposit obligation. Never infer all-clear from the primary currency alone.',
+  }),
+  adoption: z
+    .object({
+      adoption_date: z.string(),
+      opening_balance_cents: z.number().int(),
+      currency: z.string(),
+      balance_basis: z.string().nullable(),
+      needs_review: z.boolean(),
+      created_at: z.string(),
+    })
+    .nullable()
+    .optional()
+    .openapi({
+      description:
+        'Opening-balance testimony, separately denominated and excluded from charge/payment totals.',
     }),
-    rent_balance_cents: z
-      .number()
-      .int()
-      .openapi({
-        description:
-          "All NON-DEPOSIT charge types minus their active allocations — matches the ledger's " +
-          'legacy totals.rent_balance_cents (see totals.by_type there for a per-type split).',
-      }),
-    deposit_balance_cents: z.number().int(),
-    unapplied_credit_cents: z.number().int(),
-    non_deposit_overdue_cents: z.number().int().openapi({
-      description: 'Current open non-deposit balance on charges due before as_of.',
-    }),
-    non_deposit_due_today_cents: z.number().int().openapi({
-      description: 'Current open non-deposit balance on charges due on as_of.',
-    }),
-    non_deposit_upcoming_cents: z.number().int().openapi({
-      description: 'Current open non-deposit balance on billed charges due after as_of.',
-    }),
-    deposit_owed_cents: z.number().int().openapi({
-      description: 'Current open balance on live deposit charges.',
-    }),
-    deposit_held_cents: z.number().int().openapi({
-      description: 'Active payment allocations held against live deposit charges.',
-    }),
-  })
-  .openapi('RentRollupRow');
+}).openapi('RentRollupRow');
 
 const RentRollupResponse = z
   .object({
@@ -73,13 +89,11 @@ const RollupQuery = z.object({
         'whenever ended is requested.',
       example: 'active,holdover,ended',
     }),
-  as_of: CalendarDate
-    .optional()
-    .openapi({
-      description:
-        'Classification date for current open balances. Defaults to the current UTC date; ' +
-        'this is not a historical ledger snapshot.',
-    }),
+  as_of: CalendarDate.optional().openapi({
+    description:
+      'Classification date for current open balances. Defaults to the current UTC date; ' +
+      'this is not a historical ledger snapshot.',
+  }),
 });
 
 const get = createRoute({
@@ -135,12 +149,16 @@ rentRollupApp.openapi(get, async (c) => {
   }
 
   const sb = getSb(c);
-  const { data, error } = await sb.rpc('rent_rollup', {
-    p_account_id: accountId,
-    p_statuses: statuses ?? ['active', 'holdover'],
-    p_as_of: asOf,
-  });
-  if (error) throw new ApiError(500, 'database_error', error.message);
-
-  return c.json({ as_of: asOf, data: (data ?? []) as z.infer<typeof RentRollupRow>[] }, 200);
+  const legacyRows = await readAllPages(
+    () =>
+      sb.rpc('rent_rollup', {
+        p_account_id: accountId,
+        p_statuses: statuses ?? ['active', 'holdover'],
+        p_as_of: asOf,
+      }),
+    'tenancy_id',
+    (row) => row.tenancy_id,
+    'rent rollup',
+  );
+  return c.json({ as_of: asOf, data: z.array(RentRollupRow).parse(legacyRows) }, 200);
 });

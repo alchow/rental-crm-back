@@ -296,14 +296,14 @@ async function main(): Promise<void> {
     expectError(changed, 409, 'lease_executed', 'rent edit on an active lease');
 
     const echo = await patchA(`/leases/${lease.id}`, {
-      term_end: '2027-06-30',
+      term_end: lease.term_end,
       rent_amount_cents: 200000,
       rent_currency: 'USD',
     });
     assertStatus(echo, 200, 'echo-back of unchanged rent');
     const after = await getLease(lease.id);
     assert(
-      after.rent_amount_cents === 200000 && after.term_end === '2027-06-30',
+      after.rent_amount_cents === 200000 && after.term_end === lease.term_end,
       `echo left the row wrong: ${JSON.stringify(after)}`,
     );
   });
@@ -339,9 +339,9 @@ async function main(): Promise<void> {
   });
 
   // =========================================================================
-  // 4. Everything outside the frozen set stays editable while executed.
+  // 4. Agreed terms require replacement; attaching a scan changes no terms.
   // =========================================================================
-  await check('4 active: term_end, deposit and document still apply', async () => {
+  await check('4 active: term_end and deposit require correction; document still applies', async () => {
     const lease = await newLease(await newTenancy(), { status: 'active' });
     const r = await patchA(`/leases/${lease.id}`, {
       term_end: '2027-06-30',
@@ -349,11 +349,12 @@ async function main(): Promise<void> {
       deposit_currency: 'USD',
       document: { storage_key: 'leases/scan.pdf' },
     });
-    assertStatus(r, 200, 'active non-frozen edit');
+    expectError(r,409,'lease_executed','executed agreement terms');
+    assertStatus(await patchA(`/leases/${lease.id}`, { document: { storage_key: 'leases/scan.pdf' } }),200,'attach executed scan');
     const after = await getLease(lease.id);
     assert(
-      after.term_end === '2027-06-30' &&
-        after.deposit_amount_cents === 150000 &&
+      after.term_end === lease.term_end &&
+        after.deposit_amount_cents === lease.deposit_amount_cents &&
         after.document.storage_key === 'leases/scan.pdf',
       `non-frozen edit not applied: ${JSON.stringify(after)}`,
     );

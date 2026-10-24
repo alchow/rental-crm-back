@@ -48,33 +48,7 @@
 // same as its sibling tests; CI/dev run it against the local DB.
 // ----------------------------------------------------------------------------
 
-import { execSync } from 'node:child_process';
-
-interface SupabaseStatus {
-  API_URL: string;
-  DB_URL: string;
-  ANON_KEY: string;
-  SERVICE_ROLE_KEY: string;
-}
-
-function readSupabaseStatus(): SupabaseStatus {
-  const out = execSync('supabase status --output env --workdir db', {
-    cwd: process.cwd().endsWith('/api') ? '..' : '.',
-    encoding: 'utf8',
-  });
-  const lines = out.split('\n');
-  const get = (k: string) => {
-    const line = lines.find((l) => l.startsWith(k + '='));
-    if (!line) throw new Error(`supabase status missing: ${k}`);
-    return line.slice(k.length + 1).replace(/^"|"$/g, '');
-  };
-  return {
-    API_URL: get('API_URL'),
-    DB_URL: get('DB_URL'),
-    ANON_KEY: get('ANON_KEY'),
-    SERVICE_ROLE_KEY: get('SERVICE_ROLE_KEY'),
-  };
-}
+import { readSupabaseStatus } from './helpers/integration';
 
 const status = readSupabaseStatus();
 process.env.NODE_ENV = 'test';
@@ -249,6 +223,44 @@ async function main(): Promise<void> {
     o_schedule_id: string;
     o_period_start: string;
     o_amount_cents: number;
+  }
+
+  async function setPlannedEnd(tenancyId: string, endDate: string): Promise<void> {
+    const path = `/v1/accounts/${A.accountId}/tenancies/${tenancyId}`;
+    const current = await api('GET', `${path}/date-context`, { token: A.accessToken });
+    if (current.status !== 200) throw new Error(`date context: ${JSON.stringify(current.body)}`);
+    const context = current.body as {
+      facts: { date_revision: number };
+      context_fingerprint: string;
+    };
+    const changes = { end_date: endDate };
+    const preview = await api('POST', `${path}/date-corrections/preview`, {
+      token: A.accessToken,
+      body: { changes },
+    });
+    if (preview.status !== 200) throw new Error(`date preview: ${JSON.stringify(preview.body)}`);
+    const proposed = preview.body as { proposed: { status: string } };
+    const saved = await api('POST', `${path}/date-corrections`, {
+      token: A.accessToken,
+      body: {
+        changes,
+        expected_date_revision: context.facts.date_revision,
+        expected_context_fingerprint: context.context_fingerprint,
+        expected_resulting_status: proposed.proposed.status,
+        reason_code: 'other',
+        reason_note: 'The agreed planned possession end was extended.',
+      },
+    });
+    if (saved.status !== 200) throw new Error(`correct planned end: ${JSON.stringify(saved.body)}`);
+  }
+
+  async function recordEnd(tenancyId: string, effectiveDate: string): Promise<void> {
+    const saved = await api('POST', `/v1/accounts/${A.accountId}/tenancies/${tenancyId}/end`, {
+      token: A.accessToken,
+      body: { kind: 'ended', effective_date: effectiveDate, reason_code: 'other' },
+    });
+    if (saved.status !== 200)
+      throw new Error(`record actual ending: ${JSON.stringify(saved.body)}`);
   }
   async function generate(asOf: string): Promise<GenRow[]> {
     const r = await admin.rpc('generate_rent_charges', {
@@ -471,15 +483,7 @@ async function main(): Promise<void> {
   await check('cascade: ending a tenancy writes end_date onto its open schedule', async () => {
     const { tenancyId, scheduleId } = await seed({ dueDay: 1 });
 
-    // PATCH-equivalent: set the move-out date AND mark the tenancy ended in one
-    // update. The cascade fires on the status flip into 'ended' (see the
-    // dedicated "fires ONLY on status->ended" case below); v_end resolves to the
-    // NEW.end_date supplied here.
-    const upd = await admin
-      .from('tenancies')
-      .update({ end_date: '2026-07-31', status: 'ended' })
-      .eq('id', tenancyId);
-    if (upd.error) throw new Error(`end tenancy: ${upd.error.message}`);
+    await recordEnd(tenancyId, '2026-07-31');
 
     const { data: sched, error } = await admin
       .from('rent_schedules')
@@ -521,11 +525,7 @@ async function main(): Promise<void> {
       // EXTEND: push end_date far out; status stays 'active'. The cascade fires
       // ONLY on status->'ended', so this end_date edit must NOT touch the
       // schedule (otherwise the extended term would be stuck short).
-      const upd = await admin
-        .from('tenancies')
-        .update({ end_date: '2027-12-31' })
-        .eq('id', tenancyId);
-      if (upd.error) throw new Error(`extend tenancy: ${upd.error.message}`);
+      await setPlannedEnd(tenancyId, '2027-12-31');
 
       const { data: sched, error } = await admin
         .from('rent_schedules')
@@ -557,8 +557,7 @@ async function main(): Promise<void> {
     const { tenancyId, scheduleId } = await seed({ dueDay: 1, tenancyStatus: 'active' });
 
     // Step 1: set end_date only (status stays 'active') -> schedule UNCHANGED.
-    const s1 = await admin.from('tenancies').update({ end_date: '2027-06-30' }).eq('id', tenancyId);
-    if (s1.error) throw new Error(`set end_date: ${s1.error.message}`);
+    await setPlannedEnd(tenancyId, '2026-07-31');
     let sched = await admin.from('rent_schedules').select('end_date').eq('id', scheduleId).single();
     if (sched.error) throw new Error(`read schedule (1): ${sched.error.message}`);
     if (sched.data!.end_date !== null) {
@@ -568,13 +567,12 @@ async function main(): Promise<void> {
     }
 
     // Step 2: flip status to 'ended' -> schedule end_date := coalesce(end_date, today).
-    const s2 = await admin.from('tenancies').update({ status: 'ended' }).eq('id', tenancyId);
-    if (s2.error) throw new Error(`end tenancy: ${s2.error.message}`);
+    await recordEnd(tenancyId, '2026-07-31');
     sched = await admin.from('rent_schedules').select('end_date').eq('id', scheduleId).single();
     if (sched.error) throw new Error(`read schedule (2): ${sched.error.message}`);
-    if (sched.data!.end_date !== '2027-06-30') {
+    if (sched.data!.end_date !== '2026-07-31') {
       throw new Error(
-        `expected schedule end_date 2027-06-30 after status->ended, got ${sched.data!.end_date}`,
+        `expected schedule end_date 2026-07-31 after status->ended, got ${sched.data!.end_date}`,
       );
     }
 

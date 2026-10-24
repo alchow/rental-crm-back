@@ -2,8 +2,8 @@
 // advance_tenancy_statuses DoD tests (DB-level).
 //
 // Exercises the idempotent upcoming→active cron function directly against
-// the SQL. Uses a FIXED p_as_of of '2026-06-14T00:00:00Z' so the test is
-// fully deterministic regardless of when it runs.
+// the SQL. Scenarios use the database's UTC date so lifecycle normalization
+// and the cron's explicit p_as_of agree on the clock.
 //
 // Coverage:
 //   (a) upcoming + start_date <= as_of               → flipped to active.
@@ -33,8 +33,8 @@ if (!DATABASE_URL) {
   process.exit(2);
 }
 
-// Fixed reference instant; all start_date comparisons are relative to this.
-const AS_OF = '2026-06-14T00:00:00Z';
+// Assigned from the database clock during setup.
+let AS_OF = '';
 
 // Use ACCOUNT_A from the two-account seed fixture.
 const ACCOUNT_A = '11111111-1111-1111-1111-111111111111';
@@ -87,6 +87,21 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 // -----------------------------------------------------------------------
 async function setup(): Promise<void> {
   await withClient(async (c) => {
+    try {
+      await seedScenarioRows(c);
+    } catch (error) {
+      await c.query('rollback');
+      throw error;
+    }
+  });
+}
+
+async function seedScenarioRows(c: pg.Client): Promise<void> {
+    await c.query('begin');
+    const clock = await c.query<{ today: string }>(
+      `select (statement_timestamp() at time zone 'UTC')::date::text as today`,
+    );
+    AS_OF = `${clock.rows[0]!.today}T00:00:00Z`;
     // Resolve the seeded unit area for account A.
     const r = await c.query<{ id: string }>(
       `select id from public.areas where account_id = $1 and kind = 'unit' limit 1`,
@@ -97,18 +112,19 @@ async function setup(): Promise<void> {
     }
     UNIT_AREA_ID = r.rows[0].id;
 
-    // Insert all scenario tenancies under ACCOUNT_A using UNIT_AREA_ID.
-    // Use ON CONFLICT DO NOTHING so a re-run on a persistent DB is safe.
+    // Emulate rows persisted before their start date passed. Restore lifecycle
+    // normalization in this transaction before exercising the real cron.
+    await c.query('alter table public.tenancies disable trigger tenancies_lifecycle');
     await c.query(
       `insert into public.tenancies (id, account_id, area_id, start_date, status)
        values
-         ($1, $2, $3, '2026-06-01', 'upcoming'),   -- (a) due
-         ($4, $2, $3, '2026-06-15', 'upcoming'),   -- (b) future
+         ($1, $2, $3, $10::date - 1, 'upcoming'),  -- (a) due
+         ($4, $2, $3, $10::date + 1, 'upcoming'),  -- (b) future
          ($5, $2, $3, '2026-01-01', 'ended'),       -- (c) ended
          ($6, $2, $3, '2026-01-01', 'holdover'),    -- (d) holdover
          ($7, $2, $3, '2026-01-01', 'active'),      -- (e) already active
-         ($8, $2, $3, '2026-06-01', 'upcoming'),    -- (f) soft-deleted upcoming
-         ($9, $2, $3, '2026-06-14', 'upcoming')     -- (a2) boundary: start_date == as_of::date
+         ($8, $2, $3, $10::date - 1, 'upcoming'),  -- (f) soft-deleted upcoming
+         ($9, $2, $3, $10::date, 'upcoming')       -- (a2) boundary
        on conflict (id) do nothing`,
       [
         T_UPCOMING_DUE,
@@ -120,15 +136,18 @@ async function setup(): Promise<void> {
         T_ACTIVE,
         T_DELETED_UPCOMING,
         T_UPCOMING_BOUNDARY,
+        clock.rows[0]!.today,
       ],
     );
+    await c.query('set constraints all immediate');
+    await c.query('alter table public.tenancies enable trigger tenancies_lifecycle');
 
     // Soft-delete (f).
     await c.query(
       `update public.tenancies set deleted_at = now() where id = $1 and deleted_at is null`,
       [T_DELETED_UPCOMING],
     );
-  });
+    await c.query('commit');
 }
 
 // -----------------------------------------------------------------------

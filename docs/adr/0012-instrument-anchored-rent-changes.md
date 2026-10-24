@@ -4,9 +4,11 @@
   (`adr/0014-lease-lifecycle.md`, 2026-09-06): rule 4's blanket PATCH freeze on
   lease rent terms becomes status-gated (a draft lease is freely editable; an
   executed one answers 409 `lease_executed`), and its "soft-delete + recreate"
-  lease correction path is replaced by void + `replace`. Everything else here —
-  the anchoring model, the RPC, drift detection, the notice lock, and the
-  schedule/charge correction recipes — is current.
+  lease correction path is replaced by void + `replace`. **Superseded in part by
+  ADR-0016** for new billing setup/transition: agreement terms, coverage periods,
+  due dates, immutable policy snapshots, and reviewed charge actions are explicit.
+  The rent-changes RPC, notice lock, and version-1 due-grid recipes below remain
+  compatibility behavior, not the recommended new setup contract.
 - **Context owner:** money subledger (docs/api-guide.md §7) + occupancy (leases,
   notices)
 - **Implements:** migrations `20260706000001_instrument_anchored_rent_changes`
@@ -119,7 +121,7 @@ already asserted under an earlier policy is unaffected — it is its own charge
 row carrying its own recorded amount, so editing the policy neither re-prices
 nor voids it, and the editor deliberately stays open once fees exist rather than
 locking the lease's terms behind the first fee ever asserted. Nothing reads
-these columns server-side: they let a client _propose_ a late fee that a human
+these columns to automatically generate a fee: they let a client _propose_ a late fee that a human
 confirms through an ordinary `POST /charges` linked back with
 `parent_charge_id`, which keeps the fee an asserted act rather than a generated
 one.

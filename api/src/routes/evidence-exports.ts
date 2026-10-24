@@ -169,12 +169,14 @@ evidenceExportsApp.openapi(create, async (c) => {
   if (body.tenancy_id) {
     const t = await sb
       .from('tenancies')
-      .select('id')
+      .select('id,area_id')
       .eq('account_id', accountId)
       .eq('id', body.tenancy_id)
       .maybeSingle();
     if (t.error) throw new ApiError(500, 'database_error', t.error.message);
     if (!t.data) throw new ApiError(404, 'not_found', 'tenancy not found in this account');
+    if (body.area_id && body.area_id !== t.data.area_id)
+      throw new ApiError(400, 'invalid_request', 'area must match the selected tenancy');
   }
   if (body.area_id) {
     const a = await sb

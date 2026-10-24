@@ -50,6 +50,17 @@ DECLARE
   violations   text[] := '{}';
   allowlist    text[] := ARRAY[
     'create_account_for_new_user',
+    -- Date commands use a narrow function-owner role and verify live membership.
+    'correct_tenancy_dates',
+    'correct_tenancy_ending',
+    'record_tenancy_date_explanation',
+    'record_billing_setup_explanations',
+    'commit_billing_setup',
+    -- Setup commands retain JWT RLS; only their owner can finalize setup evidence.
+    'save_tenancy_setup_session',
+    'commit_tenancy_setup_session',
+    'record_payment',
+    'record_tenancy_ending',
     'create_payment_with_allocations',
     'set_owner_phone_verified',
     'is_approver_member',

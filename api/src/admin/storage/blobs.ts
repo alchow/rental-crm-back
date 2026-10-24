@@ -567,11 +567,8 @@ interface DocumentReceiptForPrune {
 }
 
 /**
- * Reclaim only receipt-unique storage objects backed by an expired service
- * receipt and by no attachment row (live or soft-deleted). RPCs accept
- * receipts for 24 hours; the 48-hour threshold adds a retry buffer. Because a
- * path contains its receipt id, an identical concurrent upload cannot share
- * the object being removed.
+ * Cleanup claims exclude active setup uploads and attached objects, and prevent
+ * concurrent consumers from binding or consuming the claimed receipt.
  */
 export async function pruneDocumentUploadOrphans(): Promise<number> {
   const admin = getAdminClient();
@@ -603,7 +600,31 @@ export async function pruneDocumentUploadOrphans(): Promise<number> {
     cursor = { created_at: last.created_at, id: last.id };
 
     for (const accountId of new Set(receipts.map((row) => row.account_id))) {
-      const accountReceipts = receipts.filter((row) => row.account_id === accountId);
+      const candidates = receipts
+        .filter((row) => row.account_id === accountId)
+        .sort((a, b) => {
+          if (a.derived_from_receipt_id === b.id) return -1;
+          if (b.derived_from_receipt_id === a.id) return 1;
+          return a.id.localeCompare(b.id);
+        });
+      const accountReceipts: DocumentReceiptForPrune[] = [];
+      for (const receipt of candidates) {
+        const { data: claimed, error: claimError } = await admin.rpc(
+          'claim_document_upload_orphan',
+          {
+            p_account_id: accountId,
+            p_receipt_id: receipt.id,
+          },
+        );
+        if (claimError)
+          throw new ApiError(
+            500,
+            'database_error',
+            `document orphan claim failed: ${claimError.message}`,
+          );
+        if (claimed) accountReceipts.push(receipt);
+      }
+      if (accountReceipts.length === 0) continue;
       const paths = [...new Set(accountReceipts.map((row) => row.storage_path))];
       const referenced = new Set<string>();
       for (let offset = 0; offset < paths.length; offset += DOCUMENT_REFERENCE_QUERY_CHUNK) {

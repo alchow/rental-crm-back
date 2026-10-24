@@ -2,7 +2,13 @@ import PDFDocument from 'pdfkit';
 import { createHash } from 'node:crypto';
 import { getAdminClient } from '../supabase-admin';
 import type { AttachmentRow, ChainStatus, ExportData, ExportScope } from '../export-pdf';
-import { deriveLedger, exportLedgerAt, inRangeISO, paymentActivityInRange } from './ledger';
+import {
+  deriveLedger,
+  exportCurrencyGroups,
+  exportLedgerAt,
+  inRangeISO,
+  paymentActivityInRange,
+} from './ledger';
 import {
   groupInteractionChains,
   interactionCastDisplay,
@@ -11,6 +17,8 @@ import {
 } from './interactions';
 import { captureDisplay } from './capture';
 import { renderIncidentsSection } from './incidents';
+import { renderTenancyDateHistory } from './tenancy-dates';
+import { agreementTermsLines, feePolicyText } from './agreement-terms';
 
 // ---- PDF rendering ----------------------------------------------------------
 
@@ -31,8 +39,6 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
   const { scope, generatedAt, chain, data } = input;
   const fromDate = scope.fromDate ?? null;
   const toDate = scope.toDate ?? null;
-  const ledger = deriveLedger(data, fromDate, toDate);
-  const money = exportLedgerAt(data, toDate);
 
   // PDF info dict + file id derived from (scope, generatedAt) so each
   // export has a stable identity within its own bytes. Unlike the inspection
@@ -89,8 +95,12 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
   if (data.tenancy) {
     doc.text(`Tenancy:       ${data.tenancy.id as string}`);
     doc.text(
-      `Tenancy span:  ${data.tenancy.start_date as string} → ${(data.tenancy.end_date as string) ?? 'open'}`,
+      `Possession span (current record): ${data.tenancy.start_date as string} -> ${(data.tenancy.end_date as string) ?? 'open'}`,
     );
+    doc.text(
+      `Date meaning: ${data.tenancy.start_date_basis === 'possession_entitlement' ? 'possession entitlement' : 'legacy meaning unverified'}`,
+    );
+    doc.text(`Actual move-in: ${data.tenancy.actual_move_in_date ?? 'not recorded'}`);
     doc.text(
       `Tenancy state: ${data.tenancy.status as string}${data.tenancy.deleted_at ? ' (soft-deleted)' : ''}`,
     );
@@ -119,6 +129,7 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
   doc.fillColor('#000').y = bannerY + 50;
 
   // ----- Lease(s) -----------------------------------------------------------
+  renderTenancyDateHistory(doc, data.dateHistory ?? []);
   section(doc, 'Lease(s)');
   if (data.leases.length === 0) {
     italicNote(doc, '(no leases recorded for this tenancy)');
@@ -133,6 +144,7 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
               ? `   deposit ${fmtMoney(ls.deposit_amount_cents as number, (ls.deposit_currency as string) ?? (ls.rent_currency as string))}`
               : ''),
         );
+      for (const line of agreementTermsLines(ls)) doc.fontSize(9).text(`  ${line}`);
     }
   }
 
@@ -148,157 +160,193 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
   }
 
   // ----- Rent ledger --------------------------------------------------------
-  section(doc, 'Rent ledger');
-  doc.fontSize(11);
-  if (fromDate) {
-    // INVARIANT: Opening balance is the carried-in debt at the
-    // start of the date range. Without it, a narrowed-range bundle would
-    // misstate the actual obligation.
-    doc.text(
-      `Opening balance as of ${fromDate}:  ${fmtMoney(ledger.opening_balance_cents, ledger.currency)}` +
-        (ledger.opening_balance_cents > 0 ? '  (carried in)' : ''),
-    );
+  const currencyGroups = exportCurrencyGroups(data);
+  if (currencyGroups.length === 0) {
+    section(doc, 'Rent ledger');
+    italicNote(doc, '(no money recorded)');
   }
-  const adoptionBalance = ledger.adoption_opening_balance_cents;
-  const adopted = ledger.adoption_date !== null || adoptionBalance !== 0;
-  if (adopted) {
-    // The landlord's own qualifiers travel with the figure: a balance they
-    // flagged unresolved must not read as settled, and the basis they stated
-    // is what a reader would otherwise have to ask for.
-    const stated =
-      (ledger.adoption_needs_review ? ' — FLAGGED NEEDS REVIEW by the landlord' : '') +
-      (ledger.adoption_balance_basis ? ` · basis: "${ledger.adoption_balance_basis}"` : '');
-    if (adoptionBalance !== 0) {
-      // The pre-tracking balance is a landlord assertion, not a transaction the
-      // system can evidence -- label it as such wherever it is read.
+  for (const group of currencyGroups) {
+    const ledger = deriveLedger(group, fromDate, toDate);
+    const money = exportLedgerAt(group, toDate);
+    section(doc, `Rent ledger — ${ledger.currency ?? 'unrecorded currency'}`);
+    doc.fontSize(11);
+    if (fromDate) {
+      // INVARIANT: Opening balance is the carried-in debt at the
+      // start of the date range. Without it, a narrowed-range bundle would
+      // misstate the actual obligation.
       doc.text(
-        `Opening balance at adoption (${ledger.adoption_date ?? 'date unrecorded'}):  ` +
-          fmtMoney(adoptionBalance, ledger.currency) +
-          (adoptionBalance > 0 ? '  (carried in)' : '') +
-          '  (from landlord statement; no itemized transactions)' +
-          stated,
+        `Opening balance as of ${fromDate}:  ${fmtMoney(ledger.opening_balance_cents, ledger.currency)}` +
+          (ledger.opening_balance_cents > 0 ? '  (carried in)' : ''),
+      );
+    }
+    const adoptionBalance = ledger.adoption_opening_balance_cents;
+    const adopted = ledger.adoption_date !== null || adoptionBalance !== 0;
+    if (adopted) {
+      // The landlord's own qualifiers travel with the figure: a balance they
+      // flagged unresolved must not read as settled, and the basis they stated
+      // is what a reader would otherwise have to ask for.
+      const stated =
+        (ledger.adoption_needs_review ? ' — FLAGGED NEEDS REVIEW by the landlord' : '') +
+        (ledger.adoption_balance_basis ? ` · basis: "${ledger.adoption_balance_basis}"` : '');
+      if (adoptionBalance !== 0) {
+        // The pre-tracking balance is a landlord assertion, not a transaction the
+        // system can evidence -- label it as such wherever it is read.
+        doc.text(
+          `Opening balance at adoption (${ledger.adoption_date ?? 'date unrecorded'}):  ` +
+            fmtMoney(adoptionBalance, ledger.currency) +
+            (adoptionBalance > 0 ? '  (carried in)' : '') +
+            '  (from landlord statement; no itemized transactions)' +
+            stated,
+        );
+        doc.text(
+          '  Charges and payments dated before this were entered at adoption, not as contemporaneous records.',
+        );
+      } else {
+        // An adoption that backfilled itemized rows states no balance, so nothing
+        // above would say the pre-adoption rows were entered after the fact.
+        doc.text(
+          `Adopted into tracking on ${ledger.adoption_date ?? 'date unrecorded'} — charges and payments dated before this were entered at adoption.` +
+            stated,
+        );
+      }
+    }
+    doc.text(
+      `Non-deposit charges, net of voids${fromDate || toDate ? ' (in range)' : ''}:  ${fmtMoney(ledger.rent_charges_in_range_cents, ledger.currency)}`,
+    );
+    doc.text(
+      `Applications, net of reversals${fromDate || toDate ? ' (in range)' : ''}:     ${fmtMoney(ledger.rent_payments_in_range_cents, ledger.currency)}`,
+    );
+    const owedSuffix =
+      ledger.closing_balance_cents > 0
+        ? '  (owed by tenant)'
+        : ledger.closing_balance_cents < 0
+          ? '  (overpaid)'
+          : '';
+    // An unallocated payment is money already received; without this the amount
+    // above reads as arrears with nothing tying it to the credit line below.
+    const creditQualifier =
+      ledger.unapplied_credit_cents > 0
+        ? `  (before ${fmtMoney(ledger.unapplied_credit_cents, ledger.currency)} unapplied credit — see below)`
+        : '';
+    if (adoptionBalance !== 0) {
+      // Show the arithmetic rather than folding the assertion into one number:
+      // the itemized figure is what these rows prove, the total is what the
+      // landlord claims, and GET /ledger returns both parts separately.
+      doc.text(
+        `Itemized closing balance:  ${fmtMoney(ledger.closing_balance_cents - adoptionBalance, ledger.currency)}`,
       );
       doc.text(
-        '  Charges and payments dated before this were entered at adoption, not as contemporaneous records.',
+        `Total including pre-tracking balance:  ${fmtMoney(ledger.closing_balance_cents, ledger.currency)}` +
+          owedSuffix +
+          creditQualifier,
       );
     } else {
-      // An adoption that backfilled itemized rows states no balance, so nothing
-      // above would say the pre-adoption rows were entered after the fact.
       doc.text(
-        `Adopted into tracking on ${ledger.adoption_date ?? 'date unrecorded'} — charges and payments dated before this were entered at adoption.` +
-          stated,
+        `Closing balance${fromDate ? ` as of ${toDate ?? 'now'}` : ''}:  ${fmtMoney(ledger.closing_balance_cents, ledger.currency)}` +
+          owedSuffix +
+          creditQualifier,
       );
     }
-  }
-  doc.text(
-    `Non-deposit charges, net of voids${fromDate || toDate ? ' (in range)' : ''}:  ${fmtMoney(ledger.rent_charges_in_range_cents, ledger.currency)}`,
-  );
-  doc.text(
-    `Applications, net of reversals${fromDate || toDate ? ' (in range)' : ''}:     ${fmtMoney(ledger.rent_payments_in_range_cents, ledger.currency)}`,
-  );
-  const owedSuffix =
-    ledger.closing_balance_cents > 0
-      ? '  (owed by tenant)'
-      : ledger.closing_balance_cents < 0
-        ? '  (overpaid)'
-        : '';
-  // An unallocated payment is money already received; without this the amount
-  // above reads as arrears with nothing tying it to the credit line below.
-  const creditQualifier =
-    ledger.unapplied_credit_cents > 0
-      ? `  (before ${fmtMoney(ledger.unapplied_credit_cents, ledger.currency)} unapplied credit — see below)`
-      : '';
-  if (adoptionBalance !== 0) {
-    // Show the arithmetic rather than folding the assertion into one number:
-    // the itemized figure is what these rows prove, the total is what the
-    // landlord claims, and GET /ledger returns both parts separately.
     doc.text(
-      `Itemized closing balance:  ${fmtMoney(ledger.closing_balance_cents - adoptionBalance, ledger.currency)}`,
+      `Deposit held:   ${fmtMoney(ledger.deposit_payments_cents, ledger.currency)}` +
+        ` / charged ${fmtMoney(ledger.deposit_charges_cents, ledger.currency)}`,
     );
-    doc.text(
-      `Total including pre-tracking balance:  ${fmtMoney(ledger.closing_balance_cents, ledger.currency)}` +
-        owedSuffix +
-        creditQualifier,
+    if (ledger.unapplied_credit_cents > 0) {
+      doc
+        .fillColor('#7a1e1e')
+        .text(
+          `Unapplied credit: ${fmtMoney(ledger.unapplied_credit_cents, ledger.currency)}  (money received but not allocated -- may be owed back)`,
+        )
+        .fillColor('#000');
+    }
+
+    // Charge / payment listings: in-range only when a range is set. Charges
+    // BEFORE the range that are still open contribute via the opening
+    // balance above (their detail is intentionally suppressed -- the goal
+    // of a date-narrowed bundle is to spotlight activity, with carry-in
+    // summarised). We always include voided rows so a litigant sees that
+    // the void happened (not just the absence).
+    const isInRangeCharge = (due: string) =>
+      (!fromDate || due >= fromDate) && (!toDate || due <= toDate);
+
+    doc.moveDown(0.3);
+    doc.fontSize(9).fillColor('#333');
+    doc.text(`Charges${fromDate || toDate ? ' (in range)' : ''}:`);
+    const chargesSorted = [...money.charges].sort((a, b) =>
+      String(a.due_date).localeCompare(String(b.due_date)),
     );
-  } else {
-    doc.text(
-      `Closing balance${fromDate ? ` as of ${toDate ?? 'now'}` : ''}:  ${fmtMoney(ledger.closing_balance_cents, ledger.currency)}` +
-        owedSuffix +
-        creditQualifier,
-    );
-  }
-  doc.text(
-    `Deposit held:   ${fmtMoney(ledger.deposit_payments_cents, ledger.currency)}` +
-      ` / charged ${fmtMoney(ledger.deposit_charges_cents, ledger.currency)}`,
-  );
-  if (ledger.unapplied_credit_cents > 0) {
-    doc
-      .fillColor('#7a1e1e')
-      .text(
-        `Unapplied credit: ${fmtMoney(ledger.unapplied_credit_cents, ledger.currency)}  (money received but not allocated -- may be owed back)`,
+    let renderedCharges = 0;
+    for (const cr of chargesSorted) {
+      if (
+        !isInRangeCharge(cr.due_date as string) &&
+        !inRangeISO(cr.voided_at as string, fromDate, toDate)
       )
-      .fillColor('#000');
-  }
-
-  // Charge / payment listings: in-range only when a range is set. Charges
-  // BEFORE the range that are still open contribute via the opening
-  // balance above (their detail is intentionally suppressed -- the goal
-  // of a date-narrowed bundle is to spotlight activity, with carry-in
-  // summarised). We always include voided rows so a litigant sees that
-  // the void happened (not just the absence).
-  const isInRangeCharge = (due: string) =>
-    (!fromDate || due >= fromDate) && (!toDate || due <= toDate);
-
-  doc.moveDown(0.3);
-  doc.fontSize(9).fillColor('#333');
-  doc.text(`Charges${fromDate || toDate ? ' (in range)' : ''}:`);
-  const chargesSorted = [...money.charges].sort((a, b) =>
-    String(a.due_date).localeCompare(String(b.due_date)),
-  );
-  let renderedCharges = 0;
-  for (const cr of chargesSorted) {
-    if (
-      !isInRangeCharge(cr.due_date as string) &&
-      !inRangeISO(cr.voided_at as string, fromDate, toDate)
-    )
-      continue;
-    const v = cr.voided_at ? ' [VOID]' : '';
-    doc.text(
-      `  ${cr.due_date as string}  ${(cr.type as string).padEnd(10)}  ${fmtMoney(cr.amount_cents as number, cr.currency as string)}${v}`,
-    );
-    renderedCharges += 1;
-  }
-  if (renderedCharges === 0) doc.text('  (none in range)');
-
-  doc.moveDown(0.3);
-  doc.text(`Payments + allocations${fromDate || toDate ? ' (in range)' : ''}:`);
-  const paymentsSorted = [...money.payments].sort((a, b) =>
-    String(a.received_at).localeCompare(String(b.received_at)),
-  );
-  let renderedPayments = 0;
-  for (const pr of paymentsSorted) {
-    const allocs = money.allocations.filter((a) => a.payment_id === pr.id);
-    if (!paymentActivityInRange(pr, allocs, fromDate, toDate)) continue;
-    const v = pr.voided_at ? ' [VOID]' : '';
-    doc.text(
-      `  ${pr.received_at as string}  via ${pr.method as string}  ${fmtMoney(pr.amount_cents as number, pr.currency as string)}${v}`,
-    );
-    for (const a of allocs) {
-      if (toDate && a.created_at && String(a.created_at).slice(0, 10) > toDate) continue;
-      const ch = data.charges.find((c) => c.id === a.charge_id);
+        continue;
+      const v = cr.voided_at ? ' [VOID]' : '';
       doc.text(
-        `     → ${fmtMoney(a.amount_cents as number, (ch?.currency as string) ?? '')} to charge ${(ch?.due_date as string) ?? '?'} (${(ch?.type as string) ?? '?'})`,
+        `  ${cr.due_date as string}  ${(cr.type as string).padEnd(10)}  ${fmtMoney(cr.amount_cents as number, cr.currency as string)}${v}`,
       );
-      if (a.created_at)
-        doc.text(`       Applied ${String(a.created_at)} · application ${String(a.id)}`);
-      if (a.note) doc.text(`       Note: ${String(a.note)}`);
-      if (a.voided_at && (!toDate || String(a.voided_at).slice(0, 10) <= toDate))
-        doc.text(`       Reversed ${String(a.voided_at)}: ${String(a.void_reason ?? '')}`);
+      if (cr.period_start && cr.period_end) {
+        doc.text(`     Coverage: ${String(cr.period_start)} to ${String(cr.period_end)}`);
+      }
+      if (cr.created_at) doc.text(`     Recorded: ${String(cr.created_at)}`);
+      const basis = cr.terms_snapshot as Record<string, unknown> | null | undefined;
+      if (basis) {
+        const agreement = basis.agreement as Record<string, unknown> | null | undefined;
+        doc.text(
+          `     Billing basis: ${String(basis.source ?? 'recorded')} ${agreement?.id ? `lease ${String(agreement.id)}` : ''}`.trimEnd(),
+        );
+        const billing = basis.billing as Record<string, unknown> | undefined;
+        if (billing)
+          doc.text(
+            `     Recorded billing grace: ${billing.grace_days ?? 'unknown'}; late fee: ${feePolicyText(billing.late_fee_policy)}`,
+          );
+        if (agreement?.updated_at)
+          doc.text(`     Agreement snapshot version: ${String(agreement.updated_at)}`);
+        const notice = basis.notice as Record<string, unknown> | null | undefined;
+        if (notice?.id)
+          doc.text(
+            `     Notice snapshot: ${String(notice.id)}; served ${notice.served_at ?? 'not recorded'}`,
+          );
+        if (basis.manual_basis)
+          doc.text(`     Manual billing basis: ${String(basis.manual_basis)}`);
+      }
+      if (cr.void_reason) doc.text(`     Void reason: ${String(cr.void_reason)}`);
+      renderedCharges += 1;
     }
-    renderedPayments += 1;
+    if (renderedCharges === 0) doc.text('  (none in range)');
+
+    doc.moveDown(0.3);
+    doc.text(`Payments + allocations${fromDate || toDate ? ' (in range)' : ''}:`);
+    const paymentsSorted = [...money.payments].sort((a, b) =>
+      String(a.received_at).localeCompare(String(b.received_at)),
+    );
+    let renderedPayments = 0;
+    for (const pr of paymentsSorted) {
+      const allocs = money.allocations.filter((a) => a.payment_id === pr.id);
+      if (!paymentActivityInRange(pr, allocs, fromDate, toDate)) continue;
+      const v = pr.voided_at ? ' [VOID]' : '';
+      doc.text(
+        `  ${typeof pr.received_at === 'string' ? pr.received_at : 'receipt date unknown'}  via ${pr.method as string}  ${fmtMoney(pr.amount_cents as number, pr.currency as string)}${v}`,
+      );
+      if (pr.created_at) doc.text(`     Recorded: ${String(pr.created_at)}`);
+      for (const a of allocs) {
+        if (toDate && a.created_at && String(a.created_at).slice(0, 10) > toDate) continue;
+        const ch = data.charges.find((c) => c.id === a.charge_id);
+        doc.text(
+          `     → ${fmtMoney(a.amount_cents as number, (ch?.currency as string) ?? '')} to charge ${(ch?.due_date as string) ?? '?'} (${(ch?.type as string) ?? '?'})`,
+        );
+        if (a.created_at)
+          doc.text(`       Applied ${String(a.created_at)} · application ${String(a.id)}`);
+        if (a.note) doc.text(`       Note: ${String(a.note)}`);
+        if (a.voided_at && (!toDate || String(a.voided_at).slice(0, 10) <= toDate))
+          doc.text(`       Reversed ${String(a.voided_at)}: ${String(a.void_reason ?? '')}`);
+      }
+      renderedPayments += 1;
+    }
+    if (renderedPayments === 0) doc.text('  (none in range)');
+    doc.fillColor('#000');
   }
-  if (renderedPayments === 0) doc.text('  (none in range)');
-  doc.fillColor('#000');
 
   // ----- Interactions -------------------------------------------------------
   // Full chains, ALWAYS: for a corrected entry, the original renders first

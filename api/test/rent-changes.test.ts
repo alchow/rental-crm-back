@@ -459,11 +459,10 @@ async function main(): Promise<void> {
       served_at: '2026-06-01T12:00:00Z',
     });
     const notice = nRes.body as { id: string };
-    const upd = await admin
-      .from('tenancies')
-      .update({ status: 'ended', end_date: '2026-06-30' })
-      .eq('id', tid);
-    if (upd.error) throw new Error(`end tenancy: ${upd.error.message}`);
+    const ended = await postA(`/tenancies/${tid}/end`, {
+      kind: 'ended', effective_date: '2026-06-30', reason_code: 'other',
+    });
+    if (ended.status !== 200) throw new Error(`end tenancy: ${JSON.stringify(ended.body)}`);
     const r = await rentChange(tid, {
       amount_cents: 210000,
       currency: 'USD',
@@ -611,12 +610,12 @@ async function main(): Promise<void> {
     }
   });
 
-  await check('lease PATCH: term_end alone still 200', async () => {
+  await check('lease PATCH: executed term_end requires a recorded correction', async () => {
     const tid = await newTenancy();
     const lease = await newLease(tid, { status: 'active', rent: 200000 });
     const r = await patchA(`/leases/${lease.id}`, { term_end: '2027-06-30' });
-    if (r.status !== 200)
-      throw new Error(`expected 200, got ${r.status} ${JSON.stringify(r.body)}`);
+    if (r.status !== 409)
+      throw new Error(`expected 409, got ${r.status} ${JSON.stringify(r.body)}`);
   });
 
   // =========================================================================
@@ -1228,17 +1227,13 @@ async function main(): Promise<void> {
     const lease = await newLease(tid, { status: 'active', rent: 200000 });
     const got = await getLease(lease.id);
 
-    // Read-modify-write: echo the object back with a real term_end edit and the
-    // UNCHANGED rent values -> tolerated (200, term_end applied).
+    // Echoing the recorded terms is a no-op; a new agreement end needs a correction.
     const echo = await patchA(`/leases/${lease.id}`, {
-      term_end: '2027-06-30',
       rent_amount_cents: got.rent_amount_cents,
       rent_currency: 'USD',
     });
     if (echo.status !== 200)
       throw new Error(`expected echo 200, got ${echo.status} ${JSON.stringify(echo.body)}`);
-    if ((echo.body as { term_end: string }).term_end !== '2027-06-30')
-      throw new Error(`term_end not updated: ${(echo.body as { term_end: string }).term_end}`);
 
     // A genuinely different rent value alongside another field -> the DB guard
     // refuses the frozen column on an executed lease.

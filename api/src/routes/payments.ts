@@ -1,9 +1,11 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
-import { asJson, nullableRpcArg } from '../supabase/db-types';
+import { asJson } from '../supabase/db-types';
 import { ApiError, errorResponses } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
+import { DateWarningPreview, WarningAcknowledgements } from './tenancies/date-warnings';
+import { dateRpc } from './tenancies/rpc';
 
 // Payment voids and application reversals preserve original facts and append audit events.
 
@@ -25,7 +27,9 @@ const Payment = z
     tenancy_id: z.string().uuid(),
     amount_cents: z.number().int().nonnegative(),
     currency: CurrencyCode,
-    received_at: z.string(),
+    received_at: z.string().nullable(),
+    receipt_date_unknown: z.boolean().optional(),
+    entry_source: z.string().optional(),
     method: PaymentMethod,
     reference: z.string().nullable(),
     payer_tenant_id: z.string().uuid().nullable(),
@@ -93,6 +97,8 @@ const CreatePaymentBody = z
     // Optional inline allocations. The DB trigger enforces all the
     // integrity rules (sums, currency, same tenancy/account, no voided).
     allocations: z.array(AllocationInput).optional(),
+    warning_acknowledgements: WarningAcknowledgements,
+    expected_context_fingerprint: z.string().min(1).max(256).optional(),
   })
   .openapi('CreatePaymentBody');
 
@@ -167,6 +173,21 @@ const create = createRoute({
       description: 'created',
       content: { 'application/json': { schema: PaymentWithAllocations } },
     },
+    ...errorResponses,
+  },
+});
+
+const previewPayment = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/payments/preview',
+  tags: ['payments'],
+  summary: 'Review the date and immediate balance effect of a receipt without writing it',
+  request: {
+    params: AccountParam,
+    body: { required: true, content: { 'application/json': { schema: CreatePaymentBody } } },
+  },
+  responses: {
+    200: { description: 'review', content: { 'application/json': { schema: DateWarningPreview } } },
     ...errorResponses,
   },
 });
@@ -250,6 +271,17 @@ paymentsApp.openapi(get, async (c) => {
   return c.json(data as z.infer<typeof Payment>, 200);
 });
 
+paymentsApp.openapi(previewPayment, async (c) => {
+  const { accountId } = c.req.valid('param');
+  return c.json(
+    await dateRpc<z.infer<typeof DateWarningPreview>>(c, 'preview_payment', {
+      p_account_id: accountId,
+      p_payload: asJson(c.req.valid('json')),
+    }),
+    200,
+  );
+});
+
 paymentsApp.openapi(create, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
@@ -259,22 +291,22 @@ paymentsApp.openapi(create, async (c) => {
   // Without this, an allocation that trips the integrity trigger would
   // leave a phantom payment row (money in limbo). The RPC takes both pieces
   // and lets postgres roll back the lot on any failure.
-  const { data: rpcData, error: rpcErr } = await sb.rpc('create_payment_with_allocations', {
+  const claim = c.get('idempotencyClaim');
+  if (!claim) throw new ApiError(500, 'database_error', 'idempotency claim unavailable');
+  const { data: rpcData, error: rpcErr } = await sb.rpc('record_payment', {
     p_account_id: accountId,
-    p_tenancy_id: body.tenancy_id,
-    p_amount_cents: body.amount_cents,
-    p_currency: body.currency,
-    p_received_at: body.received_at,
-    p_method: body.method,
-    p_reference: nullableRpcArg(body.reference ?? null),
-    p_payer_tenant_id: nullableRpcArg(body.payer_tenant_id ?? null),
-    p_notes: nullableRpcArg(body.notes ?? null),
-    p_allocations: asJson(body.allocations ?? []),
+    p_payload: asJson(body),
+    p_idempotency_key: claim.key,
+    p_request_fingerprint: claim.fingerprint,
   });
   if (rpcErr) {
+    if (rpcErr.message.startsWith('date_context_changed'))
+      throw new ApiError(409, 'date_context_changed', rpcErr.message);
+    if (['22023', '22007', '22008', '22P02'].includes(rpcErr.code))
+      throw new ApiError(400, 'invalid_request', rpcErr.message);
     // Map the trigger / FK / membership errors the function can raise to
     // the right HTTP status. Anything else is a real 500.
-    if (rpcErr.code === '42501' || rpcErr.code === '28000') {
+    if (['P0002', '42501', '28000'].includes(rpcErr.code)) {
       throw new ApiError(404, 'not_found', 'not found');
     }
     if (
@@ -306,6 +338,7 @@ paymentsApp.openapi(create, async (c) => {
   if (!row || !row.payment) {
     throw new ApiError(500, 'database_error', 'RPC returned no payment row');
   }
+  c.set('idempotencyCompletedAtomically', true);
   return c.json(
     {
       payment: row.payment as z.infer<typeof Payment>,

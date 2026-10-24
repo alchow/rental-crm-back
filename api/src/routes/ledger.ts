@@ -1,4 +1,6 @@
 import { ledgerRowsAt } from '../lib/ledger-history';
+import { emptyCurrencyTotals, ledgerCurrencyTotals, selectLedgerCurrency } from '../lib/ledger-currencies';
+import { readAllById } from '../lib/postgrest-pages';
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
@@ -19,6 +21,8 @@ const LedgerCharge = z.object({
   period_start: z.string().nullable(),
   period_end: z.string().nullable(),
   source_schedule_id: z.string().uuid().nullable(),
+  cycle_key: z.string().nullable().optional(),
+  terms_snapshot: z.record(z.unknown()).nullable().optional(),
   // The bill this entry derives from — the rent charge a late_fee was asserted
   // against (migration 20260801000007). Optional as well as nullable: the row
   // fetch is select('*'), so against a database that predates the migration the
@@ -32,6 +36,7 @@ const LedgerCharge = z.object({
   created_at: z.string(),
   type: z.string(),
   amount_cents: z.number().int(),
+  currency: z.string().optional(),
   voided_at: z.string().nullable(),
   void_reason: z.string().nullable(),
   description: z.string().nullable(),
@@ -47,13 +52,16 @@ const LedgerPayment = z.object({
   // and a statement that shows one as the other misstates either the payment
   // history or the record's provenance. Both columns are NOT NULL and predate
   // this response, so both are always present.
-  occurred_at: z.string().openapi({ description: 'received_at — when the money arrived.' }),
+  occurred_at: z.string().nullable().openapi({ description: 'Actual receipt date; null means explicitly unknown, never the entry date.' }),
+  receipt_date_unknown: z.boolean().optional(),
+  entry_source: z.string().optional(),
   created_at: z.string().openapi({
     description:
       'When this payment was RECORDED, which is later than occurred_at whenever rent ' +
       'is logged after the fact. Never render it as the payment date.',
   }),
   amount_cents: z.number().int(),
+  currency: z.string().optional(),
   method: z.string(),
   reference: z.string().nullable(),
   voided_at: z.string().nullable(),
@@ -122,29 +130,11 @@ const LedgerTotalsByType = z
   })
   .openapi('LedgerTotalsByType');
 
-const CHARGE_TYPE_KEYS = [
-  'rent',
-  'late_fee',
-  'deposit',
-  'utility',
-  'parking',
-  'repair_chargeback',
-  'nsf_fee',
-  'other',
-] as const;
-type ChargeTypeKey = (typeof CHARGE_TYPE_KEYS)[number];
-
 const LEGACY_NON_DEPOSIT_NOTE =
   'LEGACY: aggregates ALL non-deposit charge types (utility, late_fee, ... included), ' +
   'not just type=rent. Use totals.by_type for an honest per-type split.';
 
-const LedgerResponse = z
-  .object({
-    tenancy_id: z.string().uuid(),
-    currency: z.string().nullable(),
-    adoption: LedgerAdoption.nullable(),
-    entries: z.array(LedgerEntry),
-    totals: z.object({
+const LedgerTotals = z.object({
       rent_charges_cents: z.number().int().openapi({ description: LEGACY_NON_DEPOSIT_NOTE }),
       rent_payments_cents: z.number().int().openapi({ description: LEGACY_NON_DEPOSIT_NOTE }),
       rent_balance_cents: z.number().int().openapi({ description: LEGACY_NON_DEPOSIT_NOTE }),
@@ -163,7 +153,16 @@ const LedgerResponse = z
       total_allocated_cents: z.number().int(),
       unapplied_credit_cents: z.number().int(),
       by_type: LedgerTotalsByType,
-    }),
+    }).openapi('LedgerTotals');
+const LedgerResponse = z
+  .object({
+    tenancy_id: z.string().uuid(),
+    currency: z.string().nullable(),
+    adoption: LedgerAdoption.nullable(),
+    entries: z.array(LedgerEntry),
+    totals: LedgerTotals,
+    available_currencies: z.array(z.string()).optional(),
+    totals_by_currency: z.record(LedgerTotals).optional(),
   })
   .openapi('LedgerResponse');
 
@@ -179,6 +178,7 @@ const TenancyParam = z.object({
 });
 
 const LedgerQuery = z.object({
+  currency: z.string().length(3).optional().openapi({ description: 'Select one currency. All available currencies retain independent server totals.' }),
   // Point-in-time view as of END of that date.
   //   Charges included when due_date <= as_of.
   //   Payments included when received_at (date part) <= as_of.
@@ -222,6 +222,8 @@ interface ChargeRow {
   period_start: string | null;
   period_end: string | null;
   source_schedule_id: string | null;
+  cycle_key?: string | null;
+  terms_snapshot?: Record<string, unknown> | null;
   // Absent (not null) when read from a database that predates migration
   // 20260801000007; select('*') tolerates that, an explicit column list
   // would not.
@@ -237,7 +239,9 @@ interface PaymentRow {
   tenancy_id: string;
   amount_cents: number;
   currency: string;
-  received_at: string;
+  received_at: string | null;
+  receipt_date_unknown?: boolean;
+  entry_source?: string;
   method: string;
   reference: string | null;
   voided_at: string | null;
@@ -258,22 +262,22 @@ interface AllocationRow {
 
 ledgerApp.openapi(get, async (c) => {
   const { accountId, tenancyId } = c.req.valid('param');
-  const { as_of } = c.req.valid('query');
+  const { as_of, currency: requestedCurrency } = c.req.valid('query');
   const sb = getSb(c);
 
-  const [charges, payments, adoptions] = await Promise.all([
-    sb
+  const [charges, payments, adoptions, rentSchedules] = await Promise.all([
+    readAllById(() => sb
       .from('charges')
       .select('*')
       .eq('account_id', accountId)
       .eq('tenancy_id', tenancyId)
-      .is('deleted_at', null),
-    sb
+      .is('deleted_at', null),'ledger charges').then((data) => ({ data,error:null })),
+    readAllById(() => sb
       .from('payments')
       .select('*')
       .eq('account_id', accountId)
       .eq('tenancy_id', tenancyId)
-      .is('deleted_at', null),
+      .is('deleted_at', null),'ledger payments').then((data) => ({ data,error:null })),
     sb
       .from('tenancy_adoptions')
       .select('*')
@@ -281,10 +285,13 @@ ledgerApp.openapi(get, async (c) => {
       .eq('tenancy_id', tenancyId)
       .is('deleted_at', null)
       .limit(1),
+    sb.from('rent_schedules').select('currency,start_date').eq('account_id',accountId).eq('tenancy_id',tenancyId)
+      .eq('kind','rent').is('deleted_at',null).lte('start_date',as_of ?? new Date().toISOString().slice(0,10))
+      .or(`end_date.is.null,end_date.gte.${as_of ?? new Date().toISOString().slice(0,10)}`)
+      .order('start_date',{ascending:false}).order('id',{ascending:false}).limit(1),
   ]);
 
-  if (charges.error) throw new ApiError(500, 'database_error', charges.error.message);
-  if (payments.error) throw new ApiError(500, 'database_error', payments.error.message);
+  if (rentSchedules.error) throw new ApiError(500, 'database_error', rentSchedules.error.message);
   // COMPAT: tolerate a database that predates migration 20260810000001 —
   // prod deploys code on merge while a human applies migrations later, and a
   // pre-existing read endpoint must not 500 for every tenancy in that window
@@ -312,14 +319,13 @@ ledgerApp.openapi(get, async (c) => {
   const chargeIds = [...chargeById.keys()];
   const allRows: AllocationRow[] = [];
   for (let i = 0; i < chargeIds.length; i += 200) {
-    const { data, error } = await sb
+    const data = await readAllById(() => sb
       .from('payment_allocations')
       .select('*')
       .eq('account_id', accountId)
       .in('charge_id', chargeIds.slice(i, i + 200))
-      .is('deleted_at', null);
-    if (error) throw new ApiError(500, 'database_error', error.message);
-    allRows.push(...((data ?? []) as AllocationRow[]));
+      .is('deleted_at', null),'ledger allocations');
+    allRows.push(...(data as AllocationRow[]));
   }
   const paymentIds = new Set(paymentRows.map((p) => p.id));
   const tenancyAllocations = ledgerRowsAt(allRows, (row) => row.created_at, as_of).filter((row) =>
@@ -372,67 +378,15 @@ ledgerApp.openapi(get, async (c) => {
           created_at: adoptionRow.created_at,
         };
 
-  let currency: string | null = null;
-  if (chargeRows.length > 0) currency = chargeRows[0]!.currency;
-  else if (paymentRows.length > 0) currency = paymentRows[0]!.currency;
-  // A Branch-C adoption (opening balance, no rows) still states its currency.
-  else if (adoption !== null) currency = adoption.currency;
-
-  // Aggregates. Voided rows excluded. Deposits split out, and every type
-  // additionally tracked in by_type (same pass, same rules).
-  const byType = Object.fromEntries(
-    CHARGE_TYPE_KEYS.map((k) => [k, { charges_cents: 0, allocated_cents: 0, balance_cents: 0 }]),
-  ) as Record<ChargeTypeKey, z.infer<typeof TypeTotals>>;
-  // The DB CHECK constraint closes the vocabulary; 'other' is the defensive
-  // bucket in case a future migration widens it before this list catches up.
-  const typeKey = (t: string): ChargeTypeKey =>
-    (CHARGE_TYPE_KEYS as readonly string[]).includes(t) ? (t as ChargeTypeKey) : 'other';
-
-  let rentChargesC = 0,
-    rentPaymentsC = 0,
-    depositChargesC = 0,
-    depositPaymentsC = 0;
-  for (const cr of chargeRows) {
-    if (cr.voided_at) continue;
-    if (cr.type === 'deposit') depositChargesC += cr.amount_cents;
-    else rentChargesC += cr.amount_cents;
-    byType[typeKey(cr.type)].charges_cents += cr.amount_cents;
-  }
-  // Payments aren't intrinsically rent-vs-deposit; the split is decided by
-  // what they're allocated to.
-  let totalAllocatedC = 0;
-  for (const a of tenancyAllocations) {
-    if (a.voided_at) continue;
-    if (voidedPayments.has(a.payment_id)) continue;
-    if (voidedCharges.has(a.charge_id)) continue;
-    totalAllocatedC += a.amount_cents;
-    // One shared attribution key so the legacy split and by_type can never
-    // diverge: an (unreachable today) allocation whose charge is missing
-    // from chargeById lands in 'other' — non-deposit for the legacy
-    // buckets, counted in by_type — keeping Σ non-deposit ≡ rent_*.
-    const k = typeKey(chargeById.get(a.charge_id)?.type ?? 'other');
-    if (k === 'deposit') depositPaymentsC += a.amount_cents;
-    else rentPaymentsC += a.amount_cents;
-    byType[k].allocated_cents += a.amount_cents;
-  }
-  for (const k of CHARGE_TYPE_KEYS) {
-    byType[k].balance_cents = byType[k].charges_cents - byType[k].allocated_cents;
-  }
-  // Total received: every non-voided payment, regardless of where (or
-  // whether) it was allocated.
-  let totalReceivedC = 0;
-  for (const pr of paymentRows) {
-    if (pr.voided_at) continue;
-    totalReceivedC += pr.amount_cents;
-  }
-  // Unapplied credit: money received but not currently applied to a
-  // (non-voided) charge. The trigger prevents over-allocation per payment,
-  // so this is always >= 0. > 0 means either a partial allocation or a
-  // payment whose target charge was later voided.
-  const unappliedCreditC = totalReceivedC - totalAllocatedC;
+  const currencyTotals = ledgerCurrencyTotals(chargeRows,paymentRows,tenancyAllocations);
+  if (adoption && !currencyTotals[adoption.currency]) currencyTotals[adoption.currency] = emptyCurrencyTotals();
+  const availableCurrencies = Object.keys(currencyTotals).sort();
+  const currency = selectLedgerCurrency(availableCurrencies,requestedCurrency,rentSchedules.data?.[0]?.currency);
+  const totals = (currency && currencyTotals[currency]) || emptyCurrencyTotals();
 
   const entries: z.infer<typeof LedgerEntry>[] = [];
   for (const cr of chargeRows) {
+    if (cr.currency !== currency) continue;
     const allocated = allocByCharge.get(cr.id) ?? 0;
     entries.push({
       kind: 'charge',
@@ -442,11 +396,14 @@ ledgerApp.openapi(get, async (c) => {
       period_start: cr.period_start,
       period_end: cr.period_end,
       source_schedule_id: cr.source_schedule_id,
+      cycle_key: cr.cycle_key,
+      terms_snapshot: cr.terms_snapshot,
       parent_charge_id: cr.parent_charge_id,
       source: cr.source_schedule_id === null ? 'manual' : 'rent_schedule',
       created_at: cr.created_at,
       type: cr.type,
       amount_cents: cr.amount_cents,
+      currency: cr.currency,
       voided_at: cr.voided_at,
       void_reason: cr.void_reason,
       description: cr.description,
@@ -455,12 +412,16 @@ ledgerApp.openapi(get, async (c) => {
     });
   }
   for (const pr of paymentRows) {
+    if (pr.currency !== currency) continue;
     entries.push({
       kind: 'payment',
       id: pr.id,
       occurred_at: pr.received_at,
+      receipt_date_unknown: pr.receipt_date_unknown ?? false,
+      entry_source: pr.entry_source ?? 'manual',
       created_at: pr.created_at,
       amount_cents: pr.amount_cents,
+      currency: pr.currency,
       method: pr.method,
       reference: pr.reference,
       voided_at: pr.voided_at,
@@ -476,26 +437,17 @@ ledgerApp.openapi(get, async (c) => {
       })),
     });
   }
-  entries.sort((a, b) => a.occurred_at.localeCompare(b.occurred_at));
+  entries.sort((a, b) => (a.occurred_at ?? '9999').localeCompare(b.occurred_at ?? '9999') || a.created_at.localeCompare(b.created_at));
 
   return c.json(
     {
       tenancy_id: tenancyId,
       currency,
-      adoption,
+      adoption: adoption?.currency === currency ? adoption : null,
       entries,
-      totals: {
-        rent_charges_cents: rentChargesC,
-        rent_payments_cents: rentPaymentsC,
-        rent_balance_cents: rentChargesC - rentPaymentsC,
-        deposit_charges_cents: depositChargesC,
-        deposit_payments_cents: depositPaymentsC,
-        deposit_balance_cents: depositChargesC - depositPaymentsC,
-        total_received_cents: totalReceivedC,
-        total_allocated_cents: totalAllocatedC,
-        unapplied_credit_cents: unappliedCreditC,
-        by_type: byType,
-      },
+      totals,
+      available_currencies: availableCurrencies,
+      totals_by_currency: currencyTotals,
     } satisfies z.infer<typeof LedgerResponse>,
     200,
   );

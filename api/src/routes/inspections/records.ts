@@ -12,9 +12,7 @@ import {
   DEFAULT_CAPTURE_TTL_MIN,
   MAX_CAPTURE_TTL_MIN,
 } from '../../admin/inspection-capture';
-import type {
-  InspectionCheck,
-  DiffRow} from './shared';
+import type { InspectionCheck, DiffRow } from './shared';
 import {
   Inspection,
   InspectionDetail,
@@ -383,7 +381,7 @@ inspectionsApp.openapi(inspComplete, async (c) => {
     subjectSnapshot = { area: (area.data as unknown) ?? null, tenancy: null as unknown };
     if (p.tenancy_id) {
       const ten = await sb
-        .from('tenancies')
+        .from('tenancy_current')
         .select('id, start_date, end_date, status')
         .eq('account_id', accountId)
         .eq('id', p.tenancy_id)

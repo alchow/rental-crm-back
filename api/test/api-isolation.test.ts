@@ -838,6 +838,25 @@ async function main(): Promise<void> {
     },
   );
   await check(
+    'payments: POST with a missing tenancy_id -> 404',
+    async () => {
+      const res = await api('POST', `/v1/accounts/${A.accountId}/payments`, {
+        token: A.accessToken,
+        body: {
+          tenancy_id: crypto.randomUUID(),
+          amount_cents: 50000,
+          currency: 'USD',
+          received_at: '2026-02-03T12:00:00Z',
+          method: 'check',
+        },
+      });
+      await expectStatus('POST missing tenancy payment', res, 404);
+      if ((res.body as { error?: { code?: string } }).error?.code !== 'not_found') {
+        throw new Error(`expected not_found, got ${JSON.stringify(res.body)}`);
+      }
+    },
+  );
+  await check(
     "payments: A POST with allocation to B's charge under A's tenancy -> 400 (cross-tenancy/account)",
     async () => {
       const res = await api('POST', `/v1/accounts/${A.accountId}/payments`, {

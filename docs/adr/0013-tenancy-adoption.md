@@ -1,6 +1,8 @@
 # ADR-0013: Tenancy adoption — atomic historical backfill and opening balance
 
-Status: accepted (2026-08-10). Implements the architecture agreed in
+Status: current legacy-adoption behavior, amended by ADR-0015/0016 for audited
+date corrections, reviewed billing setup, and currency-grouped read models.
+Accepted 2026-08-10. Implements the architecture agreed in
 `docs/statement-setup-design-reply.md`. Not yet triggered in production until
 the Field Log adoption wizard ships.
 
@@ -20,7 +22,7 @@ The Field Log adoption wizard needs exactly two commit shapes, both atomic:
   per elapsed month, the payments actually received (with their real dates),
   and the landlord's proposed payment→charge matching.
 - **Opening balance**: the same schedule, no past charges or payments, and a
-  single signed "owed / credit as of adoption" amount that is *not* a charge.
+  single signed "owed / credit as of adoption" amount that is _not_ a charge.
 
 ## Decision
 
@@ -48,9 +50,9 @@ other schedule writer takes (so the virgin checks cannot race a concurrent
 schedule creation into two billing eras); the tenancy must exist and not be
 ended; the money timeline must be virgin (no live schedule, no non-voided
 charge or payment, no live adoption); the schedule must not start before the
-tenancy's recorded `start_date` (`tenancy_start_date_conflict` — correcting
-the tenancy start is cheap while the timeline is virgin and impossible after
-adoption money trips the `tenancy_has_money` guard); an opening balance and
+tenancy's recorded `start_date` (`tenancy_start_date_conflict` — correct the
+possession fact through a reviewed date correction, without rewriting money);
+an opening balance and
 itemized history are mutually exclusive; `adoption_date` cannot be in the
 future and every backfilled date must be on or before it (payment timestamps
 get a one-day UTC slack so a same-day receipt in a western timezone is not
@@ -117,13 +119,13 @@ payment-dated received-rent exports.
   closing vs. total including the pre-tracking balance), and carries the
   `needs_review`/`balance_basis` qualifiers; a failed adoption read fails
   the export rather than printing a wrong figure.
-- `GET /rent-rollup` does **not** include opening balances yet; a portfolio
-  tile can understate an adopted tenancy's arrears. Revisit when the FE
-  portfolio surfaces adoption state.
+- `GET /rent-rollup` returns opening testimony separately in `adoption`, never
+  in a ledger total. Currency groups are independent; a portfolio must show a
+  recorded opening fact separately from itemized debt rather than silently add it.
 - Re-adoption requires operator help (soft-delete the adoption row and void
   the backfill); there is deliberately no un-adopt endpoint.
 - The generator's `on conflict do nothing` dedupe key `(source_schedule_id,
-  period_start)` makes cron emission and backfilled periods collision-safe in
+period_start)` makes cron emission and backfilled periods collision-safe in
   both directions.
 - After a successful adoption the account's default-on auto-charging bills the
   next window from the new schedule on the next 08:00 UTC run; the current
