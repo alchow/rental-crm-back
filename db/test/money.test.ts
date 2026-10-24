@@ -484,12 +484,12 @@ async function main(): Promise<void> {
              values ($1, $2, 'rent', 50000, 'USD', $3) returning id`,
             [ACCOUNT_A, tenancyA, due],
           );
-        const c1 = (await mkCharge('2026-11-01')).rows[0]!.id;
-        const c2 = (await mkCharge('2026-12-01')).rows[0]!.id;
-        const c3 = (await mkCharge('2027-01-01')).rows[0]!.id;
+        const c1 = (await mkCharge('2026-02-01')).rows[0]!.id;
+        const c2 = (await mkCharge('2026-03-01')).rows[0]!.id;
+        const c3 = (await mkCharge('2026-04-01')).rows[0]!.id;
         const p = await c.query<{ id: string }>(
           `insert into public.payments (account_id, tenancy_id, amount_cents, currency, received_at, method)
-           values ($1, $2, 100000, 'USD', '2026-11-02T00:00:00Z', 'check') returning id`,
+           values ($1, $2, 100000, 'USD', '2026-02-02T00:00:00Z', 'check') returning id`,
           [ACCOUNT_A, tenancyA],
         );
         const pid = p.rows[0]!.id;
@@ -764,13 +764,13 @@ async function main(): Promise<void> {
         // $1000 rent charge, $1000 payment, fully allocated.
         const ch = await c.query<{ id: string }>(
           `insert into public.charges (account_id, tenancy_id, type, amount_cents, currency, due_date)
-           values ($1, $2, 'rent', 100000, 'USD', '2026-11-01') returning id`,
+           values ($1, $2, 'rent', 100000, 'USD', '2026-02-01') returning id`,
           [ACCOUNT_A, tenancyId],
         );
         const chargeId = ch.rows[0]!.id;
         const p = await c.query<{ id: string }>(
           `insert into public.payments (account_id, tenancy_id, amount_cents, currency, received_at, method)
-           values ($1, $2, 100000, 'USD', '2026-11-03T00:00:00Z', 'check') returning id`,
+           values ($1, $2, 100000, 'USD', '2026-02-03T00:00:00Z', 'check') returning id`,
           [ACCOUNT_A, tenancyId],
         );
         const paymentId = p.rows[0]!.id;
