@@ -56,6 +56,8 @@ declare
   -- Incidents (20260801000002)
   v_incident_a uuid; v_incident_b uuid;
   v_int_a2 uuid; v_int_b2 uuid;
+  v_setup_a uuid; v_setup_b uuid;
+  v_override_schedule_a uuid; v_override_schedule_b uuid;
 begin
   -- Identity
   insert into auth.users (id, email) values
@@ -388,6 +390,76 @@ begin
   ) values
     (v_acc_a, v_incident_a, v_int_a2),
     (v_acc_b, v_incident_b, v_int_b2);
+
+  -- Each setup account has private draft payload, saved testimony and billing
+  -- decisions, so member reads must prove own visibility and foreign invisibility.
+  insert into public.account_rent_defaults(account_id, grace_days, late_fee_policy) values
+    (v_acc_a, 3, '{"kind":"none"}'),
+    (v_acc_b, 5, '{"kind":"unknown"}');
+  insert into public.tenancy_onboarding_progress(account_id, tenancy_id, selected_lease_id) values
+    (v_acc_a, v_tenancy_a, v_lease_a),
+    (v_acc_b, v_tenancy_b, v_lease_b);
+
+  v_setup_a := gen_random_uuid(); v_setup_b := gen_random_uuid();
+  insert into public.tenancy_setup_sessions(id, account_id, area_id, tenancy_id, payload) values
+    (v_setup_a, v_acc_a, v_unit_a, v_tenancy_a, '{"fixture":"Account A reviewed setup"}'),
+    (v_setup_b, v_acc_b, v_unit_b, v_tenancy_b, '{"fixture":"Account B reviewed setup"}');
+  perform set_config('request.jwt.claims',jsonb_build_object('sub',v_user_a)::text,true);
+  set local role tenancy_setup_writer;
+  insert into public.tenancy_setup_confirmations(
+    account_id, setup_session_id, tenancy_id, lease_id, setup_snapshot, review_snapshot, entered_by
+  ) values
+    (v_acc_a, v_setup_a, v_tenancy_a, v_lease_a,
+      '{"fixture":"Account A reviewed setup"}', '{"fixture":"Account A review"}', v_user_a);
+  update public.tenancy_setup_sessions set result=jsonb_build_object('tenancy_id',tenancy_id),
+    completed_at=clock_timestamp() where id=v_setup_a;
+  reset role;
+  perform set_config('request.jwt.claims',jsonb_build_object('sub',v_user_b)::text,true);
+  set local role tenancy_setup_writer;
+  insert into public.tenancy_setup_confirmations(
+    account_id, setup_session_id, tenancy_id, lease_id, setup_snapshot, review_snapshot, entered_by
+  ) values
+    (v_acc_b, v_setup_b, v_tenancy_b, v_lease_b,
+      '{"fixture":"Account B reviewed setup"}', '{"fixture":"Account B review"}', v_user_b);
+  update public.tenancy_setup_sessions set result=jsonb_build_object('tenancy_id',tenancy_id),
+    completed_at=clock_timestamp() where id=v_setup_b;
+  reset role;
+
+  -- Dedicated schedules leave the money suite's legacy schedule fixtures intact.
+  v_override_schedule_a := gen_random_uuid(); v_override_schedule_b := gen_random_uuid();
+  insert into public.rent_schedules(id, account_id, tenancy_id, kind, amount_cents, currency,
+    due_day, start_date, end_date, period_policy_version, regular_anchor, manual_basis) values
+    (v_override_schedule_a, v_acc_a, v_tenancy_a2, 'rent', 120000, 'USD', 1,
+      '2026-01-01', '2026-01-31', 2, '2026-01-01', 'Isolation fixture monthly rent'),
+    (v_override_schedule_b, v_acc_b, v_tenancy_b2, 'rent', 90000, 'USD', 1,
+      '2026-01-01', '2026-01-31', 2, '2026-01-01', 'Isolation fixture monthly rent');
+  insert into public.rent_schedule_period_overrides(account_id, tenancy_id, schedule_id,
+    cycle_key, period_start, period_end, due_date, amount_cents, reason) values
+    (v_acc_a, v_tenancy_a2, v_override_schedule_a, '2026-01',
+      '2026-01-01', '2026-01-31', '2026-01-03', 120000, 'Reviewed January due date A'),
+    (v_acc_b, v_tenancy_b2, v_override_schedule_b, '2026-01',
+      '2026-01-01', '2026-01-31', '2026-01-05', 90000, 'Reviewed January due date B');
+end $$;
+
+-- Date testimony permits inserts only as the dedicated writer, even in fixtures.
+do $$
+declare owner_id uuid;
+begin
+  foreach owner_id in array array['aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'::uuid,
+    'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'::uuid] loop
+    perform set_config('request.jwt.claims',jsonb_build_object('sub',owner_id)::text,true);
+    set local role tenancy_date_writer;
+    insert into public.tenancy_date_records(account_id, tenancy_id, kind,
+      before_facts, after_facts, context_snapshot, context_fingerprint,
+      reason_code, reason_note, created_by, request_key, request_fingerprint, response_body)
+    select t.account_id,t.id,'explanation',to_jsonb(t),to_jsonb(t),
+      jsonb_build_object('fixture','Reviewed legacy possession dates'),
+      'isolation-date-context','other','Legacy possession date retained for isolation fixture',
+      owner_id,'isolation-date-explanation','isolation-date-request','{}'
+    from public.tenancies t where exists(select 1 from public.leases l
+      where l.account_id=t.account_id and l.tenancy_id=t.id);
+    reset role;
+  end loop;
 end $$;
 
 -- Phase 3 (ADR-0002): establish a chain watermark per account so the
