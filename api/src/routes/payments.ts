@@ -306,7 +306,7 @@ paymentsApp.openapi(create, async (c) => {
       throw new ApiError(400, 'invalid_request', rpcErr.message);
     // Map the trigger / FK / membership errors the function can raise to
     // the right HTTP status. Anything else is a real 500.
-    if (rpcErr.code === '42501' || rpcErr.code === '28000') {
+    if (['P0002', '42501', '28000'].includes(rpcErr.code)) {
       throw new ApiError(404, 'not_found', 'not found');
     }
     if (
