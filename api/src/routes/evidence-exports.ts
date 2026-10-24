@@ -16,20 +16,27 @@ const ExportBody = z
   .object({
     tenancy_id: z.string().uuid().optional(),
     area_id: z.string().uuid().optional(),
-    from_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-    to_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    from_date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
+    to_date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
   })
-  .refine(
-    (v) => v.tenancy_id !== undefined || v.area_id !== undefined,
-    { message: 'must include tenancy_id and/or area_id (blank-scope exports rejected)' },
-  )
+  .refine((v) => v.tenancy_id !== undefined || v.area_id !== undefined, {
+    message: 'must include tenancy_id and/or area_id (blank-scope exports rejected)',
+  })
   .openapi('EvidenceExportRequest');
 
 // DATA FLOW: The row is created queued, a background
 // job renders the bundle, and the artifact fields (attachment_id,
 // chain_verified, chain_message, the real generated_at) are null/provisional
 // until status='done'. Clients poll GET until status is done or failed.
-const ExportStatus = z.enum(['queued', 'running', 'done', 'failed']).openapi('EvidenceExportStatus');
+const ExportStatus = z
+  .enum(['queued', 'running', 'done', 'failed'])
+  .openapi('EvidenceExportStatus');
 
 const ExportRow = z
   .object({
@@ -62,11 +69,20 @@ const ListQuery = z.object({
 });
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 const AccountAndIdParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
-  id: z.string().uuid().openapi({ param: { name: 'id', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
+  id: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'id', in: 'path' } }),
 });
 
 const create = createRoute({
@@ -122,12 +138,14 @@ evidenceExportsApp.openapi(create, async (c) => {
   if (body.tenancy_id) {
     const t = await sb
       .from('tenancies')
-      .select('id')
+      .select('id,area_id')
       .eq('account_id', accountId)
       .eq('id', body.tenancy_id)
       .maybeSingle();
     if (t.error) throw new ApiError(500, 'database_error', t.error.message);
     if (!t.data) throw new ApiError(404, 'not_found', 'tenancy not found in this account');
+    if (body.area_id && body.area_id !== t.data.area_id)
+      throw new ApiError(400, 'invalid_request', 'area must match the selected tenancy');
   }
   if (body.area_id) {
     const a = await sb

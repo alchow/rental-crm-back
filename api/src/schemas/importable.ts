@@ -1,5 +1,6 @@
 import { z } from '@hono/zod-openapi';
 import { CalendarDate } from './calendar-date';
+import { LeaseTermsFields } from './lease-terms';
 
 // Schemas shared by HTTP routes and the deterministic onboarding-import
 // executor. Keep them out of route modules so admin code never imports a route
@@ -73,24 +74,15 @@ export const CreateTenancyBody = z
         'Possession start: when the tenant is entitled or scheduled to become entitled to occupy. It is not a billing instruction.',
     }),
     start_date_basis: TenancyStartDateBasis.optional().openapi({
-      description: 'Omit for legacy/unverified data; confirmed creation flows send possession_entitlement.',
+      description:
+        'Omit for legacy/unverified data; confirmed creation flows send possession_entitlement.',
     }),
     actual_move_in_date: CalendarDate.nullable().optional().openapi({
       description:
-        'Optional physical arrival date. It must describe an event that has occurred and never drives rent billing or tenancy activation.',
+        'Optional landlord-reported physical arrival date. Future actual dates require explicit warning confirmation through the audited date-correction flow; this never drives billing or activation.',
     }),
     end_date: CalendarDate.nullable().optional(),
     status: TenancyStatus,
-  })
-  .superRefine((body, ctx) => {
-    const today = new Date().toISOString().slice(0, 10);
-    if (body.actual_move_in_date && body.actual_move_in_date > today) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['actual_move_in_date'],
-        message: 'actual_move_in_date cannot be in the future',
-      });
-    }
   })
   .openapi('CreateTenancyBody');
 
@@ -108,6 +100,7 @@ export const CurrencyCode = z.string().length(3);
 
 export const CreateLeaseBody = z
   .object({
+    ...LeaseTermsFields,
     tenancy_id: z.string().uuid(),
     term_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     term_end: z

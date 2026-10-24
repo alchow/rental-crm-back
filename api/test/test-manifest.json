@@ -29,11 +29,30 @@
     },
     { "script": "test:ledger", "description": "Ledger accounting and pagination regressions." },
     {
+      "script": "test:billing-setup",
+      "description": "Atomic onboarding billing, periods, receipts, retries, concurrency and rollback."
+    },
+    {
+      "script": "test:onboarding",
+      "description": "Atomic tenancy bootstrap, evidence-backed progress, UTC occupancy and stale confirmations."
+    },
+    {
+      "script": "test:tenancy-setup-v3",
+      "description": "Resumable setup, atomic final creation, monthly rules, undated receipts and retained starting-balance restrictions."
+    },
+    {
       "script": "test:rent-rollup",
       "description": "Account rent rollup parity with tenancy ledgers."
     },
     { "script": "test:tenancy-start-date", "description": "Tenancy start-date correction guards." },
-    { "script": "test:tenancy-dates-concurrency", "description": "Date correction serialization, durable retry, permissions, and money preservation." },
+    {
+      "script": "test:date-warnings",
+      "description": "Atomic explicit date warning confirmations, future facts, scope, retries and rollback."
+    },
+    {
+      "script": "test:tenancy-dates-concurrency",
+      "description": "Date correction serialization, durable retry, permissions, and money preservation."
+    },
     { "script": "test:tenancy-endings", "description": "Atomic tenancy-ending workflow." },
     {
       "script": "test:tenant-email-uniqueness",

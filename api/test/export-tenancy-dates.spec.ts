@@ -25,6 +25,11 @@ const record: DateHistoryRecord = {
     start_date_basis: 'possession_entitlement',
   },
   context_snapshot: {},
+  corrects_ending_id: null,
+  corrects_record_id: null,
+  subject_payment_id: null,
+  subject_ending_id: null,
+  relationship_snapshots: [],
   context_fingerprint: 'a'.repeat(64),
   reason_code: 'data_entry_error',
   reason_note: 'July was entered by mistake. Keys were available May 1.',
@@ -79,5 +84,19 @@ describe('date evidence export', () => {
     expect(bytes.subarray(0, 5).toString()).toBe('%PDF-');
     expect((bytes.toString().match(/\/Type \/Page\b/g) ?? []).length).toBeGreaterThan(1);
     if (process.env.DATE_PDF_PREVIEW) await writeFile(process.env.DATE_PDF_PREVIEW, bytes);
+  });
+  it('renders actual ending correction lineage and before/after end dates', () => {
+    const lines = dateRecordLines({
+      ...record,
+      kind: 'ending_correction',
+      corrects_ending_id: 'original-ending',
+      corrects_record_id: 'previous-correction',
+      before_facts: { end_date: '2026-09-01' },
+      after_facts: { end_date: '2026-09-02' },
+    }).join('\n');
+    expect(lines).toContain('Actual ending correction');
+    expect(lines).toContain('2026-09-01 -> 2026-09-02');
+    expect(lines).toContain('Original immutable ending: original-ending');
+    expect(lines).toContain('Corrects ending correction: previous-correction');
   });
 });

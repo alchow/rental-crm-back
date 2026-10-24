@@ -255,14 +255,16 @@ export const ENTITY_CATALOG: Record<EntityType, EntitySpec> = {
         label: 'Lease term start',
         type: 'date',
         required: false,
-        description: 'Lease term start date.',
+        description:
+          'Explicit lease term start date. Never substitute possession or billing start. Required when importing a lease rent amount.',
       },
       {
         field: 'term_end',
         label: 'Lease term end',
         type: 'date',
         required: false,
-        description: 'Lease term end date.',
+        description:
+          'Explicit lease term end date. Omitted stays open/unknown; never derive from duration or possession end.',
       },
       {
         field: 'rent_amount',
@@ -276,15 +278,87 @@ export const ENTITY_CATALOG: Record<EntityType, EntitySpec> = {
         label: 'Lease rent currency',
         type: 'currency',
         required: false,
-        description: '3-letter currency code; defaults to USD.',
+        description:
+          'Explicit 3-letter lease currency; required when importing a lease rent amount.',
       },
       {
         field: 'deposit_amount',
         label: 'Security deposit',
         type: 'money',
         required: false,
-        description: 'Security deposit amount held.',
+        description:
+          'Contractual security deposit amount, not a receipt or amount held. Omitted stays unknown; explicit zero records no deposit.',
       },
+      ...(
+        [
+          [
+            'deposit_currency',
+            'Deposit currency',
+            'currency',
+            'Explicit deposit currency; otherwise an explicit lease rent currency may be used.',
+          ],
+          [
+            'deposit_knowledge',
+            'Deposit knowledge',
+            'string',
+            'unknown, none, or amount. Must agree with the explicitly mapped deposit amount.',
+          ],
+          [
+            'rent_due_kind',
+            'Lease due rule',
+            'string',
+            'unknown, day_of_month, last_day, or other. Only map contractual terms, never a schedule default.',
+          ],
+          [
+            'rent_due_day',
+            'Lease due day',
+            'int',
+            'Explicit day 1–31; requires rent_due_kind day_of_month. Preserve 29–31.',
+          ],
+          [
+            'rent_due_text',
+            'Written due rule',
+            'string',
+            'Exact written rule; requires rent_due_kind other.',
+          ],
+          [
+            'grace_days',
+            'Lease grace days',
+            'int',
+            'Explicit nonnegative integer. Missing is unknown, not zero; never calculate from dates.',
+          ],
+          [
+            'late_fee_kind',
+            'Lease late fee rule',
+            'string',
+            'unknown, none, fixed, or other. none requires an explicit no-fee term.',
+          ],
+          [
+            'late_fee_amount',
+            'Fixed lease late fee',
+            'money',
+            'Explicit fixed fee only; requires fixed kind and currency. Do not calculate percentages or daily formulas.',
+          ],
+          [
+            'late_fee_currency',
+            'Fixed late fee currency',
+            'currency',
+            'Explicit currency of the fixed fee.',
+          ],
+          [
+            'late_fee_text',
+            'Written fee rule',
+            'string',
+            'Exact percentage, conditional rule or formula; requires other kind. No enforceability judgment.',
+          ],
+        ] as const
+      ).map(([field, label, type, description]) => ({
+        field,
+        label,
+        type,
+        description,
+        required: false,
+      })),
     ],
   },
   rent_schedule: {

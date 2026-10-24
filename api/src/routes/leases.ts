@@ -10,6 +10,7 @@ import {
 import { ApiError, errorResponses, conflictResponse, mapPrefixedRpcError } from './_lib/error';
 import { keysetPage } from './_lib/cursor';
 import { CreateLeaseBody, CurrencyCode, LeaseStatus } from '../schemas/importable';
+import { LeaseTermsFields, LeaseTermsOutput } from '../schemas/lease-terms';
 
 // The leases_guard trigger (ADR-0014) is the single enforcement point; each entry
 // pins one of its RAISE messages to the code clients branch on.
@@ -29,6 +30,7 @@ const VoidReason = z
 
 const Lease = z
   .object({
+    ...LeaseTermsOutput,
     id: z.string().uuid(),
     account_id: z.string().uuid(),
     tenancy_id: z.string().uuid(),
@@ -51,6 +53,7 @@ const Lease = z
 
 const PatchLeaseBody = z
   .object({
+    ...LeaseTermsFields,
     term_start: DateString.optional(),
     term_end: DateString.nullable().optional(),
     rent_amount_cents: z.number().int().nonnegative().optional(),
@@ -71,6 +74,7 @@ const ReplaceLeaseBody = z
     void_reason: VoidReason,
     lease: z
       .object({
+        ...LeaseTermsFields,
         term_start: DateString,
         term_end: DateString.nullable().optional(),
         rent_amount_cents: z.number().int().nonnegative(),
@@ -169,8 +173,8 @@ const patch = createRoute({
   tags: ['leases'],
   summary: 'Update a lease (partial)',
   description:
-    'Mutability by status — draft: every field; active/expired (executed): term_end, ' +
-    'deposit_*, document, status; superseded: nothing; voided: nothing. Status only ' +
+    'Mutability by status — draft: every field; active/expired (executed): document and ' +
+    'forward status transitions; superseded: nothing; voided: nothing. Agreed terms require a reasoned replacement. Status only ' +
     'moves forward (draft→active|expired|superseded, active→expired|superseded). ' +
     'Re-sending an unchanged value is a no-op. Refusals: 409 lease_executed (a ' +
     'differing term_start/rent_amount_cents/rent_currency or a backward status on an ' +
@@ -217,8 +221,8 @@ const replace = createRoute({
     'Voids the lease with void_reason, creates the replacement from `lease` (same ' +
     'tenancy and status, corrects_lease_id = this lease), and re-points live rent ' +
     'schedules anchored on it. 409 schedule_conflict when an anchored schedule bills a ' +
-    'different rent than the replacement (void its charges, delete the schedule, ' +
-    'replace, then record a rent change); 409 lease_voided when already voided; 400 on ' +
+    'different rent than the replacement (review billing separately); immutable billing snapshots ' +
+    'retain the original basis when the display reference is re-pointed. 409 lease_voided when already voided; 400 on ' +
     'invalid lease fields.',
   request: {
     params: AccountAndIdParam,
@@ -280,6 +284,13 @@ leasesApp.openapi(create, async (c) => {
       document: asJson(body.document ?? {}),
       status: body.status,
       corrects_lease_id: body.corrects_lease_id ?? null,
+      rent_due_rule: asJson(body.rent_due_rule ?? { kind: 'unknown' }),
+      grace_days: body.grace_days ?? null,
+      late_fee_policy: asJson(body.late_fee_policy ?? { kind: 'unknown' }),
+      deposit_knowledge: body.deposit_knowledge ?? 'unknown',
+      terms_source: body.terms_source ? asJson(body.terms_source) : null,
+      agreement_kind: body.agreement_kind ?? 'original',
+      predecessor_lease_id: body.predecessor_lease_id ?? null,
     })
     .select('*')
     .single();
@@ -294,10 +305,13 @@ leasesApp.openapi(create, async (c) => {
 
 leasesApp.openapi(patch, async (c) => {
   const { accountId, id } = c.req.valid('param');
-  const { document, ...fields } = c.req.valid('json');
+  const { document, rent_due_rule, late_fee_policy, terms_source, ...fields } = c.req.valid('json');
   const sb = getSb(c);
   const update: DbTableUpdate<'leases'> = { ...fields, updated_at: new Date().toISOString() };
   if (document !== undefined) update.document = asJson(document);
+  if (rent_due_rule !== undefined) update.rent_due_rule = asJson(rent_due_rule);
+  if (late_fee_policy !== undefined) update.late_fee_policy = asJson(late_fee_policy);
+  if (terms_source !== undefined) update.terms_source = terms_source ? asJson(terms_source) : null;
   const { data, error } = await sb
     .from('leases')
     .update(update)
@@ -334,7 +348,7 @@ leasesApp.openapi(replace, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const { void_reason, lease } = c.req.valid('json');
   const sb = getSb(c);
-  const params: DbFunctionArgs<'replace_lease'> = {
+  const params: DbFunctionArgs<'replace_lease_terms'> = {
     p_account_id: accountId,
     p_lease_id: id,
     p_void_reason: void_reason,
@@ -345,8 +359,19 @@ leasesApp.openapi(replace, async (c) => {
     p_deposit_amount_cents: lease.deposit_amount_cents,
     p_deposit_currency: nullableRpcArg(lease.deposit_currency ?? null),
     p_document: asJson(lease.document ?? {}),
+    p_terms: asJson({
+      rent_due_rule: lease.rent_due_rule ?? { kind: 'unknown' },
+      grace_days: lease.grace_days ?? null,
+      late_fee_policy: lease.late_fee_policy ?? { kind: 'unknown' },
+      deposit_knowledge: lease.deposit_knowledge ?? 'unknown',
+      terms_source: lease.terms_source ?? null,
+      ...(lease.agreement_kind !== undefined ? { agreement_kind: lease.agreement_kind } : {}),
+      ...(lease.predecessor_lease_id !== undefined
+        ? { predecessor_lease_id: lease.predecessor_lease_id }
+        : {}),
+    }),
   };
-  const { data, error } = await sb.rpc('replace_lease', params);
+  const { data, error } = await sb.rpc('replace_lease_terms', params);
   if (error) throw mapPrefixedRpcError(error, LEASE_CONFLICTS);
   const row = (Array.isArray(data) ? data[0] : data) as
     | { o_voided_id: string; o_replacement_id: string; o_repointed_schedule_ids: string[] }

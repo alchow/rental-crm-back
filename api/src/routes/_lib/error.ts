@@ -87,6 +87,9 @@ export type ErrorCode =
   // review the Create-screen scratchpad before submitting it again.
   | 'template_changed'
   | 'date_context_changed'
+  | 'billing_context_changed'
+  | 'setup_draft_changed'
+  | 'billing_transition_required'
   | 'tenancy_end_date_changed'
   | 'date_correction_required'
   | 'no_date_change'
@@ -262,6 +265,9 @@ export function schemaCacheMiss(error: { code?: string }): ApiError | null {
  * database_error 500.
  */
 export function dbError(error: { code?: string; message: string }): ApiError {
+  if (error.code === '40001') {
+    return new ApiError(409, 'conflict', 'the tenancy changed concurrently; retry this request');
+  }
   const transient = classifyTransient(error);
   if (transient) return transient;
   if (error.code === '42501') {

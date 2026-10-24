@@ -51,7 +51,10 @@ const app = buildApp();
 
 // --- helpers ----------------------------------------------------------------
 
-interface ApiResp { status: number; body: unknown }
+interface ApiResp {
+  status: number;
+  body: unknown;
+}
 interface DateFacts {
   start_date: string;
   start_date_basis: string;
@@ -89,7 +92,10 @@ async function api(
 ): Promise<ApiResp> {
   const headers: Record<string, string> = { accept: 'application/json' };
   if (opts.token) headers.authorization = `Bearer ${opts.token}`;
-  if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase()) && path.startsWith('/v1/accounts/')) {
+  if (
+    ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase()) &&
+    path.startsWith('/v1/accounts/')
+  ) {
     headers['idempotency-key'] = `t-${crypto.randomUUID()}`;
   }
   let init: RequestInit = { method, headers };
@@ -102,20 +108,28 @@ async function api(
   return { status: res.status, body: text ? JSON.parse(text) : null };
 }
 
-function rnd(): string { return Math.random().toString(36).slice(2, 10); }
+function rnd(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
 
-interface Failure { name: string; detail: string }
+interface Failure {
+  name: string;
+  detail: string;
+}
 const failures: Failure[] = [];
 async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try { await fn(); console.info(`  PASS  ${name}`); }
-  catch (e) {
+  try {
+    await fn();
+    console.info(`  PASS  ${name}`);
+  } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     failures.push({ name, detail });
     console.error(`  FAIL  ${name}: ${detail}`);
   }
 }
 function assertEq(actual: unknown, expected: unknown, label: string): void {
-  if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, got ${String(actual)}`);
+  if (actual !== expected)
+    throw new Error(`${label}: expected ${String(expected)}, got ${String(actual)}`);
 }
 function errorCode(r: ApiResp): string | undefined {
   return (r.body as { error?: { code?: string } }).error?.code;
@@ -141,10 +155,16 @@ const patchTenancy = (id: string, body: unknown): Promise<ApiResp> =>
   api('PATCH', `/v1/accounts/${acct}/tenancies/${id}`, { token, body });
 
 const property = await post<{ id: string }>('/properties', { name: 'StartDate prop' });
-const area = await post<{ id: string }>('/areas', { property_id: property.id, kind: 'unit', name: 'Unit SD' });
+const area = await post<{ id: string }>('/areas', {
+  property_id: property.id,
+  kind: 'unit',
+  name: 'Unit SD',
+});
 // The Jordan Kim shape: created with the wrong (earlier) date, already active.
 const tenancy = await post<{ id: string }>('/tenancies', {
-  area_id: area.id, start_date: '2026-01-07', status: 'active',
+  area_id: area.id,
+  start_date: '2026-01-07',
+  status: 'active',
 });
 
 // --- tests --------------------------------------------------------------------
@@ -179,43 +199,89 @@ await check('(1) changed legacy PATCH directs the caller to the audited command'
 });
 
 await check('(2) unchanged legacy start and status/end-only PATCH remain compatible', async () => {
-  assertEq((await patchTenancy(tenancy.id, { start_date: '2026-01-07' })).status, 200, 'no-op start');
-  assertEq((await patchTenancy(tenancy.id, { end_date: null, expected_end_date: null, status: 'active' })).status, 200, 'ordinary patch');
+  assertEq(
+    (await patchTenancy(tenancy.id, { start_date: '2026-01-07' })).status,
+    200,
+    'no-op start',
+  );
+  assertEq(
+    (await patchTenancy(tenancy.id, { end_date: null, expected_end_date: null, status: 'active' }))
+      .status,
+    200,
+    'ordinary patch',
+  );
 });
 
-await check('planned end changes require the value originally reviewed', async () => {
-  assertEq((await patchTenancy(tenancy.id, { end_date: '2026-12-31' })).status, 400, 'missing expectation');
-  assertEq((await patchTenancy(tenancy.id, { expected_end_date: null })).status, 400, 'expectation without mutation');
-  const attempts = await Promise.all([
-    patchTenancy(tenancy.id, { end_date: '2026-11-30', expected_end_date: null }),
-    patchTenancy(tenancy.id, { end_date: '2026-12-31', expected_end_date: null }),
-  ]);
-  assertEq(attempts.filter((r) => r.status === 200).length, 1, 'one concurrent winner');
-  const loser = attempts.find((r) => r.status !== 200)!;
-  assertEq(loser.status, 409, 'stale writer status');
-  assertEq(errorCode(loser), 'tenancy_end_date_changed', 'stale writer code');
-  const winner = attempts.find((r) => r.status === 200)!.body as { end_date: string };
-  const staleMixed = await patchTenancy(tenancy.id, {
-    end_date: null, expected_end_date: null, status: 'upcoming',
-  });
-  assertEq(staleMixed.status, 409, 'stale mixed update');
-  const current = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancy.id}`, { token });
-  assertEq((current.body as { status: string }).status, 'active', 'status was not partially updated');
-  assertEq((current.body as { end_date: string }).end_date, winner.end_date, 'winner retained');
-  assertEq((await patchTenancy(tenancy.id, { end_date: null, expected_end_date: winner.end_date })).status, 200, 'clear with matching expectation');
-  assertEq((await patchTenancy(crypto.randomUUID(), { end_date: null, expected_end_date: null })).status, 404, 'missing tenancy');
-});
+await check(
+  'planned end changes use audited commands; legacy no-op echoes retain optimistic protection',
+  async () => {
+    assertEq(
+      (await patchTenancy(tenancy.id, { end_date: '2026-12-31' })).status,
+      400,
+      'missing expectation',
+    );
+    assertEq(
+      (await patchTenancy(tenancy.id, { expected_end_date: null })).status,
+      400,
+      'expectation without mutation',
+    );
+    const attempts = await Promise.all([
+      patchTenancy(tenancy.id, { end_date: '2026-11-30', expected_end_date: null }),
+      patchTenancy(tenancy.id, { end_date: '2026-12-31', expected_end_date: null }),
+    ]);
+    for (const attempt of attempts) {
+      assertEq(attempt.status, 409, 'changed end requires audited record');
+      assertEq(errorCode(attempt), 'date_correction_required', 'audited endpoint code');
+    }
+    const staleMixed = await patchTenancy(tenancy.id, {
+      end_date: null,
+      expected_end_date: '2026-12-31',
+      status: 'holdover',
+    });
+    assertEq(staleMixed.status, 409, 'stale mixed update');
+    const current = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancy.id}`, { token });
+    assertEq(
+      (current.body as { status: string }).status,
+      'active',
+      'status was not partially updated',
+    );
+    assertEq(
+      (current.body as { end_date: string | null }).end_date,
+      null,
+      'planned end not silently written',
+    );
+    assertEq(
+      (await patchTenancy(tenancy.id, { end_date: null, expected_end_date: null })).status,
+      200,
+      'no-op with matching expectation',
+    );
+    assertEq(
+      (await patchTenancy(crypto.randomUUID(), { end_date: null, expected_end_date: null })).status,
+      404,
+      'missing tenancy',
+    );
+  },
+);
 
 await post('/charges', {
-  tenancy_id: tenancy.id, type: 'rent', amount_cents: 100000, currency: 'USD', due_date: '2026-02-01',
+  tenancy_id: tenancy.id,
+  type: 'rent',
+  amount_cents: 100000,
+  currency: 'USD',
+  due_date: '2026-02-01',
 });
 await post('/payments', {
-  tenancy_id: tenancy.id, amount_cents: 5000, currency: 'USD',
-  received_at: '2026-02-02T00:00:00.000Z', method: 'cash',
+  tenancy_id: tenancy.id,
+  amount_cents: 5000,
+  currency: 'USD',
+  received_at: '2026-02-02T00:00:00.000Z',
+  method: 'cash',
 });
 
 await check('(3) context distinguishes possession from selected lease and rent dates', async () => {
-  const r = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-context`, { token });
+  const r = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-context`, {
+    token,
+  });
   assertEq(r.status, 200, 'context status');
   context = r.body as DateContextBody;
   assertEq(context.version, 1, 'context version');
@@ -225,9 +291,14 @@ await check('(3) context distinguishes possession from selected lease and rent d
 });
 
 await check('(4) preview reports money for review without blocking correction', async () => {
-  const r = await api('POST', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-corrections/preview`, {
-    token, body: { changes: { start_date: '2026-01-15', start_date_basis: 'possession_entitlement' } },
-  });
+  const r = await api(
+    'POST',
+    `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-corrections/preview`,
+    {
+      token,
+      body: { changes: { start_date: '2026-01-15', start_date_basis: 'possession_entitlement' } },
+    },
+  );
   assertEq(r.status, 200, 'preview status');
   preview = r.body as DatePreviewBody;
   assertEq(preview.proposed.start_date, '2026-01-15', 'proposed start');
@@ -264,7 +335,8 @@ await check('(6) stale preview fails with date_context_changed', async () => {
       expected_date_revision: preview.current.date_revision,
       expected_context_fingerprint: preview.context_fingerprint,
       expected_resulting_status: preview.proposed.status,
-      reason_code: 'data_entry_error', reason_note: 'Stale correction attempt.',
+      reason_code: 'data_entry_error',
+      reason_note: 'Stale correction attempt.',
     },
   });
   assertEq(r.status, 409, 'stale status');
@@ -272,7 +344,9 @@ await check('(6) stale preview fails with date_context_changed', async () => {
 });
 
 await check('(7) explanation records the current selected context without mutation', async () => {
-  const current = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-context`, { token });
+  const current = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-context`, {
+    token,
+  });
   assertEq(current.status, 200, 'context status');
   const fingerprint = (current.body as DateContextBody).context_fingerprint;
   const r = await api('POST', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-explanations`, {
@@ -289,17 +363,27 @@ await check('(7) explanation records the current selected context without mutati
 });
 
 await check('(8) history is paginated and omits idempotency internals', async () => {
-  const r = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-history?limit=1`, { token });
+  const r = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-history?limit=1`, {
+    token,
+  });
   assertEq(r.status, 200, 'history status');
   const body = r.body as DateHistoryBody;
   assertEq(body.data.length, 1, 'page size');
   if (!body.next_cursor) throw new Error('expected next cursor');
   const firstRecord = body.data[0];
   if (!firstRecord) throw new Error('missing first history record');
-  if ('request_key' in firstRecord || 'request_fingerprint' in firstRecord || 'response_body' in firstRecord) {
+  if (
+    'request_key' in firstRecord ||
+    'request_fingerprint' in firstRecord ||
+    'response_body' in firstRecord
+  ) {
     throw new Error('history exposed private idempotency fields');
   }
-  const page2 = await api('GET', `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-history?limit=10&cursor=${encodeURIComponent(body.next_cursor)}`, { token });
+  const page2 = await api(
+    'GET',
+    `/v1/accounts/${acct}/tenancies/${tenancy.id}/date-history?limit=10&cursor=${encodeURIComponent(body.next_cursor)}`,
+    { token },
+  );
   assertEq(page2.status, 200, 'second page status');
   const bothPages = [...body.data, ...(page2.body as DateHistoryBody).data];
   if (!bothPages.some((record) => record.id === correctionRecordId)) {

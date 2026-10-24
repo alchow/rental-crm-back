@@ -59,7 +59,10 @@ const app = buildApp();
 
 // --- helpers ----------------------------------------------------------------
 
-interface ApiResp { status: number; body: unknown }
+interface ApiResp {
+  status: number;
+  body: unknown;
+}
 
 async function api(
   method: string,
@@ -68,7 +71,10 @@ async function api(
 ): Promise<ApiResp> {
   const headers: Record<string, string> = { accept: 'application/json' };
   if (opts.token) headers.authorization = `Bearer ${opts.token}`;
-  if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase()) && path.startsWith('/v1/accounts/')) {
+  if (
+    ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase()) &&
+    path.startsWith('/v1/accounts/')
+  ) {
     headers['idempotency-key'] = `t-${crypto.randomUUID()}`;
   }
   let init: RequestInit = { method, headers };
@@ -81,20 +87,28 @@ async function api(
   return { status: res.status, body: text ? JSON.parse(text) : null };
 }
 
-function rnd(): string { return Math.random().toString(36).slice(2, 10); }
+function rnd(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
 
-interface Failure { name: string; detail: string }
+interface Failure {
+  name: string;
+  detail: string;
+}
 const failures: Failure[] = [];
 async function check(name: string, fn: () => Promise<void>): Promise<void> {
-  try { await fn(); console.info(`  PASS  ${name}`); }
-  catch (e) {
+  try {
+    await fn();
+    console.info(`  PASS  ${name}`);
+  } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     failures.push({ name, detail });
     console.error(`  FAIL  ${name}: ${detail}`);
   }
 }
 function assertEq(actual: unknown, expected: unknown, label: string): void {
-  if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, got ${String(actual)}`);
+  if (actual !== expected)
+    throw new Error(`${label}: expected ${String(expected)}, got ${String(actual)}`);
 }
 
 // --- fixture ----------------------------------------------------------------
@@ -121,12 +135,28 @@ const patch = async <T>(p: string, body: unknown): Promise<T> => {
 
 const property = await post<{ id: string }>('/properties', { name: 'MSF prop' });
 const newUnit = async (): Promise<string> =>
-  (await post<{ id: string }>('/areas', { property_id: property.id, kind: 'unit', name: `U-${rnd()}` })).id;
+  (
+    await post<{ id: string }>('/areas', {
+      property_id: property.id,
+      kind: 'unit',
+      name: `U-${rnd()}`,
+    })
+  ).id;
 
 // Tenancies across statuses (each on its own unit to avoid occupancy clashes).
-interface Row { id: string; status: string }
+interface Row {
+  id: string;
+  status: string;
+}
 const mkTenancy = async (st: string): Promise<Row> =>
-  post<Row>('/tenancies', { area_id: await newUnit(), start_date: '2026-01-01', status: st });
+  post<Row>('/tenancies', {
+    area_id: await newUnit(),
+    start_date:
+      st === 'upcoming'
+        ? new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10)
+        : '2026-01-01',
+    status: st,
+  });
 
 const tActive1 = await mkTenancy('active');
 const tActive2 = await mkTenancy('active');
@@ -142,7 +172,11 @@ const listTenancies = async (qs: string): Promise<Row[]> => {
 // Maintenance requests: create starts at 'open'; PATCH forward for others.
 const mkMr = async (): Promise<Row> => {
   const area = await newUnit();
-  return post<Row>('/maintenance-requests', { area_id: area, title: `MR ${rnd()}`, severity: 'routine' });
+  return post<Row>('/maintenance-requests', {
+    area_id: area,
+    title: `MR ${rnd()}`,
+    severity: 'routine',
+  });
 };
 const mrOpen = await mkMr();
 const mrTriaged = await mkMr();
@@ -162,7 +196,11 @@ await check('(a) tenancies single status back-compat (?status=holdover)', async 
   const rows = await listTenancies('?status=holdover');
   assertEq(rows.length, 1, 'count');
   assertEq(rows[0]?.id, tHoldover.id, 'id');
-  assertEq(rows.every((r) => r.status === 'holdover'), true, 'all holdover');
+  assertEq(
+    rows.every((r) => r.status === 'holdover'),
+    true,
+    'all holdover',
+  );
 });
 
 await check('(a) maintenance single status back-compat (?status=triaged)', async () => {
@@ -171,15 +209,23 @@ await check('(a) maintenance single status back-compat (?status=triaged)', async
   assertEq(rows[0]?.id, mrTriaged.id, 'id');
 });
 
-await check("(b) tenancies ?status=active,holdover returns the union only", async () => {
+await check('(b) tenancies ?status=active,holdover returns the union only', async () => {
   const rows = await listTenancies('?status=active,holdover');
   const ids = new Set(rows.map((r) => r.id));
-  assertEq(ids.has(tActive1.id) && ids.has(tActive2.id) && ids.has(tHoldover.id), true, 'has all three');
+  assertEq(
+    ids.has(tActive1.id) && ids.has(tActive2.id) && ids.has(tHoldover.id),
+    true,
+    'has all three',
+  );
   assertEq(ids.has(tUpcoming.id), false, 'excludes upcoming');
-  assertEq(rows.every((r) => r.status === 'active' || r.status === 'holdover'), true, 'only active/holdover');
+  assertEq(
+    rows.every((r) => r.status === 'active' || r.status === 'holdover'),
+    true,
+    'only active/holdover',
+  );
 });
 
-await check("(b) maintenance ?status=open,triaged returns both", async () => {
+await check('(b) maintenance ?status=open,triaged returns both', async () => {
   const rows = await listMrs('?status=open,triaged');
   const ids = new Set(rows.map((r) => r.id));
   assertEq(ids.has(mrOpen.id) && ids.has(mrTriaged.id), true, 'has open + triaged');
@@ -188,7 +234,11 @@ await check("(b) maintenance ?status=open,triaged returns both", async () => {
 
 await check('(b) de-dup + whitespace tolerated (?status=active, active , holdover)', async () => {
   const rows = await listTenancies(`?status=${encodeURIComponent('active, active , holdover')}`);
-  assertEq(rows.every((r) => r.status === 'active' || r.status === 'holdover'), true, 'only union');
+  assertEq(
+    rows.every((r) => r.status === 'active' || r.status === 'holdover'),
+    true,
+    'only union',
+  );
   const ids = new Set(rows.map((r) => r.id));
   assertEq(ids.has(tActive1.id) && ids.has(tHoldover.id), true, 'has both');
 });
@@ -196,21 +246,35 @@ await check('(b) de-dup + whitespace tolerated (?status=active, active , holdove
 await check('(c) tenancies bogus status -> 400 fieldErrors.status', async () => {
   const r = await api('GET', `/v1/accounts/${acct}/tenancies?status=active,bogus`, { token });
   assertEq(r.status, 400, 'status');
-  const b = r.body as { error?: { code?: string; details?: { fieldErrors?: { status?: string[] } } } };
+  const b = r.body as {
+    error?: { code?: string; details?: { fieldErrors?: { status?: string[] } } };
+  };
   assertEq(b.error?.code, 'invalid_request', 'code');
-  assertEq(b.error?.details?.fieldErrors?.status?.includes('bogus'), true, 'fieldErrors.status has bogus');
+  assertEq(
+    b.error?.details?.fieldErrors?.status?.includes('bogus'),
+    true,
+    'fieldErrors.status has bogus',
+  );
 });
 
 await check('(c) maintenance bogus status -> 400 fieldErrors.status', async () => {
   const r = await api('GET', `/v1/accounts/${acct}/maintenance-requests?status=nope`, { token });
   assertEq(r.status, 400, 'status');
-  const b = r.body as { error?: { code?: string; details?: { fieldErrors?: { status?: string[] } } } };
+  const b = r.body as {
+    error?: { code?: string; details?: { fieldErrors?: { status?: string[] } } };
+  };
   assertEq(b.error?.code, 'invalid_request', 'code');
-  assertEq(b.error?.details?.fieldErrors?.status?.includes('nope'), true, 'fieldErrors.status has nope');
+  assertEq(
+    b.error?.details?.fieldErrors?.status?.includes('nope'),
+    true,
+    'fieldErrors.status has nope',
+  );
 });
 
 await check('(c) empty status (?status=,) -> 400', async () => {
-  const r = await api('GET', `/v1/accounts/${acct}/tenancies?status=${encodeURIComponent(',')}`, { token });
+  const r = await api('GET', `/v1/accounts/${acct}/tenancies?status=${encodeURIComponent(',')}`, {
+    token,
+  });
   assertEq(r.status, 400, 'status');
   assertEq((r.body as { error?: { code?: string } }).error?.code, 'invalid_request', 'code');
 });
@@ -232,7 +296,8 @@ await check('(d) keyset walk under a multi-status filter: each row exactly once'
     const page = r.body as { data: Row[]; next_cursor: string | null };
     for (const row of page.data) {
       if (seen.has(row.id)) throw new Error(`row ${row.id} returned twice`);
-      if (row.status !== 'active' && row.status !== 'holdover') throw new Error(`leaked status ${row.status}`);
+      if (row.status !== 'active' && row.status !== 'holdover')
+        throw new Error(`leaked status ${row.status}`);
       seen.add(row.id);
     }
     cursor = page.next_cursor;

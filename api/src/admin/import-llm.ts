@@ -109,7 +109,10 @@ const SCOPE_NOTE =
   'unit_details, tenant, tenancy, tenancy_member, lease (optional), rent_schedule, and ' +
   'interaction (a free-text note/comment/log column; one entry per non-empty cell). ' +
   'Money history (individual charges and payments) is OUT OF SCOPE and must never be ' +
-  'proposed. rent_schedule captures the recurring rent amount, which is structural, not a charge.';
+  'proposed. rent_schedule captures the recurring rent amount, which is structural, not a charge. ' +
+  'Lease terms and possession/billing facts are separate: map only explicit contractual facts ' +
+  'to lease fields. Never copy a schedule default or possession date into a lease, invent ' +
+  'zero grace/no fee/no deposit, calculate a formula, or decide enforceability.';
 
 // ============================================================================
 // 1. Recognition — what entities does each region contain?
@@ -161,7 +164,10 @@ const recognitionTool = {
               type: 'boolean',
               description: 'True if at least one in-scope entity can be built from this region.',
             },
-            summary: { type: 'string', description: 'One sentence on what this region appears to be.' },
+            summary: {
+              type: 'string',
+              description: 'One sentence on what this region appears to be.',
+            },
             header: {
               type: 'object',
               description:
@@ -169,7 +175,8 @@ const recognitionTool = {
               properties: {
                 present: {
                   type: 'boolean',
-                  description: 'False when the sheet has no header row at all (row 0 of first_rows is already data).',
+                  description:
+                    'False when the sheet has no header row at all (row 0 of first_rows is already data).',
                 },
                 row_index: {
                   type: 'integer',
@@ -419,7 +426,8 @@ export async function suggestMapping(
     for (const f of parsed.data.fields) {
       if (!validFields.has(f.target_field)) continue;
       // Drop hallucinated columns: a mapping must reference a real column.
-      const source_column = f.source_column && columnNames.has(f.source_column) ? f.source_column : null;
+      const source_column =
+        f.source_column && columnNames.has(f.source_column) ? f.source_column : null;
       const constant = f.constant ?? null;
       if (!source_column && (constant === null || constant === '')) continue;
       const confidence = clamp01(f.confidence ?? 0);
@@ -444,7 +452,11 @@ export async function suggestMapping(
  */
 export async function recognizeAndSuggest(
   regions: ParsedRegion[],
-): Promise<{ regions: ParsedRegion[]; recognition: RecognitionResult[]; mapping: RegionEntityMapping[] }> {
+): Promise<{
+  regions: ParsedRegion[];
+  recognition: RecognitionResult[];
+  mapping: RegionEntityMapping[];
+}> {
   let working = regions;
   let recognition = await recognizeRegions(working);
 

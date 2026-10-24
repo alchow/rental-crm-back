@@ -6,19 +6,42 @@ import { ApiError } from '../_lib/error';
 export function mapDateRpcError(error: { code?: string; message?: string }): never {
   const message = (error.message ?? '').trim();
   const code = message.split(':', 1)[0] ?? message;
+  if (code === 'not_found') throw new ApiError(404, 'not_found', message);
+  if (code === 'invalid') throw new ApiError(400, 'invalid_request', message);
+  if (message === 'conflict: setup draft changed')
+    throw new ApiError(409, 'setup_draft_changed', 'The saved setup draft has changed.');
+  if (
+    message ===
+    'conflict: existing rent history requires an explicit transition or ordinary correction'
+  )
+    throw new ApiError(
+      409,
+      'billing_transition_required',
+      'This tenancy already has rent records. Open Change billing to keep current billing or explicitly start a new schedule.',
+    );
+  if (code === 'conflict' && /already (ended|has an ending)/i.test(message)) {
+    throw new ApiError(409, 'tenancy_already_ended', message);
+  }
   if (error.code === 'P0002' || error.code === '42501') {
     throw new ApiError(404, 'not_found', 'tenancy or selected date context not found');
   }
-  if (error.code === 'P0001' || code === 'date_context_changed' || code === 'date_correction_required') {
-    const conflictCode = code === 'date_context_changed' || code === 'date_correction_required'
-      ? code
-      : 'conflict';
+  if (
+    error.code === 'P0001' ||
+    code === 'date_context_changed' ||
+    code === 'date_correction_required'
+  ) {
+    const conflictCode =
+      code === 'date_context_changed' || code === 'date_correction_required' ? code : 'conflict';
     throw new ApiError(409, conflictCode, message || 'date context changed');
   }
   if (error.code === '22023' || error.code === '23514' || error.code === '22P02') {
     const invalidCodes = [
-      'no_date_change', 'invalid_date_order', 'date_status_conflict',
-      'date_fixed_by_cancellation', 'source_scope_invalid', 'actual_move_in_in_future',
+      'no_date_change',
+      'invalid_date_order',
+      'date_status_conflict',
+      'date_fixed_by_cancellation',
+      'source_scope_invalid',
+      'actual_move_in_in_future',
     ] as const;
     const invalidCode = invalidCodes.find((candidate) => candidate === code) ?? 'invalid_request';
     throw new ApiError(400, invalidCode, message || 'invalid date request');

@@ -4,7 +4,11 @@
 // pinned here at the seam function.
 
 import { describe, expect, it } from 'vitest';
-import { deriveLedger, paymentActivityInRange } from '../src/admin/export-pdf/ledger';
+import {
+  deriveLedger,
+  exportCurrencyGroups,
+  paymentActivityInRange,
+} from '../src/admin/export-pdf/ledger';
 import type { ExportData } from '../src/admin/export-pdf';
 
 const CUR = 'USD';
@@ -85,6 +89,39 @@ function twoMonths(paidCents: number): {
 }
 
 describe('deriveLedger', () => {
+  it('keeps undated receipts in current credit but never substitutes entry time in a dated snapshot', () => {
+    const receipt = payment({
+      received_at: null,
+      receipt_date_unknown: true,
+      created_at: '2026-06-15T00:00:00Z',
+    });
+    const data = exportData({ payments: [receipt] });
+    expect(deriveLedger(data, null, null).unapplied_credit_cents).toBe(100000);
+    expect(deriveLedger(data, null, '2026-06-30').unapplied_credit_cents).toBe(0);
+    expect(paymentActivityInRange(receipt, [], null, null)).toBe(true);
+    expect(paymentActivityInRange(receipt, [], '2026-06-01', '2026-06-30')).toBe(false);
+  });
+  it('renders independent currency ledgers, credits and adoption testimony', () => {
+    const usd = charge({ id: 'usd', amount_cents: 100000 });
+    const eur = charge({ id: 'eur', type: 'deposit', currency: 'EUR', amount_cents: 50000 });
+    const usdPay = payment({ id: 'usd-pay', amount_cents: 100000 });
+    const eurPay = payment({ id: 'eur-pay', currency: 'EUR', amount_cents: 60000 });
+    const groups = exportCurrencyGroups(
+      exportData({
+        charges: [usd, eur],
+        payments: [usdPay, eurPay],
+        allocations: [alloc('usd', 'usd-pay', 100000), alloc('eur', 'eur-pay', 50000)],
+        adoption: adoptionRow({ currency: 'CAD', opening_balance_cents: 7000 }),
+      }),
+    ).map((group) => deriveLedger(group, null, null));
+    expect(groups.map((group) => group.currency)).toEqual(['CAD', 'EUR', 'USD']);
+    expect(groups[0]?.adoption_opening_balance_cents).toBe(7000);
+    expect(groups[1]?.deposit_payments_cents).toBe(50000);
+    expect(groups[1]?.unapplied_credit_cents).toBe(10000);
+    expect(groups[1]?.rent_charges_in_range_cents).toBe(0);
+    expect(groups[2]?.closing_balance_cents).toBe(0);
+    expect(groups[2]?.adoption_date).toBeNull();
+  });
   it('honors application and reversal dates without changing the receipt date', () => {
     const bill = charge({ id: 'rent', amount_cents: 476800, due_date: '2026-09-01' });
     const pay = payment({ id: 'payment', amount_cents: 30000, received_at: '2026-08-10' });

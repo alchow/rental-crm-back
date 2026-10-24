@@ -276,7 +276,12 @@ await check('ending is readable, audited, immutable, and repeat-safe', async () 
     `/v1/accounts/${accountId}/tenancies/${cancelledTenancyId}`,
     {
       token,
-      body: { status: 'ended', start_date: '2025-08-15', end_date: '2025-08-15', expected_end_date: '2030-08-15' },
+      body: {
+        status: 'ended',
+        start_date: '2025-08-15',
+        end_date: '2025-08-15',
+        expected_end_date: '2030-08-15',
+      },
     },
   );
   if (rewriteBothViaApi.status !== 409) {
@@ -407,7 +412,8 @@ await check('an immutable ending cannot be erased by reopening the tenancy', asy
     token,
     body: { status: 'active', end_date: null, expected_end_date: '2026-07-01' },
   });
-  if (reopen.status !== 400) throw new Error(`reopen expected 400, got ${reopen.status}`);
+  if (reopen.status !== 409)
+    throw new Error(`reopen expected audited-correction conflict, got ${reopen.status}`);
   const current = await admin
     .from('tenancies')
     .select('status, end_date')
@@ -469,6 +475,94 @@ await check(
       .select('id', { count: 'exact', head: true })
       .eq('tenancy_id', target.id);
     if (ending.error || ending.count !== 0) throw new Error('failed workflow left an ending row');
+  },
+);
+
+await check(
+  'future actual ending and ordinary receipt previews require exact explicit confirmation without a note',
+  async () => {
+    const target = await createTenancy('2025-01-01', 'active');
+    const prefix = `/v1/accounts/${accountId}`;
+    const today = new Date().toISOString().slice(0, 10);
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    const charge = await post<{ id: string }>(`${prefix}/charges`, {
+      tenancy_id: target.id,
+      type: 'rent',
+      amount_cents: 10000,
+      currency: 'USD',
+      due_date: today,
+    });
+    const payment = {
+      tenancy_id: target.id,
+      amount_cents: 10000,
+      currency: 'USD',
+      received_at: tomorrow,
+      method: 'cash',
+      allocations: [{ charge_id: charge.id, amount_cents: 10000 }],
+    };
+    const receipt = await api('POST', `${prefix}/payments/preview`, { token, body: payment });
+    if (receipt.status !== 200) throw new Error(JSON.stringify(receipt.body));
+    const review = receipt.body as {
+      context_fingerprint: string;
+      findings: { relationship_fingerprint: string }[];
+      can_commit: boolean;
+    };
+    if (review.can_commit || review.findings.length !== 1)
+      throw new Error('future receipt missing review');
+    const rejected = await api('POST', `${prefix}/payments`, { token, body: payment });
+    if (rejected.status !== 400) throw new Error('unconfirmed future receipt saved');
+    const ack = review.findings.map((f) => ({
+      relationship_fingerprint: f.relationship_fingerprint,
+    }));
+    const wrong = await api('POST', `${prefix}/payments`, {
+      token,
+      body: {
+        ...payment,
+        amount_cents: 10001,
+        warning_acknowledgements: ack,
+        expected_context_fingerprint: review.context_fingerprint,
+      },
+    });
+    if (wrong.status !== 409)
+      throw new Error(`changed future receipt accepted: ${JSON.stringify(wrong)}`);
+    await post(`${prefix}/payments`, {
+      ...payment,
+      warning_acknowledgements: ack,
+      expected_context_fingerprint: review.context_fingerprint,
+    });
+    const current = await api('GET', `${prefix}/tenancies/${target.id}/ledger`, { token });
+    const dated = await api('GET', `${prefix}/tenancies/${target.id}/ledger?as_of=${today}`, {
+      token,
+    });
+    const totals = (value: ApiResp) =>
+      (value.body as { totals: { rent_balance_cents: number; total_received_cents: number } })
+        .totals;
+    if (totals(current).rent_balance_cents !== 0 || totals(current).total_received_cents !== 10000)
+      throw new Error('future receipt did not affect current balance now');
+    if (totals(dated).rent_balance_cents !== 10000 || totals(dated).total_received_cents !== 0)
+      throw new Error('dated ledger included a later receipt');
+    const body = { kind: 'ended', effective_date: tomorrow };
+    const ending = await api('POST', `${prefix}/tenancies/${target.id}/end/preview`, {
+      token,
+      body,
+    });
+    if (ending.status !== 200) throw new Error(JSON.stringify(ending.body));
+    const e = ending.body as typeof review;
+    const saved = await api('POST', `${prefix}/tenancies/${target.id}/end`, {
+      token,
+      body: {
+        ...body,
+        expected_context_fingerprint: e.context_fingerprint,
+        warning_acknowledgements: e.findings.map((f) => ({
+          relationship_fingerprint: f.relationship_fingerprint,
+        })),
+      },
+    });
+    if (
+      saved.status !== 200 ||
+      (saved.body as { tenancy: { status: string } }).tenancy.status !== 'ended'
+    )
+      throw new Error(`future ending failed ${JSON.stringify(saved)}`);
   },
 );
 

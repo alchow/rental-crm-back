@@ -41,6 +41,8 @@ const Charge = z
     period_end: z.string().nullable(),
     description: z.string().nullable(),
     source_schedule_id: z.string().uuid().nullable(),
+    cycle_key: z.string().nullable(),
+    terms_snapshot: z.record(z.unknown()).nullable(),
     // The charge this one derives from -- today, the rent charge a late_fee was
     // asserted against (migration 20260801000007). Optional as well as nullable
     // because a build running against a database that predates the migration
@@ -72,6 +74,7 @@ const CreateChargeBody = z
       .optional(),
     description: z.string().optional(),
     source_schedule_id: z.string().uuid().optional(),
+    cycle_key: z.string().regex(/^\d{4}-\d{2}$/).optional(),
     parent_charge_id: z
       .string()
       .uuid()
@@ -312,6 +315,7 @@ chargesApp.openapi(create, async (c) => {
     description: body.description ?? null,
     source_schedule_id: body.source_schedule_id ?? null,
   };
+  if (body.cycle_key !== undefined) insert.cycle_key = body.cycle_key;
   if (body.parent_charge_id !== undefined) insert.parent_charge_id = body.parent_charge_id;
 
   const { data, error } = await sb.from('charges').insert(insert).select('*').single();

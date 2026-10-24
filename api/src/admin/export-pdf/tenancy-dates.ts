@@ -8,7 +8,8 @@ export type DateHistoryRecord = Omit<
 
 const HISTORY_COLUMNS =
   'id,account_id,tenancy_id,kind,before_facts,after_facts,context_snapshot,' +
-  'context_fingerprint,reason_code,reason_note,source_document_id,source_document_snapshot,created_by,created_at';
+  'context_fingerprint,reason_code,reason_note,source_document_id,source_document_snapshot,created_by,created_at,' +
+  'corrects_ending_id,corrects_record_id,relationship_snapshots,subject_payment_id,subject_ending_id';
 
 /** Standing evidence context is complete even when the ledger has a date cutoff. */
 export async function loadTenancyDateHistory(
@@ -48,13 +49,14 @@ export function dateRecordLines(record: DateHistoryRecord): string[] {
   const after = object(record.after_facts);
   const source = object(record.source_document_snapshot);
   const lines = [
-    `${record.kind === 'correction' ? 'Correction' : 'Explanation'} ${record.id}`,
+    `${record.kind === 'warning_confirmation' ? 'Date warning confirmation' : record.kind === 'ending_correction' ? 'Actual ending correction' : record.kind === 'correction' ? 'Correction' : 'Explanation'} ${record.id}`,
     `Recorded ${record.created_at} by user:${record.created_by}`,
   ];
   const labels = {
     start_date: 'Possession start',
     start_date_basis: 'Date meaning',
     actual_move_in_date: 'Actual move-in',
+    end_date: 'Possession end',
     status: 'Tenancy status',
   };
   for (const [key, label] of Object.entries(labels)) {
@@ -69,9 +71,30 @@ export function dateRecordLines(record: DateHistoryRecord): string[] {
     if (lease.id) lines.push(`Selected lease ${lease.id}: term starts ${lease.term_start}`);
     if (schedule.id)
       lines.push(`Selected schedule ${schedule.id}: effective from ${schedule.start_date}`);
-    lines.push('Applies to the captured date context; later changes require a fresh review.');
+    lines.push(
+      'Applies to the captured relationship values; changes to those values require a fresh review.',
+    );
   }
-  lines.push(`Reason (${record.reason_code}): ${record.reason_note}`);
+  if (record.corrects_ending_id)
+    lines.push(`Original immutable ending: ${record.corrects_ending_id}`);
+  if (record.corrects_record_id)
+    lines.push(`Corrects ending correction: ${record.corrects_record_id}`);
+  if (record.kind === 'warning_confirmation') {
+    lines.push(
+      record.reason_note
+        ? `Optional note: ${record.reason_note}`
+        : 'Confirmed without a note or justification.',
+    );
+    if (record.subject_payment_id) lines.push(`Payment: ${record.subject_payment_id}`);
+    if (record.subject_ending_id) lines.push(`Actual ending: ${record.subject_ending_id}`);
+    for (const finding of Array.isArray(record.relationship_snapshots)
+      ? record.relationship_snapshots
+      : []) {
+      const warning = object(finding);
+      lines.push(`Warning ${warning.rule_id} (version ${warning.version}): ${warning.message}`);
+    }
+  } else if (record.reason_note)
+    lines.push(`Reason (${record.reason_code}): ${record.reason_note}`);
   if (record.source_document_id) {
     lines.push(`Evidence: ${source.title ?? 'document'} (${record.source_document_id})`);
     const versions = Array.isArray(source.versions) ? source.versions : [];
@@ -81,9 +104,10 @@ export function dateRecordLines(record: DateHistoryRecord): string[] {
       lines.push(`Version ${v.version_no} (${v.id}), SHA-256: ${v.content_hash}`);
     }
   }
-  lines.push(
-    'This record did not change charges, payments, allocations, leases, or rent schedules.',
-  );
+  if (record.kind !== 'warning_confirmation')
+    lines.push(
+      'This record did not change charges, payments, allocations, leases, or rent schedules.',
+    );
   return lines;
 }
 

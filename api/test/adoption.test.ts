@@ -833,6 +833,7 @@ async function main(): Promise<void> {
       const data = rows.data ?? [];
       assert(data.length === 1, `expected only the deposit payment, got ${data.length}`);
       const receivedAt = data[0]!.received_at;
+      assert(receivedAt !== null, 'known deposit receipt lost its received date');
       // Midnight UTC would render as 2026-04-30 anywhere west of Greenwich —
       // a deposit payment visibly contradicting its own charge date.
       assert(receivedAt.startsWith('2026-05-01'), `deposit received_at drifted: ${receivedAt}`);

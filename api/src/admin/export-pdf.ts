@@ -2,6 +2,13 @@ import { getLogger } from '../log';
 import { getAdminClient } from './supabase-admin';
 import { renderExportPdf } from './export-pdf/render';
 import { idChunks } from './export-pdf/chunks';
+import { readAllById } from '../lib/postgrest-pages';
+import {
+  completeInteractionChains,
+  loadScopedRows,
+  loadRelatedRows,
+  loadWindowedInteractions,
+} from './export-pdf/collection-rows';
 import { loadIncidents } from './export-pdf/incidents';
 import type { IncidentEntry } from './export-pdf/incidents';
 import { loadTenancyDateHistory, type DateHistoryRecord } from './export-pdf/tenancy-dates';
@@ -355,16 +362,18 @@ async function loadAttachmentsForEntityIds(
 ): Promise<AttachmentRow[]> {
   const rows: AttachmentRow[] = [];
   for (const chunk of idChunks(entityIds)) {
-    let query = admin
-      .from('attachments')
-      .select(ATTACHMENT_COLS)
-      .eq('account_id', accountId)
-      .in('entity_id', chunk)
-      .is('deleted_at', null);
-    if (opts.entityType) query = query.eq('entity_type', opts.entityType);
-    const { data, error } = await query;
-    if (error) throw new Error(`${opts.label} load failed: ${error.message}`);
-    rows.push(...((data as AttachmentRow[] | null) ?? []));
+    rows.push(
+      ...(await readAllById(() => {
+        let query = admin
+          .from('attachments')
+          .select(ATTACHMENT_COLS)
+          .eq('account_id', accountId)
+          .in('entity_id', chunk)
+          .is('deleted_at', null);
+        if (opts.entityType) query = query.eq('entity_type', opts.entityType);
+        return query;
+      }, opts.label)),
+    );
   }
   return rows;
 }
@@ -376,14 +385,19 @@ async function loadEventsForEntityIds(
 ): Promise<Record<string, unknown>[]> {
   const rows: Record<string, unknown>[] = [];
   for (const chunk of idChunks(entityIds)) {
-    const { data, error } = await admin
-      .from('events')
-      .select('id, account_id, actor, entity_type, entity_id, event_type, occurred_at, account_seq')
-      .eq('account_id', accountId)
-      .in('entity_id', chunk)
-      .order('account_seq', { ascending: true });
-    if (error) throw new Error(`event load failed: ${error.message}`);
-    rows.push(...((data as Record<string, unknown>[] | null) ?? []));
+    rows.push(
+      ...(await readAllById(
+        () =>
+          admin
+            .from('events')
+            .select(
+              'id, account_id, actor, entity_type, entity_id, event_type, occurred_at, account_seq',
+            )
+            .eq('account_id', accountId)
+            .in('entity_id', chunk),
+        'event export',
+      )),
+    );
   }
   return rows.sort((a, b) => Number(a.account_seq ?? 0) - Number(b.account_seq ?? 0));
 }
@@ -395,14 +409,18 @@ async function loadCastRows(
 ): Promise<CastRow[]> {
   const rows: CastRow[] = [];
   for (const chunk of idChunks(interactionIds)) {
-    const { data, error } = await admin
-      .from('interaction_participants')
-      .select('interaction_id, role, party_type, party_id, address, label, source')
-      .eq('account_id', accountId)
-      .in('interaction_id', chunk)
-      .order('created_at', { ascending: true });
-    if (error) throw new Error(`interaction cast load failed: ${error.message}`);
-    rows.push(...((data as CastRow[] | null) ?? []));
+    const data = await readAllById(
+      () =>
+        admin
+          .from('interaction_participants')
+          .select(
+            'id, created_at, interaction_id, role, party_type, party_id, address, label, source',
+          )
+          .eq('account_id', accountId)
+          .in('interaction_id', chunk),
+      'interaction cast export',
+    );
+    rows.push(...data.sort((a, b) => a.created_at.localeCompare(b.created_at)));
   }
   return rows;
 }
@@ -418,13 +436,16 @@ async function loadDeliveryRows(
     delivered_at: string | null;
   }> = [];
   for (const chunk of idChunks(interactionIds)) {
-    const { data, error } = await admin
-      .from('comm_outbox')
-      .select('interaction_id, status, delivered_at')
-      .eq('account_id', accountId)
-      .is('relay_of_interaction_id', null)
-      .in('interaction_id', chunk);
-    if (error) throw new Error(`delivery-state load failed: ${error.message}`);
+    const data = await readAllById(
+      () =>
+        admin
+          .from('comm_outbox')
+          .select('id, interaction_id, status, delivered_at')
+          .eq('account_id', accountId)
+          .is('relay_of_interaction_id', null)
+          .in('interaction_id', chunk),
+      'delivery-state export',
+    );
     rows.push(
       ...((data as Array<{
         interaction_id: string | null;
@@ -443,63 +464,25 @@ async function loadInboundProvenanceRows(
 ): Promise<Array<{ provider_msg_id: string; body_sha256: string }>> {
   const rows: Array<{ provider_msg_id: string; body_sha256: string }> = [];
   for (const chunk of idChunks(providerMsgIds)) {
-    const { data, error } = await admin
-      .from('inbound_provenance')
-      .select('provider_msg_id, body_sha256')
-      .eq('account_id', accountId)
-      .in('provider_msg_id', chunk);
-    if (error) throw new Error(`inbound-provenance load failed: ${error.message}`);
+    const data = await readAllById(
+      () =>
+        admin
+          .from('inbound_provenance')
+          .select('id, provider_msg_id, body_sha256')
+          .eq('account_id', accountId)
+          .in('provider_msg_id', chunk),
+      'inbound-provenance export',
+    );
     rows.push(...((data as Array<{ provider_msg_id: string; body_sha256: string }> | null) ?? []));
   }
   return rows;
-}
-
-// A correction chain is one event: the original entry plus the append-only
-// corrections/retractions that supersede it (interactions.corrects_id).
-// The export is the legal artifact -- it must always carry COMPLETE chains,
-// never the collapsed latest-only view, and never a chain split by a scope
-// filter. The date window applies to where a chain APPEARS on the timeline
-// (its root), not to which of its members are shown.
-//
-// completeInteractionChains: the windowed/tenancy-filtered fetch can miss
-// chain members (an amend re-dated outside the window, or re-linked to
-// another tenancy). Walk corrects_id links both ways until closure; chains
-// are short, so this is 0-2 extra queries in practice.
-async function completeInteractionChains(
-  admin: ReturnType<typeof getAdminClient>,
-  accountId: string,
-  rows: Record<string, unknown>[],
-): Promise<Record<string, unknown>[]> {
-  if (rows.length === 0) return rows;
-  const have = new Map(rows.map((r) => [String(r.id), r]));
-  for (;;) {
-    const ids = [...have.keys()];
-    const missingParents = [...have.values()]
-      .map((r) => (r.corrects_id ? String(r.corrects_id) : null))
-      .filter((x): x is string => x !== null && !have.has(x));
-    const [childRes, parentRes] = await Promise.all([
-      admin.from('interactions').select('*').eq('account_id', accountId).in('corrects_id', ids),
-      missingParents.length > 0
-        ? admin
-            .from('interactions')
-            .select('*')
-            .eq('account_id', accountId)
-            .in('id', missingParents)
-        : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
-    ]);
-    const found = [
-      ...((childRes.data as Record<string, unknown>[]) ?? []),
-      ...((parentRes.data as Record<string, unknown>[]) ?? []),
-    ].filter((r) => !have.has(String(r.id)));
-    if (found.length === 0) return [...have.values()];
-    for (const r of found) have.set(String(r.id), r);
-  }
 }
 
 export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   const admin = getAdminClient();
 
   const acct = await admin.from('accounts').select('name').eq('id', scope.accountId).single();
+  if (acct.error) throw new Error(`account export read failed: ${acct.error.message}`);
   const accountName = (acct.data as { name?: string } | null)?.name ?? scope.accountId;
 
   // Tenancy / area / property -- DO NOT filter deleted_at. Disputes
@@ -509,12 +492,16 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   let property: Record<string, unknown> | null = null;
   if (scope.tenancyId) {
     const t = await admin
-      .from('tenancies')
+      .from('tenancy_current')
       .select('*')
       .eq('account_id', scope.accountId)
       .eq('id', scope.tenancyId)
       .maybeSingle();
+    if (t.error) throw new Error(`tenancy export read failed: ${t.error.message}`);
+    if (!t.data) throw new Error('tenancy export scope no longer exists');
     tenancy = t.data as Record<string, unknown> | null;
+    if (scope.areaId && scope.areaId !== tenancy?.area_id)
+      throw new Error('export area does not match the selected tenancy');
   }
   const areaId = scope.areaId ?? (tenancy?.area_id as string | undefined);
   if (areaId) {
@@ -524,6 +511,7 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
       .eq('account_id', scope.accountId)
       .eq('id', areaId)
       .maybeSingle();
+    if (a.error) throw new Error(`area export read failed: ${a.error.message}`);
     area = a.data as Record<string, unknown> | null;
   }
   const propertyId = area?.property_id as string | undefined;
@@ -534,6 +522,7 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
       .eq('account_id', scope.accountId)
       .eq('id', propertyId)
       .maybeSingle();
+    if (p.error) throw new Error(`property export read failed: ${p.error.message}`);
     property = p.data as Record<string, unknown> | null;
   }
 
@@ -550,14 +539,18 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   // too and the renderer derives an "opening balance as of from_date"
   // line. Hard date-cuts on ledger queries would silently drop the
   // governing context a dispute usually turns on.
-  const [occRes, adoptRes, leaseRes, schedRes, chargeRes, payRes] = await Promise.all([
+  const [occupants, adoptRes, leases, rentSchedules, charges, paymentRows] = await Promise.all([
     tenancyId
-      ? admin
-          .from('tenancy_tenants')
-          .select('*, tenants(*)')
-          .eq('account_id', scope.accountId)
-          .eq('tenancy_id', tenancyId)
-      : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
+      ? readAllById(
+          () =>
+            admin
+              .from('tenancy_tenants')
+              .select('*, tenants(*)')
+              .eq('account_id', scope.accountId)
+              .eq('tenancy_id', tenancyId),
+          'occupants export',
+        )
+      : Promise.resolve([]),
     tenancyId
       ? admin
           .from('tenancy_adoptions')
@@ -568,37 +561,20 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
           .limit(1)
       : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
     tenancyId
-      ? admin
-          .from('leases')
-          .select('*')
-          .eq('account_id', scope.accountId)
-          .eq('tenancy_id', tenancyId)
-      : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
+      ? loadScopedRows(admin, scope.accountId, 'leases', 'tenancy_id', tenancyId)
+      : Promise.resolve([]),
     tenancyId
-      ? admin
-          .from('rent_schedules')
-          .select('*')
-          .eq('account_id', scope.accountId)
-          .eq('tenancy_id', tenancyId)
-      : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
+      ? loadScopedRows(admin, scope.accountId, 'rent_schedules', 'tenancy_id', tenancyId)
+      : Promise.resolve([]),
     tenancyId
-      ? admin
-          .from('charges')
-          .select('*')
-          .eq('account_id', scope.accountId)
-          .eq('tenancy_id', tenancyId)
-      : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
+      ? loadScopedRows(admin, scope.accountId, 'charges', 'tenancy_id', tenancyId)
+      : Promise.resolve([]),
     tenancyId
-      ? admin
-          .from('payments')
-          .select('*')
-          .eq('account_id', scope.accountId)
-          .eq('tenancy_id', tenancyId)
-      : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
+      ? loadScopedRows(admin, scope.accountId, 'payments', 'tenancy_id', tenancyId)
+      : Promise.resolve([]),
   ]);
   const fromDate = scope.fromDate ?? null;
   const toDate = scope.toDate ?? null;
-  const occupants: Record<string, unknown>[] = (occRes.data as Record<string, unknown>[]) ?? [];
   // COMPAT: tenancy_adoptions ships with migration 20260810000001 and this
   // service can run ahead of the applied migration, where PostgREST answers
   // PGRST205 ("Could not find the table") -- expected, and equivalent to "no
@@ -612,24 +588,16 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     throw new Error(`tenancy_adoptions query failed: ${adoptErr.message}`);
   const adoption: Record<string, unknown> | null =
     ((adoptRes.data as Record<string, unknown>[] | null) ?? [])[0] ?? null;
-  const leases: Record<string, unknown>[] = (leaseRes.data as Record<string, unknown>[]) ?? [];
-  const rentSchedules: Record<string, unknown>[] =
-    (schedRes.data as Record<string, unknown>[]) ?? [];
-  const charges: Record<string, unknown>[] = (chargeRes.data as Record<string, unknown>[]) ?? [];
-  const payments: Record<string, unknown>[] = (payRes.data as Record<string, unknown>[]) ?? [];
-  const allocations: Record<string, unknown>[] = [];
+  const payments: Record<string, unknown>[] = paymentRows;
   const chargeIds = charges.map((c) => c.id).filter((id): id is string => typeof id === 'string');
-  for (let i = 0; i < chargeIds.length; i += 200) {
-    const allocRes = await admin
-      .from('payment_allocations')
-      .select('*')
-      .eq('account_id', scope.accountId)
-      .in('charge_id', chargeIds.slice(i, i + 200))
-      .is('deleted_at', null);
-    if (allocRes.error)
-      throw new Error(`payment_allocations query failed: ${allocRes.error.message}`);
-    allocations.push(...((allocRes.data as Record<string, unknown>[]) ?? []));
-  }
+  const allocations = await loadRelatedRows(
+    admin,
+    scope.accountId,
+    'payment_allocations',
+    'charge_id',
+    chargeIds,
+    true,
+  );
 
   // Area-scoped rows.
   let interactions: Record<string, unknown>[] = [];
@@ -642,61 +610,41 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
   let incidents: IncidentEntry[] = [];
 
   if (tenancyId || areaId) {
-    let intQ = admin.from('interactions').select('*').eq('account_id', scope.accountId);
-    if (tenancyId) intQ = intQ.eq('tenancy_id', tenancyId);
-    if (fromDate) intQ = intQ.gte('occurred_at', fromDate);
-    if (toDate) intQ = intQ.lte('occurred_at', `${toDate}T23:59:59Z`);
-    const intRes = await intQ;
-    interactions = (intRes.data as Record<string, unknown>[]) ?? [];
+    interactions = await loadWindowedInteractions(admin, scope.accountId, {
+      tenancyId,
+      areaId,
+      fromDate,
+      toDate,
+    });
     // Never render a partial correction chain (see completeInteractionChains).
     interactions = await completeInteractionChains(admin, scope.accountId, interactions);
   }
   if (areaId) {
-    const [mr, ins] = await Promise.all([
-      admin
-        .from('maintenance_requests')
-        .select('*')
-        .eq('account_id', scope.accountId)
-        .eq('area_id', areaId),
-      admin.from('inspections').select('*').eq('account_id', scope.accountId).eq('area_id', areaId),
+    [maintenanceRequests, inspections] = await Promise.all([
+      loadScopedRows(admin, scope.accountId, 'maintenance_requests', 'area_id', areaId),
+      loadScopedRows(admin, scope.accountId, 'inspections', 'area_id', areaId),
     ]);
-    maintenanceRequests = (mr.data as Record<string, unknown>[]) ?? [];
-    inspections = (ins.data as Record<string, unknown>[]) ?? [];
 
     if (maintenanceRequests.length > 0) {
       const ids = maintenanceRequests.map((r) => r.id as string);
-      const wo = await admin
-        .from('work_orders')
-        .select('*')
-        .eq('account_id', scope.accountId)
-        .in('maintenance_request_id', ids);
-      workOrders = (wo.data as Record<string, unknown>[]) ?? [];
+      workOrders = await loadRelatedRows(
+        admin,
+        scope.accountId,
+        'work_orders',
+        'maintenance_request_id',
+        ids,
+      );
     }
     if (inspections.length > 0) {
       const ids = inspections.map((r) => r.id as string);
-      const [items, checks] = await Promise.all([
-        admin
-          .from('inspection_items')
-          .select('*')
-          .eq('account_id', scope.accountId)
-          .in('inspection_id', ids),
-        admin
-          .from('inspection_checks')
-          .select('*')
-          .eq('account_id', scope.accountId)
-          .in('inspection_id', ids),
+      [inspectionItems, inspectionChecks] = await Promise.all([
+        loadRelatedRows(admin, scope.accountId, 'inspection_items', 'inspection_id', ids),
+        loadRelatedRows(admin, scope.accountId, 'inspection_checks', 'inspection_id', ids),
       ]);
-      inspectionItems = (items.data as Record<string, unknown>[]) ?? [];
-      inspectionChecks = (checks.data as Record<string, unknown>[]) ?? [];
     }
   }
   if (tenancyId) {
-    const n = await admin
-      .from('notices')
-      .select('*')
-      .eq('account_id', scope.accountId)
-      .eq('tenancy_id', tenancyId);
-    notices = (n.data as Record<string, unknown>[]) ?? [];
+    notices = await loadScopedRows(admin, scope.accountId, 'notices', 'tenancy_id', tenancyId);
     // Incidents are tenancy-anchored (tenancy_id NOT NULL), so an area-only
     // bundle has no incident scope to render -- same shape as notices above.
     incidents = await loadIncidents(admin, scope.accountId, tenancyId);
@@ -747,6 +695,22 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     if (r.source_document_id) eventEntityIds.add(r.source_document_id);
   }
   for (const r of workOrders) eventEntityIds.add(r.id as string);
+  for (const rows of [
+    allocations,
+    occupants,
+    inspectionItems,
+    inspectionChecks,
+    attachments,
+  ]) {
+    for (const row of rows) {
+      eventEntityIds.add(String(row.id));
+      if ('source_document_id' in row && row.source_document_id)
+        eventEntityIds.add(String(row.source_document_id));
+    }
+  }
+  if (adoption?.id) eventEntityIds.add(String(adoption.id));
+  for (const entry of incidents)
+    for (const citation of entry.citations) eventEntityIds.add(citation.item_id);
   if (eventEntityIds.size > 0) {
     events = await loadEventsForEntityIds(admin, scope.accountId, eventEntityIds);
   }
@@ -761,11 +725,9 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     if (r.deleted_at && r.deleted_by) uploaderIds.add(String(r.deleted_by));
   }
   const uploaderNames = new Map<string, string>();
-  if (uploaderIds.size > 0) {
-    const u = await admin
-      .from('users')
-      .select('id, display_name')
-      .in('id', Array.from(uploaderIds));
+  for (const ids of idChunks(uploaderIds)) {
+    const u = await admin.from('users').select('id, display_name').in('id', ids);
+    if (u.error) throw new Error(`uploader export read failed: ${u.error.message}`);
     for (const row of (u.data as Array<{ id: string; display_name: string | null }>) ?? []) {
       uploaderNames.set(row.id, row.display_name ?? row.id);
     }
@@ -799,12 +761,13 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     if (r.vendor_id) partyIds.add(String(r.vendor_id));
   }
   for (const id of partyNames.keys()) partyIds.delete(id);
-  if (partyIds.size > 0) {
-    const ids = [...partyIds];
+  for (const ids of idChunks(partyIds)) {
     const [tRes, vRes] = await Promise.all([
       admin.from('tenants').select('id, full_name').eq('account_id', scope.accountId).in('id', ids),
       admin.from('vendors').select('id, name').eq('account_id', scope.accountId).in('id', ids),
     ]);
+    if (tRes.error) throw new Error(`tenant name export read failed: ${tRes.error.message}`);
+    if (vRes.error) throw new Error(`vendor name export read failed: ${vRes.error.message}`);
     for (const t of (tRes.data as { id: string; full_name: string }[] | null) ?? [])
       partyNames.set(t.id, t.full_name);
     for (const v of (vRes.data as { id: string; name: string }[] | null) ?? [])

@@ -1,12 +1,12 @@
 // Receipt/due dates select facts; application and reversal timestamps select their later effects.
 export function ledgerRowsAt<T extends { voided_at?: unknown; void_reason?: unknown }>(
   rows: readonly T[],
-  dateOf: (row: T) => string,
+  dateOf: (row: T) => string | null,
   cutoff?: string | null,
 ): T[] {
   if (!cutoff) return [...rows];
   return rows
-    .filter((row) => dateOf(row).slice(0, 10) <= cutoff)
+    .filter((row) => { const date = dateOf(row); return date !== null && date.slice(0, 10) <= cutoff; })
     .map((row) =>
       row.voided_at && String(row.voided_at).slice(0, 10) > cutoff
         ? { ...row, voided_at: null, void_reason: null }

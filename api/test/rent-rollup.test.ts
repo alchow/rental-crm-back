@@ -291,6 +291,17 @@ interface RollupRow {
   non_deposit_upcoming_cents: number;
   deposit_owed_cents: number;
   deposit_held_cents: number;
+  currency_totals: {
+    currency: string;
+    rent_balance_cents: number;
+    deposit_balance_cents: number;
+    unapplied_credit_cents: number;
+    non_deposit_overdue_cents: number;
+    deposit_owed_cents: number;
+    deposit_held_cents: number;
+  }[];
+  has_other_currency_balance: boolean;
+  adoption: { currency: string; opening_balance_cents: number } | null;
 }
 interface LedgerView {
   currency: string | null;
@@ -450,6 +461,167 @@ await check('(7) grants: a bare-anon RPC call (no user JWT) is refused', async (
   if (!/permission denied|not.*exist/i.test(error.message)) {
     throw new Error(`unexpected anon error shape: ${error.message}`);
   }
+});
+
+await check(
+  'currency groups preserve paid USD rent, EUR deposit/debt and independent CAD credit',
+  async () => {
+    const mixed = await mkTenancy('Mixed money', 'active', '2026-01-01');
+    await post('/rent-schedules', {
+      tenancy_id: mixed.id,
+      kind: 'rent',
+      amount_cents: 10000,
+      currency: 'USD',
+      due_day: 1,
+      start_date: '2026-01-01',
+    });
+    const usd = await post<{ id: string }>('/charges', {
+      tenancy_id: mixed.id,
+      type: 'rent',
+      amount_cents: 10000,
+      currency: 'USD',
+      due_date: '2026-02-01',
+    });
+    const eurRent = await post<{ id: string }>('/charges', {
+      tenancy_id: mixed.id,
+      type: 'rent',
+      amount_cents: 5000,
+      currency: 'EUR',
+      due_date: '2026-02-01',
+    });
+    const eurDeposit = await post<{ id: string }>('/charges', {
+      tenancy_id: mixed.id,
+      type: 'deposit',
+      amount_cents: 20000,
+      currency: 'EUR',
+      due_date: '2026-02-01',
+    });
+    await post('/payments', {
+      tenancy_id: mixed.id,
+      amount_cents: 10000,
+      currency: 'USD',
+      received_at: '2026-02-02T12:00:00Z',
+      method: 'ach',
+      allocations: [{ charge_id: usd.id, amount_cents: 10000 }],
+    });
+    await post('/payments', {
+      tenancy_id: mixed.id,
+      amount_cents: 3000,
+      currency: 'EUR',
+      received_at: '2026-02-02T12:00:00Z',
+      method: 'ach',
+      allocations: [
+        { charge_id: eurRent.id, amount_cents: 2000 },
+        { charge_id: eurDeposit.id, amount_cents: 1000 },
+      ],
+    });
+    await post('/payments', {
+      tenancy_id: mixed.id,
+      amount_cents: 700,
+      currency: 'CAD',
+      received_at: '2026-02-02T12:00:00Z',
+      method: 'cash',
+    });
+    const row = (await getRollup()).find((r) => r.tenancy_id === mixed.id)!;
+    assertEq(row.currency, 'USD', 'current rent currency is primary');
+    assertEq(row.rent_balance_cents, 0, 'USD rent fully paid');
+    assertEq(row.deposit_balance_cents, 0, 'EUR deposit does not become USD');
+    assertEq(row.unapplied_credit_cents, 0, 'CAD credit does not become USD');
+    assertEq(row.has_other_currency_balance, true, 'other currency debt is visible');
+    const eur = row.currency_totals.find((r) => r.currency === 'EUR')!;
+    assertEq(eur.rent_balance_cents, 3000, 'EUR rent remainder');
+    assertEq(eur.non_deposit_overdue_cents, 3000, 'EUR rent overdue excludes deposit');
+    assertEq(eur.deposit_owed_cents, 19000, 'EUR deposit remainder');
+    assertEq(eur.deposit_held_cents, 1000, 'EUR deposit actually held');
+    assertEq(
+      row.currency_totals.find((r) => r.currency === 'CAD')!.unapplied_credit_cents,
+      700,
+      'CAD credit retained',
+    );
+    const rejected = await api('POST', `/v1/accounts/${acct}/payments`, {
+      token,
+      body: {
+        tenancy_id: mixed.id,
+        amount_cents: 100,
+        currency: 'USD',
+        received_at: '2026-02-03T12:00:00Z',
+        method: 'ach',
+        allocations: [{ charge_id: eurRent.id, amount_cents: 100 }],
+      },
+    });
+    assertEq(rejected.status, 400, 'cross-currency allocation rejected');
+    const after = (await getRollup()).find((r) => r.tenancy_id === mixed.id)!;
+    assertEq(
+      JSON.stringify(after.currency_totals),
+      JSON.stringify(row.currency_totals),
+      'failed allocation creates no orphan receipt',
+    );
+  },
+);
+
+await check(
+  'opening balance remains separately denominated testimony, never a charge total',
+  async () => {
+    const adopted = await mkTenancy('Opening testimony', 'active', '2026-01-01');
+    const admin = createClient(status.API_URL, status.SERVICE_ROLE_KEY);
+    const saved = await admin
+      .from('tenancy_adoptions')
+      .insert({
+        account_id: acct,
+        tenancy_id: adopted.id,
+        adoption_date: '2026-03-01',
+        currency: 'EUR',
+        opening_balance_cents: 6000,
+        balance_basis: 'Landlord-confirmed earlier balance',
+        needs_review: true,
+      });
+    if (saved.error) throw new Error(saved.error.message);
+    const row = (await getRollup()).find((r) => r.tenancy_id === adopted.id)!;
+    assertEq(row.currency, 'EUR', 'testimony currency retained');
+    assertEq(row.rent_balance_cents, 0, 'testimony is not a rent charge');
+    assertEq(row.unapplied_credit_cents, 0, 'testimony is not a receipt');
+    assertEq(row.adoption?.currency, 'EUR', 'opening currency explicit');
+    assertEq(row.adoption?.opening_balance_cents, 6000, 'opening amount separate');
+    assertEq(
+      row.currency_totals[0]?.rent_balance_cents,
+      0,
+      'currency ledger group excludes testimony',
+    );
+  },
+);
+
+await check('account rollup keeps every tenancy beyond the PostgREST response cap', async () => {
+  const admin = createClient(status.API_URL, status.SERVICE_ROLE_KEY);
+  const before = await getRollup();
+  const ids = Array.from({ length: 1001 }, () => crypto.randomUUID());
+  for (let offset = 0; offset < ids.length; offset += 200) {
+    const chunk = ids.slice(offset, offset + 200);
+    const areas = await admin.from('areas').insert(
+      chunk.map((id) => ({
+        id,
+        account_id: acct,
+        property_id: property.id,
+        kind: 'unit',
+        name: `Paged ${id}`,
+      })),
+    );
+    if (areas.error) throw new Error(areas.error.message);
+    const tenancies = await admin.from('tenancies').insert(
+      chunk.map((id) => ({
+        id,
+        account_id: acct,
+        area_id: id,
+        start_date: '2026-01-01',
+        status: 'active',
+      })),
+    );
+    if (tenancies.error) throw new Error(tenancies.error.message);
+  }
+  const rows = await getRollup();
+  assertEq(rows.length, before.length + ids.length, 'uncapped account rollup');
+  const seen = new Set(rows.map((row) => row.tenancy_id));
+  assertEq(seen.size, rows.length, 'unique rollup rows');
+  for (const id of ids) assertEq(seen.has(id), true, 'tenancy retained');
 });
 
 if (failures.length > 0) {

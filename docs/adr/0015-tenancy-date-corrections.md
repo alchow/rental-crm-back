@@ -1,6 +1,7 @@
 # ADR-0015: Independent tenancy dates and reasoned corrections
 
-Status: accepted/current implementation. Deployment requires the coordinated rollout
+Status: accepted/current, amended by ADR-0016 and the onboarding date/read-model
+extensions. Deployment requires the coordinated rollout
 below; no production migration is implied by this document.
 
 ## Decision
@@ -18,7 +19,10 @@ possession fact never changes financial entries.
 
 `tenancy_date_records` captures before/after facts, selected context, reason,
 actor, capture time, and source document version/hash references. Explanations
-capture unchanged facts and apply only while their fingerprint matches. Existing
+capture unchanged facts and apply only while their scoped relationship fingerprint
+matches. A reason applies to the exact account/tenancy, selected agreement, and
+involved field values; changing an unrelated update timestamp does not erase it,
+but changing a relevant date requires fresh review. Existing
 audit triggers preserve both domain writes. Public history/feed representations
 exclude private idempotency metadata.
 
@@ -32,6 +36,30 @@ Supabase auth schema; the membership predicate is unchanged.
 Ordinary recorded endings permit an audited start correction inside their
 immutable end bound. Cancelled-before-move-in endings retain their original
 start/end relationship and require a separate lifecycle correction design.
+Planned end dates use ordinary revisioned date corrections, including clearing a
+planned end. An actual recorded ending uses the ending-corrections preview/commit
+pair: `changes.end_date` is required and non-null. Future actual dates require an
+explicit warning confirmation and preserve ended status. Each
+correction appends a record linked to the original immutable ending and prior
+correction. Current reads resolve the latest evidence; the original is not edited.
+An ended tenancy cannot reopen through a correction.
+
+Date context exposes review findings, UTC `as_of_date`/`clock_basis`, and effective
+status. GET/list, search, recipient discovery, date previews, bootstrap, and rent
+rollup use the same effective occupancy policy before the daily updater runs.
+Explicit ended/holdover statuses take priority over date-derived upcoming/active.
+Renewal terms are compared without pretending their term start is original
+possession; a deposit due after known possession end is reviewable, while an
+early actual receipt alone is not a contradiction.
+
+Date-warning acceptance is separate from justification. Notes on date corrections
+and warnings are optional. Explicit acknowledgements bind a rule/version, exact
+fields, UTC date, resulting facts and material context. A changed input requires
+fresh review. Distinct `warning_confirmation` records retain the actor, time,
+context and request identity without labeling an empty note as an explanation.
+Future arrival remains landlord-reported; future ending still ends now; future
+receipts still affect current balances now. The dated statement cutoff stays in
+force. Payment/ending references resolve inside the same transaction as the fact.
 
 ## Refactor boundaries
 
@@ -44,10 +72,9 @@ start/end relationship and require a separate lifecycle correction design.
   activity still includes complete date context/history.
 - Frontend corrections submit the exact reviewed payload and preserve the reason
   when context changes. History exposes the actor, timestamp, and captured evidence.
-- The runtime agent's chat-only date skill prepares a typed command plus captured
-  review. The deterministic approval plan renders the target and before/after facts;
-  only the approved executor sends the command. Generic edits are rejected and stale
-  contexts require a new proposal, never an automatic rebase.
+- Runtime lease extraction is advisory and read-only. Human confirmation in Core's
+  reviewed workflow owns these writes; onboarding adds no runtime Core mutation
+  capability or inferred date command.
 
 ## Deployment
 
@@ -63,10 +90,16 @@ need a separate compatibility deployment; this batch does not claim to provide i
 Old date PATCH clients receive a correction-required error. Do not run only 04
 as a usable correction release: 06 is required on hosted-style auth privileges.
 
-Planned end-date PATCH callers must send the nullable `expected_end_date` captured
-when editing began. Core compares it in the UPDATE; stale values return 409
-without changing the date or any accompanying status. This is an expected-value
-check, not a full revision history or an ABA detector.
+The onboarding extension adds migrations 20260912000008–14, including relationship
+findings and linked actual-ending corrections in 12, canonical read projections
+in 13, and currency-safe rollup in 14. Apply the complete source migration set
+before generating DB types and deploying matching callers.
+
+Changing possession start or planned end through generic PATCH returns
+`date_correction_required`; echoing the unchanged value remains compatible.
+The reviewed command checks date revision, full selected-context fingerprint,
+and expected resulting status in its audited transaction. A stale context returns
+409 without changing facts, money, history, or idempotency completion.
 
 Existing dates and money are preserved. New history starts at deployment;
 prior audit events are retained without inventing reasons. Rollback disables
@@ -78,6 +111,9 @@ An old binary relying on unrestricted date UPDATE is not a valid rollback target
 API tests cover independent dates, correction previews/history, explanation
 staleness and legacy PATCH. DB integration tests cover 13 existing money entries
 plus an allocation, retries, concurrent editors, direct-write/role restrictions,
-ending differences and audit-chain integrity. Import/adoption and PDF tests
-exercise the dependent behavior. The definer-grant allowlist names only the two
-authorized mutation wrappers.
+ending differences, planned ends, immutable ending-correction chains, scoped
+explanation applicability, canonical UTC read models, and audit-chain integrity.
+Import/adoption and PDF tests exercise the dependent behavior. The definer-grant
+allowlist explicitly names the authorized correction/explanation/ending wrappers
+and the narrow billing explanation writer; helper functions gain no public write
+authority.

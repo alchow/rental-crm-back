@@ -1386,13 +1386,21 @@ async function main(): Promise<void> {
     );
     const importPreview = assertStatus(importPreviewR, 200, 'preview old-date import') as {
       result: {
-        blockers: unknown[];
+        blockers: { entity_type: string; field: string; code: string }[];
         counts: Record<string, { created: number; reused: number }>;
         date_defaults: unknown[];
       };
     };
-    if (importPreview.result.blockers.length !== 0)
-      throw new Error(JSON.stringify(importPreview.result.blockers));
+    if (
+      importPreview.result.blockers.length !== 1 ||
+      importPreview.result.blockers[0]?.entity_type !== 'lease' ||
+      importPreview.result.blockers[0]?.field !== 'term_start' ||
+      importPreview.result.blockers[0]?.code !== 'missing_required_field'
+    ) {
+      throw new Error(
+        `missing lease term must remain a blocker: ${JSON.stringify(importPreview.result.blockers)}`,
+      );
+    }
     if (
       importPreview.result.counts.tenancy?.reused !== 1 ||
       importPreview.result.counts.tenancy?.created !== 0
@@ -1421,14 +1429,7 @@ async function main(): Promise<void> {
         token: A.accessToken,
       },
     );
-    const confirmed = assertStatus(confirmR, 200, 'confirm old-date import') as {
-      result: { committed: boolean; counts: Record<string, { created: number; reused: number }> };
-    };
-    if (!confirmed.result.committed || confirmed.result.counts.tenancy?.reused !== 1) {
-      throw new Error(
-        `old-date confirm did not reuse tenancy: ${JSON.stringify(confirmed.result)}`,
-      );
-    }
+    assertStatus(confirmR, 409, 'missing contractual lease start blocks confirmation');
   });
 
   await check(

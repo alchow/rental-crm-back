@@ -129,33 +129,114 @@ reversed allocations using the same current-balance rules.
 
 Charges, payments, allocations, schedules, and rent changes form a subledger.
 Balances are derived from immutable/reversible facts rather than mutable total
-columns. Rent changes are anchored to lease/notice instruments and execute
-through database transactions that preserve schedule and charge integrity, and
-the successor era inherits the predecessor's billing day, end bound, and
-late-fee policy. A schedule may only anchor to a lease that is neither draft
-nor voided.
+columns. The ledger groups totals by currency; the account rollup returns one
+row per tenancy with `currency_totals`, a primary currency and scalar totals
+for that currency only. A paid USD balance does not hide unpaid EUR debt.
+Opening-balance testimony is returned separately as `adoption`; it never becomes
+a charge, receipt, late-fee parent, or received-income total.
 
-Lease mutability is gated by lease status, not by whether a schedule anchors
-the lease (ADR-0014): a draft is freely editable, an executed lease freezes
-`term_start` and its rent terms, a superseded one is read-only. Leases are
-never deleted — `POST /leases/{id}/void` records a reason, and
-`POST /leases/{id}/replace` atomically voids a lease, creates its replacement
-carrying `corrects_lease_id`, and re-points the live schedules that cited the
-old one. A single `leases_guard` trigger enforces all of it, so direct
-database writes obey the same rules as the API.
+Agreement saving belongs to `routes/leases.ts` and writes only a lease. Due
+rules preserve days 1–31, last day, other written text, and unknown. Grace is
+nullable; fee policy distinguishes unknown, none, fixed cents/currency, and a
+written formula. Deposit knowledge distinguishes unknown from none and a stated
+amount. Source and predecessor metadata distinguish manual/document/import
+facts, corrections, renewals, and amendments. No contractual term certifies fee
+enforceability. Drafts remain editable; executed agreement facts require a
+reasoned replacement. Replacement re-points source/display references while
+retaining the original immutable billing and charge snapshots. See ADR-0016.
 
-A schedule's late-fee policy (`grace_days`, `late_fee_cents`) is recorded, not
-enforced: no server process reads it. It lets a client propose a fee that a
-human confirms as an ordinary charge, linked to the bill it derives from by
-`charges.parent_charge_id`, where a partial unique index allows at most one
-live late fee per parent.
+Resumable, whole-tenancy setup belongs to `routes/tenancy-setup/`:
 
-Tenancy adoption (ADR-0013) is the one sanctioned way history enters the
-subledger: `adopt_tenancy_history` atomically creates a schedule, backfilled
-charges, payments with caller-proposed allocations, an optional held deposit,
-and a `tenancy_adoptions` row — on a virgin money timeline only. An opening
-balance lives on the adoption row, never as a charge, so it cannot take a
-late fee or enter income exports. The generator still never backfills.
+```text
+private setup draft + staged upload -> read-only proposed people/agreement/money
+  -> final reviewed confirmation -> one transaction creates or updates domain facts
+  -> immutable setup testimony + completed session result + idempotency result
+```
+
+Saving a session creates no tenancy, person, agreement, charge or receipt. Session
+revision checks protect draft saves. Final confirmation instead fingerprints the
+explicit setup and live domain context, including existing membership: saving
+pending-request metadata cannot invalidate its own review. The exact commit key,
+setup and context can therefore be parked before sending. A session GET by ID
+also returns a completed result when a response was lost; completed session facts
+cannot be rewritten.
+
+The transaction supports new tenancy setup and explicit existing-agreement reuse,
+correction, renewal or billing-only work. Existing possession changes call the
+audited date-correction command inside the same transaction. Existing money is
+reused, not reconstructed; receipt matching uses charge type, currency and due
+order, excluding deleted or transition-cancelled charges. Partial periods remain
+visible while their amount/concession is unconfirmed. Final input, reviewed facts,
+optional notes, actor and server time are inserted into the immutable, audited
+`tenancy_setup_confirmations` table. A failure rolls all domain writes and final
+testimony back together. Draft keystrokes are not evidence events.
+Only the setup command owner can write completion and final testimony; its
+function uses the caller's JWT and keeps account RLS. Agreement and monthly
+billing inputs are normalized before preview and commit, so saved schedules and
+cron use the reviewed due rule. Reusing money still reviews possession against
+the selected agreement and retained schedules.
+
+Setup collects people without classifying who is on the lease; membership rows
+connect people to tenancies and retain their primary, occupant or guarantor role.
+
+Setup-bound document receipts remain private and usable until their active
+session expires. Cleanup first claims expired orphan receipts in the database;
+the claim excludes active bindings and prevents concurrent consumption or
+rebinding. Original/derived provenance is retained together. Expired drafts cannot
+be revived after their uploads become eligible for cleanup. Upload authorization
+is checked before privileged storage work.
+
+Billing setup and transitions belong to `routes/billing-setup/`:
+
+```text
+confirmed agreement or manual/notice basis -> explicit rent/deposit intent
+  -> read-only server preview -> reviewed reasons/history/partial periods
+  -> idempotent atomic commit -> schedule + charges + actual receipts
+  -> allocations + date explanations + independent progress
+```
+
+The database classifies initial, initial-rent-with-existing-money, existing-rent,
+deposit-only, and deferred modes. Existing rent history requires an explicit
+successor instruction. Newly collected facts commit together under the shared
+financial lock; retries recover the same IDs. Selecting an existing deposit or
+credit reuses its ID. A missing deposit due date supports an unallocated receipt
+without manufacturing an obligation date. Setup never enables the account's
+generator switch or changes possession status.
+
+Version-2 and version-3 schedules separate coverage from due dates. `_billing_period` owns the
+period calculation for preview, commit, scheduled manual creation, and the
+generator. Partial first/final periods require explicit amount/due date or a
+reasoned zero-charge concession. Immutable period overrides and canonical cycle
+keys keep setup and cron from claiming the same cycle twice, including voided
+cycles. Legacy version-1 schedules retain their due-grid periods and amounts.
+History review includes coverage already started or an obligation already due,
+even if its coverage starts later. Explicit overdue future overrides also require
+review; the generator does not recover missed historical obligations.
+Complete successor instructions replace billing eras without inheriting omitted
+policy; the legacy rent-change adapter retains its compatibility semantics.
+Version 3 adds a confirmed day-of-month (1–31) or last-day rule. Its explicit
+short-month policy either uses that month's last day or requires a manual period
+override. Calendar coverage never shifts to the due day. Grace days are nullable
+and nonnegative; longer recorded periods are not silently reduced to 30 days.
+
+Schedules and generated charges capture their applicable terms/basis. No process
+automatically charges a late fee; a human confirms an ordinary fee charge linked
+through `charges.parent_charge_id`. Other written contractual rules remain
+recorded; automated billing needs a separately confirmed calculable monthly rule.
+Legacy schedule creation still exposes its day 1–28 compatibility contract.
+
+An explicitly undated setup receipt stores `received_at = null` with
+`receipt_date_unknown = true` and records when it was entered separately. Current
+balances include it; any dated ledger/PDF cutoff excludes it because its receipt
+date is unknown. Neither entry time nor possession start becomes a receipt date.
+Receipt date knowledge and entry source are immutable. Setup-entered receipt
+dates are frozen as well; corrections use reasoned void/re-record rather than
+rewriting the captured provenance. Legacy/manual date-edit semantics are unchanged.
+
+The legacy adoption endpoint retains its virgin-timeline restriction (ADR-0013).
+The new setup command also handles initial rent with an existing deposit/credit,
+without reopening adoption or overwriting opening testimony. The generator
+continues to create the next eligible period rather than historical backfill.
 
 ## Imports and Background Work
 
@@ -167,15 +248,62 @@ date RPCs and append `tenancy_date_records`. Correction and idempotency response
 commit together. A dedicated function-owner role authorizes protected date
 updates; caller-set flags cannot bypass the guard. See ADR-0015.
 
-The context fingerprint captures the selected lease/schedule and possession
-facts. Stale edits conflict; an old explanation remains historical when its
-context changes. Date corrections never mutate the subledger. Evidence exports
+The context fingerprint captures selected lease/schedule identities, possession
+facts, recorded ending and live deposit due dates. Structured findings carry
+their rule/version, involved fields/values, and a relationship fingerprint.
+Reasons apply to those exact values; unrelated metadata changes do not erase an
+applicable reason. A renewal is not compared against original possession start.
+New explanation records mark their scoped format explicitly. An empty scope
+explains nothing; only older unscoped records infer their covered relationships
+from the saved context.
+Planned possession ends use the same revision/context correction command.
+Actual ending corrections append `ending_correction` records linked to the
+original immutable ending and any prior correction; current views resolve the
+latest corrected date. Cancellation constraints and ended status remain intact.
+Date corrections never mutate the subledger. Evidence exports
 include complete date history alongside current metadata, even when financial
 activity has a cutoff. Import resolution considers old-start correction aliases
 under the same per-unit identity lock used by corrections.
 
+Date differences and future reported actual arrival, actual ending, and receipt
+dates use typed warnings. Preview returns exact values, rule/version, UTC clock,
+and a fingerprint; commit recomputes them and requires explicit
+`warning_acknowledgements`. Notes are optional. A `warning_confirmation` in
+`tenancy_date_records` records acceptance separately from an explanation, with
+actor, request identity, captured context, and account-safe payment/ending links.
+Confirmation without a note never becomes a justification. Financial commands
+and history commit atomically under the existing financial lock; transport retries
+return the same saved IDs. The narrow date-writer role retains FORCE-RLS and live
+account membership when writing billing setup and reviewed receipt/ending commands.
+
+Future actual ending still ends the tenancy and stops generation immediately.
+Future receipts still affect today's allocations/balance immediately; an explicit
+ledger/PDF cutoff before the receipt date excludes them. Direct inserts, legacy
+RPCs, bootstrap and imports cannot bypass confirmation: unreviewed future facts
+fail. Creation/import callers first create the base tenancy, then use the audited
+date preview/correction flow to confirm a future reported arrival; no field is
+silently rewritten or dropped.
+
+`effective_tenancy_status` uses a UTC calendar date, preserving explicit ended
+and holdover states. `tenancy_current`, date context, progress, search, recipient
+tenancy selection and rollup use this same projection before the daily job
+materializes status. Billing/payment/condition completion is not a lifecycle
+input. The atomic bootstrap creates the tenancy and primary member together.
+Onboarding progress stores selections, revision confirmations and deferrals;
+domain records determine whether condition and billing work exists.
+Whole-tenancy setup stages proposed facts before final confirmation rather than
+bootstrapping domain records merely to continue editing. The independent
+bootstrap, agreement, progress and billing APIs remain available for existing
+clients and ordinary work. Condition evidence remains independent of possession
+and financial setup. The old standalone possession URL redirects to agreement
+setup; compatibility progress does not manufacture a possession confirmation.
+
 Imports separate recognition/mapping from execution. Preview and commit share
-the same executor semantics. In-process jobs use persisted status rows as the
+the same executor semantics. Lease import requires explicit term start/currency
+and preserves agreed due/grace/fee/deposit knowledge; possession dates and schedule
+defaults never become contractual facts. Runtime PDF extraction remains advisory
+and read-only: omissions stay null/unknown until a human confirms them.
+In-process jobs use persisted status rows as the
 truth; boot recovery marks orphaned work honestly rather than leaving it
 pending forever. Horizontal scale-out requires the checklist in ADR-0005.
 

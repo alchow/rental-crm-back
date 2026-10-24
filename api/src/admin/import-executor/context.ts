@@ -52,7 +52,6 @@ export class ExecCtx {
   private propertyCache = new Map<string, string>();
   private areaCache = new Map<string, string>();
   private tenantCache = new Map<string, string>();
-  private leaseCache = new Set<string>();
   private rentScheduleCache = new Set<string>();
   // Snapshot live account rows once per transaction so per-row SELECTs disappear. A value is an
   // id, or AMBIGUOUS when >1 live row shares the key. Rows the run itself
@@ -906,22 +905,11 @@ export class ExecCtx {
                   accountId: this.accountId,
                   row,
                   tenancyId: resolvedTenancyId,
-                  tenancyStart: tenancy.startDate,
-                  tenancyEnd: tenancy.endDate,
-                  tenancyWasCreated,
                   fields,
-                  cache: this.leaseCache,
                   getValue: (field) => this.getValue(fields, field, row.raw),
                   block: (field, code, message) =>
                     this.blockRow(row, 'lease', field, code, message),
                   recordDate: (field, raw, iso) => this.recordDate(field, raw, iso),
-                  recordDefault: (value) =>
-                    this.dateDefaults.push({
-                      field: 'lease.term_start',
-                      value,
-                      source: 'possession_start',
-                      reason: 'new_tenancy_default',
-                    }),
                   reused: () => this.recordReused('lease'),
                   created: async (id) => {
                     this.recordCreated('lease', id);

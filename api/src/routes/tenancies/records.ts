@@ -19,18 +19,21 @@ import { AccountAndIdParam, AccountParam, Tenancy } from './schemas';
 
 const PatchTenancyBody = z
   .object({
-    end_date: CalendarDate.nullable().optional(),
+    end_date: CalendarDate.nullable().optional().openapi({
+      deprecated: true,
+      description:
+        'Compatibility echo only. Changed planned possession end dates require POST /date-corrections; recorded endings require POST /ending-corrections.',
+    }),
     expected_end_date: CalendarDate.nullable().optional().openapi({
-      description: 'Required with end_date. The end date seen when editing began; null means no end date. A changed stored value returns 409 tenancy_end_date_changed.',
+      description:
+        'Required with end_date. The end date seen when editing began; null means no end date. A changed stored value returns 409 tenancy_end_date_changed.',
     }),
     status: TenancyStatus.optional(),
-    start_date: CalendarDate
-      .optional()
-      .openapi({
-        deprecated: true,
-        description:
-          'Deprecated compatibility field. The current value is accepted as a no-op. A changed value returns date_correction_required; use POST /date-corrections.',
-      }),
+    start_date: CalendarDate.optional().openapi({
+      deprecated: true,
+      description:
+        'Deprecated compatibility field. The current value is accepted as a no-op. A changed value returns date_correction_required; use POST /date-corrections.',
+    }),
   })
   .refine((b) => Object.keys(b).length > 0, {
     message: 'at least one field is required',
@@ -132,7 +135,7 @@ tenancyRecordsApp.openapi(list, async (c) => {
   const { accountId } = c.req.valid('param');
   const { cursor, limit, area_id, status } = c.req.valid('query');
   const sb = getSb(c);
-  let q = sb.from('tenancies').select('*').eq('account_id', accountId).is('deleted_at', null);
+  let q = sb.from('tenancy_current').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (area_id) q = q.eq('area_id', area_id);
   const statuses = parseCsvEnum(status, TenancyStatus.options, 'status');
   if (statuses) {
@@ -147,7 +150,7 @@ tenancyRecordsApp.openapi(get, async (c) => {
   const { accountId, id } = c.req.valid('param');
   const sb = getSb(c);
   const { data, error } = await sb
-    .from('tenancies')
+    .from('tenancy_current')
     .select('*')
     .eq('account_id', accountId)
     .eq('id', id)
@@ -193,8 +196,12 @@ tenancyRecordsApp.openapi(create, async (c) => {
     if (error.code === '23514') {
       throw new ApiError(400, 'invalid_request', error.message);
     }
-    if (error.code === '22023' && /actual_move_in_in_future/i.test(error.message)) {
-      throw new ApiError(400, 'actual_move_in_in_future', 'actual_move_in_date cannot be in the future');
+    if (error.code === '22023') {
+      throw new ApiError(
+        400,
+        'invalid_request',
+        'A future actual arrival requires review. Create the tenancy, then preview and confirm the reported actual arrival through date corrections.',
+      );
     }
     throw new ApiError(500, 'database_error', error.message);
   }
@@ -208,7 +215,7 @@ tenancyRecordsApp.openapi(patch, async (c) => {
 
   // Compatibility only. Corrections need a reason and immutable history, so
   // the audited command owns every real change regardless of ledger contents.
-  if (body.start_date !== undefined) {
+  if (body.start_date !== undefined || body.end_date !== undefined) {
     const { data: current, error: curErr } = await sb
       .from('tenancies')
       .select('start_date, end_date, status')
@@ -219,10 +226,25 @@ tenancyRecordsApp.openapi(patch, async (c) => {
     if (curErr) throw new ApiError(500, 'database_error', curErr.message);
     if (!current) throw new ApiError(404, 'not_found', 'not found');
 
-    if (body.start_date !== current.start_date) {
-      throw new ApiError(409, 'date_correction_required', 'Use the audited tenancy date correction endpoint.', {
-        correction_endpoint: `/v1/accounts/${accountId}/tenancies/${id}/date-corrections`,
-      });
+    if (body.start_date !== undefined && body.start_date !== current.start_date) {
+      throw new ApiError(
+        409,
+        'date_correction_required',
+        'Use the audited tenancy date correction endpoint.',
+        {
+          correction_endpoint: `/v1/accounts/${accountId}/tenancies/${id}/date-corrections`,
+        },
+      );
+    }
+    if (body.end_date !== undefined && body.end_date !== current.end_date) {
+      throw new ApiError(
+        409,
+        'date_correction_required',
+        'Use the audited tenancy date correction endpoint.',
+        {
+          correction_endpoint: `/v1/accounts/${accountId}/tenancies/${id}/${current.status === 'ended' ? 'ending-corrections' : 'date-corrections'}`,
+        },
+      );
     }
   }
 
@@ -237,9 +259,10 @@ tenancyRecordsApp.openapi(patch, async (c) => {
     .is('deleted_at', null);
   // Compare in the UPDATE itself so a concurrent writer cannot slip between a read and write.
   if (body.expected_end_date !== undefined) {
-    query = body.expected_end_date === null
-      ? query.is('end_date', null)
-      : query.eq('end_date', body.expected_end_date);
+    query =
+      body.expected_end_date === null
+        ? query.is('end_date', null)
+        : query.eq('end_date', body.expected_end_date);
   }
   const { data, error } = await query.select('*').maybeSingle();
   if (error) {
@@ -250,10 +273,20 @@ tenancyRecordsApp.openapi(patch, async (c) => {
   }
   if (!data) {
     if (body.expected_end_date !== undefined) {
-      const { data: current, error: readError } = await sb.from('tenancies').select('id')
-        .eq('account_id', accountId).eq('id', id).is('deleted_at', null).maybeSingle();
+      const { data: current, error: readError } = await sb
+        .from('tenancies')
+        .select('id')
+        .eq('account_id', accountId)
+        .eq('id', id)
+        .is('deleted_at', null)
+        .maybeSingle();
       if (readError) throw new ApiError(500, 'database_error', readError.message);
-      if (current) throw new ApiError(409, 'tenancy_end_date_changed', 'The tenancy end date changed. Review the latest value before saving.');
+      if (current)
+        throw new ApiError(
+          409,
+          'tenancy_end_date_changed',
+          'The tenancy end date changed. Review the latest value before saving.',
+        );
     }
     throw new ApiError(404, 'not_found', 'not found');
   }
