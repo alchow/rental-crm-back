@@ -1,3 +1,4 @@
+import { registerMediaRoutes } from './comms/media';
 import { registerTenantHistoryRoute } from './comms/tenant-history';
 import { newApiApp } from './_lib/app';
 import { registerAttachmentRoutes } from './comms/attachments';
@@ -19,3 +20,5 @@ registerPolicyRoutes(commsApp);
 registerPlatformNumberRoutes(commsApp);
 
 registerTenantHistoryRoute(commsApp);
+
+registerMediaRoutes(commsApp);

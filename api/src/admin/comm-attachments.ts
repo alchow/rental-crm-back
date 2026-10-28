@@ -1,19 +1,7 @@
-// Comm attachment store (admin-side, service-role).
-//
-// Durable blobs for attachments on comm-captured journal rows. Same posture
-// as the evidence archive (evidence.ts): the private 'comm-attachments'
-// bucket has NO authenticated storage policies, so bytes move only through
-// this module; paths are server-constructed and content-addressed
-// (`<account>/<interaction>/<sha256>`), so callers never choose where bytes
-// land and identical payloads dedupe per message.
-//
-// The metadata row lives on the existing polymorphic `attachments` table
-// (entity_type='interactions'); members read rows under the normal RLS
-// policy — only the BYTES are service-mediated (download below re-checks the
-// row's account before touching storage).
-
 import { createHash } from 'node:crypto';
 import { getAdminClient } from './supabase-admin';
+import { readAttachmentBytes } from './storage/locator';
+import { commDbError } from '../routes/comms/shared';
 import { ApiError } from '../routes/_lib/error';
 
 const BUCKET = 'comm-attachments';
@@ -21,7 +9,7 @@ const BUCKET = 'comm-attachments';
 /** Per-file cap. Mail providers top out near 25 MiB per MESSAGE; a single
  *  oversized part is the transport's problem to drop, not ours to store. */
 export const MAX_COMM_ATTACHMENT_BYTES = 10 * 1024 * 1024; // 10 MiB
-/** Per-message cap — matches the capture media[] cap. */
+/** Distinct stored files; excess provider slots retain rejected outcomes. */
 export const MAX_COMM_ATTACHMENTS_PER_MESSAGE = 10;
 
 export interface CommAttachmentRow {
@@ -32,8 +20,6 @@ export interface CommAttachmentRow {
   content_hash: string;
   created_at: string;
 }
-
-const ATTACHMENT_COLS = 'id, filename, mime_type, size_bytes, content_hash, created_at';
 
 /**
  * Store one attachment for a comm-captured interaction: bytes into the
@@ -48,6 +34,7 @@ export async function storeCommAttachment(
   filename: string,
   contentType: string,
   bytes: Uint8Array,
+  mediaSlotId?: string,
 ): Promise<CommAttachmentRow> {
   if (bytes.byteLength === 0) {
     throw new ApiError(400, 'invalid_request', 'attachment decodes to zero bytes');
@@ -74,42 +61,26 @@ export async function storeCommAttachment(
     throw new ApiError(500, 'database_error', `attachment upload failed: ${upErr.message}`);
   }
 
-  const { data, error } = await admin
-    .from('attachments')
-    .insert({
-      account_id: accountId,
-      entity_type: 'interactions',
-      entity_id: interactionId,
-      storage_path: storagePath,
-      content_hash: sha256,
-      mime_type: contentType || null,
-      size_bytes: bytes.byteLength,
-      filename,
-    })
-    .select(ATTACHMENT_COLS)
-    .single();
-  if (error) {
-    if (error.code === '23505') {
-      // Same content already attached to this interaction: idempotent.
-      const { data: existing, error: exErr } = await admin
-        .from('attachments')
-        .select(ATTACHMENT_COLS)
-        .eq('account_id', accountId)
-        .eq('entity_type', 'interactions')
-        .eq('entity_id', interactionId)
-        .eq('content_hash', sha256)
-        // The content-idempotency unique index is PARTIAL on `deleted_at is
-        // null`, so after a soft-delete + re-upload of identical bytes a
-        // tombstone and a live row coexist for this (interaction, content);
-        // filtering to the live row keeps `.single()` matching exactly one.
-        .is('deleted_at', null)
-        .single();
-      if (exErr) throw new ApiError(500, 'database_error', exErr.message);
-      return existing as CommAttachmentRow;
-    }
-    throw new ApiError(500, 'database_error', `attachment row insert failed: ${error.message}`);
-  }
-  return data as CommAttachmentRow;
+  const { data, error } = await admin.rpc('store_comm_attachment', {
+    p_account_id: accountId,
+    p_interaction_id: interactionId,
+    p_filename: filename,
+    p_content_type: contentType,
+    p_storage_path: storagePath,
+    p_content_hash: sha256,
+    p_size_bytes: bytes.byteLength,
+    p_media_slot_id: mediaSlotId,
+  });
+  if (error) throw commDbError(error);
+  const row = data as CommAttachmentRow;
+  return {
+    id: row.id,
+    filename: row.filename,
+    mime_type: row.mime_type,
+    size_bytes: row.size_bytes,
+    content_hash: row.content_hash,
+    created_at: row.created_at,
+  };
 }
 
 export interface CommAttachmentDownload {
@@ -132,7 +103,7 @@ export async function downloadCommAttachment(
   const admin = getAdminClient();
   const { data: row, error } = await admin
     .from('attachments')
-    .select('storage_path, mime_type, filename')
+    .select('account_id, storage_bucket, storage_path, content_hash, mime_type, filename')
     .eq('account_id', accountId)
     .eq('entity_type', 'interactions')
     .eq('entity_id', interactionId)
@@ -142,14 +113,9 @@ export async function downloadCommAttachment(
   if (error) throw new ApiError(500, 'database_error', error.message);
   if (!row) throw new ApiError(404, 'not_found', 'not found');
 
-  const { data: blob, error: dlErr } = await admin.storage
-    .from(BUCKET)
-    .download(row.storage_path as string);
-  if (dlErr || !blob) {
-    throw new ApiError(500, 'database_error', `attachment download failed: ${dlErr?.message}`);
-  }
+  const bytes = await readAttachmentBytes(row);
   return {
-    bytes: new Uint8Array(await blob.arrayBuffer()),
+    bytes,
     mimeType: (row.mime_type as string | null) ?? 'application/octet-stream',
     filename: (row.filename as string | null) ?? 'attachment',
   };

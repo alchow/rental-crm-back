@@ -1,13 +1,8 @@
+import { readAttachmentBytes } from './locator';
 import { createHash } from 'node:crypto';
 import { getAdminClient } from '../supabase-admin';
 import { ApiError } from '../../routes/_lib/error';
-import {
-  ALLOWED_ENTITY_TYPES,
-  BUCKET,
-  processAndStoreBytes,
-  safeFilename,
-  type StoragePut,
-} from './blobs';
+import { ALLOWED_ENTITY_TYPES, processAndStoreBytes, safeFilename, type StoragePut } from './blobs';
 
 export interface UploadInput {
   accountId: string;
@@ -25,6 +20,7 @@ export interface AttachmentRow {
   entity_type: string;
   entity_id: string;
   storage_path: string;
+  storage_bucket: string | null;
   content_hash: string;
   mime_type: string | null;
   size_bytes: number | null;
@@ -252,7 +248,9 @@ export async function downloadAttachment(
   const admin = getAdminClient();
   const { data: row, error: metaErr } = await admin
     .from('attachments')
-    .select('id, account_id, entity_type, entity_id, storage_path, content_hash, mime_type')
+    .select(
+      'id, account_id, entity_type, entity_id, storage_bucket, storage_path, content_hash, mime_type, filename',
+    )
     .eq('account_id', accountId)
     .eq('id', attachmentId)
     .is('deleted_at', null)
@@ -260,22 +258,12 @@ export async function downloadAttachment(
   if (metaErr) throw new ApiError(500, 'database_error', metaErr.message);
   if (!row) throw new ApiError(404, 'not_found', 'attachment not found');
 
-  const { data: blob, error: dlErr } = await admin.storage
-    .from(BUCKET)
-    .download(row.storage_path as string);
-  if (dlErr || !blob) {
-    throw new ApiError(
-      500,
-      'database_error',
-      `storage download failed: ${dlErr?.message ?? 'no data'}`,
-    );
-  }
-  const buf = new Uint8Array(await blob.arrayBuffer());
+  const buf = await readAttachmentBytes(row);
   const mime = (row.mime_type as string | null) ?? 'application/octet-stream';
   return {
     bytes: buf,
     mimeType: mime,
-    filename: safeFilename(`${row.entity_type}-${row.id}`, mime),
+    filename: safeFilename(row.filename ?? `${row.entity_type}-${row.id}`, mime),
     contentHash: row.content_hash as string,
   };
 }

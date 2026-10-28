@@ -10766,6 +10766,117 @@
           "is_cc"
         ]
       },
+      "CommMediaFailureCode": {
+        "type": "string",
+        "enum": [
+          "invalid_descriptor",
+          "too_many_files",
+          "file_too_large",
+          "unsupported_content",
+          "blocked_url",
+          "source_unavailable",
+          "authentication_failed",
+          "download_failed",
+          "upload_failed",
+          "processing_failed",
+          "message_withdrawn"
+        ]
+      },
+      "CommAttachment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "filename": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mime_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "filename",
+          "mime_type",
+          "size_bytes",
+          "content_hash",
+          "created_at"
+        ]
+      },
+      "CommMessageMedia": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "provider_media_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "retrying",
+              "saved",
+              "failed",
+              "rejected"
+            ]
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CommMediaFailureCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "attachment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CommAttachment"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "provider_media_index",
+          "state",
+          "failure_code",
+          "updated_at",
+          "attachment"
+        ]
+      },
       "CaptureCommInboundResponse": {
         "type": "object",
         "properties": {
@@ -10796,13 +10907,20 @@
           },
           "participant": {
             "$ref": "#/components/schemas/CommThreadParticipant"
+          },
+          "media": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommMessageMedia"
+            }
           }
         },
         "required": [
           "disposition",
           "interaction_id",
           "thread_id",
-          "participant"
+          "participant",
+          "media"
         ]
       },
       "CommInboundMedia": {
@@ -10813,14 +10931,22 @@
             "minLength": 1,
             "maxLength": 2000
           },
+          "provider_media_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "rejection_code": {
+            "$ref": "#/components/schemas/CommMediaFailureCode"
+          },
           "content_type": {
             "type": "string",
             "maxLength": 200
           }
-        },
-        "required": [
-          "url"
-        ]
+        }
       },
       "CommAuthResults": {
         "type": "object",
@@ -10915,7 +11041,7 @@
             "items": {
               "$ref": "#/components/schemas/CommInboundMedia"
             },
-            "maxItems": 20
+            "maxItems": 100
           },
           "received_at": {
             "type": "string",
@@ -11347,7 +11473,7 @@
             "items": {
               "$ref": "#/components/schemas/CommInboundMedia"
             },
-            "maxItems": 20
+            "maxItems": 100
           },
           "rfc822_message_id": {
             "type": "string",
@@ -12044,13 +12170,20 @@
                 "items": {
                   "$ref": "#/components/schemas/CommRelayLeg"
                 }
+              },
+              "media": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CommMessageMedia"
+                }
               }
             },
             "required": [
               "delivery_status",
               "delivered_at",
               "outbox_id",
-              "relay_legs"
+              "relay_legs",
+              "media"
             ]
           }
         ]
@@ -12221,50 +12354,13 @@
           "address"
         ]
       },
-      "CommAttachment": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "filename": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "mime_type": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "size_bytes": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "content_hash": {
-            "type": "string"
-          },
-          "created_at": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "filename",
-          "mime_type",
-          "size_bytes",
-          "content_hash",
-          "created_at"
-        ]
-      },
       "UploadCommAttachmentBody": {
         "type": "object",
         "properties": {
+          "media_slot_id": {
+            "type": "string",
+            "format": "uuid"
+          },
           "filename": {
             "type": "string",
             "minLength": 1,
@@ -12630,6 +12726,45 @@
           "data",
           "next_cursor",
           "snapshot"
+        ]
+      },
+      "CommMessageMediaList": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommMessageMedia"
+            }
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "CommMediaOutcomeBody": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "retrying",
+              "failed",
+              "rejected"
+            ]
+          },
+          "failure_code": {
+            "$ref": "#/components/schemas/CommMediaFailureCode"
+          },
+          "attempt_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        },
+        "required": [
+          "state",
+          "failure_code"
         ]
       },
       "OwnerPhoneResponse": {
@@ -34453,7 +34588,7 @@
         "tags": [
           "comms"
         ],
-        "summary": "Attach original file bytes to a comm-captured journal row (transport). Only rows written by the verified capture paths accept attachments; the transport uploads AFTER capture using the returned interaction_id (skip on duplicate). Idempotent per (interaction, content): a retry returns the existing attachment.",
+        "summary": "Attach original file bytes to a comm-captured journal row (transport). Only rows written by the verified capture paths accept attachments; the transport uploads after capture, including duplicate capture replays. Idempotent per (interaction, content): a retry returns the existing attachment.",
         "parameters": [
           {
             "schema": {
@@ -35324,6 +35459,236 @@
           },
           "404": {
             "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/interactions/{interactionId}/media": {
+      "get": {
+        "tags": [
+          "comms"
+        ],
+        "summary": "Current provider media outcomes and stored files from the record chain root.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "interactionId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "media",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommMessageMediaList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/interactions/{interactionId}/media/{mediaSlotId}/outcome": {
+      "post": {
+        "tags": [
+          "comms"
+        ],
+        "summary": "Report a transport media outcome; saved and rejected outcomes cannot regress.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "interactionId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "mediaSlotId",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommMediaOutcomeBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "media outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommMessageMedia"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource",
             "content": {
               "application/json": {
                 "schema": {

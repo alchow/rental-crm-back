@@ -1,6 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { createHash } from 'node:crypto';
-import { getAdminClient } from '../supabase-admin';
+import { readAttachmentBytes } from '../storage/locator';
 import type { AttachmentRow, ChainStatus, ExportData, ExportScope } from '../export-pdf';
 import {
   deriveLedger,
@@ -616,14 +616,12 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
       if (a.derived_from) derivativesByOriginal.set(a.derived_from, a);
     }
 
-    const admin = getAdminClient();
     for (const p of photoOriginals) {
       const isHeic = p.mime_type === 'image/heic' || p.mime_type === 'image/heif';
       const renderRow = isHeic ? (derivativesByOriginal.get(p.id) ?? p) : p;
       let bytes: Uint8Array | null = null;
       try {
-        const dl = await admin.storage.from('attachments').download(renderRow.storage_path);
-        if (!dl.error && dl.data) bytes = new Uint8Array(await dl.data.arrayBuffer());
+        bytes = await readAttachmentBytes(renderRow);
       } catch {
         /* fall through to placeholder */
       }
@@ -661,7 +659,7 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
           .fontSize(9)
           .fillColor('#a00')
           .text(
-            `[photo ${p.id} of type ${p.mime_type ?? '?'} could not be embedded -- bytes available at storage_path]`,
+            `[photo ${p.id} of type ${p.mime_type ?? '?'} could not be embedded -- download the original attachment]`,
           )
           .fillColor('#000');
       }

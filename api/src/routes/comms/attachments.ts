@@ -2,11 +2,7 @@ import { createRoute } from '@hono/zod-openapi';
 import type { z } from '@hono/zod-openapi';
 import { getSb } from '../../supabase/request-client';
 import { ApiError, errorResponses } from '../_lib/error';
-import {
-  downloadCommAttachment,
-  MAX_COMM_ATTACHMENTS_PER_MESSAGE,
-  storeCommAttachment,
-} from '../../admin/comm-attachments';
+import { downloadCommAttachment, storeCommAttachment } from '../../admin/comm-attachments';
 import {
   CommAttachment,
   CommAttachmentListResponse,
@@ -23,8 +19,8 @@ export function registerAttachmentRoutes(app: CommsApp): void {
     summary:
       'Attach original file bytes to a comm-captured journal row (transport). ' +
       'Only rows written by the verified capture paths accept attachments; the ' +
-      'transport uploads AFTER capture using the returned interaction_id (skip ' +
-      'on duplicate). Idempotent per (interaction, content): a retry returns ' +
+      'transport uploads after capture, including duplicate capture replays. ' +
+      'Idempotent per (interaction, content): a retry returns ' +
       'the existing attachment.',
     request: {
       params: InteractionAttachmentParams,
@@ -100,28 +96,13 @@ export function registerAttachmentRoutes(app: CommsApp): void {
       );
     }
 
-    const { count, error: cntErr } = await sb
-      .from('attachments')
-      .select('id', { count: 'exact', head: true })
-      .eq('account_id', accountId)
-      .eq('entity_type', 'interactions')
-      .eq('entity_id', interactionId)
-      .is('deleted_at', null);
-    if (cntErr) throw commDbError(cntErr);
-    if ((count ?? 0) >= MAX_COMM_ATTACHMENTS_PER_MESSAGE) {
-      throw new ApiError(
-        400,
-        'invalid_request',
-        `a message carries at most ${MAX_COMM_ATTACHMENTS_PER_MESSAGE} stored attachments`,
-      );
-    }
-
     const row = await storeCommAttachment(
       accountId,
       interactionId,
       body.filename,
       body.content_type,
       bytes,
+      body.media_slot_id,
     );
     return c.json(row, 201);
   });

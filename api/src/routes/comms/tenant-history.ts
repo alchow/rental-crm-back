@@ -1,3 +1,4 @@
+import { loadMessageMedia } from './media-read';
 import { createRoute, z } from '@hono/zod-openapi';
 import { getSb } from '../../supabase/request-client';
 import { ApiError, errorResponses } from '../_lib/error';
@@ -72,9 +73,10 @@ export function registerTenantHistoryRoute(app: CommsApp): void {
       const threadIds = [
         ...new Set(items.flatMap((r) => (r.thread_id ? [String(r.thread_id)] : []))),
       ];
-      const [casts, legs, threads] = await Promise.all([
+      const [casts, legs, media, threads] = await Promise.all([
         loadInteractionParticipants(sb, accountId, ids),
         loadRelayLegs(c, accountId, ids),
+        loadMessageMedia(sb, accountId, ids),
         threadIds.length
           ? sb
               .from('comm_threads')
@@ -94,6 +96,7 @@ export function registerTenantHistoryRoute(app: CommsApp): void {
             ...(m.deleted_at ? { body: null, party_label: null } : {}),
             participants: m.deleted_at ? [] : (casts.get(String(m.id)) ?? []),
             relay_legs: legs.get(String(m.id)) ?? [],
+            media: m.deleted_at ? [] : (media.get(String(m.id)) ?? []),
             thread: m.thread_id ? (byId.get(String(m.thread_id)) ?? null) : null,
           })),
         } as z.infer<typeof HistoryPage>,

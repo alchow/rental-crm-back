@@ -344,6 +344,41 @@ $$;
 ALTER FUNCTION "public"."_billing_period_needs_history_review"("p_period" "jsonb", "p_as_of" "date") OWNER TO "postgres";
 
 --
+-- Name: _capture_comm_media(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_capture_comm_media"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare item jsonb; ordinal integer; idx integer; reason text; accepted integer:=0;
+begin
+  if new.matched_account_id is null or new.provider<>'telnyx' or new.payload->>'channel'<>'sms' then return new; end if;
+  for item, ordinal in select value, ordinality::integer from jsonb_array_elements(
+    case when jsonb_typeof(new.payload->'media')='array' then new.payload->'media' else '[]'::jsonb end
+  ) with ordinality loop
+    idx := coalesce((item->>'provider_media_index')::integer,ordinal-1);
+    reason := item->>'rejection_code';
+    if reason is null and coalesce((item->>'size_bytes')::bigint,0)>10485760 then reason:='file_too_large'; end if;
+    if reason is null then
+      if accepted>=10 then reason:='too_many_files'; else accepted:=accepted+1; end if;
+    end if;
+    insert into public.comm_message_media(account_id,provider_msg_id,interaction_id,provider_media_index,
+      declared_content_type,declared_size_bytes,state,failure_code)
+    values(new.matched_account_id,new.provider_msg_id,new.matched_interaction_id,idx,
+      item->>'content_type',(item->>'size_bytes')::bigint,
+      case when reason is null then 'pending' else 'rejected' end,reason)
+    on conflict(account_id,provider_msg_id,provider_media_index) do update
+      set interaction_id=excluded.interaction_id
+      where comm_message_media.interaction_id is null and excluded.interaction_id is not null;
+  end loop;
+  return new;
+end $$;
+
+
+ALTER FUNCTION "public"."_capture_comm_media"() OWNER TO "postgres";
+
+--
 -- Name: _capture_known_source(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -2120,6 +2155,53 @@ $_$;
 
 
 ALTER FUNCTION "public"."_guard_attachment_insert_path"() OWNER TO "postgres";
+
+--
+-- Name: _guard_attachment_locator(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_guard_attachment_locator"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  if tg_op='UPDATE' and ((new.storage_path,new.content_hash) is distinct from (old.storage_path,old.content_hash)
+    or (new.storage_bucket is distinct from old.storage_bucket and not (old.storage_bucket is null and new.storage_bucket is not null and current_user in ('postgres','service_role')))) then
+    raise exception 'attachment storage identity is immutable' using errcode='23514';
+  end if;
+  if tg_op='INSERT' and new.storage_bucket='comm-attachments' and current_user not in ('postgres','service_role') then
+    raise exception 'communication storage is server controlled' using errcode='42501';
+  end if;
+  return new;
+end $$;
+
+
+ALTER FUNCTION "public"."_guard_attachment_locator"() OWNER TO "postgres";
+
+--
+-- Name: _guard_comm_media(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_guard_comm_media"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  if (new.account_id,new.provider_msg_id,new.provider_media_index) is distinct from (old.account_id,old.provider_msg_id,old.provider_media_index)
+    or (old.interaction_id is not null and new.interaction_id is distinct from old.interaction_id) then
+    raise exception 'media identity is immutable' using errcode='23514';
+  end if;
+  if old.state in ('saved','rejected') and (new.state,new.attachment_id,new.failure_code) is distinct from (old.state,old.attachment_id,old.failure_code) then
+    raise exception 'terminal media outcome is immutable' using errcode='23514';
+  end if;
+  if new.attempt_generation<old.attempt_generation or (old.state='failed' and new.state not in ('failed','saved') and new.attempt_generation<=old.attempt_generation) then
+    raise exception 'media retry requires a new generation' using errcode='23514';
+  end if;
+  return new;
+end $$;
+
+
+ALTER FUNCTION "public"."_guard_comm_media"() OWNER TO "postgres";
 
 --
 -- Name: _guard_onboarding_progress(); Type: FUNCTION; Schema: public; Owner: postgres
@@ -9545,6 +9627,25 @@ $$;
 ALTER FUNCTION "public"."inspection_checkout_diff"("p_account_id" "uuid", "p_checkout_inspection_id" "uuid") OWNER TO "postgres";
 
 --
+-- Name: interaction_media_root("uuid", "uuid"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."interaction_media_root"("p_account_id" "uuid", "p_interaction_id" "uuid") RETURNS "uuid"
+    LANGUAGE "sql" STABLE
+    SET "search_path" TO 'public'
+    AS $$
+  with recursive parents as (
+    select id,corrects_id,deleted_at from public.interactions where account_id=p_account_id and id=p_interaction_id
+    union all
+    select i.id,i.corrects_id,i.deleted_at from public.interactions i join parents p on i.id=p.corrects_id
+      where i.account_id=p_account_id
+  ) select id from parents where corrects_id is null and deleted_at is null;
+$$;
+
+
+ALTER FUNCTION "public"."interaction_media_root"("p_account_id" "uuid", "p_interaction_id" "uuid") OWNER TO "postgres";
+
+--
 -- Name: account_members; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -11496,6 +11597,63 @@ end $$;
 ALTER FUNCTION "public"."replace_lease_terms"("p_account_id" "uuid", "p_lease_id" "uuid", "p_void_reason" "text", "p_term_start" "date", "p_term_end" "date", "p_rent_amount_cents" bigint, "p_rent_currency" "text", "p_deposit_amount_cents" bigint, "p_deposit_currency" "text", "p_document" "jsonb", "p_terms" "jsonb") OWNER TO "postgres";
 
 --
+-- Name: comm_message_media; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."comm_message_media" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "account_id" "uuid" NOT NULL,
+    "provider_msg_id" "text" NOT NULL,
+    "interaction_id" "uuid",
+    "provider_media_index" integer NOT NULL,
+    "declared_content_type" "text",
+    "declared_size_bytes" bigint,
+    "state" "text" DEFAULT 'pending'::"text" NOT NULL,
+    "attachment_id" "uuid",
+    "failure_code" "text",
+    "attempt_generation" integer DEFAULT 0 NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "comm_message_media_attempt_generation_check" CHECK (("attempt_generation" >= 0)),
+    CONSTRAINT "comm_message_media_check" CHECK ((("state" = 'saved'::"text") = ("attachment_id" IS NOT NULL))),
+    CONSTRAINT "comm_message_media_check1" CHECK ((("state" = ANY (ARRAY['pending'::"text", 'saved'::"text"])) = ("failure_code" IS NULL))),
+    CONSTRAINT "comm_message_media_declared_size_bytes_check" CHECK (("declared_size_bytes" >= 0)),
+    CONSTRAINT "comm_message_media_failure_code_check" CHECK (("failure_code" = ANY (ARRAY['invalid_descriptor'::"text", 'too_many_files'::"text", 'file_too_large'::"text", 'unsupported_content'::"text", 'blocked_url'::"text", 'source_unavailable'::"text", 'authentication_failed'::"text", 'download_failed'::"text", 'upload_failed'::"text", 'processing_failed'::"text", 'message_withdrawn'::"text"]))),
+    CONSTRAINT "comm_message_media_provider_media_index_check" CHECK (("provider_media_index" >= 0)),
+    CONSTRAINT "comm_message_media_state_check" CHECK (("state" = ANY (ARRAY['pending'::"text", 'retrying'::"text", 'saved'::"text", 'failed'::"text", 'rejected'::"text"])))
+);
+
+ALTER TABLE ONLY "public"."comm_message_media" FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."comm_message_media" OWNER TO "postgres";
+
+--
+-- Name: report_comm_media_outcome("uuid", "uuid", "uuid", "text", "text", integer); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."report_comm_media_outcome"("p_account_id" "uuid", "p_interaction_id" "uuid", "p_slot_id" "uuid", "p_state" "text", "p_failure_code" "text", "p_attempt_generation" integer DEFAULT 0) RETURNS "public"."comm_message_media"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare slot public.comm_message_media%rowtype;
+begin
+  perform 1 from public.interactions where account_id=p_account_id and id=p_interaction_id for update;
+  if not found then raise exception 'message not found' using errcode='P0002'; end if;
+  select * into slot from public.comm_message_media where account_id=p_account_id and interaction_id=p_interaction_id and id=p_slot_id for update;
+  if not found then raise exception 'media slot not found' using errcode='P0002'; end if;
+  if slot.state in ('saved','rejected') or p_attempt_generation<slot.attempt_generation then return slot; end if;
+  if slot.state='failed' and p_attempt_generation<=slot.attempt_generation then return slot; end if;
+  if p_state not in ('retrying','failed','rejected') then raise exception 'invalid outcome' using errcode='23514'; end if;
+  update public.comm_message_media set state=p_state,failure_code=p_failure_code,attempt_generation=p_attempt_generation,updated_at=now()
+    where id=slot.id returning * into slot;
+  return slot;
+end $$;
+
+
+ALTER FUNCTION "public"."report_comm_media_outcome"("p_account_id" "uuid", "p_interaction_id" "uuid", "p_slot_id" "uuid", "p_state" "text", "p_failure_code" "text", "p_attempt_generation" integer) OWNER TO "postgres";
+
+--
 -- Name: resolve_relay_landlord_recipient("uuid", "uuid", "uuid", "text"); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -12172,6 +12330,92 @@ $$;
 
 
 ALTER FUNCTION "public"."start_checkout_from_checkin"("p_account_id" "uuid", "p_baseline_inspection_id" "uuid", "p_performed_at" timestamp with time zone, "p_template_id" "uuid", "p_notes" "text") OWNER TO "postgres";
+
+--
+-- Name: attachments; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."attachments" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "account_id" "uuid" NOT NULL,
+    "entity_type" "text" NOT NULL,
+    "entity_id" "uuid" NOT NULL,
+    "storage_path" "text" NOT NULL,
+    "content_hash" "text" NOT NULL,
+    "mime_type" "text",
+    "size_bytes" bigint,
+    "uploaded_by" "uuid",
+    "received_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "deleted_at" timestamp with time zone,
+    "derived_from" "uuid",
+    "filename" "text",
+    "storage_bucket" "text" DEFAULT 'attachments'::"text",
+    CONSTRAINT "attachments_content_hash_check" CHECK (("content_hash" ~ '^[a-f0-9]{64}$'::"text")),
+    CONSTRAINT "attachments_entity_type_check" CHECK ((("length"("entity_type") >= 1) AND ("length"("entity_type") <= 100))),
+    CONSTRAINT "attachments_filename_len" CHECK ((("filename" IS NULL) OR (("length"("filename") >= 1) AND ("length"("filename") <= 255)))),
+    CONSTRAINT "attachments_size_bytes_check" CHECK ((("size_bytes" IS NULL) OR ("size_bytes" >= 0))),
+    CONSTRAINT "attachments_storage_bucket_check" CHECK (("storage_bucket" = ANY (ARRAY['attachments'::"text", 'comm-attachments'::"text"]))),
+    CONSTRAINT "attachments_storage_path_check" CHECK ((("length"("storage_path") >= 1) AND ("length"("storage_path") <= 1024)))
+);
+
+ALTER TABLE ONLY "public"."attachments" FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."attachments" OWNER TO "postgres";
+
+--
+-- Name: store_comm_attachment("uuid", "uuid", "text", "text", "text", "text", bigint, "uuid"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."store_comm_attachment"("p_account_id" "uuid", "p_interaction_id" "uuid", "p_filename" "text", "p_content_type" "text", "p_storage_path" "text", "p_content_hash" "text", "p_size_bytes" bigint, "p_media_slot_id" "uuid" DEFAULT NULL::"uuid") RETURNS "public"."attachments"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare parent public.interactions%rowtype; slot public.comm_message_media%rowtype; result public.attachments%rowtype;
+begin
+  -- One parent lock serializes deduplication, the count cap, and slot commits.
+  select * into parent from public.interactions where account_id=p_account_id and id=p_interaction_id for update;
+  if not found then raise exception 'message not found' using errcode='P0002'; end if;
+  if parent.deleted_at is not null or exists(with recursive chain as (select id,correction_kind from public.interactions where id=parent.id union all select i.id,i.correction_kind from public.interactions i join chain c on i.corrects_id=c.id) select 1 from chain where correction_kind='retract') then
+    raise exception 'message withdrawn' using errcode='P0003';
+  end if;
+  if parent.actor not in ('system:comm-inbound','system:comm-persona','system:comm-persona-cc') or parent.attestation<>'provider_verified' then
+    raise exception 'provider verified message required' using errcode='23514';
+  end if;
+  if p_size_bytes<1 or p_size_bytes>10485760 then raise exception 'attachment size limit' using errcode='23514'; end if;
+  if p_media_slot_id is not null then
+    select * into slot from public.comm_message_media where account_id=p_account_id and interaction_id=p_interaction_id and id=p_media_slot_id for update;
+    if not found then raise exception 'media slot not found' using errcode='P0002'; end if;
+    if slot.state='saved' then
+      select * into result from public.attachments where account_id=p_account_id and id=slot.attachment_id and deleted_at is null;
+      if not found then raise exception 'attachment removed' using errcode='P0003'; end if;
+      if result.content_hash<>p_content_hash then raise exception 'slot content conflict' using errcode='P0003'; end if;
+      return result;
+    end if;
+    if slot.state='rejected' then raise exception 'media slot rejected' using errcode='P0003'; end if;
+  end if;
+  if exists(select 1 from public.attachments where account_id=p_account_id and entity_type='interactions' and entity_id=p_interaction_id and content_hash=p_content_hash and deleted_at is not null) then
+    raise exception 'attachment removed' using errcode='P0003';
+  end if;
+  select * into result from public.attachments where account_id=p_account_id and entity_type='interactions' and entity_id=p_interaction_id and content_hash=p_content_hash and deleted_at is null;
+  if not found then
+    if (select count(*) from public.attachments where account_id=p_account_id and entity_type='interactions' and entity_id=p_interaction_id and deleted_at is null)>=10 then
+      raise exception 'a message carries at most 10 stored attachments' using errcode='23514';
+    end if;
+    insert into public.attachments(account_id,entity_type,entity_id,storage_bucket,storage_path,content_hash,mime_type,size_bytes,filename)
+      values(p_account_id,'interactions',p_interaction_id,'comm-attachments',p_storage_path,p_content_hash,p_content_type,p_size_bytes,p_filename)
+      returning * into result;
+  end if;
+  if p_media_slot_id is not null then
+    update public.comm_message_media set state='saved',attachment_id=result.id,failure_code=null,updated_at=now() where id=slot.id;
+  end if;
+  return result;
+end $$;
+
+
+ALTER FUNCTION "public"."store_comm_attachment"("p_account_id" "uuid", "p_interaction_id" "uuid", "p_filename" "text", "p_content_type" "text", "p_storage_path" "text", "p_content_hash" "text", "p_size_bytes" bigint, "p_media_slot_id" "uuid") OWNER TO "postgres";
 
 --
 -- Name: submit_intake("uuid", "uuid", "uuid", "text", "text", "text", timestamp with time zone, "text"); Type: FUNCTION; Schema: public; Owner: postgres
@@ -13603,38 +13847,6 @@ ALTER TABLE ONLY "public"."assets" FORCE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."assets" OWNER TO "postgres";
-
---
--- Name: attachments; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE IF NOT EXISTS "public"."attachments" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "account_id" "uuid" NOT NULL,
-    "entity_type" "text" NOT NULL,
-    "entity_id" "uuid" NOT NULL,
-    "storage_path" "text" NOT NULL,
-    "content_hash" "text" NOT NULL,
-    "mime_type" "text",
-    "size_bytes" bigint,
-    "uploaded_by" "uuid",
-    "received_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "deleted_at" timestamp with time zone,
-    "derived_from" "uuid",
-    "filename" "text",
-    CONSTRAINT "attachments_content_hash_check" CHECK (("content_hash" ~ '^[a-f0-9]{64}$'::"text")),
-    CONSTRAINT "attachments_entity_type_check" CHECK ((("length"("entity_type") >= 1) AND ("length"("entity_type") <= 100))),
-    CONSTRAINT "attachments_filename_len" CHECK ((("filename" IS NULL) OR (("length"("filename") >= 1) AND ("length"("filename") <= 255)))),
-    CONSTRAINT "attachments_size_bytes_check" CHECK ((("size_bytes" IS NULL) OR ("size_bytes" >= 0))),
-    CONSTRAINT "attachments_storage_path_check" CHECK ((("length"("storage_path") >= 1) AND ("length"("storage_path") <= 1024)))
-);
-
-ALTER TABLE ONLY "public"."attachments" FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE "public"."attachments" OWNER TO "postgres";
 
 --
 -- Name: chain_verification_alerts; Type: TABLE; Schema: public; Owner: postgres
@@ -15350,6 +15562,22 @@ ALTER TABLE ONLY "public"."charges"
 
 
 --
+-- Name: comm_message_media comm_message_media_account_id_provider_msg_id_provider_medi_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."comm_message_media"
+    ADD CONSTRAINT "comm_message_media_account_id_provider_msg_id_provider_medi_key" UNIQUE ("account_id", "provider_msg_id", "provider_media_index");
+
+
+--
+-- Name: comm_message_media comm_message_media_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."comm_message_media"
+    ADD CONSTRAINT "comm_message_media_pkey" PRIMARY KEY ("id");
+
+
+--
 -- Name: comm_opt_outs comm_opt_outs_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -16609,6 +16837,13 @@ CREATE UNIQUE INDEX "charges_one_per_schedule_period" ON "public"."charges" USIN
 --
 
 CREATE INDEX "charges_tenancy_id_idx" ON "public"."charges" USING "btree" ("tenancy_id");
+
+
+--
+-- Name: comm_message_media_interaction_idx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "comm_message_media_interaction_idx" ON "public"."comm_message_media" USING "btree" ("account_id", "interaction_id", "provider_media_index");
 
 
 --
@@ -17893,6 +18128,13 @@ CREATE OR REPLACE TRIGGER "attachments_guard_insert_path" BEFORE INSERT ON "publ
 
 
 --
+-- Name: attachments attachments_locator_guard; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "attachments_locator_guard" BEFORE INSERT OR UPDATE ON "public"."attachments" FOR EACH ROW EXECUTE FUNCTION "public"."_guard_attachment_locator"();
+
+
+--
 -- Name: attachments attachments_reject_on_completed_inspection; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
@@ -17932,6 +18174,20 @@ CREATE OR REPLACE TRIGGER "charge_billing_basis_guard" BEFORE INSERT OR UPDATE O
 --
 
 CREATE OR REPLACE TRIGGER "charges_audit" AFTER INSERT OR DELETE OR UPDATE ON "public"."charges" FOR EACH ROW EXECUTE FUNCTION "public"."_emit_event"();
+
+
+--
+-- Name: comm_message_media comm_message_media_audit; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "comm_message_media_audit" AFTER INSERT OR DELETE OR UPDATE ON "public"."comm_message_media" FOR EACH ROW EXECUTE FUNCTION "public"."_emit_event"();
+
+
+--
+-- Name: comm_message_media comm_message_media_guard; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "comm_message_media_guard" BEFORE UPDATE ON "public"."comm_message_media" FOR EACH ROW EXECUTE FUNCTION "public"."_guard_comm_media"();
 
 
 --
@@ -18079,6 +18335,13 @@ CREATE OR REPLACE TRIGGER "inbound_provenance_audit" AFTER INSERT OR DELETE OR U
 --
 
 CREATE OR REPLACE TRIGGER "inbound_provenance_guard_update" BEFORE UPDATE ON "public"."inbound_provenance" FOR EACH ROW EXECUTE FUNCTION "public"."_inbound_provenance_guard_update"();
+
+
+--
+-- Name: inbound_raw inbound_raw_media; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "inbound_raw_media" AFTER INSERT OR UPDATE OF "matched_interaction_id" ON "public"."inbound_raw" FOR EACH ROW EXECUTE FUNCTION "public"."_capture_comm_media"();
 
 
 --
@@ -18857,6 +19120,30 @@ ALTER TABLE ONLY "public"."charges"
 
 ALTER TABLE ONLY "public"."charges"
     ADD CONSTRAINT "charges_parent_charge_fk" FOREIGN KEY ("account_id", "parent_charge_id") REFERENCES "public"."charges"("account_id", "id") ON DELETE RESTRICT;
+
+
+--
+-- Name: comm_message_media comm_message_media_account_id_attachment_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."comm_message_media"
+    ADD CONSTRAINT "comm_message_media_account_id_attachment_id_fkey" FOREIGN KEY ("account_id", "attachment_id") REFERENCES "public"."attachments"("account_id", "id");
+
+
+--
+-- Name: comm_message_media comm_message_media_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."comm_message_media"
+    ADD CONSTRAINT "comm_message_media_account_id_fkey" FOREIGN KEY ("account_id") REFERENCES "public"."accounts"("id");
+
+
+--
+-- Name: comm_message_media comm_message_media_account_id_interaction_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."comm_message_media"
+    ADD CONSTRAINT "comm_message_media_account_id_interaction_id_fkey" FOREIGN KEY ("account_id", "interaction_id") REFERENCES "public"."interactions"("account_id", "id");
 
 
 --
@@ -20236,6 +20523,21 @@ CREATE POLICY "charges_member_all" ON "public"."charges" USING (("account_id" IN
 
 
 --
+-- Name: comm_message_media; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."comm_message_media" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: comm_message_media comm_message_media_member_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "comm_message_media_member_read" ON "public"."comm_message_media" FOR SELECT TO "authenticated" USING ((EXISTS ( SELECT 1
+   FROM "public"."account_members" "m"
+  WHERE (("m"."account_id" = "comm_message_media"."account_id") AND ("m"."user_id" = "auth"."uid"()) AND ("m"."deleted_at" IS NULL)))));
+
+
+--
 -- Name: comm_opt_outs; Type: ROW SECURITY; Schema: public; Owner: postgres
 --
 
@@ -21353,6 +21655,14 @@ GRANT ALL ON FUNCTION "public"."_billing_period_needs_history_review"("p_period"
 
 
 --
+-- Name: FUNCTION "_capture_comm_media"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_capture_comm_media"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."_capture_comm_media"() TO "service_role";
+
+
+--
 -- Name: FUNCTION "_capture_known_source"(); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -21661,6 +21971,22 @@ GRANT ALL ON FUNCTION "public"."_freeze_setup_confirmation"() TO "service_role";
 
 REVOKE ALL ON FUNCTION "public"."_guard_attachment_insert_path"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."_guard_attachment_insert_path"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "_guard_attachment_locator"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_guard_attachment_locator"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."_guard_attachment_locator"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "_guard_comm_media"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_guard_comm_media"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."_guard_comm_media"() TO "service_role";
 
 
 --
@@ -22701,6 +23027,15 @@ GRANT ALL ON FUNCTION "public"."inspection_checkout_diff"("p_account_id" "uuid",
 
 
 --
+-- Name: FUNCTION "interaction_media_root"("p_account_id" "uuid", "p_interaction_id" "uuid"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."interaction_media_root"("p_account_id" "uuid", "p_interaction_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."interaction_media_root"("p_account_id" "uuid", "p_interaction_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."interaction_media_root"("p_account_id" "uuid", "p_interaction_id" "uuid") TO "service_role";
+
+
+--
 -- Name: TABLE "account_members"; Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -23026,6 +23361,22 @@ GRANT ALL ON FUNCTION "public"."replace_lease_terms"("p_account_id" "uuid", "p_l
 
 
 --
+-- Name: TABLE "comm_message_media"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."comm_message_media" TO "service_role";
+GRANT SELECT ON TABLE "public"."comm_message_media" TO "authenticated";
+
+
+--
+-- Name: FUNCTION "report_comm_media_outcome"("p_account_id" "uuid", "p_interaction_id" "uuid", "p_slot_id" "uuid", "p_state" "text", "p_failure_code" "text", "p_attempt_generation" integer); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."report_comm_media_outcome"("p_account_id" "uuid", "p_interaction_id" "uuid", "p_slot_id" "uuid", "p_state" "text", "p_failure_code" "text", "p_attempt_generation" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."report_comm_media_outcome"("p_account_id" "uuid", "p_interaction_id" "uuid", "p_slot_id" "uuid", "p_state" "text", "p_failure_code" "text", "p_attempt_generation" integer) TO "service_role";
+
+
+--
 -- Name: FUNCTION "resolve_relay_landlord_recipient"("p_account_id" "uuid", "p_user_id" "uuid", "p_source_interaction_id" "uuid", "p_fallback_address" "text"); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -23105,6 +23456,23 @@ GRANT SELECT ON TABLE "public"."inspections" TO "tenancy_date_writer";
 GRANT ALL ON FUNCTION "public"."start_checkout_from_checkin"("p_account_id" "uuid", "p_baseline_inspection_id" "uuid", "p_performed_at" timestamp with time zone, "p_template_id" "uuid", "p_notes" "text") TO "anon";
 GRANT ALL ON FUNCTION "public"."start_checkout_from_checkin"("p_account_id" "uuid", "p_baseline_inspection_id" "uuid", "p_performed_at" timestamp with time zone, "p_template_id" "uuid", "p_notes" "text") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."start_checkout_from_checkin"("p_account_id" "uuid", "p_baseline_inspection_id" "uuid", "p_performed_at" timestamp with time zone, "p_template_id" "uuid", "p_notes" "text") TO "service_role";
+
+
+--
+-- Name: TABLE "attachments"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."attachments" TO "anon";
+GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."attachments" TO "authenticated";
+GRANT ALL ON TABLE "public"."attachments" TO "service_role";
+
+
+--
+-- Name: FUNCTION "store_comm_attachment"("p_account_id" "uuid", "p_interaction_id" "uuid", "p_filename" "text", "p_content_type" "text", "p_storage_path" "text", "p_content_hash" "text", "p_size_bytes" bigint, "p_media_slot_id" "uuid"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."store_comm_attachment"("p_account_id" "uuid", "p_interaction_id" "uuid", "p_filename" "text", "p_content_type" "text", "p_storage_path" "text", "p_content_hash" "text", "p_size_bytes" bigint, "p_media_slot_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."store_comm_attachment"("p_account_id" "uuid", "p_interaction_id" "uuid", "p_filename" "text", "p_content_type" "text", "p_storage_path" "text", "p_content_hash" "text", "p_size_bytes" bigint, "p_media_slot_id" "uuid") TO "service_role";
 
 
 --
@@ -23398,15 +23766,6 @@ GRANT SELECT,INSERT,UPDATE ON TABLE "public"."area_inspection_layouts" TO "authe
 GRANT ALL ON TABLE "public"."assets" TO "anon";
 GRANT ALL ON TABLE "public"."assets" TO "authenticated";
 GRANT ALL ON TABLE "public"."assets" TO "service_role";
-
-
---
--- Name: TABLE "attachments"; Type: ACL; Schema: public; Owner: postgres
---
-
-GRANT ALL ON TABLE "public"."attachments" TO "anon";
-GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."attachments" TO "authenticated";
-GRANT ALL ON TABLE "public"."attachments" TO "service_role";
 
 
 --

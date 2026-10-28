@@ -278,6 +278,8 @@ export interface AttachmentRow {
   entity_type: string;
   entity_id: string;
   storage_path: string;
+  account_id: string;
+  storage_bucket: string | null;
   content_hash: string;
   mime_type: string | null;
   size_bytes: number | null;
@@ -289,7 +291,7 @@ export interface AttachmentRow {
 type AdminClient = ReturnType<typeof getAdminClient>;
 
 const ATTACHMENT_COLS =
-  'id, entity_type, entity_id, storage_path, content_hash, mime_type, size_bytes, uploaded_by, derived_from, received_at';
+  'id, account_id, entity_type, entity_id, storage_bucket, storage_path, content_hash, mime_type, size_bytes, uploaded_by, derived_from, received_at';
 
 export interface ExportData {
   account_name: string;

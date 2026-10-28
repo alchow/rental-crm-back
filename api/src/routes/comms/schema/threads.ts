@@ -1,3 +1,4 @@
+import { CommMessageMedia } from './attachments';
 import { z } from '@hono/zod-openapi';
 import { Interaction } from '../../../schemas/importable';
 import {
@@ -84,6 +85,7 @@ export const CommThreadMessage = Interaction.extend({
   delivered_at: z.string().nullable(),
   outbox_id: z.string().uuid().nullable(),
   relay_legs: z.array(CommRelayLeg),
+  media: z.array(CommMessageMedia),
 }).openapi('CommThreadMessage');
 
 export const ThreadListQuery = z.object({

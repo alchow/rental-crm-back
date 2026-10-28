@@ -1,3 +1,4 @@
+import { loadMessageMedia } from '../media-read';
 import { loadRelayLegs } from './delivery';
 import { createRoute, z } from '@hono/zod-openapi';
 import { getSb } from '../../../supabase/request-client';
@@ -133,13 +134,15 @@ export function registerThreadReadRoutes(app: CommsApp): void {
     const participants = participantMap.get(id) ?? [];
     const { items: msgRows, next_cursor: messagesNext } = msgPage;
     const messageIds = msgRows.map((m) => String(m.id));
-    const [legs, casts] = await Promise.all([
+    const [legs, casts, media] = await Promise.all([
       loadRelayLegs(c, accountId, messageIds),
       loadInteractionParticipants(sb, accountId, messageIds),
+      loadMessageMedia(sb, accountId, messageIds),
     ]);
     const messages = msgRows.map((m) => ({
       ...withResolvedAuthorship(m as { author_type?: string | null; actor: string }),
       relay_legs: legs.get(String(m.id)) ?? [],
+      media: media.get(String(m.id)) ?? [],
       participants: casts.get(String(m.id)) ?? [],
     }));
 
