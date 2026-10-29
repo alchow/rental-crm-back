@@ -7,7 +7,7 @@ Core side: migrations `20260703000003` (participants cast + attestation) and
 
 ## Why this exists
 
-The communications journal records what the transport *told* core a provider
+The communications journal records what the transport _told_ core a provider
 delivered. Verification of the provider's webhook signature happens at the
 transport's edge and the signed original is then discarded — so, before this
 work, nothing carrier-attested survived, and the only per-delivery recipient
@@ -92,6 +92,7 @@ Order matters: **verify → archive → process.**
    - Failure handling: archive failures must be retried from a durable queue
      but must NOT block step 3 — losing a provenance blob is bad, dropping a
      tenant's message is worse. Alert on a queue that doesn't drain.
+
 3. **Process as today**: `POST /comms/inbound` (`capture_inbound`), then any
    relay legs. No changes to that call — the cast and the attestation stamp
    are derived server-side from the fields it already carries (and, for
@@ -123,7 +124,7 @@ record DKIM/SPF verdicts inside the payload where available.
   (`pnpm --filter ./api job maintenance-janitors`), alongside the other SQL
   janitors.
 - **Legal hold**: `PUT /v1/accounts/{id}/comms/legal-hold {"active": true,
-  "reason": "..."}` (owner/manager; the agent principal is denied — a
+"reason": "..."}` (owner/manager; the agent principal is denied — a
   transport that could release a hold could re-enable destruction). While
   active, BOTH the evidence janitor and `prune_inbound_raw` skip the account.
   Set it the moment litigation is reasonably anticipated (demand letter,
@@ -153,3 +154,30 @@ record DKIM/SPF verdicts inside the payload where available.
    NOT the single-slot `party_*` headline, which is a display/filing field.
 
 Steps 2–4 need nothing from this codebase — that independence is the point.
+
+## Received MMS media
+
+Telnyx capture inserts ordered `comm_message_media` slots in the same database
+transaction as the raw receipt. A photo-only message can therefore appear with
+`pending` slots before bytes arrive. The transport uploads each verified original
+with `media_slot_id`; `store_comm_attachment` locks the parent interaction while
+checking withdrawal, the ten-file limit, and content-hash deduplication.
+
+For example, two provider slots with identical bytes point to one attachment,
+while both slots retain their original positions. Saved/rejected outcomes cannot
+regress. A failed outcome can be retried with a higher attempt generation.
+
+Thread/history pages batch-load current media state; the record media route follows
+correction heads back to the root. Account-scoped events refresh the UI after an
+upload. Deleted attachments leave a saved slot with no downloadable attachment.
+
+`attachments.storage_bucket` identifies the private storage location. The migration
+uses actual object inventory for existing rows; collisions/missing objects remain
+null and downloads fail explicitly until reviewed. `admin/storage/locator.ts` is
+the shared hash-verifying reader for normal downloads, comm downloads, and PDF
+exports. A privileged reviewed repair may set an unresolved bucket once; existing
+known storage identity remains immutable.
+
+Deploy this migration/API before the Agent ingestion version. Run the registered
+`test:comms-media` integration suite against Supabase before promotion; native
+Postgres checks do not exercise Storage or authenticated HTTP/PDF integration.

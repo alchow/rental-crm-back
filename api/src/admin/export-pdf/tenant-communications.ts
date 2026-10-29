@@ -1,3 +1,8 @@
+import {
+  loadAttachmentsForEntityIds,
+  renderAttachmentPhotos,
+  type AttachmentRow,
+} from './attachments';
 import { captureDisplay } from './capture';
 import PDFDocument from 'pdfkit';
 import { getAdminClient } from '../supabase-admin';
@@ -97,14 +102,27 @@ export async function renderTenantCommunications(
   chain: ChainStatus,
 ): Promise<Uint8Array> {
   const { entries, casts, name } = await loadTenantCommunications(scope, generatedAt.toISOString());
-  return renderTenantCommunicationLog(scope, generatedAt, chain, { entries, casts, name });
+  const attachments = await loadAttachmentsForEntityIds(
+    getAdminClient(),
+    scope.accountId,
+    entries.filter((entry) => !entry.deleted_at).map((entry) => String(entry.id)),
+    { entityType: 'interactions', label: 'communication attachment' },
+  );
+  return renderTenantCommunicationLog(
+    scope,
+    generatedAt,
+    chain,
+    { entries, casts, name },
+    attachments,
+  );
 }
 
-export function renderTenantCommunicationLog(
+export async function renderTenantCommunicationLog(
   scope: ExportScope,
   generatedAt: Date,
   chain: ChainStatus,
   { entries, casts, name }: Awaited<ReturnType<typeof loadTenantCommunications>>,
+  attachments: AttachmentRow[] = [],
 ): Promise<Uint8Array> {
   const zone = scope.timezone ?? 'UTC';
   const stamp = (value: unknown) =>
@@ -232,6 +250,7 @@ export function renderTenantCommunicationLog(
       doc.y,
       { width: 505 },
     );
+  await renderAttachmentPhotos(doc, { attachments }, { size: 'A4', margin: 45 });
   doc.end();
   return done;
 }

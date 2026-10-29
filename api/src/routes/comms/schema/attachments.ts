@@ -22,6 +22,7 @@ export const CommAttachment = z
 // control-char range would trip eslint no-control-regex.)
 export const UploadCommAttachmentBody = z
   .object({
+    media_slot_id: z.string().uuid().optional(),
     filename: z
       .string()
       .min(1)
@@ -56,3 +57,40 @@ export const InteractionAttachmentParams = z.object({
     .uuid()
     .openapi({ param: { name: 'interactionId', in: 'path' } }),
 });
+
+export const CommMediaFailureCode = z
+  .enum([
+    'invalid_descriptor',
+    'too_many_files',
+    'file_too_large',
+    'unsupported_content',
+    'blocked_url',
+    'source_unavailable',
+    'authentication_failed',
+    'download_failed',
+    'upload_failed',
+    'processing_failed',
+    'message_withdrawn',
+  ])
+  .openapi('CommMediaFailureCode');
+
+export const CommMessageMedia = z
+  .object({
+    id: z.string().uuid(),
+    provider_media_index: z.number().int().nonnegative(),
+    state: z.enum(['pending', 'retrying', 'saved', 'failed', 'rejected']),
+    failure_code: z.union([CommMediaFailureCode, z.null()]),
+    updated_at: z.string(),
+    attachment: z.union([CommAttachment, z.null()]),
+  })
+  .openapi('CommMessageMedia');
+export const CommMessageMediaList = z
+  .object({ data: z.array(CommMessageMedia) })
+  .openapi('CommMessageMediaList');
+export const CommMediaOutcomeBody = z
+  .object({
+    state: z.enum(['retrying', 'failed', 'rejected']),
+    failure_code: CommMediaFailureCode,
+    attempt_generation: z.number().int().nonnegative().default(0),
+  })
+  .openapi('CommMediaOutcomeBody');

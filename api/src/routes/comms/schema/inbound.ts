@@ -1,4 +1,5 @@
 import { z } from '@hono/zod-openapi';
+import { CommMediaFailureCode, CommMessageMedia } from './attachments';
 import { CommChannel, CommPartyType } from './outbox';
 
 // ---------------------------------------------------------------------------
@@ -7,9 +8,13 @@ import { CommChannel, CommPartyType } from './outbox';
 
 export const CommInboundMedia = z
   .object({
-    url: z.string().min(1).max(2000),
+    url: z.string().min(1).max(2000).optional(),
+    provider_media_index: z.number().int().nonnegative().optional(),
+    size_bytes: z.number().int().nonnegative().optional(),
+    rejection_code: CommMediaFailureCode.optional(),
     content_type: z.string().max(200).optional(),
   })
+  .refine((m) => Boolean(m.url || m.rejection_code), 'URL or rejection_code required')
   .openapi('CommInboundMedia');
 
 /** Provider-evaluated RFC 7601 verdicts. Core stores them with the raw capture
@@ -44,7 +49,7 @@ export const CaptureInboundBody = z
     cc: z.array(z.string().min(3).max(50)).max(10).optional(),
     channel: CommChannel,
     body: z.string().max(20000).optional(),
-    media: z.array(CommInboundMedia).max(20).optional(),
+    media: z.array(CommInboundMedia).max(100).optional(),
     received_at: z.string().datetime({ offset: true }),
     /** Email-only. The mail's Subject header, stored with the raw capture
      *  (NOT folded into the journal body — the journal shape is unchanged). */
@@ -106,7 +111,7 @@ export const CapturePersonaInboundBody = z
     /** Capped at the relay/outbox limit: a larger body could never be relayed
      *  onward or acked. The transport truncates / strips HTML first. */
     body: z.string().max(20000).optional(),
-    media: z.array(CommInboundMedia).max(20).optional(),
+    media: z.array(CommInboundMedia).max(100).optional(),
     rfc822_message_id: z.string().min(3).max(998).optional(),
     in_reply_to: z.string().min(3).max(998).optional(),
     references: z.array(z.string().min(3).max(998)).max(50).optional(),
@@ -161,6 +166,7 @@ export const CaptureInboundResponse = z
     interaction_id: z.string().uuid().nullable(),
     thread_id: z.string().uuid().nullable(),
     participant: CommThreadParticipant.nullable(),
+    media: z.array(CommMessageMedia),
   })
   .openapi('CaptureCommInboundResponse');
 

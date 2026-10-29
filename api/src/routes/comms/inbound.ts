@@ -1,3 +1,4 @@
+import { loadMessageMedia } from './media-read';
 import { createRoute, z } from '@hono/zod-openapi';
 import { getSb } from '../../supabase/request-client';
 import { requireAuth } from '../../middleware/auth';
@@ -268,6 +269,11 @@ export function registerInboundRoutes(app: CommsApp): void {
         interaction_id: result.interaction_id,
         thread_id: result.thread_id,
         participant,
+        media: result.interaction_id
+          ? ((await loadMessageMedia(sb, accountId, [result.interaction_id])).get(
+              result.interaction_id,
+            ) ?? [])
+          : [],
       },
       200,
     );

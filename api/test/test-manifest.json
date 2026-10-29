@@ -6,6 +6,7 @@
     }
   ],
   "integration": [
+    { "script": "test:comms-media", "description": "MMS media capture, storage, retries, isolation and PDF export." },
     { "script": "test:tenant-history", "description": "Person communication history pagination, attribution and PDF export." },
     { "script": "test:owner-phone-verifier", "description": "Dual-credential phone verification and atomic replay." },
     { "script": "test:api-isolation", "description": "API-level cross-account RLS isolation." },

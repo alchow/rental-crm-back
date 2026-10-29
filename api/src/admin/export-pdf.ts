@@ -1,3 +1,5 @@
+import { loadAttachmentsForEntityIds, type AttachmentRow } from './export-pdf/attachments';
+export type { AttachmentRow } from './export-pdf/attachments';
 import { renderTenantCommunications } from './export-pdf/tenant-communications';
 import { getLogger } from '../log';
 import { getAdminClient } from './supabase-admin';
@@ -273,23 +275,7 @@ async function verifyChain(accountId: string): Promise<ChainStatus> {
 
 // ---- data loader ------------------------------------------------------------
 
-export interface AttachmentRow {
-  id: string;
-  entity_type: string;
-  entity_id: string;
-  storage_path: string;
-  content_hash: string;
-  mime_type: string | null;
-  size_bytes: number | null;
-  uploaded_by: string | null;
-  derived_from: string | null;
-  received_at: string;
-}
-
 type AdminClient = ReturnType<typeof getAdminClient>;
-
-const ATTACHMENT_COLS =
-  'id, entity_type, entity_id, storage_path, content_hash, mime_type, size_bytes, uploaded_by, derived_from, received_at';
 
 export interface ExportData {
   account_name: string;
@@ -353,30 +339,6 @@ export interface CastRow {
   address: string | null;
   label: string | null;
   source: string;
-}
-
-async function loadAttachmentsForEntityIds(
-  admin: AdminClient,
-  accountId: string,
-  entityIds: Iterable<string>,
-  opts: { entityType?: string; label: string },
-): Promise<AttachmentRow[]> {
-  const rows: AttachmentRow[] = [];
-  for (const chunk of idChunks(entityIds)) {
-    rows.push(
-      ...(await readAllById(() => {
-        let query = admin
-          .from('attachments')
-          .select(ATTACHMENT_COLS)
-          .eq('account_id', accountId)
-          .in('entity_id', chunk)
-          .is('deleted_at', null);
-        if (opts.entityType) query = query.eq('entity_type', opts.entityType);
-        return query;
-      }, opts.label)),
-    );
-  }
-  return rows;
 }
 
 async function loadEventsForEntityIds(
@@ -696,13 +658,7 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     if (r.source_document_id) eventEntityIds.add(r.source_document_id);
   }
   for (const r of workOrders) eventEntityIds.add(r.id as string);
-  for (const rows of [
-    allocations,
-    occupants,
-    inspectionItems,
-    inspectionChecks,
-    attachments,
-  ]) {
+  for (const rows of [allocations, occupants, inspectionItems, inspectionChecks, attachments]) {
     for (const row of rows) {
       eventEntityIds.add(String(row.id));
       if ('source_document_id' in row && row.source_document_id)

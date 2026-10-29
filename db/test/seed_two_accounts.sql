@@ -468,3 +468,8 @@ end $$;
 -- verifies the just-seeded chains end-to-end.
 select public.verify_chain_sweep('11111111-1111-1111-1111-111111111111');
 select public.verify_chain_sweep('22222222-2222-2222-2222-222222222222');
+
+-- Provider manifests remain visible only to their account's members.
+insert into public.comm_message_media(account_id,provider_msg_id,provider_media_index) values
+ ('11111111-1111-1111-1111-111111111111','isolation-mms-a',0),
+ ('22222222-2222-2222-2222-222222222222','isolation-mms-b',0);

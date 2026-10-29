@@ -12695,7 +12695,7 @@ export interface paths {
             };
         };
         put?: never;
-        /** Attach original file bytes to a comm-captured journal row (transport). Only rows written by the verified capture paths accept attachments; the transport uploads AFTER capture using the returned interaction_id (skip on duplicate). Idempotent per (interaction, content): a retry returns the existing attachment. */
+        /** Attach original file bytes to a comm-captured journal row (transport). Only rows written by the verified capture paths accept attachments; the transport uploads after capture, including duplicate capture replays. Idempotent per (interaction, content): a retry returns the existing attachment. */
         post: {
             parameters: {
                 query?: never;
@@ -13262,6 +13262,179 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/interactions/{interactionId}/media": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Current provider media outcomes and stored files from the record chain root. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    accountId: string;
+                    interactionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description media */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CommMessageMediaList"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/interactions/{interactionId}/media/{mediaSlotId}/outcome": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Report a transport media outcome; saved and rejected outcomes cannot regress. */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    interactionId: string;
+                    mediaSlotId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CommMediaOutcomeBody"];
+                };
+            };
+            responses: {
+                /** @description media outcome */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CommMessageMedia"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -22858,6 +23031,27 @@ export interface components {
             left_at: string | null;
             is_cc: boolean;
         } | null;
+        /** @enum {string} */
+        CommMediaFailureCode: "invalid_descriptor" | "too_many_files" | "file_too_large" | "unsupported_content" | "blocked_url" | "source_unavailable" | "authentication_failed" | "download_failed" | "upload_failed" | "processing_failed" | "message_withdrawn";
+        CommAttachment: {
+            /** Format: uuid */
+            id: string;
+            filename: string | null;
+            mime_type: string | null;
+            size_bytes: number | null;
+            content_hash: string;
+            created_at: string;
+        };
+        CommMessageMedia: {
+            /** Format: uuid */
+            id: string;
+            provider_media_index: number;
+            /** @enum {string} */
+            state: "pending" | "retrying" | "saved" | "failed" | "rejected";
+            failure_code: components["schemas"]["CommMediaFailureCode"] | null;
+            updated_at: string;
+            attachment: components["schemas"]["CommAttachment"] | null;
+        };
         CaptureCommInboundResponse: {
             /** @enum {string} */
             disposition: "matched" | "matched_direct" | "orphan" | "opted_out" | "sender_mismatch" | "duplicate";
@@ -22866,9 +23060,13 @@ export interface components {
             /** Format: uuid */
             thread_id: string | null;
             participant: components["schemas"]["CommThreadParticipant"];
+            media: components["schemas"]["CommMessageMedia"][];
         };
         CommInboundMedia: {
-            url: string;
+            url?: string;
+            provider_media_index?: number;
+            size_bytes?: number;
+            rejection_code?: components["schemas"]["CommMediaFailureCode"];
             content_type?: string;
         };
         CommAuthResults: {
@@ -23145,6 +23343,7 @@ export interface components {
             /** Format: uuid */
             outbox_id: string | null;
             relay_legs: components["schemas"]["CommRelayLeg"][];
+            media: components["schemas"]["CommMessageMedia"][];
         };
         CommThreadDetail: components["schemas"]["CommThreadWithParticipants"] & {
             bindings: components["schemas"]["CommThreadBinding"][];
@@ -23190,16 +23389,9 @@ export interface components {
         RebindCommBindingBody: {
             address: string;
         };
-        CommAttachment: {
-            /** Format: uuid */
-            id: string;
-            filename: string | null;
-            mime_type: string | null;
-            size_bytes: number | null;
-            content_hash: string;
-            created_at: string;
-        };
         UploadCommAttachmentBody: {
+            /** Format: uuid */
+            media_slot_id?: string;
             filename: string;
             content_type: string;
             data_b64: string;
@@ -23287,6 +23479,16 @@ export interface components {
             next_cursor: string | null;
             /** Format: date-time */
             snapshot: string;
+        };
+        CommMessageMediaList: {
+            data: components["schemas"]["CommMessageMedia"][];
+        };
+        CommMediaOutcomeBody: {
+            /** @enum {string} */
+            state: "retrying" | "failed" | "rejected";
+            failure_code: components["schemas"]["CommMediaFailureCode"];
+            /** @default 0 */
+            attempt_generation: number;
         };
         OwnerPhoneResponse: {
             /** Format: uuid */

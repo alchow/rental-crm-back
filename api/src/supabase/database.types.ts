@@ -403,6 +403,7 @@ export type Database = {
           mime_type: string | null;
           received_at: string;
           size_bytes: number | null;
+          storage_bucket: string | null;
           storage_path: string;
           updated_at: string;
           uploaded_by: string | null;
@@ -420,6 +421,7 @@ export type Database = {
           mime_type?: string | null;
           received_at?: string;
           size_bytes?: number | null;
+          storage_bucket?: string | null;
           storage_path: string;
           updated_at?: string;
           uploaded_by?: string | null;
@@ -437,6 +439,7 @@ export type Database = {
           mime_type?: string | null;
           received_at?: string;
           size_bytes?: number | null;
+          storage_bucket?: string | null;
           storage_path?: string;
           updated_at?: string;
           uploaded_by?: string | null;
@@ -697,6 +700,90 @@ export type Database = {
             isOneToOne: false;
             referencedRelation: 'charges';
             referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
+      comm_message_media: {
+        Row: {
+          account_id: string;
+          attachment_id: string | null;
+          attempt_generation: number;
+          created_at: string;
+          declared_content_type: string | null;
+          declared_size_bytes: number | null;
+          failure_code: string | null;
+          id: string;
+          interaction_id: string | null;
+          provider_media_index: number;
+          provider_msg_id: string;
+          state: string;
+          updated_at: string;
+        };
+        Insert: {
+          account_id: string;
+          attachment_id?: string | null;
+          attempt_generation?: number;
+          created_at?: string;
+          declared_content_type?: string | null;
+          declared_size_bytes?: number | null;
+          failure_code?: string | null;
+          id?: string;
+          interaction_id?: string | null;
+          provider_media_index: number;
+          provider_msg_id: string;
+          state?: string;
+          updated_at?: string;
+        };
+        Update: {
+          account_id?: string;
+          attachment_id?: string | null;
+          attempt_generation?: number;
+          created_at?: string;
+          declared_content_type?: string | null;
+          declared_size_bytes?: number | null;
+          failure_code?: string | null;
+          id?: string;
+          interaction_id?: string | null;
+          provider_media_index?: number;
+          provider_msg_id?: string;
+          state?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'comm_message_media_account_id_attachment_id_fkey';
+            columns: ['account_id', 'attachment_id'];
+            isOneToOne: false;
+            referencedRelation: 'attachments';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'comm_message_media_account_id_fkey';
+            columns: ['account_id'];
+            isOneToOne: false;
+            referencedRelation: 'accounts';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'comm_message_media_account_id_interaction_id_fkey';
+            columns: ['account_id', 'interaction_id'];
+            isOneToOne: false;
+            referencedRelation: 'interactions';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'comm_message_media_account_id_interaction_id_fkey';
+            columns: ['account_id', 'interaction_id'];
+            isOneToOne: false;
+            referencedRelation: 'interactions_with_chain';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'comm_message_media_account_id_interaction_id_fkey';
+            columns: ['account_id', 'interaction_id'];
+            isOneToOne: false;
+            referencedRelation: 'interactions_with_chain';
+            referencedColumns: ['account_id', 'superseded_by_id'];
           },
         ];
       };
@@ -5924,6 +6011,10 @@ export type Database = {
           status: string;
         }[];
       };
+      interaction_media_root: {
+        Args: { p_account_id: string; p_interaction_id: string };
+        Returns: string;
+      };
       is_account_member: { Args: { p_account_id: string }; Returns: boolean };
       is_address_opted_out: {
         Args: { p_address: string; p_channel: string };
@@ -6346,6 +6437,37 @@ export type Database = {
           o_voided_id: string;
         }[];
       };
+      report_comm_media_outcome: {
+        Args: {
+          p_account_id: string;
+          p_attempt_generation?: number;
+          p_failure_code: string;
+          p_interaction_id: string;
+          p_slot_id: string;
+          p_state: string;
+        };
+        Returns: {
+          account_id: string;
+          attachment_id: string | null;
+          attempt_generation: number;
+          created_at: string;
+          declared_content_type: string | null;
+          declared_size_bytes: number | null;
+          failure_code: string | null;
+          id: string;
+          interaction_id: string | null;
+          provider_media_index: number;
+          provider_msg_id: string;
+          state: string;
+          updated_at: string;
+        };
+        SetofOptions: {
+          from: '*';
+          to: 'comm_message_media';
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
       resolve_relay_landlord_recipient: {
         Args: {
           p_account_id: string;
@@ -6464,6 +6586,42 @@ export type Database = {
         SetofOptions: {
           from: '*';
           to: 'inspections';
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      store_comm_attachment: {
+        Args: {
+          p_account_id: string;
+          p_content_hash: string;
+          p_content_type: string;
+          p_filename: string;
+          p_interaction_id: string;
+          p_media_slot_id?: string;
+          p_size_bytes: number;
+          p_storage_path: string;
+        };
+        Returns: {
+          account_id: string;
+          content_hash: string;
+          created_at: string;
+          deleted_at: string | null;
+          derived_from: string | null;
+          entity_id: string;
+          entity_type: string;
+          filename: string | null;
+          id: string;
+          mime_type: string | null;
+          received_at: string;
+          size_bytes: number | null;
+          storage_bucket: string | null;
+          storage_path: string;
+          updated_at: string;
+          uploaded_by: string | null;
+        };
+        SetofOptions: {
+          from: '*';
+          to: 'attachments';
           isOneToOne: true;
           isSetofReturn: false;
         };
