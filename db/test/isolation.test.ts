@@ -1,3 +1,4 @@
+import { checkMmsStorageBackfill } from './mms-storage-backfill';
 // ----------------------------------------------------------------------------
 // DB-level tenant isolation test (Phase 2 DoD #1).
 //
@@ -343,6 +344,7 @@ async function checkTable(
 async function main(): Promise<void> {
   const superClient = new Client({ connectionString: DATABASE_URL });
   await superClient.connect();
+  await checkMmsStorageBackfill(superClient);
   const tables = await listPublicTables(superClient);
   const cols = await tableColumns(superClient, tables);
   await assertSeededOwn(superClient, tables);

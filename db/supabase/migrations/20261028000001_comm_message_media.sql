@@ -7,13 +7,18 @@ do $inventory$
 begin
   if to_regclass('storage.objects') is not null then
     execute $query$
-update public.attachments a set storage_bucket = case
-  when exists (select 1 from storage.objects o where o.bucket_id='comm-attachments' and o.name=a.storage_path)
-   and not exists (select 1 from storage.objects o where o.bucket_id='attachments' and o.name=a.storage_path)
-  then 'comm-attachments'
-  when exists (select 1 from storage.objects o where o.bucket_id='attachments' and o.name=a.storage_path)
-   and not exists (select 1 from storage.objects o where o.bucket_id='comm-attachments' and o.name=a.storage_path)
-  then 'attachments' else null end;
+with inventory as (
+  select a.id, case
+    when exists (select 1 from storage.objects o where o.bucket_id='comm-attachments' and o.name=a.storage_path)
+     and not exists (select 1 from storage.objects o where o.bucket_id='attachments' and o.name=a.storage_path)
+    then 'comm-attachments'
+    when exists (select 1 from storage.objects o where o.bucket_id='attachments' and o.name=a.storage_path)
+     and not exists (select 1 from storage.objects o where o.bucket_id='comm-attachments' and o.name=a.storage_path)
+    then 'attachments' else null end as bucket
+  from public.attachments a
+)
+update public.attachments a set storage_bucket=inventory.bucket
+from inventory where a.id=inventory.id and a.storage_bucket is distinct from inventory.bucket;
     $query$;
   else
     update public.attachments set storage_bucket=null;
