@@ -15,8 +15,8 @@ _resetJwksCacheForTests();
 const { getAdminClient, _resetAdminClientForTests } = await import('../src/admin/supabase-admin');
 _resetAdminClientForTests();
 const { buildApp } = await import('../src/app');
-const { loadExportData } = await import('../src/admin/export-pdf');
-const { renderExportPdf } = await import('../src/admin/export-pdf/render');
+const { renderTenantCommunications } =
+  await import('../src/admin/export-pdf/tenant-communications');
 const api = createApiClient(buildApp());
 const admin = getAdminClient();
 
@@ -317,12 +317,11 @@ const count = await admin
 assert(count.count === 10, 'count never exceeds cap');
 
 const scope = { accountId, tenantId: tenant.id, exporter: owner.user.id };
-const data = await loadExportData(scope);
-const pdf = await renderExportPdf({
-  scope,
-  data,
-  generatedAt: new Date(),
-  chain: { ok: true, message: 'test', broken_at: null, broken_event_no: null },
+const pdf = await renderTenantCommunications(scope, new Date(), {
+  ok: true,
+  message: 'test',
+  broken_at: null,
+  broken_event_no: null,
 });
 assert(Buffer.from(pdf).includes(Buffer.from('/Subtype /Image')), 'evidence PDF embeds saved PNG');
 await writeFile('/tmp/rentalcrm-mms-evidence.pdf', pdf);
