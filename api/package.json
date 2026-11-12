@@ -32,6 +32,7 @@
     "test:billing-setup": "tsx test/billing-setup.test.ts",
     "test:onboarding": "tsx test/onboarding.test.ts",
     "test:tenancy-setup-v3": "tsx test/tenancy-setup-v3.test.ts",
+    "test:field-log-phase-zero": "tsx test/field-log-phase-zero.test.ts",
     "test:rent-rollup": "tsx test/rent-rollup.test.ts",
     "test:tenancy-start-date": "tsx test/tenancy-start-date.test.ts",
     "test:tenancy-dates-concurrency": "tsx test/tenancy-dates-concurrency.test.ts",

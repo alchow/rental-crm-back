@@ -6,9 +6,18 @@
     }
   ],
   "integration": [
-    { "script": "test:comms-media", "description": "MMS media capture, storage, retries, isolation and PDF export." },
-    { "script": "test:tenant-history", "description": "Person communication history pagination, attribution and PDF export." },
-    { "script": "test:owner-phone-verifier", "description": "Dual-credential phone verification and atomic replay." },
+    {
+      "script": "test:comms-media",
+      "description": "MMS media capture, storage, retries, isolation and PDF export."
+    },
+    {
+      "script": "test:tenant-history",
+      "description": "Person communication history pagination, attribution and PDF export."
+    },
+    {
+      "script": "test:owner-phone-verifier",
+      "description": "Dual-credential phone verification and atomic replay."
+    },
     { "script": "test:api-isolation", "description": "API-level cross-account RLS isolation." },
     { "script": "test:auth-refresh", "description": "Concurrent auth refresh isolation." },
     { "script": "test:profile", "description": "Authenticated landlord profile behavior." },
@@ -42,6 +51,10 @@
     {
       "script": "test:tenancy-setup-v3",
       "description": "Resumable setup, atomic final creation, monthly rules, undated receipts and retained starting-balance restrictions."
+    },
+    {
+      "script": "test:field-log-phase-zero",
+      "description": "Starting balances in ledger, rent roll and PDF; scheduled move-out cancel, derived ending and intake."
     },
     {
       "script": "test:rent-rollup",
