@@ -11,6 +11,8 @@ import {
   fieldErrorsFromFindings,
   prorationSuggestions,
   rentStepOverrides,
+  rentFor,
+  overrideAmountSource,
   validateRentSteps,
   validateSetupShape,
   type DepositAnswer,
@@ -32,7 +34,7 @@ export interface PlannedSetup {
 async function accountClock(c: Context, accountId: string) {
   const { data, error } = await getSb(c)
     .from('accounts')
-    .select('time_zone, proration_method')
+    .select('time_zone, proration_method, currency, multi_currency')
     .eq('id', accountId)
     .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
@@ -46,6 +48,8 @@ async function accountClock(c: Context, accountId: string) {
   return {
     today,
     method: ((data?.proration_method as string | undefined) ?? 'actual_days') as ProrationMethod,
+    currency: (data?.currency as string | undefined) ?? 'USD',
+    multiCurrency: Boolean(data?.multi_currency),
   };
 }
 
@@ -110,7 +114,7 @@ export async function planSetup(
   id: string,
   input: Json,
 ): Promise<PlannedSetup> {
-  const { today, method } = await accountClock(c, accountId);
+  const { today, method, currency, multiCurrency } = await accountClock(c, accountId);
   const {
     deposit_answer: depositAnswer,
     rent_steps: rawSteps,
@@ -122,6 +126,7 @@ export async function planSetup(
   let setup: Json = rest;
   const steps = rawSteps ?? [];
   const errors: FieldError[] = validateSetupShape(setup);
+  if (!multiCurrency) errors.push(...singleCurrencyErrors(setup, currency));
   const agreement = setup.agreement as Parameters<typeof deriveBillingFromLease>[0];
   if (depositAnswer) {
     const expanded = expandDepositAnswer(setup, depositAnswer, today);
@@ -138,7 +143,30 @@ export async function planSetup(
   } else if (rent.decision === 'configure' && steps.length) {
     errors.push({ code: 'rent_step.needs_lease_billing', step: 'lease', field: 'rent_steps' });
   }
-  setup = { ...setup, billing: { ...billing, rent } };
+  const schedule: RentStep[] = [
+    {
+      effective_month: agreement.term_start.slice(0, 7),
+      amount_cents: agreement.rent_amount_cents,
+    },
+    ...steps,
+  ];
+  const monthlyFor = (month: string): number =>
+    (steps.length ? rentFor(schedule, month) : null) ?? (rent.amount_cents as number);
+  // PROVENANCE: each period amount records whether it is the suggestion or the landlord's own.
+  const withSources = (overrides: Json[]): Json[] =>
+    overrides.map((o) => ({
+      ...o,
+      amount_source: overrideAmountSource(
+        o as { period_start: string; period_end: string; amount_cents: number },
+        monthlyFor(String(o.period_start).slice(0, 7)),
+        method,
+      ),
+    }));
+  if (rent.decision === 'configure')
+    rent = { ...rent, period_overrides: withSources((rent.period_overrides as Json[]) ?? []) };
+  const payers = attributePayers(setup, (billing.payments as Json[]) ?? []);
+  errors.push(...payers.errors);
+  setup = { ...setup, billing: { ...billing, rent, payments: payers.payments } };
   if (errors.length) return { setup, review: null, errors, failure: failureOf(errors) };
 
   const preview = async (payload: Json) =>
@@ -164,7 +192,7 @@ export async function planSetup(
     if (overrides.length) {
       rent = {
         ...rent,
-        period_overrides: [...((rent.period_overrides as Json[]) ?? []), ...overrides],
+        period_overrides: [...((rent.period_overrides as Json[]) ?? []), ...withSources(overrides)],
       };
       setup = { ...setup, billing: { ...(setup.billing as Json), rent } };
       result = await preview(setup);
@@ -187,10 +215,88 @@ export async function planSetup(
     field_errors: blocking,
     billing_differences: billingDifferences(agreement, rent),
     proration_suggestions:
-      rent.decision === 'configure'
-        ? prorationSuggestions(review, rent.amount_cents as number, method)
-        : [],
+      rent.decision === 'configure' ? prorationSuggestions(review, monthlyFor, method) : [],
     proration_method: method,
+    period_amount_sources: ((rent.period_overrides as Json[]) ?? []).map((o) => ({
+      cycle_key: o.cycle_key,
+      amount_cents: o.amount_cents,
+      amount_source: o.amount_source,
+    })),
+    opening_receipts: openingReceipts(rent, review, (setup.billing as Json).payments as Json[]),
   };
   return { setup, review, errors: blocking, failure: blocking.length ? failureOf(blocking) : null };
+}
+
+function singleCurrencyErrors(setup: Json, currency: string): FieldError[] {
+  const agreement = setup.agreement as Json;
+  const rent = (setup.billing as Json).rent as Json;
+  const fields: Array<[string, unknown]> = [
+    ['agreement.rent_currency', agreement.rent_currency],
+    ['agreement.deposit_currency', agreement.deposit_currency],
+    ...(rent.decision === 'configure'
+      ? [['billing.rent.currency', rent.currency] as [string, unknown]]
+      : []),
+  ];
+  return fields
+    .filter(([, value]) => value !== currency)
+    .map(([field, value]) => ({
+      code: 'currency.unsupported',
+      step: 'lease' as const,
+      field,
+      meta: { value: String(value), account_currency: currency },
+    }));
+}
+
+/** One person on the lease pays; with several, a named payer must be one of them. */
+function attributePayers(
+  setup: Json,
+  payments: Json[],
+): { payments: Json[]; errors: FieldError[] } {
+  const people = ((setup.people as Json[]) ?? []).map((p) => String(p.tenant_id ?? p.key));
+  const errors: FieldError[] = [];
+  const out = payments.map((payment, index) => {
+    if (payment.payer_tenant_id == null)
+      return people.length === 1 ? { ...payment, payer_tenant_id: people[0] } : payment;
+    if (!people.includes(String(payment.payer_tenant_id)))
+      errors.push({
+        code: 'payment.payer_not_on_lease',
+        step: 'catchup',
+        field: `billing.payments[${index}].payer_tenant_id`,
+      });
+    return payment;
+  });
+  return { payments: out, errors };
+}
+
+/** Receipts dated before the itemized months, with the landlord's answer when given. */
+function openingReceipts(rent: Json, review: Json, payments: Json[] = []) {
+  const opening = rent.opening_balance as Json | undefined;
+  const from = opening?.itemize_from as string | undefined;
+  if (!from) return [];
+  const periods = [
+    ...((review.history_periods as Json[]) ?? []),
+    ...((review.charge_candidates as Json[]) ?? []),
+  ];
+  const start = periods.find((p) => p.cycle_key === from)?.period_start as string | undefined;
+  if (!start) return [];
+  const answers = new Map(
+    ((opening?.earlier_receipts as Json[]) ?? []).map((a) => [
+      String(a.payment_key),
+      String(a.choice),
+    ]),
+  );
+  return payments
+    .map((payment, index) => ({ payment, index }))
+    .filter(({ payment }) => {
+      const at = payment.received_at as string | null | undefined;
+      return payment.receipt_date_unknown === true || !at || at.slice(0, 10) < start;
+    })
+    .map(({ payment, index }) => ({
+      payment_index: index,
+      draft_key: payment.draft_key,
+      amount_cents: payment.amount_cents,
+      received_at: payment.received_at ?? null,
+      receipt_date_unknown: payment.receipt_date_unknown === true,
+      choice: answers.get(String(payment.draft_key)) ?? null,
+    }));
 }

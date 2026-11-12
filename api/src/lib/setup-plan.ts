@@ -308,7 +308,7 @@ export function validateRentSteps(
 /** Partial-period amount suggestions for each cycle the preview asks to confirm. */
 export function prorationSuggestions(
   review: { findings?: Json[]; history_periods?: HistoryPeriod[] },
-  monthlyCents: number,
+  monthlyCents: number | ((month: string) => number),
   method: ProrationMethod,
 ): Array<{
   cycle_key: string;
@@ -328,7 +328,11 @@ export function prorationSuggestions(
   return (review.history_periods ?? [])
     .filter((p) => p.cycle_key && cycles.has(p.cycle_key) && p.period_start && p.period_end)
     .map((p) => {
-      const r = prorate(monthlyCents, p.period_start!, p.period_end!, method);
+      const monthly =
+        typeof monthlyCents === 'function'
+          ? monthlyCents(p.period_start!.slice(0, 7))
+          : monthlyCents;
+      const r = prorate(monthly, p.period_start!, p.period_end!, method);
       return {
         cycle_key: p.cycle_key!,
         period_start: p.period_start!,
@@ -339,6 +343,20 @@ export function prorationSuggestions(
         method,
       };
     });
+}
+
+/** Whether a period amount is the server's suggestion or the landlord's own. */
+export function overrideAmountSource(
+  override: { period_start: string; period_end: string; amount_cents: number },
+  monthlyCents: number,
+  method: ProrationMethod,
+): 'suggested' | 'landlord' {
+  const days = toDay(override.period_end) - toDay(override.period_start) + 1;
+  const partial = days < daysInMonth(override.period_start);
+  const suggested = partial
+    ? prorate(monthlyCents, override.period_start, override.period_end, method).cents
+    : monthlyCents;
+  return override.amount_cents === suggested ? 'suggested' : 'landlord';
 }
 
 const ISO_CURRENCIES = new Set<string>(Intl.supportedValuesOf('currency'));
@@ -635,6 +653,19 @@ export function fieldErrorsFromFindings(findings: readonly Json[]): FieldError[]
           field: 'billing.rent.period_overrides',
           meta: { cycle_key: cycle },
         };
+      if (id.startsWith('opening_receipt_unanswered:')) {
+        const values = (f.values ?? {}) as Json;
+        return {
+          code: 'opening.receipt_unanswered',
+          step: 'catchup',
+          field: 'billing.rent.opening_balance.earlier_receipts',
+          meta: Object.fromEntries(
+            Object.entries(values)
+              .filter(([, v]) => v !== null && v !== undefined)
+              .map(([k, v]) => [k, String(v)]),
+          ),
+        };
+      }
       if (id.startsWith('history_review:'))
         return {
           code: 'catchup.period_unreviewed',

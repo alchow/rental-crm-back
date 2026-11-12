@@ -12,6 +12,10 @@ const Currency = z.string().length(3);
 const CycleKey = z.string().regex(/^\d{4}-\d{2}$/);
 export const PeriodOverride = z
   .object({
+    amount_source: z.enum(['suggested', 'landlord']).optional().openapi({
+      description:
+        'Set by the server: suggested when the amount equals the proration suggestion, landlord otherwise.',
+    }),
     cycle_key: CycleKey,
     period_start: CalendarDate,
     period_end: CalendarDate,
@@ -49,7 +53,22 @@ const ConfigureRent = z
           .optional()
           .openapi({
             description:
-              'With history_mode itemized: the first itemized month. The amount is owed from before that month and is dated the day before it; receipts must be dated in the itemized months.',
+              'With history_mode itemized: the first itemized month. The amount is owed from before that month and is dated the day before it.',
+          }),
+        earlier_receipts: z
+          .array(
+            z
+              .object({
+                payment_key: DraftKey,
+                choice: z.enum(['add_to_owed', 'keep_owed']),
+              })
+              .strict(),
+          )
+          .max(200)
+          .optional()
+          .openapi({
+            description:
+              'One answer per receipt dated before itemize_from (or with an unknown date). add_to_owed: the typed amount was already net of the receipt, so the opening entry is amount + receipt. keep_owed: the opening entry is the typed amount. Either way the receipt is applied to it.',
           }),
       })
       .strict()
@@ -108,6 +127,9 @@ const Payment = z
     method: z.enum(['cash', 'check', 'ach', 'card', 'zelle_venmo', 'money_order', 'other']),
     receipt_date_unknown: z.boolean().optional(),
     entry_source: z.enum(['manual', 'entered_at_setup', 'import']).optional(),
+    payer_tenant_id: z.string().uuid().optional().openapi({
+      description: 'Who paid. Setup fills it in for a one-person tenancy; omit when unsure.',
+    }),
     reference: z.string().max(500).optional(),
     notes: z.string().max(2000).optional(),
     allocations: z.array(Allocation).max(120).default([]),

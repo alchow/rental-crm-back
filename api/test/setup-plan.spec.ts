@@ -385,3 +385,68 @@ describe('setup field errors (WP-01)', () => {
     ]);
   });
 });
+
+describe('Phase 1 follow-ups', () => {
+  it('marks a period amount as the suggestion or the landlord own amount (WP-07)', async () => {
+    const { overrideAmountSource } = await import('../src/lib/setup-plan');
+    const partial = { period_start: '2026-10-15', period_end: '2026-10-31' };
+    expect(overrideAmountSource({ ...partial, amount_cents: 131613 }, 240000, 'actual_days')).toBe(
+      'suggested',
+    );
+    expect(overrideAmountSource({ ...partial, amount_cents: 130000 }, 240000, 'actual_days')).toBe(
+      'landlord',
+    );
+    expect(
+      overrideAmountSource({ ...partial, amount_cents: 136000 }, 240000, 'thirty_day_month'),
+    ).toBe('suggested');
+    expect(
+      overrideAmountSource(
+        { period_start: '2024-02-01', period_end: '2024-02-29', amount_cents: 140000 },
+        140000,
+        'actual_days',
+      ),
+    ).toBe('suggested');
+  });
+  it('suggests a past partial month at the rent step in force (WP-10)', () => {
+    const review = {
+      findings: [{ rule_id: 'partial_period:2019-03' }],
+      history_periods: [
+        {
+          cycle_key: '2019-03',
+          period_start: '2019-03-15',
+          period_end: '2019-03-31',
+          due_date: '2019-03-15',
+        },
+      ],
+    };
+    const rate = (month: string) =>
+      rentFor(
+        [
+          { effective_month: '2019-03', amount_cents: 140000 },
+          { effective_month: '2024-03', amount_cents: 147500 },
+        ],
+        month,
+      )!;
+    expect(prorationSuggestions(review, rate, 'actual_days')[0]!.amount_cents).toBe(
+      Math.round((140000 * 17) / 31),
+    );
+  });
+  it('turns an unanswered earlier receipt into a field error with its details (WP-09)', () => {
+    expect(
+      fieldErrorsFromFindings([
+        {
+          rule_id: 'opening_receipt_unanswered:early',
+          severity: 'error',
+          values: { payment_index: 0, draft_key: 'early', amount_cents: 30000, received_at: null },
+        },
+      ]),
+    ).toEqual([
+      {
+        code: 'opening.receipt_unanswered',
+        step: 'catchup',
+        field: 'billing.rent.opening_balance.earlier_receipts',
+        meta: { payment_index: '0', draft_key: 'early', amount_cents: '30000' },
+      },
+    ]);
+  });
+});
