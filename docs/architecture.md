@@ -188,6 +188,28 @@ setup and context can therefore be parked before sending. A session GET by ID
 also returns a completed result when a response was lost; completed session facts
 cannot be rewritten.
 
+Validate, preview and confirm share one planning step (`routes/tenancy-setup/plan.ts`,
+pure rules in `lib/setup-plan.ts`):
+
+```text
+request -> billing derived from the lease (billing.rent.follows_lease = true)
+  -> deposit_answer expanded into lease term, deposit charge and payment
+  -> rent_steps turned into explicit amounts for past cycles
+  -> shape checks -> database preview -> blocking findings as field errors
+```
+
+`POST .../tenancy-setup-sessions/{id}/validate` returns `{ ok, errors }`; preview and
+confirm failures carry the same `FieldError` list in `error.details.errors`. A draft that
+validates therefore cannot fail confirm on a field error. Omitted new fields keep the
+old payload behaviour. `GET /accounts/{id}/people/match` reads existing people by
+normalized email/phone (exact) or name (possible) while `person_match_enabled` is on.
+`rent_schedules.follows_lease` records whether billing was derived from the lease.
+Partial periods carry suggestions from `accounts.proration_method`, which also
+prorates a move-out's final period. With the starting-balance ledger on, an amount owed
+from before may accompany itemized months (`opening_balance.itemize_from`): it is dated
+the day before the first itemized month, earlier cycles cannot be itemized, and receipts
+must be dated in the itemized months.
+
 The transaction supports new tenancy setup and explicit existing-agreement reuse,
 correction, renewal or billing-only work. Existing possession changes call the
 audited date-correction command inside the same transaction. Existing money is

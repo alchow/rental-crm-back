@@ -1,0 +1,262 @@
+-- Field Log Phase 1 database checks: people matching, billing that follows the lease,
+-- percent late fees, proration method, an amount owed from before itemized months,
+-- and future rent steps. Everything runs in one transaction and rolls back.
+\set ON_ERROR_STOP on
+begin;
+insert into auth.users(id,email) values ('dddddddd-dddd-dddd-dddd-dddddddddddd','phase-one@example.test');
+select set_config('request.jwt.claims','{"sub":"dddddddd-dddd-dddd-dddd-dddddddddddd","role":"authenticated"}',true);
+set local role authenticated;
+select account_id from public.create_account_for_new_user('Phase one','Test owner','America/Los_Angeles') \gset
+select set_config('field_log.account_id', :'account_id', true);
+reset role;
+update public.accounts set opening_balance_ledger_enabled=true, scheduled_move_out_enabled=true,
+  auto_charge_enabled=true where id=:'account_id';
+set local role authenticated;
+
+-- billing: the rent intent; start_on: lease and possession start.
+create function pg_temp.setup(person uuid, start_on date, rent jsonb, payments jsonb default '[]') returns jsonb
+language sql as $$
+  select jsonb_build_object(
+    'people',jsonb_build_array(jsonb_build_object('key',person,'tenant_id',person)),
+    'tenancy',jsonb_build_object('start_date',start_on),
+    'agreement',jsonb_build_object('id',gen_random_uuid(),'change_kind','new','term_start',start_on,
+      'rent_amount_cents',147500,'rent_currency','USD','deposit_amount_cents',0,'deposit_currency','USD',
+      'rent_due_rule','{"kind":"day_of_month","day":1}'::jsonb,'grace_days',5,
+      'late_fee_policy','{"kind":"percent","percent":5}'::jsonb,'deposit_knowledge','unknown','terms_source','{"kind":"manual"}'::jsonb),
+    'billing',jsonb_build_object(
+      'rent',jsonb_build_object('decision','configure','coverage_start',start_on,'regular_anchor',start_on,'due_day',1,
+        'billing_due_rule','{"kind":"day_of_month","day":1}'::jsonb,'short_month_policy','last_day',
+        'amount_cents',147500,'currency','USD','grace_days',5,'late_fee_policy','{"kind":"percent","percent":5}'::jsonb,
+        'history_mode','itemized','charge_keys','[]'::jsonb)||rent,
+      'deposit','{"decision":"defer"}'::jsonb,'payments',payments,'credit_allocations','[]'::jsonb,'explanations','[]'::jsonb),
+    'receipt_purposes','{}'::jsonb,'warning_notes','{}'::jsonb)
+$$;
+create function pg_temp.new_draft(place uuid, label text) returns uuid
+language plpgsql as $$
+declare door uuid; draft uuid := gen_random_uuid();
+begin
+  insert into public.areas(account_id,property_id,kind,name)
+    values(current_setting('field_log.account_id')::uuid,place,'unit',label) returning id into door;
+  perform public.save_tenancy_setup_session(current_setting('field_log.account_id')::uuid,draft,door,null,0,'{"version":4}');
+  return draft;
+end;
+$$;
+create function pg_temp.commit_setup(draft uuid, setup jsonb) returns jsonb
+language plpgsql as $$
+declare account uuid := current_setting('field_log.account_id')::uuid; review jsonb; key text := 'setup-'||draft::text;
+begin
+  review := public.preview_tenancy_setup_session(account,draft,setup);
+  if (review->>'can_confirm')::boolean is distinct from true then raise exception 'Setup review blocked: %',review->'findings'; end if;
+  perform public.claim_idempotency_key(account,key,md5(key)||md5(key));
+  return public.commit_tenancy_setup_session(account,draft,setup,review->>'setup_context',true,key,md5(key)||md5(key));
+end;
+$$;
+
+do $test$
+declare place uuid; person uuid; account uuid := current_setting('field_log.account_id')::uuid;
+begin
+  insert into public.properties(account_id,name) values(account,'418 Juniper Avenue') returning id into place;
+  insert into public.tenants(account_id,full_name,emails,phones)
+    values(account,'Dana Whitfield',array['Dana.Whitfield@example.test'],array['+15035550123']) returning id into person;
+  perform set_config('field_log.place',place::text,true);
+  perform set_config('field_log.person',person::text,true);
+end;
+$test$;
+
+-- WP-01: people matching is off until the flag is on, then exact by email/phone, possible by name.
+do $test$
+declare account uuid := current_setting('field_log.account_id')::uuid; found jsonb;
+begin
+  found := public.match_setup_people(account,'dana.whitfield@example.test','','');
+  if (found->>'enabled')::boolean or jsonb_array_length(found->'exact') <> 0 then
+    raise exception 'Matching ran while person_match_enabled was off: %',found;
+  end if;
+end;
+$test$;
+reset role;
+update public.accounts set person_match_enabled=true where id=:'account_id';
+set local role authenticated;
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  person uuid := current_setting('field_log.person')::uuid;
+  draft uuid := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Unit A');
+  found jsonb;
+begin
+  perform pg_temp.commit_setup(draft,pg_temp.setup(person,(date_trunc('month',now())+interval '1 month')::date,'{}'));
+  found := public.match_setup_people(account,' DANA.WHITFIELD@example.test ','','');
+  if found->'exact'->0->>'person_id' <> person::text or found->'exact'->0->'matched_on' <> '["email"]'
+    or found->'exact'->0->'tenancies'->0->>'door_name' <> 'Unit A'
+    or found->'exact'->0->'tenancies'->0->>'property_name' <> '418 Juniper Avenue'
+    or found->'exact'->0->'tenancies'->0->>'status' <> 'upcoming' then
+    raise exception 'Email match missing context: %',found;
+  end if;
+  found := public.match_setup_people(account,'','+15035550123','');
+  if found->'exact'->0->'matched_on' <> '["phone"]' then raise exception 'Phone match missing: %',found; end if;
+  found := public.match_setup_people(account,'other@example.test','','  dana   WHITFIELD ');
+  if jsonb_array_length(found->'exact') <> 0 or found->'possible'->0->'matched_on' <> '["name"]' then
+    raise exception 'Name-only match should be possible, not exact: %',found;
+  end if;
+end;
+$test$;
+
+-- WP-04 and WP-06: follows_lease is stored with the schedule; a percent late fee is a valid term.
+do $test$
+declare
+  person uuid := current_setting('field_log.person')::uuid;
+  draft uuid := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Unit B');
+begin
+  perform pg_temp.commit_setup(draft,pg_temp.setup(person,(date_trunc('month',now())+interval '1 month')::date,
+    '{"follows_lease":true}'));
+  if (select follows_lease from public.rent_schedules where tenancy_id=draft) is distinct from true
+    or (select late_fee_policy->>'kind' from public.leases where tenancy_id=draft) <> 'percent' then
+    raise exception 'follows_lease or percent late fee was not stored';
+  end if;
+  if public._valid_recorded_term('{"kind":"percent","percent":0}',false)
+    or public._valid_recorded_term('{"kind":"percent","percent":100.5}',false)
+    or public._valid_recorded_term('{"kind":"percent","percent":2.555}',false)
+    or not public._valid_recorded_term('{"kind":"percent","percent":2.5}',false) then
+    raise exception 'Percent late fee validation is wrong';
+  end if;
+  begin
+    perform public.preview_tenancy_setup_session(current_setting('field_log.account_id')::uuid,
+      pg_temp.new_draft(current_setting('field_log.place')::uuid,'Unit B2'),
+      pg_temp.setup(person,(date_trunc('month',now())+interval '1 month')::date,'{"follows_lease":"yes"}'));
+    raise exception 'A non-boolean follows_lease was accepted';
+  exception when raise_exception then
+    if sqlerrm not like 'invalid: incomplete or unsupported recurring instruction%' then raise; end if;
+  end;
+end;
+$test$;
+
+-- WP-09: an amount owed from before plus itemized months, with no overlap and no early receipts.
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  person uuid := current_setting('field_log.person')::uuid;
+  month_start date := date_trunc('month',public._account_date(account))::date;
+  start_on date := (month_start - interval '4 months')::date;
+  itemize date := (month_start - interval '1 month')::date;
+  draft uuid := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Unit C');
+  rent jsonb := jsonb_build_object('opening_balance',jsonb_build_object('amount_cents',65000,'basis','Rent',
+    'itemize_from',to_char(itemize,'YYYY-MM')));
+begin
+  begin
+    perform public.preview_tenancy_setup_session(account,draft,pg_temp.setup(person,start_on,
+      jsonb_build_object('opening_balance','{"amount_cents":65000,"basis":"Rent"}'::jsonb)));
+    raise exception 'Itemized history with an unbounded opening amount was accepted';
+  exception when raise_exception then
+    if sqlerrm not like 'invalid: opening balance and itemized history are exclusive%' then raise; end if;
+  end;
+  begin
+    perform public.preview_tenancy_setup_session(account,draft,pg_temp.setup(person,start_on,rent,
+      jsonb_build_array(jsonb_build_object('draft_key','early','amount_cents',147500,'currency','USD',
+        'received_at',(itemize-10)::text,'method','check','allocations','[]'::jsonb))));
+    raise exception 'A receipt before the itemized months was accepted';
+  exception when raise_exception then
+    if sqlerrm not like 'invalid: a payment before the itemized months%' then raise; end if;
+  end;
+  begin
+    perform public.preview_tenancy_setup_session(account,draft,pg_temp.setup(person,start_on,
+      rent||jsonb_build_object('charge_keys',jsonb_build_array(jsonb_build_object('cycle_key',to_char(start_on,'YYYY-MM'),'draft_key','old')))));
+    raise exception 'A month covered by the opening amount was itemized';
+  exception when raise_exception then
+    if sqlerrm not like 'invalid: a selected month is covered%' then raise; end if;
+  end;
+  perform pg_temp.commit_setup(draft,pg_temp.setup(person,start_on,rent,
+    jsonb_build_array(jsonb_build_object('draft_key','paid','amount_cents',147500,'currency','USD',
+      'received_at',(itemize+2)::text,'method','check','allocations',
+      jsonb_build_array(jsonb_build_object('charge_key','rent_'||to_char(itemize,'YYYY_MM'),'amount_cents',147500))))));
+  if (select due_date from public.charges where tenancy_id=draft and type='opening_balance') <> itemize-1
+    or (select min(period_start) from public.charges where tenancy_id=draft and type='rent') <> itemize
+    or (select count(*) from public.charges where tenancy_id=draft and type='rent') <> 2
+    or (select rent_balance_cents from public.rent_rollup(account,array['active'],month_start+1) where tenancy_id=draft)
+      <> 65000 + 147500 then
+    raise exception 'Combined setup double counted or misdated: %',
+      (select jsonb_agg(jsonb_build_object('type',type,'due',due_date,'start',period_start,'amount',amount_cents))
+         from public.charges where tenancy_id=draft);
+  end if;
+end;
+$test$;
+
+-- WP-07: the account's 30-day method prorates a move-out's final period.
+reset role;
+update public.accounts set proration_method='thirty_day_month' where id=:'account_id';
+set local role authenticated;
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  person uuid := current_setting('field_log.person')::uuid;
+  month_start date := date_trunc('month',public._account_date(account))::date;
+  draft uuid := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Unit D');
+  key text := 'end-'||gen_random_uuid()::text;
+begin
+  perform pg_temp.commit_setup(draft,pg_temp.setup(person,(month_start - interval '2 months')::date,
+    jsonb_build_object('coverage_start',month_start,'regular_anchor',month_start,
+      'history_mode','opening_balance','opening_balance','{"amount_cents":1000,"basis":"Rent","includes_current_rent":true}'::jsonb)));
+  perform set_config('field_log.prorate_tenancy',draft::text,true);
+end;
+$test$;
+reset role;
+do $test$
+declare next_month date := (date_trunc('month',public._account_date(current_setting('field_log.account_id')::uuid))+interval '1 month')::date;
+begin
+  perform public.generate_rent_charges(current_setting('field_log.account_id')::uuid,
+    next_month::timestamp at time zone 'America/Los_Angeles');
+end;
+$test$;
+set local role authenticated;
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  tenancy uuid := current_setting('field_log.prorate_tenancy')::uuid;
+  next_month date := (date_trunc('month',public._account_date(account))+interval '1 month')::date;
+  key text := 'end-'||gen_random_uuid()::text;
+begin
+  perform public.claim_idempotency_key(account,key,md5(key)||md5(key));
+  perform public.record_tenancy_ending(account,tenancy,jsonb_build_object('kind','ended','effective_date',next_month+9,
+    'initiated_by','tenant','reason_code','notice'),key,md5(key)||md5(key));
+  if (select amount_cents from public.charges where tenancy_id=tenancy and type='rent' and voided_at is null) <> round(147500*10/30.0) then
+    raise exception 'Final period ignored the 30-day method: %',
+      (select jsonb_agg(amount_cents) from public.charges where tenancy_id=tenancy and type='rent' and voided_at is null);
+  end if;
+end;
+$test$;
+
+-- WP-10: a future rent step changes the generated charge from its month and not before.
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  person uuid := current_setting('field_log.person')::uuid;
+  month_start date := date_trunc('month',public._account_date(account))::date;
+  draft uuid := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Unit E');
+  outcome jsonb;
+begin
+  outcome := pg_temp.commit_setup(draft,pg_temp.setup(person,(month_start - interval '2 months')::date,
+    jsonb_build_object('coverage_start',month_start,'regular_anchor',month_start,
+      'history_mode','opening_balance','opening_balance','{"amount_cents":1000,"basis":"Rent","includes_current_rent":true}'::jsonb)));
+  perform public.change_tenancy_rent(p_account_id=>account,p_tenancy_id=>draft,p_amount_cents=>155000,p_currency=>'USD',
+    p_effective_date=>(month_start+interval '2 months')::date,p_source_lease_id=>(outcome->>'lease_id')::uuid,
+    p_change_reason=>'Rent increase agreed');
+  perform set_config('field_log.step_tenancy',draft::text,true);
+end;
+$test$;
+reset role;
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  tenancy uuid := current_setting('field_log.step_tenancy')::uuid;
+  month_start date := date_trunc('month',public._account_date(account))::date;
+begin
+  perform public.generate_rent_charges(account,(month_start+interval '1 month')::timestamp at time zone 'America/Los_Angeles');
+  perform public.generate_rent_charges(account,(month_start+interval '2 months')::timestamp at time zone 'America/Los_Angeles');
+  if (select string_agg(period_start||'='||amount_cents,' ' order by period_start) from public.charges
+      where tenancy_id=tenancy and type='rent' and voided_at is null)
+    <> (month_start+interval '1 month')::date||'=147500 '||(month_start+interval '2 months')::date||'=155000' then
+    raise exception 'Rent step did not apply from its month: %',
+      (select string_agg(period_start||'='||amount_cents,' ' order by period_start) from public.charges where tenancy_id=tenancy and type='rent');
+  end if;
+end;
+$test$;
+
+rollback;

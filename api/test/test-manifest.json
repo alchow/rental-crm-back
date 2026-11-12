@@ -57,6 +57,10 @@
       "description": "Starting balances in ledger, rent roll and PDF; scheduled move-out cancel, derived ending and intake."
     },
     {
+      "script": "test:setup-phase-one",
+      "description": "Setup validate route, people matching, lease-derived billing, one-answer deposit and proration setting."
+    },
+    {
       "script": "test:rent-rollup",
       "description": "Account rent rollup parity with tenancy ledgers."
     },
