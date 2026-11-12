@@ -163,6 +163,13 @@ off, behavior is exactly as described above.
 Combined with itemized months (same flag): billing setup accepts `history_mode =
 'itemized'` with `opening_balance.itemize_from`. The opening entry is dated the day
 before the first itemized period (`tenancy_adoptions.opening_on`), cycles before that
-month cannot be itemized or overridden, and receipts must be dated within the itemized
-months, because the stated amount is already net of anything received earlier. The
-timeline must still be virgin, and without `itemize_from` the two remain exclusive.
+month cannot be itemized or overridden. The timeline must still be virgin, and without
+`itemize_from` the two remain exclusive.
+
+A receipt dated before the itemized months (or with an unknown date) is not refused.
+The landlord answers per receipt in `opening_balance.earlier_receipts`: `add_to_owed`
+records the opening entry as the typed amount plus the receipt (the typed amount was
+already net of it); `keep_owed` records the typed amount. Either way the receipt keeps
+its real date or unknown-date marker and is applied to the opening entry; anything
+beyond it stays unapplied credit. An unanswered receipt blocks confirm. The adoption
+keeps `typed_opening_cents` and `earlier_receipts` (the answers) as provenance.
