@@ -14773,6 +14773,7 @@ CREATE TABLE IF NOT EXISTS "public"."accounts" (
     "proration_method" "text" DEFAULT 'actual_days'::"text" NOT NULL,
     "currency" "text" DEFAULT 'USD'::"text" NOT NULL,
     "multi_currency" boolean DEFAULT false NOT NULL,
+    "wizard_v2_enabled" boolean DEFAULT false NOT NULL,
     CONSTRAINT "accounts_currency_check" CHECK (("currency" ~ '^[A-Z]{3}$'::"text")),
     CONSTRAINT "accounts_email_subdomain_format" CHECK ((("email_subdomain" IS NULL) OR ("email_subdomain" ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'::"text"))),
     CONSTRAINT "accounts_email_subdomain_no_punycode" CHECK ((("email_subdomain" IS NULL) OR ("email_subdomain" !~~ 'xn--%'::"text"))),

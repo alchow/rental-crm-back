@@ -24396,6 +24396,8 @@ export interface components {
             person_match_enabled?: boolean;
             opening_balance_ledger_enabled?: boolean;
             scheduled_move_out_enabled?: boolean;
+            /** @description Read-only rollout flag: show the new setup wizard. Both setup payloads are accepted either way. */
+            wizard_v2_enabled?: boolean;
             time_zone?: string;
             /** @enum {string} */
             proration_method?: "actual_days" | "thirty_day_month";
@@ -24495,6 +24497,23 @@ export interface components {
             }[];
             /** @enum {string} */
             proration_method?: "actual_days" | "thirty_day_month";
+            /** @description Each period amount sent in period_overrides, marked suggested or the landlord’s own. */
+            period_amount_sources?: {
+                cycle_key: string;
+                amount_cents: number;
+                /** @enum {string} */
+                amount_source: "suggested" | "landlord";
+            }[];
+            /** @description Receipts dated before opening_balance.itemize_from (or with an unknown date) and the answer given for each; null choice blocks confirm. */
+            opening_receipts?: {
+                payment_index: number;
+                draft_key: string;
+                amount_cents: number;
+                received_at: string | null;
+                receipt_date_unknown: boolean;
+                /** @enum {string|null} */
+                choice: "add_to_owed" | "keep_owed" | null;
+            }[];
         };
         /** @description One deposit amount and one answer. null amount = unknown, 0 = no deposit. The server writes the lease term, the deposit charge (due at lease start, or today once the lease has started) and any payment, replacing agreement.deposit_*, billing.deposit and the deposit payment. */
         TenancySetupDepositAnswer: {

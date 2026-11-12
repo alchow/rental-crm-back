@@ -13516,6 +13516,10 @@
           "scheduled_move_out_enabled": {
             "type": "boolean"
           },
+          "wizard_v2_enabled": {
+            "type": "boolean",
+            "description": "Read-only rollout flag: show the new setup wizard. Both setup payloads are accepted either way."
+          },
           "time_zone": {
             "type": "string"
           },
@@ -13854,6 +13858,79 @@
                   "actual_days",
                   "thirty_day_month"
                 ]
+              },
+              "period_amount_sources": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "cycle_key": {
+                      "type": "string"
+                    },
+                    "amount_cents": {
+                      "type": "integer"
+                    },
+                    "amount_source": {
+                      "type": "string",
+                      "enum": [
+                        "suggested",
+                        "landlord"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "cycle_key",
+                    "amount_cents",
+                    "amount_source"
+                  ]
+                },
+                "description": "Each period amount sent in period_overrides, marked suggested or the landlord’s own."
+              },
+              "opening_receipts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "payment_index": {
+                      "type": "integer"
+                    },
+                    "draft_key": {
+                      "type": "string"
+                    },
+                    "amount_cents": {
+                      "type": "integer"
+                    },
+                    "received_at": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "receipt_date_unknown": {
+                      "type": "boolean"
+                    },
+                    "choice": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "add_to_owed",
+                        "keep_owed",
+                        null
+                      ]
+                    }
+                  },
+                  "required": [
+                    "payment_index",
+                    "draft_key",
+                    "amount_cents",
+                    "received_at",
+                    "receipt_date_unknown",
+                    "choice"
+                  ]
+                },
+                "description": "Receipts dated before opening_balance.itemize_from (or with an unknown date) and the answer given for each; null choice blocks confirm."
               }
             },
             "required": [

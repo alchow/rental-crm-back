@@ -140,6 +140,7 @@ export type Database = {
           sender_display_name: string | null;
           time_zone: string;
           updated_at: string;
+          wizard_v2_enabled: boolean;
         };
         Insert: {
           auto_charge_enabled?: boolean;
@@ -158,6 +159,7 @@ export type Database = {
           sender_display_name?: string | null;
           time_zone?: string;
           updated_at?: string;
+          wizard_v2_enabled?: boolean;
         };
         Update: {
           auto_charge_enabled?: boolean;
@@ -176,6 +178,7 @@ export type Database = {
           sender_display_name?: string | null;
           time_zone?: string;
           updated_at?: string;
+          wizard_v2_enabled?: boolean;
         };
         Relationships: [];
       };
