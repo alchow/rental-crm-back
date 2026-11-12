@@ -3373,6 +3373,28 @@
                   "kind": {
                     "type": "string",
                     "enum": [
+                      "percent"
+                    ]
+                  },
+                  "percent": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "kind",
+                  "percent"
+                ],
+                "additionalProperties": false,
+                "description": "Percent of the monthly rent."
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
                       "other"
                     ]
                   },
@@ -3742,6 +3764,28 @@
                   "kind": {
                     "type": "string",
                     "enum": [
+                      "percent"
+                    ]
+                  },
+                  "percent": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "kind",
+                  "percent"
+                ],
+                "additionalProperties": false,
+                "description": "Percent of the monthly rent."
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
                       "other"
                     ]
                   },
@@ -4013,6 +4057,28 @@
                   "currency"
                 ],
                 "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "percent"
+                    ]
+                  },
+                  "percent": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "kind",
+                  "percent"
+                ],
+                "additionalProperties": false,
+                "description": "Percent of the monthly rent."
               },
               {
                 "type": "object",
@@ -4322,6 +4388,28 @@
                       "currency"
                     ],
                     "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "percent"
+                        ]
+                      },
+                      "percent": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 100
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "percent"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Percent of the monthly rent."
                   },
                   {
                     "type": "object",
@@ -8039,6 +8127,28 @@
                           "kind": {
                             "type": "string",
                             "enum": [
+                              "percent"
+                            ]
+                          },
+                          "percent": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "maximum": 100
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "percent"
+                        ],
+                        "additionalProperties": false,
+                        "description": "Percent of the monthly rent."
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
                               "other"
                             ]
                           },
@@ -8128,6 +8238,11 @@
                       },
                       "includes_current_rent": {
                         "type": "boolean"
+                      },
+                      "itemize_from": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-(0[1-9]|1[0-2])$",
+                        "description": "With history_mode itemized: the first itemized month. The amount is owed from before that month and is dated the day before it; receipts must be dated in the itemized months."
                       }
                     },
                     "required": [
@@ -8160,6 +8275,10 @@
                     },
                     "maxItems": 120,
                     "default": []
+                  },
+                  "follows_lease": {
+                    "type": "boolean",
+                    "description": "True: setup derives amount, currency, due rule, grace, late fee and coverage end from the agreement. False: billing differs on purpose. Omitted: billing is used as sent."
                   }
                 },
                 "required": [
@@ -13009,6 +13128,13 @@
           },
           "time_zone": {
             "type": "string"
+          },
+          "proration_method": {
+            "type": "string",
+            "enum": [
+              "actual_days",
+              "thirty_day_month"
+            ]
           }
         },
         "required": [
@@ -13020,11 +13146,16 @@
         "properties": {
           "auto_charge_enabled": {
             "type": "boolean"
+          },
+          "proration_method": {
+            "type": "string",
+            "enum": [
+              "actual_days",
+              "thirty_day_month"
+            ]
           }
         },
-        "required": [
-          "auto_charge_enabled"
-        ]
+        "additionalProperties": false
       },
       "TenancySetupSession": {
         "type": "object",
@@ -13090,6 +13221,37 @@
           "created_at",
           "updated_at",
           "expires_at"
+        ]
+      },
+      "SetupFieldError": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "step": {
+            "type": "string",
+            "enum": [
+              "who",
+              "lease",
+              "catchup",
+              "confirm"
+            ]
+          },
+          "field": {
+            "type": "string"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "code",
+          "step",
+          "field"
         ]
       },
       "TenancySetupReview": {
@@ -13207,6 +13369,87 @@
                     "additionalProperties": false
                   }
                 ]
+              },
+              "field_errors": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SetupFieldError"
+                }
+              },
+              "billing_differences": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "field": {
+                      "type": "string",
+                      "enum": [
+                        "amount_cents",
+                        "currency",
+                        "due_rule",
+                        "grace_days",
+                        "late_fee_policy",
+                        "coverage_end"
+                      ]
+                    },
+                    "lease": {},
+                    "billing": {}
+                  },
+                  "required": [
+                    "field"
+                  ]
+                }
+              },
+              "proration_suggestions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "cycle_key": {
+                      "type": "string"
+                    },
+                    "period_start": {
+                      "type": "string",
+                      "format": "date"
+                    },
+                    "period_end": {
+                      "type": "string",
+                      "format": "date"
+                    },
+                    "days": {
+                      "type": "integer"
+                    },
+                    "base": {
+                      "type": "integer"
+                    },
+                    "amount_cents": {
+                      "type": "integer"
+                    },
+                    "method": {
+                      "type": "string",
+                      "enum": [
+                        "actual_days",
+                        "thirty_day_month"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "cycle_key",
+                    "period_start",
+                    "period_end",
+                    "days",
+                    "base",
+                    "amount_cents",
+                    "method"
+                  ]
+                }
+              },
+              "proration_method": {
+                "type": "string",
+                "enum": [
+                  "actual_days",
+                  "thirty_day_month"
+                ]
               }
             },
             "required": [
@@ -13220,9 +13463,98 @@
           }
         ]
       },
+      "TenancySetupDepositAnswer": {
+        "type": "object",
+        "properties": {
+          "amount_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "maximum": 9007199254740991
+          },
+          "paid": {
+            "type": "string",
+            "enum": [
+              "not_yet",
+              "yes",
+              "part"
+            ]
+          },
+          "payment": {
+            "type": "object",
+            "properties": {
+              "amount_cents": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "method": {
+                "type": "string",
+                "enum": [
+                  "cash",
+                  "check",
+                  "ach",
+                  "card",
+                  "zelle_venmo",
+                  "money_order",
+                  "other"
+                ]
+              },
+              "received_at": {
+                "type": "string",
+                "format": "date"
+              },
+              "reference": {
+                "type": "string",
+                "maxLength": 500
+              }
+            },
+            "required": [
+              "method"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "amount_cents"
+        ],
+        "additionalProperties": false,
+        "description": "One deposit amount and one answer. null amount = unknown, 0 = no deposit. The server writes the lease term, the deposit charge (due at lease start, or today once the lease has started) and any payment, replacing agreement.deposit_*, billing.deposit and the deposit payment."
+      },
+      "TenancySetupRentStep": {
+        "type": "object",
+        "properties": {
+          "effective_month": {
+            "type": "string",
+            "pattern": "^\\d{4}-(0[1-9]|1[0-2])$"
+          },
+          "amount_cents": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "effective_month",
+          "amount_cents"
+        ],
+        "additionalProperties": false
+      },
       "TenancySetupInput": {
         "type": "object",
         "properties": {
+          "deposit_answer": {
+            "$ref": "#/components/schemas/TenancySetupDepositAnswer"
+          },
+          "rent_steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TenancySetupRentStep"
+            },
+            "maxItems": 60,
+            "description": "Past rent changes after the lease start (\"from [month] rent became [amount]\"). Requires billing.rent.follows_lease = true."
+          },
           "people": {
             "type": "array",
             "items": {
@@ -13440,6 +13772,28 @@
                       "kind": {
                         "type": "string",
                         "enum": [
+                          "percent"
+                        ]
+                      },
+                      "percent": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 100
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "percent"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Percent of the monthly rent."
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
                           "other"
                         ]
                       },
@@ -13642,6 +13996,24 @@
         ],
         "additionalProperties": false
       },
+      "TenancySetupValidation": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SetupFieldError"
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "errors"
+        ]
+      },
       "TenancySetupResult": {
         "type": "object",
         "properties": {
@@ -13671,6 +14043,175 @@
           "lease_id",
           "status",
           "billing"
+        ]
+      },
+      "PeopleMatch": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "exact": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "person_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "full_name": {
+                  "type": "string"
+                },
+                "matched_on": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "email",
+                      "phone",
+                      "name"
+                    ]
+                  }
+                },
+                "tenancies": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "tenancy_id": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "status": {
+                        "type": "string"
+                      },
+                      "start_date": {
+                        "type": "string",
+                        "format": "date"
+                      },
+                      "move_out_on": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date"
+                      },
+                      "door_name": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "property_name": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "tenancy_id",
+                      "status",
+                      "start_date",
+                      "move_out_on",
+                      "door_name",
+                      "property_name"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "person_id",
+                "full_name",
+                "matched_on",
+                "tenancies"
+              ]
+            }
+          },
+          "possible": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "person_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "full_name": {
+                  "type": "string"
+                },
+                "matched_on": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "email",
+                      "phone",
+                      "name"
+                    ]
+                  }
+                },
+                "tenancies": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "tenancy_id": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "status": {
+                        "type": "string"
+                      },
+                      "start_date": {
+                        "type": "string",
+                        "format": "date"
+                      },
+                      "move_out_on": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date"
+                      },
+                      "door_name": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "property_name": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "tenancy_id",
+                      "status",
+                      "start_date",
+                      "move_out_on",
+                      "door_name",
+                      "property_name"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "person_id",
+                "full_name",
+                "matched_on",
+                "tenancies"
+              ]
+            }
+          }
+        },
+        "required": [
+          "enabled",
+          "exact",
+          "possible"
         ]
       },
       "Attachment": {
@@ -37145,6 +37686,138 @@
         }
       }
     },
+    "/v1/accounts/{accountId}/tenancy-setup-sessions/{id}/validate": {
+      "post": {
+        "tags": [
+          "tenancy_setup"
+        ],
+        "summary": "Run the checks confirm runs and list every field error",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenancySetupInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok = true when confirm would not fail on a field error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenancySetupValidation"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/accounts/{accountId}/tenancy-setup-sessions/{id}/commit": {
       "post": {
         "tags": [
@@ -37231,6 +37904,123 @@
                   "enum": [
                     "true"
                   ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/people/match": {
+      "get": {
+        "tags": [
+          "tenancy_setup"
+        ],
+        "summary": "People already recorded with the same email, phone or name",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 320
+            },
+            "required": false,
+            "name": "email",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "required": false,
+            "name": "phone",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "required": false,
+            "name": "name",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "exact: same normalized email or E.164 phone; possible: same normalized name only. Empty with enabled = false while person matching is off.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PeopleMatch"
                 }
               }
             }
@@ -37386,6 +38176,28 @@
                             "currency"
                           ],
                           "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "percent"
+                              ]
+                            },
+                            "percent": {
+                              "type": "number",
+                              "exclusiveMinimum": 0,
+                              "maximum": 100
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "percent"
+                          ],
+                          "additionalProperties": false,
+                          "description": "Percent of the monthly rent."
                         },
                         {
                           "type": "object",

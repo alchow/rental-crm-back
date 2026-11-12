@@ -2785,6 +2785,7 @@ CREATE TABLE IF NOT EXISTS "public"."tenancy_adoptions" (
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "deleted_at" timestamp with time zone,
     "includes_current_rent" boolean,
+    "opening_on" "date",
     CONSTRAINT "tenancy_adoptions_balance_basis_check" CHECK ((("balance_basis" IS NULL) OR (("length"("balance_basis") >= 1) AND ("length"("balance_basis") <= 200)))),
     CONSTRAINT "tenancy_adoptions_currency_check" CHECK (("char_length"("currency") = 3))
 );
@@ -2808,7 +2809,7 @@ begin
     insert into public.charges(account_id, tenancy_id, type, amount_cents, currency, due_date,
       description, opening_adoption_id, opening_category)
     values (p_adoption.account_id, p_adoption.tenancy_id, 'opening_balance', p_adoption.opening_balance_cents,
-      p_adoption.currency, p_adoption.adoption_date, 'Entered at setup', p_adoption.id,
+      p_adoption.currency, coalesce(p_adoption.opening_on, p_adoption.adoption_date), 'Entered at setup', p_adoption.id,
       case lower(btrim(p_adoption.balance_basis))
         when 'rent' then 'rent' when 'fees' then 'fees' when 'utilities' then 'utilities'
         when 'several' then 'mixed' when 'mixed' then 'mixed' else 'unspecified' end)
@@ -2817,7 +2818,8 @@ begin
     insert into public.payments(account_id, tenancy_id, amount_cents, currency, method, received_at,
       receipt_date_unknown, entry_source, opening_adoption_id, opening_credit_on)
     values (p_adoption.account_id, p_adoption.tenancy_id, -p_adoption.opening_balance_cents,
-      p_adoption.currency, null, null, true, 'opening_credit', p_adoption.id, p_adoption.adoption_date)
+      p_adoption.currency, null, null, true, 'opening_credit', p_adoption.id,
+      coalesce(p_adoption.opening_on, p_adoption.adoption_date))
     on conflict (account_id, opening_adoption_id) where opening_adoption_id is not null do nothing;
   end if;
 end;
@@ -2845,6 +2847,9 @@ CREATE OR REPLACE FUNCTION "public"."_valid_recorded_term"("p_term" "jsonb", "p_
       and jsonb_typeof(p_term->'amount_cents') = 'number'
       and (p_term->>'amount_cents') ~ '^[0-9]+$' and (p_term->>'amount_cents')::numeric > 0
       and length(p_term->>'currency') = 3
+    when 'percent' then not p_due and p_term - array['kind','percent'] = '{}'::jsonb
+      and jsonb_typeof(p_term->'percent') = 'number' and (p_term->>'percent')::numeric > 0
+      and (p_term->>'percent')::numeric <= 100 and (p_term->>'percent')::numeric = round((p_term->>'percent')::numeric, 2)
     when 'other' then p_term - array['kind','text'] = '{}'::jsonb
       and jsonb_typeof(p_term->'text') = 'string' and length(btrim(p_term->>'text')) between 1 and 2000
     else false end,false)
@@ -2881,6 +2886,7 @@ CREATE TABLE IF NOT EXISTS "public"."rent_schedules" (
     "manual_basis" "text",
     "billing_due_rule" "jsonb",
     "short_month_policy" "text",
+    "follows_lease" boolean,
     CONSTRAINT "rent_schedules_amount_cents_check" CHECK (("amount_cents" >= 0)),
     CONSTRAINT "rent_schedules_check" CHECK ((("end_date" IS NULL) OR ("end_date" >= "start_date"))),
     CONSTRAINT "rent_schedules_currency_check" CHECK (("length"("currency") = 3)),
@@ -2955,7 +2961,8 @@ begin
   if t.move_out_plan->>'final_rent_schedule_id' = s.id::text then
     cents := (t.move_out_plan->>'final_rent_amount_cents')::bigint;
   end if;
-  denominator := extract(day from (date_trunc('month',from_on) + interval '1 month - 1 day'))::integer;
+  denominator := case when (select proration_method from public.accounts where id = s.account_id) = 'thirty_day_month' then 30
+    else extract(day from (date_trunc('month',from_on) + interval '1 month - 1 day'))::integer end;
   return p_period || jsonb_build_object('period_end',t.move_out_on,
     'due_date',least((p_period->>'due_date')::date,t.move_out_on),
     'amount_cents',coalesce(cents,round(s.amount_cents::numeric *
@@ -7364,19 +7371,22 @@ begin
   if r->>'decision' = 'configure' then
     if v_preview->>'mode' = 'initial' and (r->>'history_mode' = 'opening_balance' or exists(
       select 1 from jsonb_array_elements(v_preview->'history_periods') h where coalesce((h->>'is_elapsed')::boolean,false))) then
-      insert into public.tenancy_adoptions(account_id,tenancy_id,adoption_date,opening_balance_cents,currency,balance_basis,includes_current_rent)
+      insert into public.tenancy_adoptions(account_id,tenancy_id,adoption_date,opening_balance_cents,currency,balance_basis,includes_current_rent,opening_on)
       values(p_account_id,p_tenancy_id,(v_preview->>'as_of_date')::date,
         coalesce((r->'opening_balance'->>'amount_cents')::bigint,0),r->>'currency',r->'opening_balance'->>'basis',case when exists (select 1 from public.accounts
         where id = p_account_id and opening_balance_ledger_enabled)
-        then (r->'opening_balance'->>'includes_current_rent')::boolean end) returning id into v_adoption_id;
+        then (r->'opening_balance'->>'includes_current_rent')::boolean end,
+        case when r->'opening_balance'->>'itemize_from' is not null
+          then (public._billing_period(r, r->'opening_balance'->>'itemize_from')->>'period_start')::date - 1 end)
+        returning id into v_adoption_id;
     end if;
     insert into public.rent_schedules(account_id,tenancy_id,kind,amount_cents,currency,due_day,start_date,end_date,
-      source_lease_id,source_notice_id,grace_days,late_fee_cents,period_policy_version,regular_anchor,terms_snapshot,manual_basis,billing_due_rule,short_month_policy)
+      source_lease_id,source_notice_id,grace_days,late_fee_cents,period_policy_version,regular_anchor,terms_snapshot,manual_basis,billing_due_rule,short_month_policy,follows_lease)
     values(p_account_id,p_tenancy_id,'rent',(r->>'amount_cents')::bigint,r->>'currency',(r->>'due_day')::integer,
       (r->>'coverage_start')::date,(r->>'coverage_end')::date,(r->>'source_lease_id')::uuid,(r->>'source_notice_id')::uuid,(r->>'grace_days')::integer,
       case when r->'late_fee_policy'->>'kind' = 'fixed' and r->'late_fee_policy'->>'currency' = r->>'currency'
         then (r->'late_fee_policy'->>'amount_cents')::bigint else null end,case when r?'billing_due_rule' or (r->>'due_day')::integer>28 then 3 else 2 end,(r->>'regular_anchor')::date,
-      jsonb_build_object('late_fee_policy',coalesce(r->'late_fee_policy','{"kind":"unknown"}')),r->>'manual_basis',r->'billing_due_rule',case when r?'billing_due_rule' then coalesce(r->>'short_month_policy','last_day') else null end) returning id into v_schedule_id;
+      jsonb_build_object('late_fee_policy',coalesce(r->'late_fee_policy','{"kind":"unknown"}')),r->>'manual_basis',r->'billing_due_rule',case when r?'billing_due_rule' then coalesce(r->>'short_month_policy','last_day') else null end,(r->>'follows_lease')::boolean) returning id into v_schedule_id;
     for e in select value from jsonb_array_elements(coalesce(r->'period_overrides','[]')) loop
       insert into public.rent_schedule_period_overrides(account_id,tenancy_id,schedule_id,cycle_key,period_start,period_end,due_date,amount_cents,reason)
       values(p_account_id,p_tenancy_id,v_schedule_id,e->>'cycle_key',(e->>'period_start')::date,(e->>'period_end')::date,
@@ -10963,6 +10973,58 @@ $$;
 ALTER FUNCTION "public"."list_interactions_for_party"("p_account_id" "uuid", "p_party_type" "text", "p_party_id" "uuid", "p_tenancy_id" "uuid", "p_maintenance_request_id" "uuid", "p_area_id" "uuid", "p_property_id" "uuid", "p_direction" "text", "p_latest_only" boolean, "p_before_occurred_at" timestamp with time zone, "p_before_id" "uuid", "p_limit" integer) OWNER TO "postgres";
 
 --
+-- Name: match_setup_people("uuid", "text", "text", "text"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."match_setup_people"("p_account_id" "uuid", "p_email" "text", "p_phone" "text", "p_name" "text") RETURNS "jsonb"
+    LANGUAGE "sql" STABLE
+    SET "search_path" TO 'public'
+    AS $$
+  with flag as (
+    select coalesce((select person_match_enabled from public.accounts where id = p_account_id), false) as enabled
+  ),
+  wanted as (
+    select nullif(lower(btrim(p_email)), '') as email, nullif(btrim(p_phone), '') as phone,
+      nullif(lower(regexp_replace(btrim(coalesce(p_name, '')), '\s+', ' ', 'g')), '') as name
+  ),
+  people as (
+    select t.id, t.full_name,
+      array_remove(array[
+        case when w.email is not null and w.email in (select lower(btrim(e)) from unnest(t.emails) e) then 'email' end,
+        case when w.phone is not null and w.phone = any(t.phones) then 'phone' end,
+        case when w.name is not null and w.name = lower(regexp_replace(btrim(t.full_name), '\s+', ' ', 'g')) then 'name' end
+      ], null) as matched_on
+    from public.tenants t cross join wanted w cross join flag f
+    where f.enabled and t.account_id = p_account_id and t.deleted_at is null
+  ),
+  matches as (
+    select p.*, (select coalesce(jsonb_agg(x.tenancy order by x.rank, x.start_date desc), '[]') from (
+        select jsonb_build_object('tenancy_id', c.id, 'status', c.status, 'start_date', c.start_date,
+          'move_out_on', c.move_out_on, 'door_name', a.name, 'property_name', pr.name) as tenancy,
+          case c.status when 'active' then 0 when 'holdover' then 0 when 'upcoming' then 1 else 2 end as rank,
+          c.start_date
+        from public.tenancy_tenants m
+        join public.tenancy_current c on c.account_id = m.account_id and c.id = m.tenancy_id and c.deleted_at is null
+        join public.areas a on a.account_id = c.account_id and a.id = c.area_id
+        left join public.properties pr on pr.account_id = a.account_id and pr.id = a.property_id
+        where m.account_id = p_account_id and m.tenant_id = p.id and m.deleted_at is null
+        order by 2, 3 desc limit 3) x) as tenancies
+    from people p where cardinality(p.matched_on) > 0
+  )
+  select jsonb_build_object(
+    'enabled', (select enabled from flag),
+    'exact', coalesce((select jsonb_agg(jsonb_build_object('person_id', id, 'full_name', full_name,
+      'matched_on', to_jsonb(matched_on), 'tenancies', tenancies) order by full_name, id)
+      from matches where matched_on && array['email','phone']), '[]'),
+    'possible', coalesce((select jsonb_agg(jsonb_build_object('person_id', id, 'full_name', full_name,
+      'matched_on', to_jsonb(matched_on), 'tenancies', tenancies) order by full_name, id)
+      from matches where not (matched_on && array['email','phone'])), '[]'))
+$$;
+
+
+ALTER FUNCTION "public"."match_setup_people"("p_account_id" "uuid", "p_email" "text", "p_phone" "text", "p_name" "text") OWNER TO "postgres";
+
+--
 -- Name: normalize_search_text("text"); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -11061,7 +11123,8 @@ begin
     if v_transition and r->>'source_lease_id' is null and r->>'source_notice_id' is null then raise exception 'invalid: a successor needs a confirmed agreement or served notice'; end if;
     if t.status = 'ended' or public._moved_out(t.move_out_on,t.account_id) then raise exception 'conflict: recurring setup cannot reopen an ended tenancy'; end if;
     if r - array['decision','source_lease_id','source_notice_id','coverage_start','coverage_end','regular_anchor','due_day','amount_cents','currency',
-      'grace_days','late_fee_policy','billing_due_rule','short_month_policy','manual_basis','period_overrides','history_mode','opening_balance','charge_keys'] <> '{}'
+      'grace_days','late_fee_policy','billing_due_rule','short_month_policy','manual_basis','period_overrides','history_mode','opening_balance','charge_keys','follows_lease'] <> '{}'
+      or jsonb_typeof(coalesce(r->'follows_lease','null')) not in ('boolean','null')
       or (r->>'amount_cents')::bigint < 0 or (r->>'amount_cents') is null or length(coalesce(r->>'currency','')) <> 3
       or (r->>'due_day')::integer not between 1 and 31 or r->>'due_day' is null
       or r->>'coverage_start' is null or r->>'regular_anchor' is null
@@ -11136,7 +11199,30 @@ begin
         or length(btrim(coalesce(r->'opening_balance'->>'basis',''))) not between 1 and 200
         or jsonb_array_length(coalesce(r->'charge_keys','[]')) > 0 or jsonb_array_length(coalesce(p_intent->'payments','[]')) > 0
       then raise exception 'invalid: opening balance needs a virgin timeline, testimony and no itemized charges or receipts'; end if;
-    elsif r->'opening_balance' is not null then raise exception 'invalid: opening balance and itemized history are exclusive'; end if;
+    elsif r->'opening_balance' is not null then
+      if r->'opening_balance'->>'itemize_from' is null then
+        raise exception 'invalid: opening balance and itemized history are exclusive';
+      end if;
+      if v_existing_money or coalesce((r->'opening_balance'->>'amount_cents')::bigint, 0) = 0
+        or length(btrim(coalesce(r->'opening_balance'->>'basis',''))) not between 1 and 200
+        or r->'opening_balance'->>'includes_current_rent' is not null
+        or not exists (select 1 from public.accounts where id = p_account_id and opening_balance_ledger_enabled) then
+        raise exception 'invalid: an amount owed from before itemized months needs the starting-balance ledger, a virgin timeline and testimony';
+      end if;
+      if r->'opening_balance'->>'itemize_from' !~ '^\d{4}-(0[1-9]|1[0-2])$'
+        or r->'opening_balance'->>'itemize_from' > to_char(v_today, 'YYYY-MM') then
+        raise exception 'invalid: start itemizing from a past or current month';
+      end if;
+      v_period := public._billing_period_for_tenancy(p_account_id, t.id, r, r->'opening_balance'->>'itemize_from');
+      if v_period is null or (v_period->>'period_start')::date <= v_start then
+        raise exception 'invalid: start itemizing after the first billed month';
+      end if;
+      if exists (select 1 from jsonb_array_elements(coalesce(p_intent->'payments','[]')) p
+        where coalesce((p->>'receipt_date_unknown')::boolean, false) or p->>'received_at' is null
+          or left(p->>'received_at', 10)::date < (v_period->>'period_start')::date) then
+        raise exception 'invalid: a payment before the itemized months is part of the amount owed from before';
+      end if;
+    end if;
 
     -- The current-month question applies only to an amount owed on a flagged account.
     if r->>'history_mode' = 'opening_balance' then
@@ -11175,7 +11261,8 @@ begin
     while v_month <= date_trunc('month',greatest(v_today,v_start))::date loop
       v_count := v_count+1;if v_count > 120 then raise exception 'invalid: at most 120 historical billing cycles'; end if;
       v_period := public._billing_period_for_tenancy(p_account_id,t.id,r,to_char(v_month,'YYYY-MM'));
-      if v_period is not null then
+      if v_period is not null and (r->'opening_balance'->>'itemize_from' is null
+        or v_period->>'cycle_key' >= r->'opening_balance'->>'itemize_from') then
         select value into v_key from jsonb_array_elements(coalesce(r->'charge_keys','[]')) where value->>'cycle_key' = v_period->>'cycle_key';
         v_period := v_period||jsonb_build_object('draft_key',coalesce(v_key->>'draft_key','rent_'||replace(v_period->>'cycle_key','-','_')));
         if (v_period->>'needs_override')::boolean then v_findings := v_findings||jsonb_build_array(jsonb_build_object(
@@ -11194,6 +11281,8 @@ begin
     for v_key in select value from jsonb_array_elements(coalesce(r->'charge_keys','[]')) loop
       v_period := public._billing_period_for_tenancy(p_account_id,t.id,r,v_key->>'cycle_key');
       if v_period is null then raise exception 'invalid: selected cycle outside schedule coverage'; end if;
+      if v_key->>'cycle_key' < r->'opening_balance'->>'itemize_from' then
+        raise exception 'invalid: a selected month is covered by the amount owed from before'; end if;
       if (v_period->>'needs_override')::boolean then raise exception 'invalid: selected partial cycle needs a confirmed override'; end if;
       v_period := v_period||jsonb_build_object('draft_key',v_key->>'draft_key');
       if v_key->>'cycle_key' = any(v_seen) then raise exception 'invalid: duplicate selected cycle'; end if;
@@ -11206,6 +11295,8 @@ begin
       v_seen := array_append(v_seen,v_elem->>'cycle_key');
       v_period := public._billing_period_for_tenancy(p_account_id,t.id,r,v_elem->>'cycle_key');
       if v_period is null then raise exception 'invalid: override outside coverage'; end if;
+      if v_elem->>'cycle_key' < r->'opening_balance'->>'itemize_from' then
+        raise exception 'invalid: a selected month is covered by the amount owed from before'; end if;
       if public._billing_period_needs_history_review(v_period,v_today)
         and not exists(select 1 from jsonb_array_elements(v_history) h where h->>'cycle_key' = v_period->>'cycle_key') then
         v_history := v_history||jsonb_build_array(v_period-'needs_override'||jsonb_build_object('is_elapsed',true,
@@ -14425,6 +14516,7 @@ CREATE TABLE IF NOT EXISTS "public"."accounts" (
     "opening_balance_ledger_enabled" boolean DEFAULT false NOT NULL,
     "time_zone" "text" DEFAULT 'UTC'::"text" NOT NULL,
     "scheduled_move_out_enabled" boolean DEFAULT false NOT NULL,
+    "proration_method" "text" DEFAULT 'actual_days'::"text" NOT NULL,
     CONSTRAINT "accounts_email_subdomain_format" CHECK ((("email_subdomain" IS NULL) OR ("email_subdomain" ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'::"text"))),
     CONSTRAINT "accounts_email_subdomain_no_punycode" CHECK ((("email_subdomain" IS NULL) OR ("email_subdomain" !~~ 'xn--%'::"text"))),
     CONSTRAINT "accounts_email_subdomain_reserved" CHECK ((("email_subdomain" IS NULL) OR ("email_subdomain" <> ALL (ARRAY['www'::"text", 'mail'::"text", 'api'::"text", 'app'::"text", 'admin'::"text", 'root'::"text", 'smtp'::"text", 'imap'::"text", 'pop'::"text", 'pop3'::"text", 'mx'::"text", 'ns'::"text", 'ns1'::"text", 'ns2'::"text", 'ftp'::"text", 'webmail'::"text", 'email'::"text", 'reply'::"text", 'noreply'::"text", 'no-reply'::"text", 'bounce'::"text", 'bounces'::"text", 'unsubscribe'::"text", 'abuse'::"text", 'postmaster'::"text", 'support'::"text", 'help'::"text", 'info'::"text", 'billing'::"text", 'security'::"text", 'status'::"text", 'dev'::"text", 'staging'::"text", 'test'::"text", 'internal'::"text"])))),
@@ -14432,6 +14524,7 @@ CREATE TABLE IF NOT EXISTS "public"."accounts" (
     CONSTRAINT "accounts_persona_local_part_format" CHECK ((("persona_local_part" IS NULL) OR ("persona_local_part" ~ '^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?$'::"text"))),
     CONSTRAINT "accounts_persona_local_part_not_token" CHECK ((("persona_local_part" IS NULL) OR ("persona_local_part" !~~ 't-%'::"text"))),
     CONSTRAINT "accounts_persona_local_part_reserved" CHECK ((("persona_local_part" IS NULL) OR ("persona_local_part" <> ALL (ARRAY['postmaster'::"text", 'abuse'::"text", 'mailer-daemon'::"text", 'hostmaster'::"text", 'webmaster'::"text", 'admin'::"text", 'administrator'::"text", 'root'::"text", 'noreply'::"text", 'no-reply'::"text", 'reply'::"text", 'bounce'::"text", 'bounces'::"text", 'unsubscribe'::"text", 'mail'::"text", 'email'::"text", 'smtp'::"text", 'imap'::"text", 'pop'::"text", 'support'::"text", 'help'::"text", 'info'::"text", 'billing'::"text", 'security'::"text", 'spam'::"text", 'dmarc'::"text", 'spf'::"text"])))),
+    CONSTRAINT "accounts_proration_method_check" CHECK (("proration_method" = ANY (ARRAY['actual_days'::"text", 'thirty_day_month'::"text"]))),
     CONSTRAINT "accounts_sender_display_name_len" CHECK ((("sender_display_name" IS NULL) OR (("length"("sender_display_name") >= 1) AND ("length"("sender_display_name") <= 120)))),
     CONSTRAINT "accounts_sender_display_name_no_ctrl" CHECK ((("sender_display_name" IS NULL) OR ("sender_display_name" !~ '[\x01-\x1F\x7F-\x9F]'::"text")))
 );
@@ -21552,6 +21645,15 @@ CREATE POLICY "idempotency_keys_member_insert" ON "public"."idempotency_keys" FO
 
 
 --
+-- Name: idempotency_keys idempotency_keys_member_release; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "idempotency_keys_member_release" ON "public"."idempotency_keys" FOR DELETE USING ((("completed_at" IS NULL) AND ("account_id" IN ( SELECT "m"."account_id"
+   FROM "public"."account_members" "m"
+  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL))))));
+
+
+--
 -- Name: idempotency_keys idempotency_keys_member_select; Type: POLICY; Schema: public; Owner: postgres
 --
 
@@ -24134,6 +24236,15 @@ GRANT ALL ON FUNCTION "public"."list_interactions_for_party"("p_account_id" "uui
 
 
 --
+-- Name: FUNCTION "match_setup_people"("p_account_id" "uuid", "p_email" "text", "p_phone" "text", "p_name" "text"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."match_setup_people"("p_account_id" "uuid", "p_email" "text", "p_phone" "text", "p_name" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."match_setup_people"("p_account_id" "uuid", "p_email" "text", "p_phone" "text", "p_name" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."match_setup_people"("p_account_id" "uuid", "p_email" "text", "p_phone" "text", "p_name" "text") TO "service_role";
+
+
+--
 -- Name: FUNCTION "normalize_search_text"("p_text" "text"); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -24730,6 +24841,13 @@ GRANT UPDATE("persona_local_part") ON TABLE "public"."accounts" TO "authenticate
 --
 
 GRANT UPDATE("time_zone") ON TABLE "public"."accounts" TO "authenticated";
+
+
+--
+-- Name: COLUMN "accounts"."proration_method"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT UPDATE("proration_method") ON TABLE "public"."accounts" TO "authenticated";
 
 
 --

@@ -133,6 +133,7 @@ export type Database = {
           opening_balance_ledger_enabled: boolean;
           person_match_enabled: boolean;
           persona_local_part: string | null;
+          proration_method: string;
           scheduled_move_out_enabled: boolean;
           sender_display_name: string | null;
           time_zone: string;
@@ -148,6 +149,7 @@ export type Database = {
           opening_balance_ledger_enabled?: boolean;
           person_match_enabled?: boolean;
           persona_local_part?: string | null;
+          proration_method?: string;
           scheduled_move_out_enabled?: boolean;
           sender_display_name?: string | null;
           time_zone?: string;
@@ -163,6 +165,7 @@ export type Database = {
           opening_balance_ledger_enabled?: boolean;
           person_match_enabled?: boolean;
           persona_local_part?: string | null;
+          proration_method?: string;
           scheduled_move_out_enabled?: boolean;
           sender_display_name?: string | null;
           time_zone?: string;
@@ -3817,6 +3820,7 @@ export type Database = {
           deleted_at: string | null;
           due_day: number;
           end_date: string | null;
+          follows_lease: boolean | null;
           grace_days: number | null;
           id: string;
           kind: string;
@@ -3842,6 +3846,7 @@ export type Database = {
           deleted_at?: string | null;
           due_day: number;
           end_date?: string | null;
+          follows_lease?: boolean | null;
           grace_days?: number | null;
           id?: string;
           kind: string;
@@ -3867,6 +3872,7 @@ export type Database = {
           deleted_at?: string | null;
           due_day?: number;
           end_date?: string | null;
+          follows_lease?: boolean | null;
           grace_days?: number | null;
           id?: string;
           kind?: string;
@@ -4100,6 +4106,7 @@ export type Database = {
           includes_current_rent: boolean | null;
           needs_review: boolean;
           opening_balance_cents: number;
+          opening_on: string | null;
           tenancy_id: string;
           updated_at: string;
         };
@@ -4114,6 +4121,7 @@ export type Database = {
           includes_current_rent?: boolean | null;
           needs_review?: boolean;
           opening_balance_cents?: number;
+          opening_on?: string | null;
           tenancy_id: string;
           updated_at?: string;
         };
@@ -4128,6 +4136,7 @@ export type Database = {
           includes_current_rent?: boolean | null;
           needs_review?: boolean;
           opening_balance_cents?: number;
+          opening_on?: string | null;
           tenancy_id?: string;
           updated_at?: string;
         };
@@ -6299,6 +6308,15 @@ export type Database = {
           isOneToOne: false;
           isSetofReturn: true;
         };
+      };
+      match_setup_people: {
+        Args: {
+          p_account_id: string;
+          p_email: string;
+          p_name: string;
+          p_phone: string;
+        };
+        Returns: Json;
       };
       normalize_search_text: { Args: { p_text: string }; Returns: string };
       preview_billing_setup: {
