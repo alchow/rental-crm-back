@@ -10,6 +10,9 @@ as $$
 declare
   conflict record;
 begin
+  if not exists (select 1 from public.accounts where id = p_account_id and person_match_enabled) then
+    return;
+  end if;
   with new_contacts as (
     select person.ordinality - 1 as person_index, contact.field, contact.value
     from jsonb_array_elements(p_people) with ordinality as person(data, ordinality)
@@ -123,7 +126,7 @@ returns table(claimed boolean, fingerprint_matches boolean, in_flight boolean, s
 language sql set search_path = public as $$
   select * from public.claim_idempotency_key(p_account_id,p_key,p_fingerprint,false)
 $$;
-grant execute on function public.claim_idempotency_key(uuid,text,text,boolean) to tenancy_date_writer, tenancy_setup_writer, service_role, anon;
+grant execute on function public.claim_idempotency_key(uuid,text,text,boolean) to tenancy_setup_writer, service_role;
 
 notify pgrst, 'reload schema';
 commit;
