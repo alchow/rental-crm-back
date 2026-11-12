@@ -65,6 +65,9 @@ const ConfigureRent = z
               .strict(),
           )
           .max(200)
+          .refine((answers) => new Set(answers.map((a) => a.payment_key)).size === answers.length, {
+            message: 'answer each earlier receipt once',
+          })
           .optional()
           .openapi({
             description:

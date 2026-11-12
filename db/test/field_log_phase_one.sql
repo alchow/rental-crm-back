@@ -195,6 +195,20 @@ declare
   receipt record;
   owed bigint;
 begin
+  -- One answer per receipt: a repeated payment_key would count the receipt twice.
+  begin
+    perform public.preview_tenancy_setup_session(account,pg_temp.new_draft(current_setting('field_log.place')::uuid,'Earlier twice'),
+      pg_temp.setup(person,start_on,
+        jsonb_build_object('opening_balance',jsonb_build_object('amount_cents',65000,'basis','Rent',
+          'itemize_from',to_char(itemize,'YYYY-MM'),
+          'earlier_receipts','[{"payment_key":"early","choice":"add_to_owed"},{"payment_key":"early","choice":"add_to_owed"}]'::jsonb),
+          'charge_keys','[]'::jsonb),
+        jsonb_build_array(jsonb_build_object('draft_key','early','amount_cents',30000,'currency','USD',
+          'received_at',(itemize-10)::text,'method','check','allocations','[]'::jsonb))));
+    raise exception 'Two answers for one earlier receipt were accepted';
+  exception when raise_exception then
+    if sqlerrm not like 'invalid: each earlier-receipt answer names one receipt%' then raise; end if;
+  end;
   for choice, date_unknown in select * from (values ('add_to_owed', false), ('keep_owed', false), ('keep_owed', true)) v(c, u) loop
     draft := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Earlier '||choice||date_unknown::text);
     perform pg_temp.commit_setup(draft,pg_temp.setup(person,start_on,

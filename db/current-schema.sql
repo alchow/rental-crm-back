@@ -11465,7 +11465,9 @@ begin
         if jsonb_typeof(coalesce(r->'opening_balance'->'earlier_receipts','[]')) <> 'array' or exists (
           select 1 from jsonb_array_elements(coalesce(r->'opening_balance'->'earlier_receipts','[]')) e
           where e - array['payment_key','choice'] <> '{}' or e->>'choice' not in ('add_to_owed','keep_owed')
-            or (jsonb_array_length(coalesce(p_intent->'payments','[]')) > 0 and not (e->>'payment_key' = any(early_keys)))) then
+            or (jsonb_array_length(coalesce(p_intent->'payments','[]')) > 0 and not (e->>'payment_key' = any(early_keys))))
+          or (select count(*) <> count(distinct value->>'payment_key')
+            from jsonb_array_elements(coalesce(r->'opening_balance'->'earlier_receipts','[]'))) then
           raise exception 'invalid: each earlier-receipt answer names one receipt from before the itemized months and add_to_owed or keep_owed';
         end if;
       end;

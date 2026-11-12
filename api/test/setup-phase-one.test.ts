@@ -364,6 +364,21 @@ await check(
       ),
       JSON.stringify(unanswered.body),
     );
+    const twice = withReceipt('add_to_owed');
+    const twiceOpening = (
+      twice.billing.rent as unknown as { opening_balance: { earlier_receipts: unknown[] } }
+    ).opening_balance;
+    twiceOpening.earlier_receipts = [
+      ...twiceOpening.earlier_receipts,
+      ...twiceOpening.earlier_receipts,
+    ];
+    const repeated = await request('POST', `/tenancy-setup-sessions/${id}/validate`, twice);
+    assert(
+      (repeated.body as { ok: boolean; errors: Array<{ code: string }> }).errors.some(
+        (e) => e.code === 'opening.receipt_answer_invalid',
+      ),
+      JSON.stringify(repeated.body),
+    );
     const answered = withReceipt('keep_owed');
     const review = await request('POST', `/tenancy-setup-sessions/${id}/preview`, answered);
     const r = review.body as {

@@ -419,6 +419,8 @@ export function fieldErrorsFromIssues(
       };
     }
     if (/currency$/.test(leaf)) return { code: 'currency.unsupported', step, field: path };
+    if (leaf === 'earlier_receipts')
+      return { code: 'opening.receipt_answer_invalid', step: 'catchup', field: path };
     if (leaf === 'full_name') return { code: 'person.name_missing', step, field: path };
     if (leaf === 'emails' || /emails\[\d+\]$/.test(path))
       return { code: 'person.email_invalid', step, field: path };
@@ -537,6 +539,14 @@ const DB_ERRORS: Array<[RegExp, Omit<FieldError, 'meta'>]> = [
       code: 'opening.itemize_from_invalid',
       step: 'catchup',
       field: 'billing.rent.opening_balance.itemize_from',
+    },
+  ],
+  [
+    /each earlier-receipt answer names one receipt/,
+    {
+      code: 'opening.receipt_answer_invalid',
+      step: 'catchup',
+      field: 'billing.rent.opening_balance.earlier_receipts',
     },
   ],
   [
