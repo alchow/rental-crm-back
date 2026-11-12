@@ -23,16 +23,25 @@ const AccountSettings = z
     scheduled_move_out_enabled: z.boolean().optional(),
     time_zone: z.string().optional(),
     proration_method: z.enum(['actual_days', 'thirty_day_month']).optional(),
+    currency: z.string().optional().openapi({ description: 'ISO 4217 code money defaults to.' }),
+    multi_currency: z.boolean().optional().openapi({
+      description: 'False: show no currency control or code; setup refuses other currencies.',
+    }),
   })
   .openapi('AccountSettings');
 
-// auto_charge_enabled and proration_method are the ONLY writable fields. The RLS policy cannot
+// auto_charge_enabled, proration_method, currency and multi_currency are the ONLY writable fields. The RLS policy cannot
 // restrict an UPDATE to a single column, so the column allow-list is enforced
 // HERE: this body admits nothing else.
 const PatchAccountSettingsBody = z
   .object({
     auto_charge_enabled: z.boolean().optional(),
     proration_method: z.enum(['actual_days', 'thirty_day_month']).optional(),
+    currency: z
+      .string()
+      .refine((code) => Intl.supportedValuesOf('currency').includes(code), 'currency.unsupported')
+      .optional(),
+    multi_currency: z.boolean().optional(),
   })
   .strict()
   .refine((body) => Object.keys(body).length > 0, 'Send at least one setting.')
@@ -88,6 +97,8 @@ settingsApp.openapi(get, async (c) => {
       scheduled_move_out_enabled: data.scheduled_move_out_enabled,
       time_zone: data.time_zone,
       proration_method: data.proration_method as 'actual_days' | 'thirty_day_month',
+      currency: data.currency,
+      multi_currency: data.multi_currency,
     },
     200,
   );
@@ -105,7 +116,7 @@ settingsApp.openapi(patch, async (c) => {
     .update(body)
     .eq('id', accountId)
     .is('deleted_at', null)
-    .select('auto_charge_enabled, proration_method')
+    .select('auto_charge_enabled, proration_method, currency, multi_currency')
     .maybeSingle();
   if (error) throw dbError(error);
   // A viewer passes the account-membership middleware (they ARE a member and
@@ -119,6 +130,8 @@ settingsApp.openapi(patch, async (c) => {
     {
       auto_charge_enabled: data.auto_charge_enabled,
       proration_method: data.proration_method as 'actual_days' | 'thirty_day_month',
+      currency: data.currency,
+      multi_currency: data.multi_currency,
     },
     200,
   );

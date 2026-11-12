@@ -207,8 +207,20 @@ normalized email/phone (exact) or name (possible) while `person_match_enabled` i
 Partial periods carry suggestions from `accounts.proration_method`, which also
 prorates a move-out's final period. With the starting-balance ledger on, an amount owed
 from before may accompany itemized months (`opening_balance.itemize_from`): it is dated
-the day before the first itemized month, earlier cycles cannot be itemized, and receipts
-must be dated in the itemized months.
+the day before the first itemized month and earlier cycles cannot be itemized; a receipt
+dated earlier needs an `earlier_receipts` answer (ADR-0013).
+
+Owed amounts come from one read, `owed_summaries()` (`GET .../owed-summaries`): unpaid
+charges due today in the account's time zone by type, the overdue part (due date plus
+grace, never a starting balance), the next charge (an unpaid future charge or an unbilled
+schedule period) and whether rent is tracked. `late_fee_suggestions()` lists unpaid rent
+past grace with the lease fee (fixed, percent of the rent, or other); adding the fee is an
+ordinary late_fee charge parented on the rent charge, skipping writes
+`late_fee_decisions`. Nothing is charged automatically and no message is sent. Payments
+may name a payer on the lease (automatic for a one-person lease); the ledger shows payer
+names and a per-month split while balances stay joint. `accounts.currency` and
+`multi_currency` (settings) drive the single-currency check in setup.
+
 
 The transaction supports new tenancy setup and explicit existing-agreement reuse,
 correction, renewal or billing-only work. Existing possession changes call the

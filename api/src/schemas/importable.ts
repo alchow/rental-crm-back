@@ -16,6 +16,10 @@ export const Address = z.object({
   state: z.string().max(100).optional(),
   zip: z.string().max(20).optional(),
   country: z.string().max(100).optional(),
+  label: z.string().max(300).optional(),
+  provider_id: z.string().max(300).optional(),
+  lat: z.number().min(-90).max(90).optional(),
+  lng: z.number().min(-180).max(180).optional(),
 });
 
 export const CreatePropertyBody = z

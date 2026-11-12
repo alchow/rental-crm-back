@@ -5,6 +5,7 @@ import profileRoutes from './routes/profile';
 import authRoutes from './routes/auth';
 import { accountsApp } from './routes/accounts';
 import { propertiesApp } from './routes/properties';
+import { owedApp } from './routes/owed';
 import { vendorsApp } from './routes/vendors';
 import { tenantsApp } from './routes/tenants';
 import { areasApp } from './routes/areas';
@@ -216,6 +217,8 @@ export function buildApp(): OpenAPIHono {
   // (the stack above handles it). They simply expose the OpenAPIHono
   // routes; mounting at '/v1' inherits the v1-level middleware.
   app.route('/v1', accountsApp);
+  // Before propertiesApp: /properties/duplicates must not reach /properties/{id}.
+  app.route('/v1', owedApp);
   app.route('/v1', propertiesApp);
   app.route('/v1', vendorsApp);
   app.route('/v1', tenantsApp);
