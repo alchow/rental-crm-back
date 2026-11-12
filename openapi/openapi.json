@@ -511,6 +511,242 @@
           "suggested_persona_local_parts"
         ]
       },
+      "OwedSummary": {
+        "type": "object",
+        "properties": {
+          "tenancy_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "as_of": {
+            "type": "string",
+            "format": "date",
+            "description": "Today in the account's time zone."
+          },
+          "total_cents": {
+            "type": "integer",
+            "description": "Every unpaid non-deposit charge due today or earlier."
+          },
+          "by_type": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string"
+                },
+                "cents": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "type",
+                "cents"
+              ]
+            }
+          },
+          "overdue_cents": {
+            "type": "integer",
+            "description": "Part of total past its due date plus grace; a starting balance is never overdue."
+          },
+          "oldest_due_on": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "deposit_owed_cents": {
+            "type": "integer"
+          },
+          "unapplied_credit_cents": {
+            "type": "integer"
+          },
+          "next_charge": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "cents": {
+                "type": "integer"
+              },
+              "due_on": {
+                "type": "string",
+                "format": "date"
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "charge",
+                  "schedule"
+                ]
+              }
+            },
+            "required": [
+              "cents",
+              "due_on",
+              "source"
+            ],
+            "description": "The next amount coming due: an unpaid future charge or an unbilled schedule period."
+          },
+          "rent_tracked": {
+            "type": "boolean",
+            "description": "False when no rent schedule covers today or later."
+          }
+        },
+        "required": [
+          "tenancy_id",
+          "currency",
+          "as_of",
+          "total_cents",
+          "by_type",
+          "overdue_cents",
+          "oldest_due_on",
+          "deposit_owed_cents",
+          "unapplied_credit_cents",
+          "next_charge",
+          "rent_tracked"
+        ]
+      },
+      "LateFeeSuggestion": {
+        "type": "object",
+        "properties": {
+          "charge_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenancy_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "due_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "grace_days": {
+            "type": "integer"
+          },
+          "eligible_on": {
+            "type": "string",
+            "format": "date"
+          },
+          "rent_amount_cents": {
+            "type": "integer"
+          },
+          "unpaid_cents": {
+            "type": "integer"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "fee": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "fixed",
+                  "percent",
+                  "other"
+                ]
+              },
+              "amount_cents": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "percent": {
+                "type": "number"
+              },
+              "text": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "amount_cents"
+            ]
+          }
+        },
+        "required": [
+          "charge_id",
+          "tenancy_id",
+          "due_date",
+          "grace_days",
+          "eligible_on",
+          "rent_amount_cents",
+          "unpaid_cents",
+          "currency",
+          "fee"
+        ]
+      },
+      "LateFeeDecision": {
+        "type": "object",
+        "properties": {
+          "charge_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "skipped"
+            ]
+          },
+          "decided_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "charge_id",
+          "decision",
+          "decided_at"
+        ]
+      },
+      "PropertyMatch": {
+        "type": "object",
+        "properties": {
+          "property_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "address": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {}
+          },
+          "door_count": {
+            "type": "integer"
+          },
+          "matched_on": {
+            "type": "string",
+            "enum": [
+              "provider_id",
+              "address"
+            ]
+          }
+        },
+        "required": [
+          "property_id",
+          "name",
+          "address",
+          "door_count",
+          "matched_on"
+        ]
+      },
       "Property": {
         "type": "object",
         "properties": {
@@ -554,6 +790,24 @@
               "country": {
                 "type": "string",
                 "maxLength": 100
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 300
+              },
+              "provider_id": {
+                "type": "string",
+                "maxLength": 300
+              },
+              "lat": {
+                "type": "number",
+                "minimum": -90,
+                "maximum": 90
+              },
+              "lng": {
+                "type": "number",
+                "minimum": -180,
+                "maximum": 180
               }
             }
           },
@@ -635,6 +889,24 @@
               "country": {
                 "type": "string",
                 "maxLength": 100
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 300
+              },
+              "provider_id": {
+                "type": "string",
+                "maxLength": 300
+              },
+              "lat": {
+                "type": "number",
+                "minimum": -90,
+                "maximum": 90
+              },
+              "lng": {
+                "type": "number",
+                "minimum": -180,
+                "maximum": 180
               }
             }
           }
@@ -677,6 +949,24 @@
               "country": {
                 "type": "string",
                 "maxLength": 100
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 300
+              },
+              "provider_id": {
+                "type": "string",
+                "maxLength": 300
+              },
+              "lat": {
+                "type": "number",
+                "minimum": -90,
+                "maximum": 90
+              },
+              "lng": {
+                "type": "number",
+                "minimum": -180,
+                "maximum": 180
               }
             }
           }
@@ -6352,7 +6642,8 @@
           },
           "payer_tenant_id": {
             "type": "string",
-            "format": "uuid"
+            "format": "uuid",
+            "description": "Who paid. Must be on the lease. Omitted on a one-person lease, it is that person; omitted otherwise, the payment is not attributed."
           },
           "notes": {
             "type": "string"
@@ -6970,6 +7261,20 @@
                         "null"
                       ]
                     },
+                    "payer_tenant_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "payer_name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Name of the person who paid; null when the payment is not attributed."
+                    },
                     "opening_credit_on": {
                       "type": [
                         "string",
@@ -7075,6 +7380,50 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/LedgerTotals"
             }
+          },
+          "payer_splits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "month": {
+                  "type": "string",
+                  "description": "YYYY-MM of the receipt date"
+                },
+                "payers": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "tenant_id": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "full_name": {
+                        "type": "string"
+                      },
+                      "amount_cents": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "tenant_id",
+                      "full_name",
+                      "amount_cents"
+                    ]
+                  }
+                },
+                "unattributed_cents": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "month",
+                "payers",
+                "unattributed_cents"
+              ]
+            },
+            "description": "Months (selected currency, live receipts) where at least one payment names its payer. Balances stay joint."
           }
         },
         "required": [
@@ -8176,6 +8525,14 @@
                     "items": {
                       "type": "object",
                       "properties": {
+                        "amount_source": {
+                          "type": "string",
+                          "enum": [
+                            "suggested",
+                            "landlord"
+                          ],
+                          "description": "Set by the server: suggested when the amount equals the proration suggestion, landlord otherwise."
+                        },
                         "cycle_key": {
                           "type": "string",
                           "pattern": "^\\d{4}-\\d{2}$"
@@ -8242,7 +8599,35 @@
                       "itemize_from": {
                         "type": "string",
                         "pattern": "^\\d{4}-(0[1-9]|1[0-2])$",
-                        "description": "With history_mode itemized: the first itemized month. The amount is owed from before that month and is dated the day before it; receipts must be dated in the itemized months."
+                        "description": "With history_mode itemized: the first itemized month. The amount is owed from before that month and is dated the day before it."
+                      },
+                      "earlier_receipts": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "payment_key": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 100,
+                              "pattern": "^[A-Za-z0-9_-]+$"
+                            },
+                            "choice": {
+                              "type": "string",
+                              "enum": [
+                                "add_to_owed",
+                                "keep_owed"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "payment_key",
+                            "choice"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "maxItems": 200,
+                        "description": "One answer per receipt dated before itemize_from (or with an unknown date). add_to_owed: the typed amount was already net of the receipt, so the opening entry is amount + receipt. keep_owed: the opening entry is the typed amount. Either way the receipt is applied to it."
                       }
                     },
                     "required": [
@@ -8427,6 +8812,11 @@
                     "entered_at_setup",
                     "import"
                   ]
+                },
+                "payer_tenant_id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "description": "Who paid. Setup fills it in for a one-person tenancy; omit when unsure."
                 },
                 "reference": {
                   "type": "string",
@@ -13135,6 +13525,14 @@
               "actual_days",
               "thirty_day_month"
             ]
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO 4217 code money defaults to."
+          },
+          "multi_currency": {
+            "type": "boolean",
+            "description": "False: show no currency control or code; setup refuses other currencies."
           }
         },
         "required": [
@@ -13153,6 +13551,12 @@
               "actual_days",
               "thirty_day_month"
             ]
+          },
+          "currency": {
+            "type": "string"
+          },
+          "multi_currency": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false
@@ -18612,6 +19016,460 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EmailBrandingSuggestions"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/owed-summaries": {
+      "get": {
+        "tags": [
+          "ledger"
+        ],
+        "summary": "What each tenancy owes now, by type, with overdue and the next charge",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": false,
+            "name": "tenancy_id",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One row per tenancy and currency",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/OwedSummary"
+                      }
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/late-fee-suggestions": {
+      "get": {
+        "tags": [
+          "charges"
+        ],
+        "summary": "Unpaid rent charges past their grace period whose late fee has not been added or skipped",
+        "description": "Add the fee with POST /charges (type late_fee, parent_charge_id = charge_id); skip it with POST /charges/{id}/late-fee-decision. A starting balance never appears.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": false,
+            "name": "tenancy_id",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Suggestions, oldest due first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/LateFeeSuggestion"
+                      }
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/charges/{id}/late-fee-decision": {
+      "post": {
+        "tags": [
+          "charges"
+        ],
+        "summary": "Skip the suggested late fee for one rent charge",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "skipped"
+                    ]
+                  }
+                },
+                "required": [
+                  "decision"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Decision recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LateFeeDecision"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/properties/duplicates": {
+      "get": {
+        "tags": [
+          "properties"
+        ],
+        "summary": "Existing properties with the same picked place or the same normalized address",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "required": false,
+            "name": "provider_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "required": false,
+            "name": "address",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matches, oldest first; empty when nothing matches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PropertyMatch"
+                      }
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
                 }
               }
             }

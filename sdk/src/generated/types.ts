@@ -866,6 +866,348 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/accounts/{accountId}/owed-summaries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What each tenancy owes now, by type, with overdue and the next charge */
+        get: {
+            parameters: {
+                query?: {
+                    tenancy_id?: string;
+                };
+                header?: never;
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description One row per tenancy and currency */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OwedSummary"][];
+                        };
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/late-fee-suggestions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Unpaid rent charges past their grace period whose late fee has not been added or skipped
+         * @description Add the fee with POST /charges (type late_fee, parent_charge_id = charge_id); skip it with POST /charges/{id}/late-fee-decision. A starting balance never appears.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    tenancy_id?: string;
+                };
+                header?: never;
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Suggestions, oldest due first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["LateFeeSuggestion"][];
+                        };
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/charges/{id}/late-fee-decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Skip the suggested late fee for one rent charge */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        decision: "skipped";
+                    };
+                };
+            };
+            responses: {
+                /** @description Decision recorded */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LateFeeDecision"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/properties/duplicates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Existing properties with the same picked place or the same normalized address */
+        get: {
+            parameters: {
+                query?: {
+                    provider_id?: string;
+                    address?: string;
+                };
+                header?: never;
+                path: {
+                    accountId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Matches, oldest first; empty when nothing matches */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["PropertyMatch"][];
+                        };
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/accounts/{accountId}/properties": {
         parameters: {
             query?: never;
@@ -20845,6 +21187,77 @@ export interface components {
             suggested_display_name: string | null;
             suggested_persona_local_parts: string[];
         };
+        OwedSummary: {
+            /** Format: uuid */
+            tenancy_id: string;
+            currency: string;
+            /**
+             * Format: date
+             * @description Today in the account's time zone.
+             */
+            as_of: string;
+            /** @description Every unpaid non-deposit charge due today or earlier. */
+            total_cents: number;
+            by_type: {
+                type: string;
+                cents: number;
+            }[];
+            /** @description Part of total past its due date plus grace; a starting balance is never overdue. */
+            overdue_cents: number;
+            /** Format: date */
+            oldest_due_on: string | null;
+            deposit_owed_cents: number;
+            unapplied_credit_cents: number;
+            /** @description The next amount coming due: an unpaid future charge or an unbilled schedule period. */
+            next_charge: {
+                cents: number;
+                /** Format: date */
+                due_on: string;
+                /** @enum {string} */
+                source: "charge" | "schedule";
+            } | null;
+            /** @description False when no rent schedule covers today or later. */
+            rent_tracked: boolean;
+        };
+        LateFeeSuggestion: {
+            /** Format: uuid */
+            charge_id: string;
+            /** Format: uuid */
+            tenancy_id: string;
+            /** Format: date */
+            due_date: string;
+            grace_days: number;
+            /** Format: date */
+            eligible_on: string;
+            rent_amount_cents: number;
+            unpaid_cents: number;
+            currency: string;
+            fee: {
+                /** @enum {string} */
+                kind: "fixed" | "percent" | "other";
+                amount_cents: number | null;
+                percent?: number;
+                text?: string | null;
+            };
+        };
+        LateFeeDecision: {
+            /** Format: uuid */
+            charge_id: string;
+            /** @enum {string} */
+            decision: "skipped";
+            decided_at: string;
+        };
+        PropertyMatch: {
+            /** Format: uuid */
+            property_id: string;
+            name: string;
+            address: {
+                [key: string]: unknown;
+            } | null;
+            door_count: number;
+            /** @enum {string} */
+            matched_on: "provider_id" | "address";
+        };
         Property: {
             /** Format: uuid */
             id: string;
@@ -20858,6 +21271,10 @@ export interface components {
                 state?: string;
                 zip?: string;
                 country?: string;
+                label?: string;
+                provider_id?: string;
+                lat?: number;
+                lng?: number;
             } | null;
             created_at: string;
             updated_at: string;
@@ -20876,6 +21293,10 @@ export interface components {
                 state?: string;
                 zip?: string;
                 country?: string;
+                label?: string;
+                provider_id?: string;
+                lat?: number;
+                lng?: number;
             };
         };
         PatchPropertyBody: {
@@ -20887,6 +21308,10 @@ export interface components {
                 state?: string;
                 zip?: string;
                 country?: string;
+                label?: string;
+                provider_id?: string;
+                lat?: number;
+                lng?: number;
             };
         };
         Vendor: {
@@ -22312,7 +22737,10 @@ export interface components {
             /** @enum {string} */
             method: "cash" | "check" | "ach" | "card" | "zelle_venmo" | "money_order" | "other";
             reference?: string;
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description Who paid. Must be on the lease. Omitted on a one-person lease, it is that person; omitted otherwise, the payment is not attributed.
+             */
             payer_tenant_id?: string;
             notes?: string;
             allocations?: components["schemas"]["PaymentAllocationInput"][];
@@ -22468,6 +22896,10 @@ export interface components {
                 amount_cents: number;
                 currency?: string;
                 method: string | null;
+                /** Format: uuid */
+                payer_tenant_id?: string | null;
+                /** @description Name of the person who paid; null when the payment is not attributed. */
+                payer_name?: string | null;
                 opening_credit_on?: string | null;
                 reference: string | null;
                 voided_at: string | null;
@@ -22490,6 +22922,18 @@ export interface components {
             totals_by_currency?: {
                 [key: string]: components["schemas"]["LedgerTotals"];
             };
+            /** @description Months (selected currency, live receipts) where at least one payment names its payer. Balances stay joint. */
+            payer_splits?: {
+                /** @description YYYY-MM of the receipt date */
+                month: string;
+                payers: {
+                    /** Format: uuid */
+                    tenant_id: string;
+                    full_name: string;
+                    amount_cents: number;
+                }[];
+                unattributed_cents: number;
+            }[];
         };
         AdoptionResult: {
             /** Format: uuid */
@@ -22763,6 +23207,11 @@ export interface components {
                 manual_basis?: string;
                 /** @default [] */
                 period_overrides: {
+                    /**
+                     * @description Set by the server: suggested when the amount equals the proration suggestion, landlord otherwise.
+                     * @enum {string}
+                     */
+                    amount_source?: "suggested" | "landlord";
                     cycle_key: string;
                     /** Format: date */
                     period_start: string;
@@ -22782,8 +23231,14 @@ export interface components {
                     amount_cents: number;
                     basis: string;
                     includes_current_rent?: boolean;
-                    /** @description With history_mode itemized: the first itemized month. The amount is owed from before that month and is dated the day before it; receipts must be dated in the itemized months. */
+                    /** @description With history_mode itemized: the first itemized month. The amount is owed from before that month and is dated the day before it. */
                     itemize_from?: string;
+                    /** @description One answer per receipt dated before itemize_from (or with an unknown date). add_to_owed: the typed amount was already net of the receipt, so the opening entry is amount + receipt. keep_owed: the opening entry is the typed amount. Either way the receipt is applied to it. */
+                    earlier_receipts?: {
+                        payment_key: string;
+                        /** @enum {string} */
+                        choice: "add_to_owed" | "keep_owed";
+                    }[];
                 };
                 /** @default [] */
                 charge_keys: {
@@ -22821,6 +23276,11 @@ export interface components {
                 receipt_date_unknown?: boolean;
                 /** @enum {string} */
                 entry_source?: "manual" | "entered_at_setup" | "import";
+                /**
+                 * Format: uuid
+                 * @description Who paid. Setup fills it in for a one-person tenancy; omit when unsure.
+                 */
+                payer_tenant_id?: string;
                 reference?: string;
                 notes?: string;
                 /** @default [] */
@@ -23939,11 +24399,17 @@ export interface components {
             time_zone?: string;
             /** @enum {string} */
             proration_method?: "actual_days" | "thirty_day_month";
+            /** @description ISO 4217 code money defaults to. */
+            currency?: string;
+            /** @description False: show no currency control or code; setup refuses other currencies. */
+            multi_currency?: boolean;
         };
         PatchAccountSettingsBody: {
             auto_charge_enabled?: boolean;
             /** @enum {string} */
             proration_method?: "actual_days" | "thirty_day_month";
+            currency?: string;
+            multi_currency?: boolean;
         };
         TenancySetupSession: {
             /** Format: uuid */

@@ -126,9 +126,11 @@ export type Database = {
         Row: {
           auto_charge_enabled: boolean;
           created_at: string;
+          currency: string;
           deleted_at: string | null;
           email_subdomain: string | null;
           id: string;
+          multi_currency: boolean;
           name: string;
           opening_balance_ledger_enabled: boolean;
           person_match_enabled: boolean;
@@ -142,9 +144,11 @@ export type Database = {
         Insert: {
           auto_charge_enabled?: boolean;
           created_at?: string;
+          currency?: string;
           deleted_at?: string | null;
           email_subdomain?: string | null;
           id?: string;
+          multi_currency?: boolean;
           name: string;
           opening_balance_ledger_enabled?: boolean;
           person_match_enabled?: boolean;
@@ -158,9 +162,11 @@ export type Database = {
         Update: {
           auto_charge_enabled?: boolean;
           created_at?: string;
+          currency?: string;
           deleted_at?: string | null;
           email_subdomain?: string | null;
           id?: string;
+          multi_currency?: boolean;
           name?: string;
           opening_balance_ledger_enabled?: boolean;
           person_match_enabled?: boolean;
@@ -3135,6 +3141,48 @@ export type Database = {
         };
         Relationships: [];
       };
+      late_fee_decisions: {
+        Row: {
+          account_id: string;
+          charge_id: string;
+          decided_at: string;
+          decided_by: string;
+          decision: string;
+          id: string;
+        };
+        Insert: {
+          account_id: string;
+          charge_id: string;
+          decided_at?: string;
+          decided_by?: string;
+          decision: string;
+          id?: string;
+        };
+        Update: {
+          account_id?: string;
+          charge_id?: string;
+          decided_at?: string;
+          decided_by?: string;
+          decision?: string;
+          id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'late_fee_decisions_account_id_charge_id_fkey';
+            columns: ['account_id', 'charge_id'];
+            isOneToOne: true;
+            referencedRelation: 'charges';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'late_fee_decisions_account_id_fkey';
+            columns: ['account_id'];
+            isOneToOne: false;
+            referencedRelation: 'accounts';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
       leases: {
         Row: {
           account_id: string;
@@ -3746,6 +3794,7 @@ export type Database = {
         Row: {
           account_id: string;
           amount_cents: number;
+          amount_source: string | null;
           created_at: string;
           created_by: string;
           cycle_key: string;
@@ -3760,6 +3809,7 @@ export type Database = {
         Insert: {
           account_id: string;
           amount_cents: number;
+          amount_source?: string | null;
           created_at?: string;
           created_by?: string;
           cycle_key: string;
@@ -3774,6 +3824,7 @@ export type Database = {
         Update: {
           account_id?: string;
           amount_cents?: number;
+          amount_source?: string | null;
           created_at?: string;
           created_by?: string;
           cycle_key?: string;
@@ -4102,12 +4153,14 @@ export type Database = {
           created_at: string;
           currency: string;
           deleted_at: string | null;
+          earlier_receipts: Json | null;
           id: string;
           includes_current_rent: boolean | null;
           needs_review: boolean;
           opening_balance_cents: number;
           opening_on: string | null;
           tenancy_id: string;
+          typed_opening_cents: number | null;
           updated_at: string;
         };
         Insert: {
@@ -4117,12 +4170,14 @@ export type Database = {
           created_at?: string;
           currency: string;
           deleted_at?: string | null;
+          earlier_receipts?: Json | null;
           id?: string;
           includes_current_rent?: boolean | null;
           needs_review?: boolean;
           opening_balance_cents?: number;
           opening_on?: string | null;
           tenancy_id: string;
+          typed_opening_cents?: number | null;
           updated_at?: string;
         };
         Update: {
@@ -4132,12 +4187,14 @@ export type Database = {
           created_at?: string;
           currency?: string;
           deleted_at?: string | null;
+          earlier_receipts?: Json | null;
           id?: string;
           includes_current_rent?: boolean | null;
           needs_review?: boolean;
           opening_balance_cents?: number;
           opening_on?: string | null;
           tenancy_id?: string;
+          typed_opening_cents?: number | null;
           updated_at?: string;
         };
         Relationships: [
@@ -5221,6 +5278,10 @@ export type Database = {
         Args: { p_as_of: string; p_period: Json };
         Returns: boolean;
       };
+      _charge_late_terms: {
+        Args: { p_account_id: string; p_schedule_id: string; p_terms: Json };
+        Returns: Json;
+      };
       _comm_choose_persona_route: {
         Args: {
           p_account_id: string;
@@ -5369,6 +5430,7 @@ export type Database = {
         Args: { p_agreement: Json; p_existing: Json };
         Returns: Json;
       };
+      _normalized_address: { Args: { p_text: string }; Returns: string };
       _party_display_name: {
         Args: { p_account_id: string; p_party_id: string; p_party_type: string };
         Returns: string;
@@ -5423,6 +5485,10 @@ export type Database = {
           p_tenancy_id: string;
         };
         Returns: Json;
+      };
+      _receipt_before_itemized: {
+        Args: { p_itemized_start: string; p_payment: Json };
+        Returns: boolean;
       };
       _receipt_date_warning: {
         Args: {
@@ -6102,6 +6168,10 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      find_duplicate_properties: {
+        Args: { p_account_id: string; p_address: string; p_provider_id: string };
+        Returns: Json;
+      };
       generate_rent_charges: {
         Args: { p_account_id: string; p_as_of: string };
         Returns: {
@@ -6213,6 +6283,20 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      late_fee_suggestions: {
+        Args: { p_account_id: string; p_tenancy_id?: string };
+        Returns: {
+          charge_id: string;
+          currency: string;
+          due_date: string;
+          eligible_on: string;
+          fee: Json;
+          grace_days: number;
+          rent_amount_cents: number;
+          tenancy_id: string;
+          unpaid_cents: number;
+        }[];
+      };
       link_unmatched_inbound: {
         Args: {
           p_account_id: string;
@@ -6319,6 +6403,22 @@ export type Database = {
         Returns: Json;
       };
       normalize_search_text: { Args: { p_text: string }; Returns: string };
+      owed_summaries: {
+        Args: { p_account_id: string; p_tenancy_id?: string };
+        Returns: {
+          as_of: string;
+          by_type: Json;
+          currency: string;
+          deposit_owed_cents: number;
+          next_charge: Json;
+          oldest_due_on: string;
+          overdue_cents: number;
+          rent_tracked: boolean;
+          tenancy_id: string;
+          total_cents: number;
+          unapplied_credit_cents: number;
+        }[];
+      };
       preview_billing_setup: {
         Args: { p_account_id: string; p_intent: Json; p_tenancy_id: string };
         Returns: Json;
