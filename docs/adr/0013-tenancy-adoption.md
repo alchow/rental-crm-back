@@ -159,3 +159,10 @@ current month bills normally. Existing adoptions convert per account with
 `db/scripts/backfill-opening-balances.sql` (idempotent, before/after report) and can
 be reversed with `revert-opening-balance-backfill.sql` while untouched. With the flag
 off, behavior is exactly as described above.
+
+Combined with itemized months (same flag): billing setup accepts `history_mode =
+'itemized'` with `opening_balance.itemize_from`. The opening entry is dated the day
+before the first itemized period (`tenancy_adoptions.opening_on`), cycles before that
+month cannot be itemized or overridden, and receipts must be dated within the itemized
+months, because the stated amount is already net of anything received earlier. The
+timeline must still be virgin, and without `itemize_from` the two remain exclusive.
