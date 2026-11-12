@@ -11443,6 +11443,7 @@ begin
       end if;
       declare early jsonb; idx integer; answer jsonb; early_keys text[] := '{}';
       begin
+        -- Setup previews once without receipts; answers are matched once receipts are present.
         for early, idx in select value, ordinality::integer
           from jsonb_array_elements(coalesce(p_intent->'payments','[]')) with ordinality loop
           if public._receipt_before_itemized(early, (v_period->>'period_start')::date) then
@@ -15594,12 +15595,12 @@ ALTER TABLE "public"."ip_rate_buckets" OWNER TO "postgres";
 --
 
 CREATE TABLE IF NOT EXISTS "public"."late_fee_decisions" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "account_id" "uuid" NOT NULL,
     "charge_id" "uuid" NOT NULL,
     "decision" "text" NOT NULL,
     "decided_by" "uuid" DEFAULT "auth"."uid"() NOT NULL,
     "decided_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     CONSTRAINT "late_fee_decisions_decision_check" CHECK (("decision" = 'skipped'::"text"))
 );
 
