@@ -28,18 +28,21 @@ const ChargeType = z.enum([
 ]);
 const CurrencyCode = z.string().length(3);
 
+const ReadChargeType = z.union([ChargeType, z.literal('opening_balance')]);
+
 const Charge = z
   .object({
     id: z.string().uuid(),
     account_id: z.string().uuid(),
     tenancy_id: z.string().uuid(),
-    type: ChargeType,
+    type: ReadChargeType,
     amount_cents: z.number().int().nonnegative(),
     currency: CurrencyCode,
     due_date: z.string(),
     period_start: z.string().nullable(),
     period_end: z.string().nullable(),
     description: z.string().nullable(),
+    opening_category: z.string().nullable().optional(),
     source_schedule_id: z.string().uuid().nullable(),
     cycle_key: z.string().nullable(),
     terms_snapshot: z.record(z.unknown()).nullable(),
@@ -74,7 +77,10 @@ const CreateChargeBody = z
       .optional(),
     description: z.string().optional(),
     source_schedule_id: z.string().uuid().optional(),
-    cycle_key: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+    cycle_key: z
+      .string()
+      .regex(/^\d{4}-\d{2}$/)
+      .optional(),
     parent_charge_id: z
       .string()
       .uuid()
@@ -139,7 +145,7 @@ const ListQuery = z.object({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().positive().max(100).default(50),
   tenancy_id: z.string().uuid().optional(),
-  type: ChargeType.optional(),
+  type: ReadChargeType.optional(),
 });
 const ListResponse = z
   .object({ data: z.array(Charge), next_cursor: z.string().nullable() })

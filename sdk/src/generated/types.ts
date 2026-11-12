@@ -3178,7 +3178,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorEnvelope"];
                     };
                 };
-                /** @description idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource */
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -3533,7 +3533,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Review an actual ending and its immediate lifecycle effect without writing it */
+        /** Review an ending or planned move-out without writing it */
         post: {
             parameters: {
                 query?: never;
@@ -3630,7 +3630,7 @@ export interface paths {
         put?: never;
         /**
          * End or cancel a tenancy atomically
-         * @description Creates an immutable ending fact, marks the tenancy ended, and safely stops future rent generation in one transaction.
+         * @description Schedules a future move-out on enabled accounts. Ending today or earlier records the actual ending immediately.
          */
         post: {
             parameters: {
@@ -3660,6 +3660,104 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["EndTenancyResponse"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/tenancies/{id}/move-out/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel a scheduled move-out while the tenancy is occupied */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** Format: date */
+                        expected_move_out_on: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Current tenancy */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Tenancy"];
                     };
                 };
                 /** @description invalid request */
@@ -7428,7 +7526,7 @@ export interface paths {
                     cursor?: string;
                     limit?: number;
                     tenancy_id?: string;
-                    type?: "rent" | "late_fee" | "deposit" | "utility" | "parking" | "repair_chargeback" | "nsf_fee" | "other";
+                    type?: ("rent" | "late_fee" | "deposit" | "utility" | "parking" | "repair_chargeback" | "nsf_fee" | "other") | "opening_balance";
                 };
                 header?: never;
                 path: {
@@ -14057,7 +14155,79 @@ export interface paths {
             };
         };
         post?: never;
-        delete?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Draft discarded */
+                204: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -20412,6 +20582,7 @@ export interface components {
             email: string;
             password: string;
             account_name: string;
+            time_zone?: string;
         };
         LoginResponse: {
             user: {
@@ -20729,6 +20900,23 @@ export interface components {
             date_revision: number;
             /** Format: date */
             end_date: string | null;
+            /** Format: date */
+            move_out_on?: string | null;
+            move_out_plan?: {
+                initiated_by?: string;
+                reason_code?: string;
+                reason_note?: string;
+                /** Format: uuid */
+                source_interaction_id?: string;
+                /** Format: uuid */
+                source_notice_id?: string;
+                /** Format: uuid */
+                final_rent_schedule_id?: string;
+                final_rent_amount_cents?: number;
+            } | null;
+            /** Format: date */
+            account_date?: string;
+            scheduled_move_out_enabled?: boolean;
             /** @enum {string} */
             status: "upcoming" | "active" | "ended" | "holdover";
             created_at: string;
@@ -20889,6 +21077,11 @@ export interface components {
              * @enum {string}
              */
             reason_code: "notice" | "abandonment" | "fixed_term_completed" | "mutual_surrender" | "other";
+            /** Format: date */
+            expected_move_out_on?: string;
+            /** Format: uuid */
+            final_rent_schedule_id?: string;
+            final_rent_amount_cents?: number;
         } | {
             /** @enum {string} */
             kind: "cancelled_before_move_in";
@@ -20914,7 +21107,7 @@ export interface components {
         };
         EndTenancyResponse: {
             tenancy: components["schemas"]["Tenancy"];
-            ending: components["schemas"]["TenancyEnding"];
+            ending: components["schemas"]["TenancyEnding"] | null;
         };
         TenancyDateFacts: {
             /** Format: uuid */
@@ -21817,14 +22010,14 @@ export interface components {
             account_id: string;
             /** Format: uuid */
             tenancy_id: string;
-            /** @enum {string} */
-            type: "rent" | "late_fee" | "deposit" | "utility" | "parking" | "repair_chargeback" | "nsf_fee" | "other";
+            type: ("rent" | "late_fee" | "deposit" | "utility" | "parking" | "repair_chargeback" | "nsf_fee" | "other") | "opening_balance";
             amount_cents: number;
             currency: string;
             due_date: string;
             period_start: string | null;
             period_end: string | null;
             description: string | null;
+            opening_category?: string | null;
             /** Format: uuid */
             source_schedule_id: string | null;
             cycle_key: string | null;
@@ -21878,8 +22071,8 @@ export interface components {
             received_at: string | null;
             receipt_date_unknown?: boolean;
             entry_source?: string;
-            /** @enum {string} */
-            method: "cash" | "check" | "ach" | "card" | "zelle_venmo" | "money_order" | "other";
+            /** @enum {string|null} */
+            method: "cash" | "check" | "ach" | "card" | "zelle_venmo" | "money_order" | "other" | null;
             reference: string | null;
             /** Format: uuid */
             payer_tenant_id: string | null;
@@ -21952,6 +22145,7 @@ export interface components {
             currency: string;
             balance_basis: string | null;
             needs_review: boolean;
+            recorded_in_ledger?: boolean;
             created_at: string;
         } | null;
         LedgerTotalsByType: {
@@ -21995,6 +22189,11 @@ export interface components {
                 allocated_cents: number;
                 balance_cents: number;
             };
+            opening_balance?: {
+                charges_cents: number;
+                allocated_cents: number;
+                balance_cents: number;
+            };
         };
         LedgerTotals: {
             /** @description LEGACY: aggregates ALL non-deposit charge types (utility, late_fee, ... included), not just type=rent. Use totals.by_type for an honest per-type split. */
@@ -22007,6 +22206,7 @@ export interface components {
             deposit_payments_cents: number;
             deposit_balance_cents: number;
             total_received_cents: number;
+            opening_credit_cents?: number;
             total_allocated_cents: number;
             unapplied_credit_cents: number;
             by_type: components["schemas"]["LedgerTotalsByType"];
@@ -22034,7 +22234,8 @@ export interface components {
                 /** Format: uuid */
                 parent_charge_id?: string | null;
                 /** @enum {string} */
-                source: "manual" | "rent_schedule";
+                source: "manual" | "rent_schedule" | "landlord_statement";
+                opening_category?: string | null;
                 created_at: string;
                 type: string;
                 amount_cents: number;
@@ -22057,7 +22258,8 @@ export interface components {
                 created_at: string;
                 amount_cents: number;
                 currency?: string;
-                method: string;
+                method: string | null;
+                opening_credit_on?: string | null;
                 reference: string | null;
                 voided_at: string | null;
                 void_reason: string | null;
@@ -22268,7 +22470,7 @@ export interface components {
                     currency: string;
                     received_at: string | null;
                     receipt_date_unknown: boolean;
-                    method: string;
+                    method: string | null;
                     reference: string | null;
                     available_cents: number;
                     voided_at: string | null;
@@ -22366,6 +22568,7 @@ export interface components {
                 opening_balance?: {
                     amount_cents: number;
                     basis: string;
+                    includes_current_rent?: boolean;
                 };
                 /** @default [] */
                 charge_keys: {
@@ -22468,10 +22671,11 @@ export interface components {
         };
         RentRollupCurrencyTotals: {
             currency: string;
-            /** @description All NON-DEPOSIT charge types minus active allocations in this currency. Opening-balance testimony is separate. */
+            /** @description All NON-DEPOSIT charge types minus active allocations in this currency. Includes starting balances recorded in the ledger. */
             rent_balance_cents: number;
             deposit_balance_cents: number;
             unapplied_credit_cents: number;
+            opening_owed_cents?: number;
             /** @description Current open non-deposit balance on charges due before as_of. */
             non_deposit_overdue_cents: number;
             /** @description Current open non-deposit balance on charges due on as_of. */
@@ -22486,10 +22690,11 @@ export interface components {
         RentRollupRow: {
             /** @description Primary current rent-schedule currency, otherwise first recorded currency; null when none exists. Scalar amounts use only this currency. */
             currency: string | null;
-            /** @description All NON-DEPOSIT charge types minus active allocations in this currency. Opening-balance testimony is separate. */
+            /** @description All NON-DEPOSIT charge types minus active allocations in this currency. Includes starting balances recorded in the ledger. */
             rent_balance_cents: number;
             deposit_balance_cents: number;
             unapplied_credit_cents: number;
+            opening_owed_cents?: number;
             /** @description Current open non-deposit balance on charges due before as_of. */
             non_deposit_overdue_cents: number;
             /** @description Current open non-deposit balance on charges due on as_of. */
@@ -22507,13 +22712,14 @@ export interface components {
             currency_totals?: components["schemas"]["RentRollupCurrencyTotals"][];
             /** @description A different currency has a live positive rent or deposit obligation. Never infer all-clear from the primary currency alone. */
             has_other_currency_balance?: boolean;
-            /** @description Opening-balance testimony, separately denominated and excluded from charge/payment totals. */
+            /** @description Starting-balance provenance. Recorded amounts are already included in ledger totals. */
             adoption?: {
                 adoption_date: string;
                 opening_balance_cents: number;
                 currency: string;
                 balance_basis: string | null;
                 needs_review: boolean;
+                recorded_in_ledger?: boolean;
                 created_at: string;
             } | null;
         };
@@ -23510,6 +23716,10 @@ export interface components {
         };
         AccountSettings: {
             auto_charge_enabled: boolean;
+            person_match_enabled?: boolean;
+            opening_balance_ledger_enabled?: boolean;
+            scheduled_move_out_enabled?: boolean;
+            time_zone?: string;
         };
         PatchAccountSettingsBody: {
             auto_charge_enabled: boolean;

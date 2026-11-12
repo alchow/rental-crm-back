@@ -39,7 +39,11 @@ const ConfigureRent = z
     period_overrides: z.array(PeriodOverride).max(120).default([]),
     history_mode: z.enum(['itemized', 'opening_balance']).default('itemized'),
     opening_balance: z
-      .object({ amount_cents: z.number().int(), basis: z.string().trim().min(1).max(200) })
+      .object({
+        amount_cents: z.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER),
+        basis: z.string().trim().min(1).max(200),
+        includes_current_rent: z.boolean().optional(),
+      })
       .strict()
       .optional(),
     charge_keys: z
@@ -82,10 +86,13 @@ const Payment = z
     draft_key: DraftKey,
     amount_cents: z.number().int().positive(),
     currency: Currency,
-    received_at: z.union([CalendarDate, z.string().datetime({ offset: true })]).nullable().openapi({
-      description:
-        'Actual receipt date or timestamp. A calendar date is stored at noon UTC to preserve the entered day.',
-    }),
+    received_at: z
+      .union([CalendarDate, z.string().datetime({ offset: true })])
+      .nullable()
+      .openapi({
+        description:
+          'Actual receipt date or timestamp. A calendar date is stored at noon UTC to preserve the entered day.',
+      }),
     method: z.enum(['cash', 'check', 'ach', 'card', 'zelle_venmo', 'money_order', 'other']),
     receipt_date_unknown: z.boolean().optional(),
     entry_source: z.enum(['manual', 'entered_at_setup', 'import']).optional(),
@@ -221,7 +228,7 @@ export const BillingSetupPreview = z
           currency: Currency,
           received_at: z.string().nullable(),
           receipt_date_unknown: z.boolean(),
-          method: z.string(),
+          method: z.string().nullable(),
           reference: z.string().nullable(),
           available_cents: z.number().int(),
           voided_at: z.string().nullable(),

@@ -30,7 +30,7 @@ const Payment = z
     received_at: z.string().nullable(),
     receipt_date_unknown: z.boolean().optional(),
     entry_source: z.string().optional(),
-    method: PaymentMethod,
+    method: PaymentMethod.nullable(),
     reference: z.string().nullable(),
     payer_tenant_id: z.string().uuid().nullable(),
     processor_ref: z.string().nullable(),

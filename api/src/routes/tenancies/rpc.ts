@@ -3,9 +3,26 @@ import { asDbFunctionArgs, asJson, type DbFunctionName } from '../../supabase/db
 import { getSb } from '../../supabase/request-client';
 import { ApiError } from '../_lib/error';
 
-export function mapDateRpcError(error: { code?: string; message?: string }): never {
+export function mapDateRpcError(error: {
+  code?: string;
+  message?: string;
+  details?: string;
+}): never {
   const message = (error.message ?? '').trim();
   const code = message.split(':', 1)[0] ?? message;
+  if (error.code === 'PT409' && code === 'setup_person_contact_conflict') {
+    const details: unknown = error.details ? JSON.parse(error.details) : undefined;
+    throw new ApiError(409, code, 'Review duplicate contact details in setup.', details);
+  }
+  if (code === 'move_out_changed' || code === 'move_out_overlap') {
+    throw new ApiError(
+      409,
+      code,
+      code === 'move_out_changed'
+        ? 'The scheduled move-out changed. Reload the tenancy and try again.'
+        : 'The dates overlap another tenancy on this door.',
+    );
+  }
   if (code === 'not_found') throw new ApiError(404, 'not_found', message);
   if (code === 'invalid') throw new ApiError(400, 'invalid_request', message);
   if (message === 'conflict: setup draft changed')

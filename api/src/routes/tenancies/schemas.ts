@@ -14,6 +14,22 @@ export const Tenancy = z
     actual_move_in_date: CalendarDate.nullable(),
     date_revision: z.number().int().nonnegative(),
     end_date: CalendarDate.nullable(),
+    move_out_on: CalendarDate.nullable().optional(),
+    move_out_plan: z
+      .object({
+        initiated_by: z.string().optional(),
+        reason_code: z.string().optional(),
+        reason_note: z.string().optional(),
+        source_interaction_id: z.string().uuid().optional(),
+        source_notice_id: z.string().uuid().optional(),
+        final_rent_schedule_id: z.string().uuid().optional(),
+        final_rent_amount_cents: z.number().int().nonnegative().optional(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
+    account_date: CalendarDate.optional(),
+    scheduled_move_out_enabled: z.boolean().optional(),
     status: TenancyStatus,
     created_at: z.string(),
     updated_at: z.string(),

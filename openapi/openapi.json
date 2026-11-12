@@ -186,6 +186,11 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          },
+          "time_zone": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
           }
         },
         "required": [
@@ -1510,6 +1515,53 @@
             ],
             "format": "date"
           },
+          "move_out_on": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "move_out_plan": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "initiated_by": {
+                "type": "string"
+              },
+              "reason_code": {
+                "type": "string"
+              },
+              "reason_note": {
+                "type": "string"
+              },
+              "source_interaction_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "source_notice_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "final_rent_schedule_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "final_rent_amount_cents": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "account_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "scheduled_move_out_enabled": {
+            "type": "boolean"
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -2025,6 +2077,19 @@
                   "other"
                 ],
                 "default": "other"
+              },
+              "expected_move_out_on": {
+                "type": "string",
+                "format": "date"
+              },
+              "final_rent_schedule_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "final_rent_amount_cents": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
               }
             },
             "required": [
@@ -2104,7 +2169,14 @@
             "$ref": "#/components/schemas/Tenancy"
           },
           "ending": {
-            "$ref": "#/components/schemas/TenancyEnding"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TenancyEnding"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -5745,16 +5817,26 @@
             "format": "uuid"
           },
           "type": {
-            "type": "string",
-            "enum": [
-              "rent",
-              "late_fee",
-              "deposit",
-              "utility",
-              "parking",
-              "repair_chargeback",
-              "nsf_fee",
-              "other"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "rent",
+                  "late_fee",
+                  "deposit",
+                  "utility",
+                  "parking",
+                  "repair_chargeback",
+                  "nsf_fee",
+                  "other"
+                ]
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "opening_balance"
+                ]
+              }
             ]
           },
           "amount_cents": {
@@ -5782,6 +5864,12 @@
             ]
           },
           "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "opening_category": {
             "type": [
               "string",
               "null"
@@ -5997,7 +6085,10 @@
             "type": "string"
           },
           "method": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "enum": [
               "cash",
               "check",
@@ -6005,7 +6096,8 @@
               "card",
               "zelle_venmo",
               "money_order",
-              "other"
+              "other",
+              null
             ]
           },
           "reference": {
@@ -6331,6 +6423,9 @@
           "needs_review": {
             "type": "boolean"
           },
+          "recorded_in_ledger": {
+            "type": "boolean"
+          },
           "created_at": {
             "type": "string"
           }
@@ -6498,6 +6593,25 @@
               "allocated_cents",
               "balance_cents"
             ]
+          },
+          "opening_balance": {
+            "type": "object",
+            "properties": {
+              "charges_cents": {
+                "type": "integer"
+              },
+              "allocated_cents": {
+                "type": "integer"
+              },
+              "balance_cents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "charges_cents",
+              "allocated_cents",
+              "balance_cents"
+            ]
           }
         },
         "required": [
@@ -6536,6 +6650,9 @@
             "type": "integer"
           },
           "total_received_cents": {
+            "type": "integer"
+          },
+          "opening_credit_cents": {
             "type": "integer"
           },
           "total_allocated_cents": {
@@ -6643,7 +6760,14 @@
                       "type": "string",
                       "enum": [
                         "manual",
-                        "rent_schedule"
+                        "rent_schedule",
+                        "landlord_statement"
+                      ]
+                    },
+                    "opening_category": {
+                      "type": [
+                        "string",
+                        "null"
                       ]
                     },
                     "created_at": {
@@ -6739,7 +6863,16 @@
                       "type": "string"
                     },
                     "method": {
-                      "type": "string"
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "opening_credit_on": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "reference": {
                       "type": [
@@ -7540,7 +7673,10 @@
                       "type": "boolean"
                     },
                     "method": {
-                      "type": "string"
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "reference": {
                       "type": [
@@ -7967,12 +8103,17 @@
                     "type": "object",
                     "properties": {
                       "amount_cents": {
-                        "type": "integer"
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
                       },
                       "basis": {
                         "type": "string",
                         "minLength": 1,
                         "maxLength": 200
+                      },
+                      "includes_current_rent": {
+                        "type": "boolean"
                       }
                     },
                     "required": [
@@ -8440,12 +8581,15 @@
           },
           "rent_balance_cents": {
             "type": "integer",
-            "description": "All NON-DEPOSIT charge types minus active allocations in this currency. Opening-balance testimony is separate."
+            "description": "All NON-DEPOSIT charge types minus active allocations in this currency. Includes starting balances recorded in the ledger."
           },
           "deposit_balance_cents": {
             "type": "integer"
           },
           "unapplied_credit_cents": {
+            "type": "integer"
+          },
+          "opening_owed_cents": {
             "type": "integer"
           },
           "non_deposit_overdue_cents": {
@@ -8493,12 +8637,15 @@
           },
           "rent_balance_cents": {
             "type": "integer",
-            "description": "All NON-DEPOSIT charge types minus active allocations in this currency. Opening-balance testimony is separate."
+            "description": "All NON-DEPOSIT charge types minus active allocations in this currency. Includes starting balances recorded in the ledger."
           },
           "deposit_balance_cents": {
             "type": "integer"
           },
           "unapplied_credit_cents": {
+            "type": "integer"
+          },
+          "opening_owed_cents": {
             "type": "integer"
           },
           "non_deposit_overdue_cents": {
@@ -8568,6 +8715,9 @@
               "needs_review": {
                 "type": "boolean"
               },
+              "recorded_in_ledger": {
+                "type": "boolean"
+              },
               "created_at": {
                 "type": "string"
               }
@@ -8580,7 +8730,7 @@
               "needs_review",
               "created_at"
             ],
-            "description": "Opening-balance testimony, separately denominated and excluded from charge/payment totals."
+            "description": "Starting-balance provenance. Recorded amounts are already included in ledger totals."
           }
         },
         "required": [
@@ -12833,6 +12983,18 @@
         "properties": {
           "auto_charge_enabled": {
             "type": "boolean"
+          },
+          "person_match_enabled": {
+            "type": "boolean"
+          },
+          "opening_balance_ledger_enabled": {
+            "type": "boolean"
+          },
+          "scheduled_move_out_enabled": {
+            "type": "boolean"
+          },
+          "time_zone": {
+            "type": "string"
           }
         },
         "required": [
@@ -21308,7 +21470,7 @@
             }
           },
           "409": {
-            "description": "idempotency_conflict (same key, different body) or idempotency_in_flight (original still running), or a domain conflict for this resource",
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
             "content": {
               "application/json": {
                 "schema": {
@@ -21776,7 +21938,7 @@
         "tags": [
           "tenancies"
         ],
-        "summary": "Review an actual ending and its immediate lifecycle effect without writing it",
+        "summary": "Review an ending or planned move-out without writing it",
         "parameters": [
           {
             "schema": {
@@ -21909,7 +22071,7 @@
           "tenancies"
         ],
         "summary": "End or cancel a tenancy atomically",
-        "description": "Creates an immutable ending fact, marks the tenancy ended, and safely stops future rent generation in one transaction.",
+        "description": "Schedules a future move-out on enabled accounts. Ending today or earlier records the actual ending immediately.",
         "parameters": [
           {
             "schema": {
@@ -21959,6 +22121,147 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EndTenancyResponse"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/tenancies/{id}/move-out/cancel": {
+      "post": {
+        "tags": [
+          "tenancies"
+        ],
+        "summary": "Cancel a scheduled move-out while the tenancy is occupied",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "expected_move_out_on": {
+                    "type": "string",
+                    "format": "date"
+                  }
+                },
+                "required": [
+                  "expected_move_out_on"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Current tenancy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tenancy"
                 }
               }
             },
@@ -27358,16 +27661,26 @@
           },
           {
             "schema": {
-              "type": "string",
-              "enum": [
-                "rent",
-                "late_fee",
-                "deposit",
-                "utility",
-                "parking",
-                "repair_chargeback",
-                "nsf_fee",
-                "other"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "rent",
+                    "late_fee",
+                    "deposit",
+                    "utility",
+                    "parking",
+                    "repair_chargeback",
+                    "nsf_fee",
+                    "other"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "enum": [
+                    "opening_balance"
+                  ]
+                }
               ]
             },
             "required": false,
@@ -36501,6 +36814,118 @@
                 }
               }
             },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "tenancy_setup"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Draft discarded",
             "headers": {
               "Idempotency-Replay": {
                 "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",

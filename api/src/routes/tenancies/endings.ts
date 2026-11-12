@@ -31,6 +31,14 @@ const EndTenancyBody = z
       kind: z.literal('ended'),
       ...EndingBodyFields,
       reason_code: EndedReasonCode.default('other'),
+      expected_move_out_on: CalendarDate.optional(),
+      final_rent_schedule_id: z.string().uuid().optional(),
+      final_rent_amount_cents: z
+        .number()
+        .int()
+        .nonnegative()
+        .max(Number.MAX_SAFE_INTEGER)
+        .optional(),
     }),
     z.object({
       kind: z.literal('cancelled_before_move_in'),
@@ -38,6 +46,12 @@ const EndTenancyBody = z
       reason_code: CancelledReasonCode.default('other'),
     }),
   ])
+  .refine(
+    (body) =>
+      body.kind !== 'ended' ||
+      (body.final_rent_schedule_id === undefined) === (body.final_rent_amount_cents === undefined),
+    'The final rent amount needs its rent schedule.',
+  )
   .openapi('EndTenancyBody');
 const TenancyEnding = z
   .object({
@@ -58,7 +72,7 @@ const TenancyEnding = z
   })
   .openapi('TenancyEnding');
 const EndTenancyResponse = z
-  .object({ tenancy: Tenancy, ending: TenancyEnding })
+  .object({ tenancy: Tenancy, ending: TenancyEnding.nullable() })
   .openapi('EndTenancyResponse');
 
 const getEnding = createRoute({
@@ -78,7 +92,7 @@ const endTenancy = createRoute({
   tags: ['tenancies'],
   summary: 'End or cancel a tenancy atomically',
   description:
-    'Creates an immutable ending fact, marks the tenancy ended, and safely stops future rent generation in one transaction.',
+    'Schedules a future move-out on enabled accounts. Ending today or earlier records the actual ending immediately.',
   request: {
     params: AccountAndIdParam,
     body: { required: true, content: { 'application/json': { schema: EndTenancyBody } } },
@@ -93,7 +107,7 @@ const previewEnding = createRoute({
   method: 'post',
   path: '/accounts/{accountId}/tenancies/{id}/end/preview',
   tags: ['tenancies'],
-  summary: 'Review an actual ending and its immediate lifecycle effect without writing it',
+  summary: 'Review an ending or planned move-out without writing it',
   request: {
     params: AccountAndIdParam,
     body: { required: true, content: { 'application/json': { schema: EndTenancyBody } } },
@@ -101,6 +115,29 @@ const previewEnding = createRoute({
   responses: {
     200: { description: 'review', content: { 'application/json': { schema: DateWarningPreview } } },
     ...errorResponses,
+  },
+});
+
+const cancelMoveOut = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/tenancies/{id}/move-out/cancel',
+  tags: ['tenancies'],
+  summary: 'Cancel a scheduled move-out while the tenancy is occupied',
+  request: {
+    params: AccountAndIdParam,
+    body: {
+      required: true,
+      content: {
+        'application/json': {
+          schema: z.object({ expected_move_out_on: CalendarDate }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: { description: 'Current tenancy', content: { 'application/json': { schema: Tenancy } } },
+    ...errorResponses,
+    ...conflictResponse,
   },
 });
 
@@ -142,4 +179,19 @@ tenancyEndingsApp.openapi(endTenancy, async (c) => {
   });
   c.set('idempotencyCompletedAtomically', true);
   return c.json(data, 200);
+});
+
+tenancyEndingsApp.openapi(cancelMoveOut, async (c) => {
+  const { accountId, id } = c.req.valid('param');
+  const claim = c.get('idempotencyClaim');
+  if (!claim) throw new ApiError(500, 'database_error', 'Missing request claim');
+  const tenancy = await dateRpc<z.infer<typeof Tenancy>>(c, 'cancel_scheduled_move_out', {
+    p_account_id: accountId,
+    p_tenancy_id: id,
+    p_expected_move_out_on: c.req.valid('json').expected_move_out_on,
+    p_idempotency_key: claim.key,
+    p_request_fingerprint: claim.fingerprint,
+  });
+  c.set('idempotencyCompletedAtomically', true);
+  return c.json(tenancy, 200);
 });

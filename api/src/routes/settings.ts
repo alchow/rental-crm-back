@@ -9,12 +9,19 @@ import { ApiError, dbError, errorResponses } from './_lib/error';
 // Both use the caller JWT, and PATCH inherits the shared idempotency contract.
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 
 const AccountSettings = z
   .object({
     auto_charge_enabled: z.boolean(),
+    person_match_enabled: z.boolean().optional(),
+    opening_balance_ledger_enabled: z.boolean().optional(),
+    scheduled_move_out_enabled: z.boolean().optional(),
+    time_zone: z.string().optional(),
   })
   .openapi('AccountSettings');
 
@@ -63,14 +70,20 @@ settingsApp.openapi(get, async (c) => {
   const sb = getSb(c);
   const { data, error } = await sb
     .from('accounts')
-    .select('auto_charge_enabled')
+    .select('*')
     .eq('id', accountId)
     .is('deleted_at', null)
     .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
   if (!data) throw new ApiError(404, 'not_found', 'account not found');
   return c.json(
-    { auto_charge_enabled: (data as { auto_charge_enabled: boolean }).auto_charge_enabled },
+    {
+      auto_charge_enabled: data.auto_charge_enabled,
+      person_match_enabled: data.person_match_enabled,
+      opening_balance_ledger_enabled: data.opening_balance_ledger_enabled,
+      scheduled_move_out_enabled: data.scheduled_move_out_enabled,
+      time_zone: data.time_zone,
+    },
     200,
   );
 });

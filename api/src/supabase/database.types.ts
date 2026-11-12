@@ -130,8 +130,12 @@ export type Database = {
           email_subdomain: string | null;
           id: string;
           name: string;
+          opening_balance_ledger_enabled: boolean;
+          person_match_enabled: boolean;
           persona_local_part: string | null;
+          scheduled_move_out_enabled: boolean;
           sender_display_name: string | null;
+          time_zone: string;
           updated_at: string;
         };
         Insert: {
@@ -141,8 +145,12 @@ export type Database = {
           email_subdomain?: string | null;
           id?: string;
           name: string;
+          opening_balance_ledger_enabled?: boolean;
+          person_match_enabled?: boolean;
           persona_local_part?: string | null;
+          scheduled_move_out_enabled?: boolean;
           sender_display_name?: string | null;
+          time_zone?: string;
           updated_at?: string;
         };
         Update: {
@@ -152,8 +160,12 @@ export type Database = {
           email_subdomain?: string | null;
           id?: string;
           name?: string;
+          opening_balance_ledger_enabled?: boolean;
+          person_match_enabled?: boolean;
           persona_local_part?: string | null;
+          scheduled_move_out_enabled?: boolean;
           sender_display_name?: string | null;
+          time_zone?: string;
           updated_at?: string;
         };
         Relationships: [];
@@ -619,6 +631,8 @@ export type Database = {
           description: string | null;
           due_date: string;
           id: string;
+          opening_adoption_id: string | null;
+          opening_category: string | null;
           parent_charge_id: string | null;
           period_end: string | null;
           period_start: string | null;
@@ -640,6 +654,8 @@ export type Database = {
           description?: string | null;
           due_date: string;
           id?: string;
+          opening_adoption_id?: string | null;
+          opening_category?: string | null;
           parent_charge_id?: string | null;
           period_end?: string | null;
           period_start?: string | null;
@@ -661,6 +677,8 @@ export type Database = {
           description?: string | null;
           due_date?: string;
           id?: string;
+          opening_adoption_id?: string | null;
+          opening_category?: string | null;
           parent_charge_id?: string | null;
           period_end?: string | null;
           period_start?: string | null;
@@ -692,6 +710,13 @@ export type Database = {
             columns: ['account_id', 'tenancy_id'];
             isOneToOne: false;
             referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'charges_opening_adoption_fk';
+            columns: ['account_id', 'opening_adoption_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_adoptions';
             referencedColumns: ['account_id', 'id'];
           },
           {
@@ -3507,8 +3532,10 @@ export type Database = {
           entry_source: string;
           id: string;
           idempotency_key: string | null;
-          method: string;
+          method: string | null;
           notes: string | null;
+          opening_adoption_id: string | null;
+          opening_credit_on: string | null;
           payer_tenant_id: string | null;
           processor_ref: string | null;
           receipt_date_unknown: boolean;
@@ -3528,8 +3555,10 @@ export type Database = {
           entry_source?: string;
           id?: string;
           idempotency_key?: string | null;
-          method: string;
+          method?: string | null;
           notes?: string | null;
+          opening_adoption_id?: string | null;
+          opening_credit_on?: string | null;
           payer_tenant_id?: string | null;
           processor_ref?: string | null;
           receipt_date_unknown?: boolean;
@@ -3549,8 +3578,10 @@ export type Database = {
           entry_source?: string;
           id?: string;
           idempotency_key?: string | null;
-          method?: string;
+          method?: string | null;
           notes?: string | null;
+          opening_adoption_id?: string | null;
+          opening_credit_on?: string | null;
           payer_tenant_id?: string | null;
           processor_ref?: string | null;
           receipt_date_unknown?: boolean;
@@ -3581,6 +3612,13 @@ export type Database = {
             columns: ['account_id', 'tenancy_id'];
             isOneToOne: false;
             referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'payments_opening_adoption_fk';
+            columns: ['account_id', 'opening_adoption_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_adoptions';
             referencedColumns: ['account_id', 'id'];
           },
         ];
@@ -3991,6 +4029,8 @@ export type Database = {
           deleted_at: string | null;
           end_date: string | null;
           id: string;
+          move_out_on: string | null;
+          move_out_plan: Json | null;
           start_date: string;
           start_date_basis: string;
           status: string;
@@ -4005,6 +4045,8 @@ export type Database = {
           deleted_at?: string | null;
           end_date?: string | null;
           id?: string;
+          move_out_on?: string | null;
+          move_out_plan?: Json | null;
           start_date: string;
           start_date_basis?: string;
           status: string;
@@ -4019,6 +4061,8 @@ export type Database = {
           deleted_at?: string | null;
           end_date?: string | null;
           id?: string;
+          move_out_on?: string | null;
+          move_out_plan?: Json | null;
           start_date?: string;
           start_date_basis?: string;
           status?: string;
@@ -4043,6 +4087,7 @@ export type Database = {
           currency: string;
           deleted_at: string | null;
           id: string;
+          includes_current_rent: boolean | null;
           needs_review: boolean;
           opening_balance_cents: number;
           tenancy_id: string;
@@ -4056,6 +4101,7 @@ export type Database = {
           currency: string;
           deleted_at?: string | null;
           id?: string;
+          includes_current_rent?: boolean | null;
           needs_review?: boolean;
           opening_balance_cents?: number;
           tenancy_id: string;
@@ -4069,6 +4115,7 @@ export type Database = {
           currency?: string;
           deleted_at?: string | null;
           id?: string;
+          includes_current_rent?: boolean | null;
           needs_review?: boolean;
           opening_balance_cents?: number;
           tenancy_id?: string;
@@ -5097,6 +5144,7 @@ export type Database = {
       };
       tenancy_current: {
         Row: {
+          account_date: string | null;
           account_id: string | null;
           actual_move_in_date: string | null;
           area_id: string | null;
@@ -5105,38 +5153,13 @@ export type Database = {
           deleted_at: string | null;
           end_date: string | null;
           id: string | null;
+          move_out_on: string | null;
+          move_out_plan: Json | null;
+          scheduled_move_out_enabled: boolean | null;
           start_date: string | null;
           start_date_basis: string | null;
           status: string | null;
           updated_at: string | null;
-        };
-        Insert: {
-          account_id?: string | null;
-          actual_move_in_date?: string | null;
-          area_id?: string | null;
-          created_at?: string | null;
-          date_revision?: number | null;
-          deleted_at?: string | null;
-          end_date?: string | null;
-          id?: string | null;
-          start_date?: string | null;
-          start_date_basis?: string | null;
-          status?: never;
-          updated_at?: string | null;
-        };
-        Update: {
-          account_id?: string | null;
-          actual_move_in_date?: string | null;
-          area_id?: string | null;
-          created_at?: string | null;
-          date_revision?: number | null;
-          deleted_at?: string | null;
-          end_date?: string | null;
-          id?: string | null;
-          start_date?: string | null;
-          start_date_basis?: string | null;
-          status?: never;
-          updated_at?: string | null;
         };
         Relationships: [
           {
@@ -5150,6 +5173,10 @@ export type Database = {
       };
     };
     Functions: {
+      _account_date: {
+        Args: { p_account_id: string; p_as_of?: string };
+        Returns: string;
+      };
       _actual_date_warnings: {
         Args: { p_context: string; p_facts: Json };
         Returns: Json;
@@ -5289,6 +5316,19 @@ export type Database = {
         Args: { p_candidates: string[] };
         Returns: string[];
       };
+      _materialize_opening_balance: {
+        Args: {
+          p_adoption: Database['public']['Tables']['tenancy_adoptions']['Row'];
+        };
+        Returns: undefined;
+      };
+      _move_out_billing_period: {
+        Args: {
+          p_period: Json;
+          s: Database['public']['Tables']['rent_schedules']['Row'];
+        };
+        Returns: Json;
+      };
       _normalize_billing_setup_intent: {
         Args: { p_intent: Json };
         Returns: Json;
@@ -5424,6 +5464,15 @@ export type Database = {
         };
         Returns: Json;
       };
+      _tenancy_status_on: {
+        Args: {
+          p_move_out: string;
+          p_start: string;
+          p_status: string;
+          p_today: string;
+        };
+        Returns: string;
+      };
       _tenant_email_conflicts: {
         Args: {
           p_account_id: string;
@@ -5444,6 +5493,10 @@ export type Database = {
       _valid_recorded_term: {
         Args: { p_due: boolean; p_term: Json };
         Returns: boolean;
+      };
+      _validate_new_setup_contacts: {
+        Args: { p_account_id: string; p_people: Json };
+        Returns: undefined;
       };
       _write_tenancy_date_record: {
         Args: {
@@ -5502,6 +5555,16 @@ export type Database = {
       bump_ip_rate_bucket: {
         Args: { p_ip: string; p_scope: string; p_window_sec: number };
         Returns: number;
+      };
+      cancel_scheduled_move_out: {
+        Args: {
+          p_account_id: string;
+          p_expected_move_out_on: string;
+          p_idempotency_key: string;
+          p_request_fingerprint: string;
+          p_tenancy_id: string;
+        };
+        Returns: Json;
       };
       capture_inbound: {
         Args: {
@@ -5599,16 +5662,32 @@ export type Database = {
         Args: { p_account_id: string; p_receipt_id: string };
         Returns: boolean;
       };
-      claim_idempotency_key: {
-        Args: { p_account_id: string; p_fingerprint: string; p_key: string };
-        Returns: {
-          body: Json;
-          claimed: boolean;
-          fingerprint_matches: boolean;
-          in_flight: boolean;
-          status_code: number;
-        }[];
-      };
+      claim_idempotency_key:
+        | {
+            Args: { p_account_id: string; p_fingerprint: string; p_key: string };
+            Returns: {
+              body: Json;
+              claimed: boolean;
+              fingerprint_matches: boolean;
+              in_flight: boolean;
+              status_code: number;
+            }[];
+          }
+        | {
+            Args: {
+              p_account_id: string;
+              p_fingerprint: string;
+              p_key: string;
+              p_setup_commit: boolean;
+            };
+            Returns: {
+              body: Json;
+              claimed: boolean;
+              fingerprint_matches: boolean;
+              in_flight: boolean;
+              status_code: number;
+            }[];
+          };
       comm_persona_routing_version: { Args: never; Returns: number };
       commit_billing_setup: {
         Args: {
@@ -5706,13 +5785,25 @@ export type Database = {
         };
         Returns: Json;
       };
-      create_account_for_new_user: {
-        Args: { p_account_name: string; p_display_name?: string };
-        Returns: {
-          account_id: string;
-          role: string;
-        }[];
-      };
+      create_account_for_new_user:
+        | {
+            Args: { p_account_name: string; p_display_name?: string };
+            Returns: {
+              account_id: string;
+              role: string;
+            }[];
+          }
+        | {
+            Args: {
+              p_account_name: string;
+              p_display_name: string;
+              p_time_zone: string;
+            };
+            Returns: {
+              account_id: string;
+              role: string;
+            }[];
+          };
       create_inspection_from_template: {
         Args: {
           p_account_id: string;
@@ -5818,6 +5909,10 @@ export type Database = {
           o_schedule_total_cents: number;
           o_tenancy_id: string;
         }[];
+      };
+      discard_tenancy_setup_session: {
+        Args: { p_account_id: string; p_id: string };
+        Returns: undefined;
       };
       dismiss_unmatched_inbound: {
         Args: { p_account_id: string; p_unmatched_id: string };

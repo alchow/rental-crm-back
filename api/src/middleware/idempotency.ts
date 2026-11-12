@@ -35,7 +35,10 @@ const COMPLETE_TIMEOUT_MS = 2500;
 
 // This operation authenticates again before replaying its atomic database receipt.
 export function isIdempotencyExempt(method: string, path: string): boolean {
-  return method.toUpperCase() === 'POST' && /^\/v1\/accounts\/[^/]+\/owner-phone-verifications\/confirm$/.test(path);
+  return (
+    method.toUpperCase() === 'POST' &&
+    /^\/v1\/accounts\/[^/]+\/owner-phone-verifications\/confirm$/.test(path)
+  );
 }
 
 export function requireIdempotency(): MiddlewareHandler {
@@ -61,6 +64,8 @@ export function requireIdempotency(): MiddlewareHandler {
       );
     }
 
+    const setupCommit =
+      method === 'POST' && /\/tenancy-setup-sessions\/[^/]+\/commit$/.test(c.req.path);
     const accountId = c.get('account').accountId;
     const sb = getSb(c);
 
@@ -94,6 +99,7 @@ export function requireIdempotency(): MiddlewareHandler {
       p_account_id: accountId,
       p_key: key,
       p_fingerprint: fingerprint,
+      ...(setupCommit ? { p_setup_commit: true } : {}),
     });
     // The claim RPC is SECURITY INVOKER, so this INSERT is the FIRST
     // RLS-gated write on any mutating request -- a just-revoked agent (still
@@ -183,8 +189,8 @@ export function requireIdempotency(): MiddlewareHandler {
     // the latency-sensitive path.
     if (c.get('idempotencyCompletedAtomically')) return;
 
-    if (status >= 500) {
-      // 5xx: don't cache. Clean up the placeholder so a retry can proceed.
+    if (status >= 500 || (setupCommit && (status < 200 || status >= 300))) {
+      // Setup commits cache their successful receipt inside the transaction.
       // An RPC may commit its receipt before its response is lost. Never erase that receipt.
       await sb
         .from('idempotency_keys')

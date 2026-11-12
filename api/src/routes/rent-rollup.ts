@@ -15,10 +15,11 @@ const CurrencyBalances = z.object({
   }),
   rent_balance_cents: z.number().int().openapi({
     description:
-      'All NON-DEPOSIT charge types minus active allocations in this currency. Opening-balance testimony is separate.',
+      'All NON-DEPOSIT charge types minus active allocations in this currency. Includes starting balances recorded in the ledger.',
   }),
   deposit_balance_cents: z.number().int(),
   unapplied_credit_cents: z.number().int(),
+  opening_owed_cents: z.number().int().optional(),
   non_deposit_overdue_cents: z.number().int().openapi({
     description: 'Current open non-deposit balance on charges due before as_of.',
   }),
@@ -52,13 +53,14 @@ const RentRollupRow = CurrencyBalances.extend({
       currency: z.string(),
       balance_basis: z.string().nullable(),
       needs_review: z.boolean(),
+      recorded_in_ledger: z.boolean().optional(),
       created_at: z.string(),
     })
     .nullable()
     .optional()
     .openapi({
       description:
-        'Opening-balance testimony, separately denominated and excluded from charge/payment totals.',
+        'Starting-balance provenance. Recorded amounts are already included in ledger totals.',
     }),
 }).openapi('RentRollupRow');
 
@@ -160,5 +162,10 @@ rentRollupApp.openapi(get, async (c) => {
     (row) => row.tenancy_id,
     'rent rollup',
   );
-  return c.json({ as_of: asOf, data: z.array(RentRollupRow).parse(legacyRows) }, 200);
+  const data = z.array(RentRollupRow).parse(legacyRows).map((row) => ({
+    ...row,
+    opening_owed_cents: row.currency_totals?.find((totals) => totals.currency === row.currency)
+      ?.opening_owed_cents,
+  }));
+  return c.json({ as_of: asOf, data }, 200);
 });

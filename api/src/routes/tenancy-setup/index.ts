@@ -3,7 +3,7 @@ import { newApiApp } from '../_lib/app';
 import { getSb } from '../../supabase/request-client';
 import { asJson } from '../../supabase/db-types';
 import { ApiError, errorResponses, conflictResponse } from '../_lib/error';
-import { dateRpc } from '../tenancies/rpc';
+import { dateRpc, mapDateRpcError } from '../tenancies/rpc';
 import { requireManager } from '../_lib/guards';
 import { stageDocumentUpload, MAX_BYTES, renderStoredImageToJpeg } from '../../admin/storage';
 import { renderDocumentImagePdf } from '../../admin/document-image';
@@ -64,6 +64,16 @@ const save = createRoute({
   },
   responses: {
     200: { description: 'Saved draft', content: { 'application/json': { schema: Session } } },
+    ...responses,
+  },
+});
+const discard = createRoute({
+  method: 'delete',
+  path: '/accounts/{accountId}/tenancy-setup-sessions/{id}',
+  tags: ['tenancy_setup'],
+  request: { params: SetupParam },
+  responses: {
+    204: { description: 'Draft discarded' },
     ...responses,
   },
 });
@@ -188,6 +198,16 @@ tenancySetupApp.openapi(save, async (c) => {
     }),
     200,
   );
+});
+tenancySetupApp.openapi(discard, async (c) => {
+  requireManager(c);
+  const { accountId, id } = c.req.valid('param');
+  const { error } = await getSb(c).rpc('discard_tenancy_setup_session', {
+    p_account_id: accountId,
+    p_id: id,
+  });
+  if (error) mapDateRpcError(error);
+  return c.body(null, 204);
 });
 tenancySetupApp.openapi(preview, async (c) => {
   const { accountId, id } = c.req.valid('param');
