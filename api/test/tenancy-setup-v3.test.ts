@@ -1284,6 +1284,9 @@ await check('preview and commit reject a matching contact and allow reuse', asyn
   });
   assert(existing.status === 201, JSON.stringify(existing.body));
   const existingId = (existing.body as { id: string }).id;
+  await pool.query('update public.accounts set person_match_enabled=true where id=$1', [
+    auth.account.id,
+  ]);
   for (const field of ['email', 'phone'] as const) {
     const duplicate = {
       ...setup,
@@ -1347,6 +1350,9 @@ await check('preview and commit reject a matching contact and allow reuse', asyn
   );
   const discard = await request('DELETE', path);
   assert(discard.status === 409, JSON.stringify(discard.body));
+  await pool.query('update public.accounts set person_match_enabled=false where id=$1', [
+    auth.account.id,
+  ]);
 });
 
 await check('discard clears a setup draft and blocks a stale browser from saving it', async () => {
