@@ -251,7 +251,7 @@ chargesApp.openapi(create, async (c) => {
   if (body.parent_charge_id !== undefined) {
     const parent = await sb
       .from('charges')
-      .select('id, tenancy_id, voided_at')
+      .select('id, tenancy_id, voided_at, type')
       .eq('account_id', accountId)
       .eq('id', body.parent_charge_id)
       .is('deleted_at', null)
@@ -260,7 +260,11 @@ chargesApp.openapi(create, async (c) => {
     if (!parent.data) {
       throw new ApiError(404, 'not_found', 'parent_charge_id does not belong to this account');
     }
-    const parentRow = parent.data as { tenancy_id: string; voided_at: string | null };
+    const parentRow = parent.data as {
+      tenancy_id: string;
+      voided_at: string | null;
+      type: string;
+    };
     if (parentRow.tenancy_id !== body.tenancy_id) {
       // WHICH id is wrong decides the status. A tenancy_id this account cannot
       // see earns the same 404 the insert's FK would have produced had there
@@ -296,6 +300,10 @@ chargesApp.openapi(create, async (c) => {
     // exception, and only because it is the system unwinding its own generated
     // charge -- change_tenancy_rent voids the fees derived from the advance rent
     // charges it supersedes, and returns their ids in voided_charge_ids.
+    // INVARIANT: a starting balance is owed but never late (DB-enforced too).
+    if (parentRow.type === 'opening_balance') {
+      throw new ApiError(400, 'invalid_request', 'A starting balance cannot take a late fee.');
+    }
     if (parentRow.voided_at !== null) {
       throw new ApiError(
         409,

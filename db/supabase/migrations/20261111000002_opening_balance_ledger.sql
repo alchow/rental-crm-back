@@ -98,15 +98,54 @@ create trigger charges_opening_balance_provenance before insert or update on pub
 create trigger payments_opening_balance_provenance before insert or update on public.payments
   for each row execute function public._guard_opening_balance_provenance();
 
+create function public._guard_opening_balance_parent() returns trigger
+language plpgsql set search_path = public as $$
+begin
+  -- INVARIANT: a starting balance is owed but never late, so nothing derives from it.
+  if new.parent_charge_id is not null and exists (select 1 from public.charges p
+    where p.account_id = new.account_id and p.id = new.parent_charge_id and p.type = 'opening_balance') then
+    raise exception 'invalid: a starting balance cannot take a late fee' using errcode = '23514';
+  end if;
+  return new;
+end;
+$$;
+revoke all on function public._guard_opening_balance_parent() from public, anon, authenticated, service_role;
+create trigger charges_opening_balance_parent before insert or update of parent_charge_id on public.charges
+  for each row execute function public._guard_opening_balance_parent();
+
+-- Replaces each anchor exactly p_count times so a changed body fails the migration.
+create or replace function pg_temp.patched(p_body text, p_anchor text, p_replacement text, p_count integer default 1)
+returns text language plpgsql as $$
+declare found_count integer := (length(p_body) - length(replace(p_body, p_anchor, ''))) / length(p_anchor);
+begin
+  if found_count <> p_count then
+    raise exception 'migration anchor matched % times, expected %: %', found_count, p_count, p_anchor;
+  end if;
+  return replace(p_body, p_anchor, p_replacement);
+end;
+$$;
+
 -- Both setup entry points use the same planner. Its current-period candidate
 -- is committed alongside the starting balance and shares normal cycle uniqueness.
 do $migration$
-declare body text; anchor text; replacement text;
+declare body text; anchor text;
 begin
   body := pg_get_functiondef('public.preview_billing_setup_facts(uuid,uuid,jsonb,jsonb,jsonb)'::regprocedure);
   anchor := '    v_snapshot := jsonb_build_object';
-  assert position(anchor in body) > 0, 'billing setup planner changed';
-  replacement := $patch$
+  body := pg_temp.patched(body, anchor, $patch$
+    -- The current-month question applies only to an amount owed on a flagged account.
+    if r->>'history_mode' = 'opening_balance' then
+      if jsonb_typeof(r->'opening_balance'->'includes_current_rent') not in ('boolean', 'null')
+        or ((r->'opening_balance'->>'amount_cents')::bigint <= 0
+          and r->'opening_balance'->>'includes_current_rent' is not null) then
+        raise exception 'invalid: only an amount owed says whether it includes this month''s rent';
+      end if;
+      if (r->'opening_balance'->>'amount_cents')::bigint > 0
+        and r->'opening_balance'->>'includes_current_rent' is null
+        and exists (select 1 from public.accounts where id = p_account_id and opening_balance_ledger_enabled) then
+        raise exception 'invalid: say whether the amount owed includes this month''s rent';
+      end if;
+    end if;
     if r->>'history_mode' = 'opening_balance'
       and r->'opening_balance'->>'includes_current_rent' = 'false'
       and exists (select 1 from public.accounts where id = p_account_id and opening_balance_ledger_enabled) then
@@ -123,23 +162,25 @@ begin
           jsonb_build_object('draft_key','opening_current_rent'));
       end if;
     end if;
-$patch$;
-  body := replace(body, anchor, replacement || anchor);
+$patch$ || anchor);
+  -- A recorded starting balance is not an unscheduled history overlap.
+  body := pg_temp.patched(body,
+    'and c->>''voided_at'' is null and c->>''deleted_at'' is null and c->>''type'' <> ''deposit'') then',
+    'and c->>''voided_at'' is null and c->>''deleted_at'' is null and c->>''type'' not in (''deposit'',''opening_balance'')) then');
   execute body;
 
   body := pg_get_functiondef('public.commit_billing_setup(uuid,uuid,jsonb,text,text)'::regprocedure);
-  anchor := 'adoption_date,opening_balance_cents,currency,balance_basis)';
-  assert position(anchor in body) > 0, 'billing setup adoption writer changed';
-  body := replace(body, anchor, 'adoption_date,opening_balance_cents,currency,balance_basis,includes_current_rent)');
-  anchor := 'r->''opening_balance''->>''basis'') returning id into v_adoption_id';
-  assert position(anchor in body) > 0, 'billing setup adoption values changed';
-  body := replace(body, anchor, 'r->''opening_balance''->>''basis'',(r->''opening_balance''->>''includes_current_rent'')::boolean) returning id into v_adoption_id');
+  body := pg_temp.patched(body, 'adoption_date,opening_balance_cents,currency,balance_basis)',
+    'adoption_date,opening_balance_cents,currency,balance_basis,includes_current_rent)');
+  body := pg_temp.patched(body, 'r->''opening_balance''->>''basis'') returning id into v_adoption_id',
+    $patch$r->'opening_balance'->>'basis',case when exists (select 1 from public.accounts
+        where id = p_account_id and opening_balance_ledger_enabled)
+        then (r->'opening_balance'->>'includes_current_rent')::boolean end) returning id into v_adoption_id$patch$);
   execute body;
 
   body := pg_get_functiondef('public.generate_rent_charges(uuid,timestamp with time zone)'::regprocedure);
   anchor := '    insert into public.charges(account_id,tenancy_id,type,amount_cents,currency,due_date,period_start,period_end,source_schedule_id,cycle_key)';
-  assert position(anchor in body) > 0, 'rent generator insert changed';
-  body := replace(body, anchor, $patch$
+  body := pg_temp.patched(body, anchor, $patch$
     if exists (select 1 from public.tenancy_adoptions a join public.accounts ac on ac.id = a.account_id
       where a.account_id = p_account_id and a.tenancy_id = s.tenancy_id and a.deleted_at is null
         and ac.opening_balance_ledger_enabled and a.includes_current_rent
@@ -148,24 +189,23 @@ $patch$ || anchor);
   execute body;
 
   body := pg_get_functiondef('public.rent_rollup(uuid,text[],date)'::regprocedure);
-  anchor := 'cb.type<>''deposit'' and cb.due_date<p_as_of';
-  assert position(anchor in body) > 0, 'rent rollup overdue classification changed';
-  body := replace(body, anchor, 'cb.type not in (''deposit'',''opening_balance'') and cb.due_date<p_as_of');
-  body := replace(body, 'cb.type<>''deposit'' and cb.due_date=p_as_of',
+  body := pg_temp.patched(body, 'cb.type<>''deposit'' and cb.due_date<p_as_of',
+    'cb.type not in (''deposit'',''opening_balance'') and cb.due_date<p_as_of');
+  body := pg_temp.patched(body, 'cb.type<>''deposit'' and cb.due_date=p_as_of',
     'cb.type not in (''deposit'',''opening_balance'') and cb.due_date=p_as_of');
-  body := replace(body, 'cb.type<>''deposit'' and cb.due_date>p_as_of',
+  body := pg_temp.patched(body, 'cb.type<>''deposit'' and cb.due_date>p_as_of',
     'cb.type not in (''deposit'',''opening_balance'') and cb.due_date>p_as_of');
-  body := replace(body, 'coalesce(sum(cb.allocated),0)::bigint as total_allocated',
+  body := pg_temp.patched(body, 'coalesce(sum(cb.allocated),0)::bigint as total_allocated',
     'coalesce(sum(cb.balance) filter(where cb.type=''opening_balance''),0)::bigint as opening_owed_cents,
       coalesce(sum(cb.allocated),0)::bigint as total_allocated');
-  body := replace(body, '''deposit_owed_cents'',coalesce(b.deposit_owed_cents,0)',
+  body := pg_temp.patched(body, '''deposit_owed_cents'',coalesce(b.deposit_owed_cents,0)',
     '''opening_owed_cents'',coalesce(b.opening_owed_cents,0),''deposit_owed_cents'',coalesce(b.deposit_owed_cents,0)');
-  body := replace(body, 'a.opening_balance_cents,''currency'',a.currency', $patch$
+  body := pg_temp.patched(body, 'a.opening_balance_cents,''currency'',a.currency', $patch$
       a.opening_balance_cents,'recorded_in_ledger',(
         exists(select 1 from public.charges c where c.account_id=a.account_id and c.opening_adoption_id=a.id)
         or exists(select 1 from public.payments p where p.account_id=a.account_id and p.opening_adoption_id=a.id)
       ),'currency',a.currency$patch$);
-  body := replace(body, 'coalesce(ad.opening_balance_cents,0)<>0',
+  body := pg_temp.patched(body, 'coalesce(ad.opening_balance_cents,0)<>0',
     '(coalesce(ad.opening_balance_cents,0)<>0 and not coalesce((ad.adoption->>''recorded_in_ledger'')::boolean,false))');
   execute body;
 end;

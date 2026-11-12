@@ -1,7 +1,8 @@
 # ADR-0013: Tenancy adoption — atomic historical backfill and opening balance
 
 Status: current legacy-adoption behavior, amended by ADR-0015/0016 for audited
-date corrections, reviewed billing setup, and currency-grouped read models.
+date corrections, reviewed billing setup, and currency-grouped read models, and
+by the starting-balance ledger amendment below (per-account flag).
 Accepted 2026-08-10. Implements the architecture agreed in
 `docs/statement-setup-design-reply.md`. Not yet triggered in production until
 the Field Log adoption wizard ships.
@@ -84,7 +85,8 @@ carry their invariants at the DB, not only in routes). After commit the row
 is frozen testimony — a `BEFORE UPDATE` trigger permits only `needs_review`
 (resolved via `PATCH /tenancies/{id}/adoption`) and the audited soft-delete.
 
-**Opening balance is a recorded fact, not a ledger row.** It is returned by
+**Opening balance is a recorded fact, not a ledger row** — on accounts with
+`opening_balance_ledger_enabled` off (see the amendment at the end). It is returned by
 the ledger endpoint in a separate `adoption` block, never mixed into
 charge/payment totals. Consequences fall out of the data model instead of
 being enforced by code: it cannot take a late fee (the fee walker iterates
@@ -130,3 +132,30 @@ period_start)` makes cron emission and backfilled periods collision-safe in
 - After a successful adoption the account's default-on auto-charging bills the
   next window from the new schedule on the next 08:00 UTC run; the current
   not-yet-due period intentionally appears then, not at commit time.
+
+## Amendment: starting balance in the ledger (per-account flag)
+
+Accepted 2026-11-11 by the owner for the Field Log fix plan. With
+`accounts.opening_balance_ledger_enabled` on, inserting an adoption with a non-zero
+opening balance also writes exactly one ledger entry keyed by the adoption
+(`opening_adoption_id`, unique): an amount owed becomes a charge of type
+`opening_balance` due on the adoption date with no period, schedule or parent; a
+credit becomes a payment with `entry_source = 'opening_credit'`, no method, no
+receipt date and `opening_credit_on` set to the adoption date. Both are written only
+by the adoption trigger, and their tenancy, amount and currency cannot change.
+
+The adoption row remains provenance. Read paths (ledger, `rent_rollup`, PDF export)
+report `recorded_in_ledger` and stop adding the testimony on top. The legal posture
+is kept by rule rather than by data shape: an `opening_balance` charge counts as owed
+but is excluded from overdue, due-today and upcoming classification, and the
+database refuses any charge parented on it, so it never takes a late fee. The
+opening credit is unapplied credit, not cash received, and is labelled as entered at
+setup in exports.
+
+An amount owed must answer whether it includes the current month's rent: "no" adds
+the current period as a charge in the same commit; "yes" stops the generator billing
+any period starting before next month. A credit does not take the question and the
+current month bills normally. Existing adoptions convert per account with
+`db/scripts/backfill-opening-balances.sql` (idempotent, before/after report) and can
+be reversed with `revert-opening-balance-backfill.sql` while untouched. With the flag
+off, behavior is exactly as described above.
