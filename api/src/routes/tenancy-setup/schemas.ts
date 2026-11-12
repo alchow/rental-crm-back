@@ -171,6 +171,35 @@ export const SetupReview = BillingSetupPreview.extend({
     )
     .optional(),
   proration_method: z.enum(['actual_days', 'thirty_day_month']).optional(),
+  period_amount_sources: z
+    .array(
+      z.object({
+        cycle_key: z.string(),
+        amount_cents: z.number().int(),
+        amount_source: z.enum(['suggested', 'landlord']),
+      }),
+    )
+    .optional()
+    .openapi({
+      description:
+        'Each period amount sent in period_overrides, marked suggested or the landlord’s own.',
+    }),
+  opening_receipts: z
+    .array(
+      z.object({
+        payment_index: z.number().int(),
+        draft_key: z.string(),
+        amount_cents: z.number().int(),
+        received_at: z.string().nullable(),
+        receipt_date_unknown: z.boolean(),
+        choice: z.enum(['add_to_owed', 'keep_owed']).nullable(),
+      }),
+    )
+    .optional()
+    .openapi({
+      description:
+        'Receipts dated before opening_balance.itemize_from (or with an unknown date) and the answer given for each; null choice blocks confirm.',
+    }),
 }).openapi('TenancySetupReview');
 export const SetupValidation = z
   .object({ ok: z.boolean(), errors: z.array(FieldErrorSchema) })
