@@ -636,6 +636,7 @@ export type Database = {
           parent_charge_id: string | null;
           period_end: string | null;
           period_start: string | null;
+          replaces_charge_id: string | null;
           source_schedule_id: string | null;
           tenancy_id: string;
           terms_snapshot: Json | null;
@@ -659,6 +660,7 @@ export type Database = {
           parent_charge_id?: string | null;
           period_end?: string | null;
           period_start?: string | null;
+          replaces_charge_id?: string | null;
           source_schedule_id?: string | null;
           tenancy_id: string;
           terms_snapshot?: Json | null;
@@ -682,6 +684,7 @@ export type Database = {
           parent_charge_id?: string | null;
           period_end?: string | null;
           period_start?: string | null;
+          replaces_charge_id?: string | null;
           source_schedule_id?: string | null;
           tenancy_id?: string;
           terms_snapshot?: Json | null;
@@ -722,6 +725,13 @@ export type Database = {
           {
             foreignKeyName: 'charges_parent_charge_fk';
             columns: ['account_id', 'parent_charge_id'];
+            isOneToOne: false;
+            referencedRelation: 'charges';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'charges_replaces_charge_fk';
+            columns: ['account_id', 'replaces_charge_id'];
             isOneToOne: false;
             referencedRelation: 'charges';
             referencedColumns: ['account_id', 'id'];
@@ -5189,6 +5199,15 @@ export type Database = {
         Args: { p_cycle_key: string; p_rent: Json };
         Returns: Json;
       };
+      _billing_period_for_tenancy: {
+        Args: {
+          p_account_id: string;
+          p_cycle: string;
+          p_intent: Json;
+          p_tenancy_id: string;
+        };
+        Returns: Json;
+      };
       _billing_period_needs_history_review: {
         Args: { p_as_of: string; p_period: Json };
         Returns: boolean;
@@ -5329,6 +5348,10 @@ export type Database = {
         };
         Returns: Json;
       };
+      _moved_out: {
+        Args: { p_account_id: string; p_move_out: string };
+        Returns: boolean;
+      };
       _normalize_billing_setup_intent: {
         Args: { p_intent: Json };
         Returns: Json;
@@ -5401,6 +5424,10 @@ export type Database = {
         };
         Returns: Json;
       };
+      _reconcile_move_out_charges: {
+        Args: { p_account_id: string; p_from: string; p_tenancy_id: string };
+        Returns: undefined;
+      };
       _review_date_warnings: {
         Args: {
           p_account: string;
@@ -5430,6 +5457,13 @@ export type Database = {
         };
         Returns: Json;
       };
+      _scheduled_base_period: {
+        Args: {
+          p_cycle_key: string;
+          s: Database['public']['Tables']['rent_schedules']['Row'];
+        };
+        Returns: Json;
+      };
       _scope_relationship_warnings: {
         Args: { p_context: string; p_facts: Json; p_findings: Json };
         Returns: Json;
@@ -5450,6 +5484,10 @@ export type Database = {
       };
       _storage_path_account_id: { Args: { p_name: string }; Returns: string };
       _tenancy_calendar_date: { Args: { p_value: string }; Returns: string };
+      _tenancy_current_status: {
+        Args: { p_tenancy: Database['public']['Tables']['tenancies']['Row'] };
+        Returns: string;
+      };
       _tenancy_date_actor: { Args: never; Returns: string };
       _tenancy_date_facts: {
         Args: { p_t: Database['public']['Tables']['tenancies']['Row'] };

@@ -20994,8 +20994,13 @@ export interface components {
             start_date?: string;
         };
         TenancyEnding: {
-            /** Format: uuid */
-            id: string;
+            /**
+             * Format: uuid
+             * @description Null when the ending is a scheduled move-out whose last day has passed.
+             */
+            id: string | null;
+            /** @enum {string} */
+            source?: "recorded" | "scheduled_move_out";
             /** Format: uuid */
             account_id: string;
             /** Format: uuid */
@@ -21012,7 +21017,7 @@ export interface components {
             /** Format: uuid */
             source_interaction_id: string | null;
             /** Format: uuid */
-            created_by: string;
+            created_by: string | null;
             created_at: string;
             original_effective_date?: string;
             /** Format: uuid */
@@ -22342,7 +22347,7 @@ export interface components {
                 method?: "cash" | "check" | "ach" | "card" | "zelle_venmo" | "money_order" | "other";
             };
             /**
-             * @description Signed: > 0 the tenant owed money at adoption, < 0 the tenant held a credit. A recorded fact, not a charge — it can never take a late fee and is never part of payment-dated income exports. Mutually exclusive with itemized charges/payments.
+             * @description Signed: > 0 the tenant owed money at adoption, < 0 the tenant held a credit. Always kept as the adoption record. On accounts with the starting-balance ledger enabled it is also written once to the ledger: an amount owed as an opening_balance charge (owed, never overdue, never a late-fee parent), a credit as an opening_credit payment with no receipt date (unapplied credit, not income). Otherwise it is not a charge or payment. Mutually exclusive with itemized charges/payments.
              * @default 0
              */
             opening_balance_cents: number;
