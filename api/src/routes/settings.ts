@@ -22,16 +22,20 @@ const AccountSettings = z
     opening_balance_ledger_enabled: z.boolean().optional(),
     scheduled_move_out_enabled: z.boolean().optional(),
     time_zone: z.string().optional(),
+    proration_method: z.enum(['actual_days', 'thirty_day_month']).optional(),
   })
   .openapi('AccountSettings');
 
-// auto_charge_enabled is the ONLY writable field. The RLS policy cannot
+// auto_charge_enabled and proration_method are the ONLY writable fields. The RLS policy cannot
 // restrict an UPDATE to a single column, so the column allow-list is enforced
 // HERE: this body admits nothing else.
 const PatchAccountSettingsBody = z
   .object({
-    auto_charge_enabled: z.boolean(),
+    auto_charge_enabled: z.boolean().optional(),
+    proration_method: z.enum(['actual_days', 'thirty_day_month']).optional(),
   })
+  .strict()
+  .refine((body) => Object.keys(body).length > 0, 'Send at least one setting.')
   .openapi('PatchAccountSettingsBody');
 
 const get = createRoute({
@@ -83,6 +87,7 @@ settingsApp.openapi(get, async (c) => {
       opening_balance_ledger_enabled: data.opening_balance_ledger_enabled,
       scheduled_move_out_enabled: data.scheduled_move_out_enabled,
       time_zone: data.time_zone,
+      proration_method: data.proration_method as 'actual_days' | 'thirty_day_month',
     },
     200,
   );
@@ -90,17 +95,17 @@ settingsApp.openapi(get, async (c) => {
 
 settingsApp.openapi(patch, async (c) => {
   const { accountId } = c.req.valid('param');
-  const { auto_charge_enabled } = c.req.valid('json');
+  const body = c.req.valid('json');
   const sb = getSb(c);
   // Writes the ONLY writable field. Under the caller's JWT, the
   // accounts_manager_update RLS policy authorises the UPDATE only for
   // an owner/manager.
   const { data, error } = await sb
     .from('accounts')
-    .update({ auto_charge_enabled })
+    .update(body)
     .eq('id', accountId)
     .is('deleted_at', null)
-    .select('auto_charge_enabled')
+    .select('auto_charge_enabled, proration_method')
     .maybeSingle();
   if (error) throw dbError(error);
   // A viewer passes the account-membership middleware (they ARE a member and
@@ -111,7 +116,10 @@ settingsApp.openapi(patch, async (c) => {
     throw new ApiError(403, 'forbidden', 'only an account owner or manager may change settings');
   }
   return c.json(
-    { auto_charge_enabled: (data as { auto_charge_enabled: boolean }).auto_charge_enabled },
+    {
+      auto_charge_enabled: data.auto_charge_enabled,
+      proration_method: data.proration_method as 'actual_days' | 'thirty_day_month',
+    },
     200,
   );
 });

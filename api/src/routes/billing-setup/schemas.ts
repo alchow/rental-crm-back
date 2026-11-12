@@ -43,6 +43,14 @@ const ConfigureRent = z
         amount_cents: z.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER),
         basis: z.string().trim().min(1).max(200),
         includes_current_rent: z.boolean().optional(),
+        itemize_from: z
+          .string()
+          .regex(/^\d{4}-(0[1-9]|1[0-2])$/)
+          .optional()
+          .openapi({
+            description:
+              'With history_mode itemized: the first itemized month. The amount is owed from before that month and is dated the day before it; receipts must be dated in the itemized months.',
+          }),
       })
       .strict()
       .optional(),
@@ -50,6 +58,10 @@ const ConfigureRent = z
       .array(z.object({ cycle_key: CycleKey, draft_key: DraftKey }).strict())
       .max(120)
       .default([]),
+    follows_lease: z.boolean().optional().openapi({
+      description:
+        'True: setup derives amount, currency, due rule, grace, late fee and coverage end from the agreement. False: billing differs on purpose. Omitted: billing is used as sent.',
+    }),
   })
   .strict();
 const RentIntent = z.discriminatedUnion('decision', [

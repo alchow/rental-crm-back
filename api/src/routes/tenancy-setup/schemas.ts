@@ -3,6 +3,14 @@ import { CalendarDate } from '../../schemas/calendar-date';
 import { LeaseTermsFields, LateFeePolicy } from '../../schemas/lease-terms';
 import { BillingSetupIntent, BillingSetupPreview } from '../billing-setup/schemas';
 
+export const FieldErrorSchema = z
+  .object({
+    code: z.string(),
+    step: z.enum(['who', 'lease', 'catchup', 'confirm']),
+    field: z.string(),
+    meta: z.record(z.string()).optional(),
+  })
+  .openapi('SetupFieldError');
 export const SetupParam = z.object({ accountId: z.string().uuid(), id: z.string().uuid() });
 export const SetupAccount = z.object({ accountId: z.string().uuid() });
 export const SetupPerson = z
@@ -37,8 +45,40 @@ export const SetupDocument = z.object({
   original_receipt_id: z.string().uuid().optional(),
   name: z.string().min(1).max(255),
 });
+const MonthKey = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
+export const SetupDepositAnswer = z
+  .object({
+    amount_cents: z.number().int().max(Number.MAX_SAFE_INTEGER).nullable(),
+    paid: z.enum(['not_yet', 'yes', 'part']).optional(),
+    payment: z
+      .object({
+        amount_cents: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+        method: z.enum(['cash', 'check', 'ach', 'card', 'zelle_venmo', 'money_order', 'other']),
+        received_at: CalendarDate.optional(),
+        reference: z.string().max(500).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .openapi('TenancySetupDepositAnswer', {
+    description:
+      'One deposit amount and one answer. null amount = unknown, 0 = no deposit. The server writes the lease term, the deposit charge (due at lease start, or today once the lease has started) and any payment, replacing agreement.deposit_*, billing.deposit and the deposit payment.',
+  });
+export const SetupRentStep = z
+  .object({
+    effective_month: MonthKey,
+    amount_cents: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict()
+  .openapi('TenancySetupRentStep');
 export const SetupInput = z
   .object({
+    deposit_answer: SetupDepositAnswer.optional(),
+    rent_steps: z.array(SetupRentStep).max(60).optional().openapi({
+      description:
+        'Past rent changes after the lease start ("from [month] rent became [amount]"). Requires billing.rent.follows_lease = true.',
+    }),
     people: z.array(SetupPerson).min(1).max(50),
     tenancy: z.object({ start_date: CalendarDate, end_date: CalendarDate.nullable() }).strict(),
     agreement: SetupAgreement,
@@ -100,7 +140,66 @@ export const SetupReview = BillingSetupPreview.extend({
     })
     .passthrough(),
   billing_intent: BillingSetupIntent.extend({ operation: z.enum(['initial', 'transition']) }),
+  field_errors: z.array(FieldErrorSchema).optional(),
+  billing_differences: z
+    .array(
+      z.object({
+        field: z.enum([
+          'amount_cents',
+          'currency',
+          'due_rule',
+          'grace_days',
+          'late_fee_policy',
+          'coverage_end',
+        ]),
+        lease: z.unknown(),
+        billing: z.unknown(),
+      }),
+    )
+    .optional(),
+  proration_suggestions: z
+    .array(
+      z.object({
+        cycle_key: z.string(),
+        period_start: CalendarDate,
+        period_end: CalendarDate,
+        days: z.number().int(),
+        base: z.number().int(),
+        amount_cents: z.number().int(),
+        method: z.enum(['actual_days', 'thirty_day_month']),
+      }),
+    )
+    .optional(),
+  proration_method: z.enum(['actual_days', 'thirty_day_month']).optional(),
 }).openapi('TenancySetupReview');
+export const SetupValidation = z
+  .object({ ok: z.boolean(), errors: z.array(FieldErrorSchema) })
+  .openapi('TenancySetupValidation');
+const PersonMatchTenancy = z.object({
+  tenancy_id: z.string().uuid(),
+  status: z.string(),
+  start_date: CalendarDate,
+  move_out_on: CalendarDate.nullable(),
+  door_name: z.string().nullable(),
+  property_name: z.string().nullable(),
+});
+const PersonMatch = z.object({
+  person_id: z.string().uuid(),
+  full_name: z.string(),
+  matched_on: z.array(z.enum(['email', 'phone', 'name'])),
+  tenancies: z.array(PersonMatchTenancy),
+});
+export const PeopleMatchQuery = z.object({
+  accountId: z.string().uuid(),
+});
+export const PeopleMatchParams = z.object({
+  email: z.string().max(320).optional(),
+  phone: z.string().max(32).optional(),
+  name: z.string().max(200).optional(),
+});
+export const PeopleMatch = z
+  .object({ enabled: z.boolean(), exact: z.array(PersonMatch), possible: z.array(PersonMatch) })
+  .openapi('PeopleMatch');
 export const SetupResult = z
   .object({
     session_id: z.string().uuid(),
