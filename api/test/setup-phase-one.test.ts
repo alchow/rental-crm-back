@@ -241,6 +241,11 @@ await check('billing follows the lease and the deposit is entered once', async (
     totals.deposit_charges_cents === 185000 && totals.deposit_payments_cents === 185000,
     JSON.stringify(totals),
   );
+  const rollup = await request('GET', '/rent-rollup?status=upcoming');
+  const row = (
+    rollup.body as { data: Array<{ tenancy_id: string; deposit_held_cents: number }> }
+  ).data.find((r) => r.tenancy_id === tenancyId);
+  assert(row?.deposit_held_cents === 185000, `deposit held: ${JSON.stringify(rollup.body)}`);
   const schedule = await pool.query(
     'select follows_lease from public.rent_schedules where tenancy_id=$1',
     [tenancyId],
@@ -274,6 +279,181 @@ await check('billing that differs from the lease lists each difference', async (
     JSON.stringify(diffs),
   );
 });
+
+await check('"Use the lease terms" is sending follows_lease true', async () => {
+  const id = await draft();
+  const differs = setup({}, { follows_lease: false, amount_cents: 190000, grace_days: 2 });
+  const before = await request('POST', `/tenancy-setup-sessions/${id}/preview`, differs);
+  assert(
+    (before.body as { billing_differences: unknown[] }).billing_differences.length > 0,
+    JSON.stringify(before.body),
+  );
+  const fixed = setup({}, { follows_lease: true, amount_cents: 190000, grace_days: 2 });
+  const after = await request('POST', `/tenancy-setup-sessions/${id}/preview`, fixed);
+  const body = after.body as {
+    billing_differences: unknown[];
+    billing_intent: { rent: { amount_cents: number; grace_days: number } };
+  };
+  assert(
+    after.status === 200 &&
+      body.billing_differences.length === 0 &&
+      body.billing_intent.rent.amount_cents === 185000 &&
+      body.billing_intent.rent.grace_days === 5,
+    JSON.stringify(after.body),
+  );
+});
+
+await check(
+  'a receipt before the itemized months asks how it relates to the amount owed',
+  async () => {
+    await pool.query('update public.accounts set opening_balance_ledger_enabled=true where id=$1', [
+      accountId,
+    ]);
+    const id = await draft();
+    const month = new Date(`${today.slice(0, 7)}-01T12:00:00Z`);
+    month.setUTCMonth(month.getUTCMonth() - 1);
+    const itemizeFrom = month.toISOString().slice(0, 7);
+    const start = new Date(month);
+    start.setUTCMonth(start.getUTCMonth() - 3);
+    const startOn = start.toISOString().slice(0, 10);
+    const input = (choice?: 'add_to_owed' | 'keep_owed') =>
+      setup(
+        {
+          tenancy: { start_date: startOn, end_date: null },
+          agreement: { ...setup().agreement, term_start: startOn },
+        },
+        {
+          coverage_start: startOn,
+          regular_anchor: startOn,
+          opening_balance: {
+            amount_cents: 65000,
+            basis: 'Rent',
+            itemize_from: itemizeFrom,
+            ...(choice ? { earlier_receipts: [{ payment_key: 'early', choice }] } : {}),
+          },
+        },
+      );
+    const withReceipt = (choice?: 'add_to_owed' | 'keep_owed') => {
+      const body = input(choice);
+      (body.billing as { payments: unknown[] }).payments = [
+        {
+          draft_key: 'early',
+          amount_cents: 30000,
+          currency: 'USD',
+          received_at: startOn,
+          method: 'check',
+          allocations: [],
+        },
+      ];
+      return body;
+    };
+    const unanswered = await request(
+      'POST',
+      `/tenancy-setup-sessions/${id}/validate`,
+      withReceipt(),
+    );
+    const errors = (
+      unanswered.body as { errors: Array<{ code: string; meta?: Record<string, string> }> }
+    ).errors;
+    assert(
+      errors.some(
+        (e) =>
+          e.code === 'opening.receipt_unanswered' &&
+          e.meta?.draft_key === 'early' &&
+          e.meta?.amount_cents === '30000',
+      ),
+      JSON.stringify(unanswered.body),
+    );
+    const answered = withReceipt('keep_owed');
+    const review = await request('POST', `/tenancy-setup-sessions/${id}/preview`, answered);
+    const r = review.body as {
+      can_confirm: boolean;
+      setup_context: string;
+      opening_receipts: Array<{ choice: string }>;
+    };
+    assert(
+      review.status === 200 && r.can_confirm && r.opening_receipts[0]?.choice === 'keep_owed',
+      JSON.stringify(review.body),
+    );
+    const committed = await request('POST', `/tenancy-setup-sessions/${id}/commit`, {
+      setup: answered,
+      expected_context: r.setup_context,
+      accept_warnings: true,
+    });
+    assert(committed.status === 201, JSON.stringify(committed.body));
+    const opening = await pool.query(
+      `select c.amount_cents, a.typed_opening_cents from public.charges c
+       join public.tenancy_adoptions a on a.id = c.opening_adoption_id
+      where c.tenancy_id=$1 and c.type='opening_balance'`,
+      [(committed.body as { tenancy_id: string }).tenancy_id],
+    );
+    assert(
+      Number(opening.rows[0]?.amount_cents) === 65000 &&
+        Number(opening.rows[0]?.typed_opening_cents) === 65000,
+      JSON.stringify(opening.rows),
+    );
+  },
+);
+
+await check(
+  'a period amount records whether it is the suggestion or the landlord own',
+  async () => {
+    const id = await draft();
+    const midMonth = `${nextMonth.slice(0, 7)}-15`;
+    const anchor = new Date(`${nextMonth}T12:00:00Z`);
+    anchor.setUTCMonth(anchor.getUTCMonth() + 1);
+    const base = setup(
+      {
+        tenancy: { start_date: midMonth, end_date: null },
+        agreement: { ...setup().agreement, term_start: midMonth },
+      },
+      { coverage_start: midMonth, regular_anchor: anchor.toISOString().slice(0, 10) },
+    );
+    const first = await request('POST', `/tenancy-setup-sessions/${id}/preview`, base);
+    assert(first.status === 200, JSON.stringify(first.body));
+    const partial = first.body as {
+      proration_suggestions: Array<{
+        cycle_key: string;
+        period_start: string;
+        period_end: string;
+        amount_cents: number;
+      }>;
+      history_periods: Array<{ cycle_key: string; due_date: string }>;
+    };
+    const suggestion = partial.proration_suggestions[0]!;
+    const due = partial.history_periods.find((p) => p.cycle_key === suggestion.cycle_key)!.due_date;
+    const withAmount = (amount: number) => {
+      const body = structuredClone(base);
+      (body.billing.rent as Record<string, unknown>).period_overrides = [
+        {
+          cycle_key: suggestion.cycle_key,
+          period_start: suggestion.period_start,
+          period_end: suggestion.period_end,
+          due_date: due,
+          amount_cents: amount,
+          reason: 'Agreed with tenant',
+        },
+      ];
+      return body;
+    };
+    for (const [amount, source] of [
+      [suggestion.amount_cents, 'suggested'],
+      [suggestion.amount_cents - 100, 'landlord'],
+    ] as const) {
+      const review = await request(
+        'POST',
+        `/tenancy-setup-sessions/${id}/preview`,
+        withAmount(amount),
+      );
+      const sources = (review.body as { period_amount_sources: Array<{ amount_source: string }> })
+        .period_amount_sources;
+      assert(
+        review.status === 200 && sources[0]?.amount_source === source,
+        JSON.stringify(review.body),
+      );
+    }
+  },
+);
 
 await check('settings change the proration method', async () => {
   const patched = await request('PATCH', '/settings', { proration_method: 'thirty_day_month' });

@@ -118,6 +118,9 @@ jobs:
       - name: Field Log Phase 1 checks (matching, lease billing, combined opening balance, rent steps)
         run: psql -v ON_ERROR_STOP=1 -f db/test/field_log_phase_one.sql
 
+      - name: Field Log Phase 4 checks (owed summary, late-fee suggestions, currency, duplicate properties)
+        run: psql -v ON_ERROR_STOP=1 -f db/test/field_log_phase_four.sql
+
       - name: Seed two-account fixture
         run: psql -v ON_ERROR_STOP=1 -f db/test/seed_two_accounts.sql
 

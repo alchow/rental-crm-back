@@ -61,6 +61,10 @@
       "description": "Setup validate route, people matching, lease-derived billing, one-answer deposit and proration setting."
     },
     {
+      "script": "test:field-log-phase-four",
+      "description": "Owed summary, late-fee suggestions and decisions, payer attribution, account currency and duplicate properties."
+    },
+    {
       "script": "test:rent-rollup",
       "description": "Account rent rollup parity with tenancy ledgers."
     },

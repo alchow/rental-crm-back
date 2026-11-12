@@ -138,6 +138,7 @@ declare
   start_on date := (month_start - interval '4 months')::date;
   itemize date := (month_start - interval '1 month')::date;
   draft uuid := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Unit C');
+  review jsonb;
   rent jsonb := jsonb_build_object('opening_balance',jsonb_build_object('amount_cents',65000,'basis','Rent',
     'itemize_from',to_char(itemize,'YYYY-MM')));
 begin
@@ -148,14 +149,14 @@ begin
   exception when raise_exception then
     if sqlerrm not like 'invalid: opening balance and itemized history are exclusive%' then raise; end if;
   end;
-  begin
-    perform public.preview_tenancy_setup_session(account,draft,pg_temp.setup(person,start_on,rent,
-      jsonb_build_array(jsonb_build_object('draft_key','early','amount_cents',147500,'currency','USD',
-        'received_at',(itemize-10)::text,'method','check','allocations','[]'::jsonb))));
-    raise exception 'A receipt before the itemized months was accepted';
-  exception when raise_exception then
-    if sqlerrm not like 'invalid: a payment before the itemized months%' then raise; end if;
-  end;
+  review := public.preview_tenancy_setup_session(account,draft,pg_temp.setup(person,start_on,rent,
+    jsonb_build_array(jsonb_build_object('draft_key','early','amount_cents',30000,'currency','USD',
+      'received_at',(itemize-10)::text,'method','check','allocations','[]'::jsonb))));
+  if (review->>'can_confirm')::boolean or not exists (select 1 from jsonb_array_elements(review->'findings') f
+    where f->>'rule_id' = 'opening_receipt_unanswered:early' and f->>'severity' = 'error'
+      and (f->'values'->>'payment_index')::integer = 0 and (f->'values'->>'amount_cents')::bigint = 30000) then
+    raise exception 'An unanswered earlier receipt did not block confirm: %',review->'findings';
+  end if;
   begin
     perform public.preview_tenancy_setup_session(account,draft,pg_temp.setup(person,start_on,
       rent||jsonb_build_object('charge_keys',jsonb_build_array(jsonb_build_object('cycle_key',to_char(start_on,'YYYY-MM'),'draft_key','old')))));
@@ -176,6 +177,52 @@ begin
       (select jsonb_agg(jsonb_build_object('type',type,'due',due_date,'start',period_start,'amount',amount_cents))
          from public.charges where tenancy_id=draft);
   end if;
+end;
+$test$;
+
+-- WP-09 follow-up: an earlier receipt is answered, never refused, and never invented.
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  person uuid := current_setting('field_log.person')::uuid;
+  month_start date := date_trunc('month',public._account_date(account))::date;
+  start_on date := (month_start - interval '4 months')::date;
+  itemize date := (month_start - interval '1 month')::date;
+  draft uuid;
+  choice text;
+  date_unknown boolean;
+  opening record;
+  receipt record;
+  owed bigint;
+begin
+  for choice, date_unknown in select * from (values ('add_to_owed', false), ('keep_owed', false), ('keep_owed', true)) v(c, u) loop
+    draft := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Earlier '||choice||date_unknown::text);
+    perform pg_temp.commit_setup(draft,pg_temp.setup(person,start_on,
+      jsonb_build_object('opening_balance',jsonb_build_object('amount_cents',65000,'basis','Rent',
+        'itemize_from',to_char(itemize,'YYYY-MM'),
+        'earlier_receipts',jsonb_build_array(jsonb_build_object('payment_key','early','choice',choice))),
+        'charge_keys','[]'::jsonb),
+      jsonb_build_array(jsonb_build_object('draft_key','early','amount_cents',30000,'currency','USD',
+        'received_at',case when date_unknown then null else (itemize-10)::text end,'receipt_date_unknown',date_unknown,
+        'method','check','allocations','[]'::jsonb))));
+    select c.amount_cents, a.typed_opening_cents, a.earlier_receipts into opening
+      from public.charges c join public.tenancy_adoptions a on a.id = c.opening_adoption_id
+      where c.tenancy_id = draft and c.type = 'opening_balance';
+    select p.received_at, p.receipt_date_unknown, (select sum(x.amount_cents) from public.payment_allocations x
+        join public.charges c on c.id = x.charge_id and c.type = 'opening_balance' where x.payment_id = p.id) as applied
+      into receipt from public.payments p where p.tenancy_id = draft and p.amount_cents = 30000;
+    select coalesce(sum(c.amount_cents - coalesce((select sum(x.amount_cents) from public.payment_allocations x
+        where x.charge_id = c.id and x.voided_at is null),0)),0) into owed
+      from public.charges c where c.tenancy_id = draft and c.type = 'opening_balance';
+    if opening.amount_cents <> (case when choice = 'add_to_owed' then 95000 else 65000 end)
+      or opening.typed_opening_cents <> 65000 or opening.earlier_receipts->0->>'choice' <> choice
+      or receipt.applied <> 30000 or receipt.receipt_date_unknown <> date_unknown
+      or (receipt.received_at is null) <> date_unknown
+      or owed <> (case when choice = 'add_to_owed' then 65000 else 35000 end) then
+      raise exception 'Earlier receipt % (unknown date %) recorded wrongly: opening %, receipt %, owed %',
+        choice, date_unknown, to_jsonb(opening), to_jsonb(receipt), owed;
+    end if;
+  end loop;
 end;
 $test$;
 
