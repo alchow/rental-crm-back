@@ -1,4 +1,5 @@
 import { createRoute, z } from '@hono/zod-openapi';
+import type { Context } from 'hono';
 import { newApiApp } from '../_lib/app';
 import { getSb } from '../../supabase/request-client';
 import { ApiError, conflictResponse, errorResponses } from '../_lib/error';
@@ -55,7 +56,10 @@ const EndTenancyBody = z
   .openapi('EndTenancyBody');
 const TenancyEnding = z
   .object({
-    id: z.string().uuid(),
+    id: z.string().uuid().nullable().openapi({
+      description: 'Null when the ending is a scheduled move-out whose last day has passed.',
+    }),
+    source: z.enum(['recorded', 'scheduled_move_out']).optional(),
     account_id: z.string().uuid(),
     tenancy_id: z.string().uuid(),
     kind: z.enum(['ended', 'cancelled_before_move_in']),
@@ -65,7 +69,7 @@ const TenancyEnding = z
     reason_note: z.string().nullable(),
     source_notice_id: z.string().uuid().nullable(),
     source_interaction_id: z.string().uuid().nullable(),
-    created_by: z.string().uuid(),
+    created_by: z.string().uuid().nullable(),
     created_at: z.string(),
     original_effective_date: z.string().optional(),
     correction_record_id: z.string().uuid().nullable().optional(),
@@ -141,6 +145,44 @@ const cancelMoveOut = createRoute({
   },
 });
 
+// DATA FLOW: a scheduled move-out records no ending row. Once its last day has
+// passed in the account's time zone, the ending is derived from the saved plan.
+async function scheduledEnding(
+  c: Context,
+  accountId: string,
+  tenancyId: string,
+): Promise<z.infer<typeof TenancyEnding>> {
+  const { data, error } = await getSb(c)
+    .from('tenancy_current')
+    .select('status, move_out_on, move_out_plan')
+    .eq('account_id', accountId)
+    .eq('id', tenancyId)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  if (!data || data.status !== 'ended' || !data.move_out_on) {
+    throw new ApiError(404, 'not_found', 'ending not found');
+  }
+  const plan = (data.move_out_plan ?? {}) as Record<string, unknown>;
+  const text = (key: string) => (typeof plan[key] === 'string' ? (plan[key] as string) : null);
+  const initiatedBy = EndingInitiatedBy.safeParse(plan.initiated_by);
+  return {
+    id: null,
+    source: 'scheduled_move_out',
+    account_id: accountId,
+    tenancy_id: tenancyId,
+    kind: 'ended',
+    effective_date: data.move_out_on,
+    initiated_by: initiatedBy.success ? initiatedBy.data : 'unknown',
+    reason_code: text('reason_code') ?? 'other',
+    reason_note: text('reason_note'),
+    source_notice_id: text('source_notice_id'),
+    source_interaction_id: text('source_interaction_id'),
+    created_by: text('scheduled_by'),
+    created_at: text('scheduled_at') ?? data.move_out_on,
+  };
+}
+
 export const tenancyEndingsApp = newApiApp();
 tenancyEndingsApp.openapi(getEnding, async (c) => {
   const { accountId, id } = c.req.valid('param');
@@ -151,12 +193,12 @@ tenancyEndingsApp.openapi(getEnding, async (c) => {
     .eq('tenancy_id', id)
     .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
-  if (!original) throw new ApiError(404, 'not_found', 'ending not found');
+  if (!original) return c.json(await scheduledEnding(c, accountId, id), 200);
   const data = await dateRpc<z.infer<typeof TenancyEnding>>(c, 'get_tenancy_ending_context', {
     p_account_id: accountId,
     p_tenancy_id: id,
   });
-  return c.json(data as z.infer<typeof TenancyEnding>, 200);
+  return c.json({ ...data, source: 'recorded' } as z.infer<typeof TenancyEnding>, 200);
 });
 tenancyEndingsApp.openapi(previewEnding, async (c) => {
   const { accountId, id } = c.req.valid('param');

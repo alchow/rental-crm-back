@@ -15,12 +15,15 @@ export function mapDateRpcError(error: {
     throw new ApiError(409, code, 'Review duplicate contact details in setup.', details);
   }
   if (code === 'move_out_changed' || code === 'move_out_overlap') {
+    const detail = message.slice(code.length + 1).trim();
     throw new ApiError(
       409,
       code,
-      code === 'move_out_changed'
-        ? 'The scheduled move-out changed. Reload the tenancy and try again.'
-        : 'The dates overlap another tenancy on this door.',
+      code === 'move_out_overlap'
+        ? 'The dates overlap another tenancy on this door.'
+        : detail
+          ? `${detail.charAt(0).toUpperCase()}${detail.slice(1)}.`
+          : 'The scheduled move-out changed. Reload the tenancy and try again.',
     );
   }
   if (code === 'not_found') throw new ApiError(404, 'not_found', message);

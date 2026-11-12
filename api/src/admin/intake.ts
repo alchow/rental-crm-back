@@ -35,6 +35,19 @@ export interface MintedToken {
   created_at: string;
 }
 
+// INVARIANT: a passed scheduled move-out ends the tenancy on read, while the
+// stored status stays active, so intake reads the derived status.
+async function tenancyHasEnded(accountId: string, tenancyId: string): Promise<boolean> {
+  const { data, error } = await getAdminClient()
+    .from('tenancy_current')
+    .select('status')
+    .eq('account_id', accountId)
+    .eq('id', tenancyId)
+    .maybeSingle();
+  if (error) throw new ApiError(500, 'database_error', error.message);
+  return data?.status === 'ended';
+}
+
 export async function mintIntakeToken(accountId: string, tenancyId: string): Promise<MintedToken> {
   const admin = getAdminClient();
   const { data: t, error: tErr } = await admin
@@ -46,7 +59,7 @@ export async function mintIntakeToken(accountId: string, tenancyId: string): Pro
     .maybeSingle();
   if (tErr) throw new ApiError(500, 'database_error', tErr.message);
   if (!t) throw new ApiError(404, 'not_found', 'tenancy not found in this account');
-  if (t.status === 'ended') {
+  if (t.status === 'ended' || (await tenancyHasEnded(accountId, tenancyId))) {
     throw new ApiError(409, 'conflict', 'cannot mint intake token for an ended tenancy');
   }
   const propertyId = Array.isArray(t.areas)
@@ -267,7 +280,12 @@ async function lookupAndRateLimitToken(secret: string): Promise<VerifiedToken> {
     .eq('id', data.tenancy_id)
     .maybeSingle();
   if (tErr) throw new ApiError(500, 'database_error', tErr.message);
-  if (!t || t.deleted_at !== null || t.status === 'ended') {
+  if (
+    !t ||
+    t.deleted_at !== null ||
+    t.status === 'ended' ||
+    (await tenancyHasEnded(data.account_id, data.tenancy_id))
+  ) {
     throw new ApiError(404, 'not_found', 'invalid token');
   }
 

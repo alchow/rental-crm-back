@@ -148,8 +148,19 @@ Balances are derived from immutable/reversible facts rather than mutable total
 columns. The ledger groups totals by currency; the account rollup returns one
 row per tenancy with `currency_totals`, a primary currency and scalar totals
 for that currency only. A paid USD balance does not hide unpaid EUR debt.
-Opening-balance testimony is returned separately as `adoption`; it never becomes
-a charge, receipt, late-fee parent, or received-income total.
+Starting balances depend on `accounts.opening_balance_ledger_enabled`. With the
+flag off, the adoption's opening balance is testimony returned separately as
+`adoption`; it never becomes a charge, receipt, late-fee parent, or received-income
+total. With the flag on, inserting the adoption also writes one ledger entry keyed
+by the adoption: an amount owed becomes an `opening_balance` charge (counted in
+balances, never overdue, never a late-fee parent), a credit becomes an
+`opening_credit` payment with no method or receipt date (unapplied credit, not cash
+received). `adoption.recorded_in_ledger` tells readers not to add the testimony
+again. An amount owed must say whether it includes this month's rent: "no" adds the
+current period in the same commit, "yes" stops the generator billing it.
+`db/scripts/backfill-opening-balances.sql` converts existing adoptions per account
+with a before/after report; `revert-opening-balance-backfill.sql` reverses untouched
+entries.
 
 Agreement saving belongs to `routes/leases.ts` and writes only a lease. Due
 rules preserve days 1–31, last day, other written text, and unknown. Grace is
@@ -292,7 +303,19 @@ and history commit atomically under the existing financial lock; transport retri
 return the same saved IDs. The narrow date-writer role retains FORCE-RLS and live
 account membership when writing billing setup and reviewed receipt/ending commands.
 
-Future actual ending still ends the tenancy and stops generation immediately.
+With `accounts.scheduled_move_out_enabled` off, a future actual ending still ends
+the tenancy and stops generation immediately. With it on, a future ending date
+schedules a move-out instead (`tenancies.move_out_on` and `move_out_plan`): no
+ending row is written and the stored status stays active. Status is derived on read
+in the account's time zone (`accounts.time_zone`): the tenancy reads as ended from
+the day after `move_out_on` in `tenancy_current`, the generator, intake links, date
+context, billing setup and inbound routing, and `GET .../ending` derives the ending
+from the saved plan. No job materializes it. Scheduling, changing or cancelling the
+date reconciles already-generated scheduled rent: later periods are voided, the final
+period is voided and replaced at its move-out amount, and a cancelled or later date
+restores what the command voided. Money a payment or late fee relies on is never
+changed; the command returns `move_out_changed` for review. Another tenancy cannot
+start on the door until after `move_out_on`.
 Future receipts still affect today's allocations/balance immediately; an explicit
 ledger/PDF cutoff before the receipt date excludes them. Direct inserts, legacy
 RPCs, bootstrap and imports cannot bypass confirmation: unreviewed future facts
