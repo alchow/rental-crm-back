@@ -21,6 +21,10 @@ const AccountSettings = z
     person_match_enabled: z.boolean().optional(),
     opening_balance_ledger_enabled: z.boolean().optional(),
     scheduled_move_out_enabled: z.boolean().optional(),
+    wizard_v2_enabled: z.boolean().optional().openapi({
+      description:
+        'Read-only rollout flag: show the new setup wizard. Both setup payloads are accepted either way.',
+    }),
     time_zone: z.string().optional(),
     proration_method: z.enum(['actual_days', 'thirty_day_month']).optional(),
     currency: z.string().optional().openapi({ description: 'ISO 4217 code money defaults to.' }),
@@ -95,6 +99,7 @@ settingsApp.openapi(get, async (c) => {
       person_match_enabled: data.person_match_enabled,
       opening_balance_ledger_enabled: data.opening_balance_ledger_enabled,
       scheduled_move_out_enabled: data.scheduled_move_out_enabled,
+      wizard_v2_enabled: data.wizard_v2_enabled,
       time_zone: data.time_zone,
       proration_method: data.proration_method as 'actual_days' | 'thirty_day_month',
       currency: data.currency,

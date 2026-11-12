@@ -484,6 +484,22 @@ await check('settings change the proration method', async () => {
   );
 });
 
+await check('the wizard flag is read-only on settings and set in SQL', async () => {
+  const off = await request('GET', '/settings');
+  assert(
+    (off.body as { wizard_v2_enabled: boolean }).wizard_v2_enabled === false,
+    JSON.stringify(off.body),
+  );
+  const patched = await request('PATCH', '/settings', { wizard_v2_enabled: true });
+  assert(patched.status === 400, JSON.stringify(patched.body));
+  await pool.query('update public.accounts set wizard_v2_enabled=true where id=$1', [accountId]);
+  const on = await request('GET', '/settings');
+  assert(
+    (on.body as { wizard_v2_enabled: boolean }).wizard_v2_enabled === true,
+    JSON.stringify(on.body),
+  );
+});
+
 await pool.end();
 if (failures.length) {
   console.error(failures);

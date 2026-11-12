@@ -299,6 +299,30 @@ The new setup command also handles initial rent with an existing deposit/credit,
 without reopening adoption or overwriting opening testimony. The generator
 continues to create the next eligible period rather than historical backfill.
 
+## Field Log rollout flags
+
+Per-account booleans on `accounts`, default off, read-only on
+`GET /v1/accounts/{id}/settings` and set by an operator in SQL:
+
+| Flag | Effect |
+| --- | --- |
+| `person_match_enabled` | setup refuses a new person whose email/phone is on file; people match returns results |
+| `opening_balance_ledger_enabled` | a starting balance is written to the ledger (ADR-0013 amendment) |
+| `scheduled_move_out_enabled` | a future ending schedules a move-out (ADR-0015 amendment) |
+| `wizard_v2_enabled` | the frontend shows the new setup wizard; the API accepts old and new payloads either way |
+
+```sql
+update public.accounts
+   set person_match_enabled = true,
+       opening_balance_ledger_enabled = true,
+       scheduled_move_out_enabled = true,
+       wizard_v2_enabled = true
+ where id = '<account uuid>';
+```
+
+Turn the starting-balance ledger on for an account that already has adoptions with
+`db/scripts/backfill-opening-balances.sql`, not with the update above.
+
 ## Imports and Background Work
 
 Tenancy possession facts, lease terms, and rent-effective eras are independent.
