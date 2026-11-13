@@ -48,7 +48,13 @@ async function request(method: string, path: string, body?: unknown, key?: strin
   });
 }
 
-const today = new Date().toISOString().slice(0, 10);
+// The account's date (America/Los_Angeles), which is what the server calls today.
+const today = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Los_Angeles',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+}).format(new Date());
 const monthStart = `${today.slice(0, 7)}-01`;
 const nextMonth = new Date(`${monthStart}T12:00:00Z`);
 nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1);

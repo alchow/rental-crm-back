@@ -36,7 +36,13 @@ async function request(method: string, path: string, body?: unknown) {
 const property = await request('POST', '/properties', { name: '418 Juniper Avenue' });
 assert(property.status === 201, JSON.stringify(property.body));
 
-const today = new Date().toISOString().slice(0, 10);
+// The account's date (America/Los_Angeles), which is what the server calls today.
+const today = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Los_Angeles',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+}).format(new Date());
 const future = new Date(`${today.slice(0, 7)}-01T12:00:00Z`);
 future.setUTCMonth(future.getUTCMonth() + 1);
 const nextMonth = future.toISOString().slice(0, 10);
@@ -575,6 +581,40 @@ await check('settings change the proration method', async () => {
   );
 });
 
+await check('settings read and set the time zone that decides "today"', async () => {
+  const read = await request('GET', '/settings');
+  assert(
+    (read.body as { time_zone: string }).time_zone === 'America/Los_Angeles',
+    JSON.stringify(read.body),
+  );
+  const bad = await request('PATCH', '/settings', { time_zone: 'Mars/Olympus_Mons' });
+  assert(bad.status === 400, JSON.stringify(bad.body));
+  // A zone whose date differs from the UTC date right now: UTC-12 before noon UTC, UTC+14 after.
+  const zone = new Date().getUTCHours() < 12 ? 'Etc/GMT+12' : 'Pacific/Kiritimati';
+  const patched = await request('PATCH', '/settings', { time_zone: zone });
+  assert(
+    patched.status === 200 && (patched.body as { time_zone: string }).time_zone === zone,
+    JSON.stringify(patched.body),
+  );
+  const zoneDate = () =>
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: zone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+  // Read the zone's date on both sides of the request: it may roll over in between.
+  const before = zoneDate();
+  const rollup = await request('GET', '/rent-rollup');
+  const after = zoneDate();
+  const asOf = (rollup.body as { as_of: string }).as_of;
+  await request('PATCH', '/settings', { time_zone: 'America/Los_Angeles' });
+  assert(
+    rollup.status === 200 && (asOf === before || asOf === after),
+    JSON.stringify({ asOf, before, after }),
+  );
+});
+
 await check('a mistyped starting balance is voided and re-entered', async () => {
   await pool.query('update public.accounts set opening_balance_ledger_enabled=true where id=$1', [
     accountId,
@@ -680,6 +720,58 @@ await check('a mistyped starting balance is voided and re-entered', async () => 
     deleted.status === 409 &&
       (deleted.body as { error: { code: string } }).error.code === 'opening_entry_deleted',
     JSON.stringify(deleted.body),
+  );
+});
+
+await check('a starting balance answered as 0 is corrected to an amount owed', async () => {
+  const id = await draft();
+  const monthStart = `${today.slice(0, 7)}-01`;
+  const startDate = new Date(`${monthStart}T12:00:00Z`);
+  startDate.setUTCMonth(startDate.getUTCMonth() - 2);
+  const startOn = startDate.toISOString().slice(0, 10);
+  const input = setup(
+    {
+      tenancy: { start_date: startOn, end_date: null },
+      agreement: { ...setup().agreement, term_start: startOn },
+    },
+    {
+      coverage_start: monthStart,
+      regular_anchor: monthStart,
+      history_mode: 'opening_balance',
+      opening_balance: { amount_cents: 0, basis: 'Rent' },
+    },
+  );
+  const review = await request('POST', `/tenancy-setup-sessions/${id}/preview`, input);
+  assert(review.status === 200, JSON.stringify(review.body));
+  const committed = await request('POST', `/tenancy-setup-sessions/${id}/commit`, {
+    setup: input,
+    expected_context: (review.body as { setup_context: string }).setup_context,
+    accept_warnings: true,
+  });
+  assert(committed.status === 201, JSON.stringify(committed.body));
+  const tenancyId = (committed.body as { tenancy_id: string }).tenancy_id;
+  const path = `/tenancies/${tenancyId}/opening-balance/correction`;
+  const body = { amount_cents: 30000, basis: 'Rent', reason: 'Answered 0 by mistake' };
+  const preview = await request('POST', `${path}/preview`, body);
+  assert(preview.status === 200, JSON.stringify(preview.body));
+  const result = await api('POST', base + path, {
+    token: auth.session.access_token,
+    body,
+    idempotencyKey: crypto.randomUUID(),
+  });
+  const r = result.body as {
+    previous: { opening_cents: number; entry: { kind: string } };
+    next: { opening_cents: number; entry: { kind: string; id: string } };
+    owed_after: { total_cents: number; overdue_cents: number };
+  };
+  assert(
+    result.status === 200 &&
+      r.previous.opening_cents === 0 &&
+      r.previous.entry.kind === 'none' &&
+      r.next.entry.kind === 'charge' &&
+      r.owed_after.total_cents === 30000 &&
+      r.owed_after.overdue_cents === 0,
+    JSON.stringify(result.body),
   );
 });
 

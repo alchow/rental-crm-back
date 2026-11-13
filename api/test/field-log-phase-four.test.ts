@@ -42,7 +42,13 @@ const property = await request('POST', '/properties', {
 });
 assert(property.status === 201, JSON.stringify(property.body));
 
-const today = new Date().toISOString().slice(0, 10);
+// The account's date (America/Los_Angeles), which is what the server calls today.
+const today = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Los_Angeles',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+}).format(new Date());
 const lastMonth = new Date(`${today.slice(0, 7)}-01T12:00:00Z`);
 lastMonth.setUTCMonth(lastMonth.getUTCMonth() - 1);
 const start = lastMonth.toISOString().slice(0, 10);

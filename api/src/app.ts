@@ -154,8 +154,8 @@ export function buildApp(): OpenAPIHono {
       // real HEVC Storage rendition, so request-time outage/recovery changes
       // the signal instead of leaving a stale boot snapshot.
       capabilities: {
-        tenancy_setup: { version: 3, clock_basis: 'UTC' },
-        billing_setup: { version: 1, clock_basis: 'UTC' },
+        tenancy_setup: { version: 3, clock_basis: 'account' },
+        billing_setup: { version: 1, clock_basis: 'account' },
         heic_decode: heic,
         tenant_messages: { version: 1 },
         // Onboarding import needs ANTHROPIC_API_KEY (LLM) + SUPABASE_DB_URL

@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { PoolClient } from 'pg';
 import { CreateLeaseBody } from '../../schemas/importable';
 import type { BlockerCode, FieldMapping } from '../import-catalog';
-import { coerceCurrency, firstIssue, todayIso } from './coercions';
+import { coerceCurrency, firstIssue } from './coercions';
 import { mapImportedDate } from './date-mapping';
 import { exactImportedMoney, mapImportedLeaseTerms } from './lease-terms';
 import type { RawImportRow } from './types';
@@ -12,6 +12,8 @@ export async function importLease(input: {
   accountId: string;
   row: RawImportRow;
   tenancyId: string;
+  /** Today in the account's time zone. */
+  today: string;
   fields: FieldMapping[];
   getValue: (field: string) => string | null;
   block: (field: string | null, code: BlockerCode, message: string) => void;
@@ -64,7 +66,7 @@ export async function importLease(input: {
     rent_amount_cents: rentCents,
     rent_currency: currency,
     ...terms.terms,
-    status: termEnd && termEnd < todayIso() ? 'expired' : 'active',
+    status: termEnd && termEnd < input.today ? 'expired' : 'active',
   });
   if (!valid.success) return input.block(null, 'invalid_value', firstIssue(valid.error));
   const existing = await input.client.query(

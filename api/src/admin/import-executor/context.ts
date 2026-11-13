@@ -76,6 +76,9 @@ export class ExecCtx {
   private blockedRowIds = new Set<string>();
   private dateSamples = new Map<string, ExecutionResult['date_interpretations'][number]>();
   private dateDefaults: ExecutionResult['date_defaults'] = [];
+  // The account's date once prefetch has read it: the same today the database's
+  // date checks use, so a row the importer passes is not refused as future.
+  private today = todayIso();
   constructor(
     private readonly client: PoolClient,
     private readonly accountId: string,
@@ -151,6 +154,11 @@ export class ExecCtx {
    *  Runs inside the executor txn (service_role; manual account scoping is
    *  the isolation guard, same as every other query here). */
   async prefetch(): Promise<void> {
+    const today = await this.client.query<{ today: string }>(
+      `select to_char(public._account_date($1::uuid), 'YYYY-MM-DD') as today`,
+      [this.accountId],
+    );
+    if (today.rows[0]?.today) this.today = today.rows[0].today;
     const props = await this.client.query(
       `select id, lower(name) as k from properties where account_id = $1 and deleted_at is null`,
       [this.accountId],
@@ -670,7 +678,7 @@ export class ExecCtx {
     const mappedRaw = this.getValue(fields, 'occurred_at', row.raw);
     const mapped = coerceDate(mappedRaw);
     this.recordDate('interaction.occurred_at', mappedRaw, mapped);
-    const occurred = mapped ?? extractLeadingDate(body) ?? todayIso();
+    const occurred = mapped ?? extractLeadingDate(body) ?? this.today;
     const v = CreateInteractionBody.safeParse({
       kind: 'note',
       body,
@@ -827,7 +835,7 @@ export class ExecCtx {
                 'actual_move_in_date',
                 row.raw,
               ),
-              today: todayIso(),
+              today: this.today,
             });
             if (tenancyMeta.kind === 'invalid') {
               this.blockRow(
@@ -849,7 +857,7 @@ export class ExecCtx {
               actualMoveInRaw,
               tenancyMeta.actualMoveInDate,
             );
-            const today = todayIso();
+            const today = this.today;
             const status = end && end < today ? 'ended' : start > today ? 'upcoming' : 'active';
             const tenancy = await resolveTenancyIdentity({
               client: this.client,
@@ -905,6 +913,7 @@ export class ExecCtx {
                   accountId: this.accountId,
                   row,
                   tenancyId: resolvedTenancyId,
+                  today: this.today,
                   fields,
                   getValue: (field) => this.getValue(fields, field, row.raw),
                   block: (field, code, message) =>

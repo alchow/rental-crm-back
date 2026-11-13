@@ -5361,6 +5361,7 @@ export type Database = {
         Args: { p_account_id: string; p_as_of?: string };
         Returns: string;
       };
+      _account_time_zone: { Args: { p_account_id: string }; Returns: string };
       _actual_date_warnings: {
         Args: { p_context: string; p_facts: Json };
         Returns: Json;

@@ -3,6 +3,7 @@ import { newApiApp } from '../_lib/app';
 import { conflictResponse, errorResponses } from '../_lib/error';
 import { CreateTenancyBody, MemberRole, TenancyStatus } from '../../schemas/importable';
 import { CalendarDate } from '../../schemas/calendar-date';
+import { ClockBasis } from '../../schemas/time-zone';
 import { AccountParam, AccountAndTenancyParam, Tenancy } from './schemas';
 import { atomicDateArgs, dateRpc } from './rpc';
 
@@ -20,7 +21,7 @@ export const OnboardingProgress = z
     date_revision: z.number().int().nonnegative(),
     effective_status: TenancyStatus,
     as_of_date: CalendarDate,
-    clock_basis: z.literal('UTC'),
+    clock_basis: ClockBasis,
     updated_at: z.string().nullable(),
   })
   .openapi('TenancyOnboardingProgress');

@@ -1,5 +1,6 @@
 import { z } from '@hono/zod-openapi';
 import { CalendarDate } from '../../schemas/calendar-date';
+import { ClockBasis } from '../../schemas/time-zone';
 import { LateFeePolicy, RentDueRule } from '../../schemas/lease-terms';
 import { OnboardingProgress } from '../tenancies/onboarding';
 import { WarningAcknowledgements } from '../tenancies/date-warnings';
@@ -235,7 +236,7 @@ export const BillingSetupPreview = z
   .object({
     version: z.literal(1),
     as_of_date: CalendarDate,
-    clock_basis: z.literal('UTC'),
+    clock_basis: ClockBasis,
     context_fingerprint: z.string(),
     mode: z.enum([
       'initial',
