@@ -34,7 +34,7 @@ export interface PlannedSetup {
 async function accountClock(c: Context, accountId: string) {
   const { data, error } = await getSb(c)
     .from('accounts')
-    .select('time_zone, proration_method, currency, multi_currency')
+    .select('time_zone, proration_method')
     .eq('id', accountId)
     .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
@@ -48,8 +48,6 @@ async function accountClock(c: Context, accountId: string) {
   return {
     today,
     method: ((data?.proration_method as string | undefined) ?? 'actual_days') as ProrationMethod,
-    currency: (data?.currency as string | undefined) ?? 'USD',
-    multiCurrency: Boolean(data?.multi_currency),
   };
 }
 
@@ -114,7 +112,7 @@ export async function planSetup(
   id: string,
   input: Json,
 ): Promise<PlannedSetup> {
-  const { today, method, currency, multiCurrency } = await accountClock(c, accountId);
+  const { today, method } = await accountClock(c, accountId);
   const {
     deposit_answer: depositAnswer,
     rent_steps: rawSteps,
@@ -126,7 +124,6 @@ export async function planSetup(
   let setup: Json = rest;
   const steps = rawSteps ?? [];
   const errors: FieldError[] = validateSetupShape(setup);
-  if (!multiCurrency) errors.push(...singleCurrencyErrors(setup, currency));
   const agreement = setup.agreement as Parameters<typeof deriveBillingFromLease>[0];
   if (depositAnswer) {
     const expanded = expandDepositAnswer(setup, depositAnswer, today);
@@ -225,26 +222,6 @@ export async function planSetup(
     opening_receipts: openingReceipts(rent, review, (setup.billing as Json).payments as Json[]),
   };
   return { setup, review, errors: blocking, failure: blocking.length ? failureOf(blocking) : null };
-}
-
-function singleCurrencyErrors(setup: Json, currency: string): FieldError[] {
-  const agreement = setup.agreement as Json;
-  const rent = (setup.billing as Json).rent as Json;
-  const fields: Array<[string, unknown]> = [
-    ['agreement.rent_currency', agreement.rent_currency],
-    ['agreement.deposit_currency', agreement.deposit_currency],
-    ...(rent.decision === 'configure'
-      ? [['billing.rent.currency', rent.currency] as [string, unknown]]
-      : []),
-  ];
-  return fields
-    .filter(([, value]) => value !== currency)
-    .map(([field, value]) => ({
-      code: 'currency.unsupported',
-      step: 'lease' as const,
-      field,
-      meta: { value: String(value), account_currency: currency },
-    }));
 }
 
 /** One person on the lease pays; with several, a named payer must be one of them. */
