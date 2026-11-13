@@ -3867,6 +3867,8 @@ export type Database = {
         Row: {
           account_id: string;
           amount_cents: number;
+          basis_kind: string | null;
+          basis_note: string | null;
           billing_due_rule: Json | null;
           change_reason: string | null;
           created_at: string;
@@ -3893,6 +3895,8 @@ export type Database = {
         Insert: {
           account_id: string;
           amount_cents: number;
+          basis_kind?: string | null;
+          basis_note?: string | null;
           billing_due_rule?: Json | null;
           change_reason?: string | null;
           created_at?: string;
@@ -3919,6 +3923,8 @@ export type Database = {
         Update: {
           account_id?: string;
           amount_cents?: number;
+          basis_kind?: string | null;
+          basis_note?: string | null;
           billing_due_rule?: Json | null;
           change_reason?: string | null;
           created_at?: string;
@@ -5434,6 +5440,28 @@ export type Database = {
         Returns: Json;
       };
       _normalized_address: { Args: { p_text: string }; Returns: string };
+      _opening_result: {
+        Args: { p_itemized_start: string; p_payments: Json; p_rent: Json };
+        Returns: Json;
+      };
+      _owed_summaries_base: {
+        Args: { p_account_id: string; p_tenancy_id?: string };
+        Returns: {
+          as_of: string;
+          by_type: Json;
+          credit_remaining_cents: number;
+          currency: string;
+          deposit_owed_cents: number;
+          headline_cents: number;
+          next_charge: Json;
+          oldest_due_on: string;
+          overdue_cents: number;
+          rent_tracked: boolean;
+          tenancy_id: string;
+          total_cents: number;
+          unapplied_credit_cents: number;
+        }[];
+      };
       _party_display_name: {
         Args: { p_account_id: string; p_party_id: string; p_party_type: string };
         Returns: string;
@@ -6411,8 +6439,10 @@ export type Database = {
         Returns: {
           as_of: string;
           by_type: Json;
+          credit_remaining_cents: number;
           currency: string;
           deposit_owed_cents: number;
+          headline_cents: number;
           next_charge: Json;
           oldest_due_on: string;
           overdue_cents: number;
