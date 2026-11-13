@@ -309,6 +309,20 @@ begin
     (v_acc_a, v_tenancy_a2, '2026-01-01', 0, 'USD'),
     (v_acc_b, v_tenancy_b2, '2026-01-01', 0, 'USD');
 
+  -- Late-fee decisions and starting-balance corrections (20261111000006, …0013):
+  -- one row per account so the isolation suite checks both tables.
+  insert into public.late_fee_decisions (account_id, charge_id, decision, decided_by) values
+    (v_acc_a, v_charge_a, 'skipped', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+    (v_acc_b, v_charge_b, 'skipped', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
+  insert into public.opening_balance_corrections (
+    account_id, tenancy_id, adoption_id, previous_typed_cents, previous_opening_cents,
+    typed_cents, opening_cents, reason, corrected_by
+  )
+  select a.account_id, a.tenancy_id, a.id, 0, 0, 0, 0, 'Isolation fixture',
+    case a.account_id when v_acc_a then 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'::uuid
+      else 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'::uuid end
+  from public.tenancy_adoptions a where a.tenancy_id in (v_tenancy_a2, v_tenancy_b2);
+
   -- Comms ledger (20260701000002): one row of every account-scoped comms
   -- table per account. (comm_opt_outs / inbound_raw are service-tier — no
   -- account_id — and are covered by their own deny-all assertions instead.)
