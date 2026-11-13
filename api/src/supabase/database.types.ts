@@ -3485,6 +3485,95 @@ export type Database = {
           },
         ];
       };
+      opening_balance_corrections: {
+        Row: {
+          account_id: string;
+          adoption_id: string;
+          allocations: Json;
+          basis: string | null;
+          corrected_at: string;
+          corrected_by: string;
+          id: string;
+          new_charge_id: string | null;
+          new_payment_id: string | null;
+          opening_cents: number;
+          previous_opening_cents: number;
+          previous_typed_cents: number;
+          reason: string;
+          replaced_charge_id: string | null;
+          replaced_payment_id: string | null;
+          tenancy_id: string;
+          typed_cents: number;
+        };
+        Insert: {
+          account_id: string;
+          adoption_id: string;
+          allocations?: Json;
+          basis?: string | null;
+          corrected_at?: string;
+          corrected_by: string;
+          id?: string;
+          new_charge_id?: string | null;
+          new_payment_id?: string | null;
+          opening_cents: number;
+          previous_opening_cents: number;
+          previous_typed_cents: number;
+          reason: string;
+          replaced_charge_id?: string | null;
+          replaced_payment_id?: string | null;
+          tenancy_id: string;
+          typed_cents: number;
+        };
+        Update: {
+          account_id?: string;
+          adoption_id?: string;
+          allocations?: Json;
+          basis?: string | null;
+          corrected_at?: string;
+          corrected_by?: string;
+          id?: string;
+          new_charge_id?: string | null;
+          new_payment_id?: string | null;
+          opening_cents?: number;
+          previous_opening_cents?: number;
+          previous_typed_cents?: number;
+          reason?: string;
+          replaced_charge_id?: string | null;
+          replaced_payment_id?: string | null;
+          tenancy_id?: string;
+          typed_cents?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'opening_balance_corrections_account_id_adoption_id_fkey';
+            columns: ['account_id', 'adoption_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_adoptions';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'opening_balance_corrections_account_id_fkey';
+            columns: ['account_id'];
+            isOneToOne: false;
+            referencedRelation: 'accounts';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'opening_balance_corrections_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancies';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'opening_balance_corrections_account_id_tenancy_id_fkey';
+            columns: ['account_id', 'tenancy_id'];
+            isOneToOne: false;
+            referencedRelation: 'tenancy_current';
+            referencedColumns: ['account_id', 'id'];
+          },
+        ];
+      };
       owner_phone_verification_receipts: {
         Row: {
           account_id: string;
@@ -3605,6 +3694,7 @@ export type Database = {
           receipt_date_unknown: boolean;
           received_at: string | null;
           reference: string | null;
+          replaces_payment_id: string | null;
           tenancy_id: string;
           updated_at: string;
           void_reason: string | null;
@@ -3628,6 +3718,7 @@ export type Database = {
           receipt_date_unknown?: boolean;
           received_at?: string | null;
           reference?: string | null;
+          replaces_payment_id?: string | null;
           tenancy_id: string;
           updated_at?: string;
           void_reason?: string | null;
@@ -3651,6 +3742,7 @@ export type Database = {
           receipt_date_unknown?: boolean;
           received_at?: string | null;
           reference?: string | null;
+          replaces_payment_id?: string | null;
           tenancy_id?: string;
           updated_at?: string;
           void_reason?: string | null;
@@ -3683,6 +3775,13 @@ export type Database = {
             columns: ['account_id', 'opening_adoption_id'];
             isOneToOne: false;
             referencedRelation: 'tenancy_adoptions';
+            referencedColumns: ['account_id', 'id'];
+          },
+          {
+            foreignKeyName: 'payments_replaces_payment_fk';
+            columns: ['account_id', 'replaces_payment_id'];
+            isOneToOne: false;
+            referencedRelation: 'payments';
             referencedColumns: ['account_id', 'id'];
           },
         ];
@@ -5270,6 +5369,10 @@ export type Database = {
         Args: { p_account_id: string; p_findings: Json; p_tenancy_id: string };
         Returns: Json;
       };
+      _apply_opening_correction: {
+        Args: { p_account_id: string; p_payload: Json; p_tenancy_id: string };
+        Returns: Json;
+      };
       _billing_period: {
         Args: { p_cycle_key: string; p_rent: Json };
         Returns: Json;
@@ -5377,6 +5480,16 @@ export type Database = {
           party_id: string;
           party_type: string;
           source: string;
+        }[];
+      };
+      _current_opening: {
+        Args: {
+          p_adoption: Database['public']['Tables']['tenancy_adoptions']['Row'];
+        };
+        Returns: {
+          added_cents: number;
+          opening_cents: number;
+          typed_cents: number;
         }[];
       };
       _date_context_without_warning: {
@@ -5908,6 +6021,16 @@ export type Database = {
           party_id: string;
           party_type: string;
         }[];
+      };
+      correct_opening_balance: {
+        Args: {
+          p_account_id: string;
+          p_idempotency_key: string;
+          p_payload: Json;
+          p_request_fingerprint: string;
+          p_tenancy_id: string;
+        };
+        Returns: Json;
       };
       correct_tenancy_dates: {
         Args: {
@@ -6464,6 +6587,10 @@ export type Database = {
           p_tenancy: Json;
           p_tenancy_id: string;
         };
+        Returns: Json;
+      };
+      preview_opening_balance_correction: {
+        Args: { p_account_id: string; p_payload: Json; p_tenancy_id: string };
         Returns: Json;
       };
       preview_payment: {

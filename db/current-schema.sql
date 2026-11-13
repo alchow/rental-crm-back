@@ -101,6 +101,155 @@ $$;
 ALTER FUNCTION "public"."_applicable_date_findings"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_findings" "jsonb") OWNER TO "postgres";
 
 --
+-- Name: _apply_opening_correction("uuid", "uuid", "jsonb"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_apply_opening_correction"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  a public.tenancy_adoptions;
+  cur record;
+  old_charge public.charges;
+  old_payment public.payments;
+  new_charge_id uuid;
+  new_payment_id uuid;
+  new_typed bigint := (p_payload->>'amount_cents')::bigint;
+  new_opening bigint;
+  basis text := nullif(btrim(coalesce(p_payload->>'basis', '')), '');
+  reason text := btrim(coalesce(p_payload->>'reason', ''));
+  marker text;
+  owed_before jsonb;
+  owed_after jsonb;
+  moves jsonb := '[]';
+  left_cents bigint;
+  applied bigint;
+  alloc record;
+  correction_id uuid;
+begin
+  if p_payload - array['amount_cents','basis','reason'] <> '{}' or coalesce(jsonb_typeof(p_payload->'amount_cents'), '') <> 'number'
+    or length(reason) not between 1 and 500 or (basis is not null and length(basis) > 200)
+    or (new_typed <> 0 and basis is null) then
+    raise exception 'invalid: send the corrected amount, a reason, and what the amount is for unless it is 0';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended('rent_change:'||p_tenancy_id::text, 0));
+  select * into a from public.tenancy_adoptions where account_id = p_account_id and tenancy_id = p_tenancy_id
+    and deleted_at is null;
+  if not found then raise exception 'not_found: no starting balance for this tenancy' using errcode = 'P0002'; end if;
+  if not exists (select 1 from public.accounts where id = p_account_id and opening_balance_ledger_enabled) then
+    raise exception 'conflict: opening_ledger_disabled';
+  end if;
+  select * into old_charge from public.charges where account_id = p_account_id and opening_adoption_id = a.id
+    and voided_at is null and deleted_at is null;
+  select * into old_payment from public.payments where account_id = p_account_id and opening_adoption_id = a.id
+    and voided_at is null and deleted_at is null;
+  if old_charge.id is null and old_payment.id is null and not exists (
+    select 1 from public.opening_balance_corrections c where c.account_id = p_account_id and c.adoption_id = a.id) then
+    raise exception 'conflict: opening_not_in_ledger';
+  end if;
+  select * into cur from public._current_opening(a);
+  new_opening := new_typed + cur.added_cents;
+  if new_typed = cur.typed_cents then raise exception 'invalid: opening_unchanged'; end if;
+  marker := 'Starting balance corrected: ' || reason;
+  select to_jsonb(s) into owed_before from public.owed_summaries(p_account_id, p_tenancy_id) s where s.currency = a.currency;
+
+  -- Release what the old entry carried, then void it.
+  create temporary table if not exists opening_correction_moves(
+    ord integer, allocation_id uuid, payment_id uuid, charge_id uuid, amount_cents bigint) on commit drop;
+  truncate opening_correction_moves;
+  if old_charge.id is not null then
+    insert into opening_correction_moves
+      select row_number() over (order by p.received_at nulls first, p.created_at, x.created_at)::integer,
+        x.id, x.payment_id, x.charge_id, x.amount_cents
+      from public.payment_allocations x join public.payments p on p.account_id = x.account_id and p.id = x.payment_id
+      where x.account_id = p_account_id and x.charge_id = old_charge.id and x.voided_at is null and x.deleted_at is null
+        and p.voided_at is null and p.deleted_at is null;
+  elsif old_payment.id is not null then
+    insert into opening_correction_moves
+      select row_number() over (order by c.due_date, c.created_at, x.created_at)::integer,
+        x.id, x.payment_id, x.charge_id, x.amount_cents
+      from public.payment_allocations x join public.charges c on c.account_id = x.account_id and c.id = x.charge_id
+      where x.account_id = p_account_id and x.payment_id = old_payment.id and x.voided_at is null and x.deleted_at is null
+        and c.voided_at is null and c.deleted_at is null;
+  end if;
+  update public.payment_allocations set voided_at = now(), void_reason = marker
+    where account_id = p_account_id and id in (select allocation_id from opening_correction_moves);
+  if old_charge.id is not null then
+    update public.charges set voided_at = clock_timestamp(), void_reason = marker, updated_at = clock_timestamp()
+      where account_id = p_account_id and id = old_charge.id;
+  end if;
+  if old_payment.id is not null then
+    update public.payments set voided_at = clock_timestamp(), void_reason = marker, updated_at = clock_timestamp()
+      where account_id = p_account_id and id = old_payment.id;
+  end if;
+
+  -- The new opening entry, linked to what it replaces.
+  if new_opening > 0 then
+    insert into public.charges(account_id, tenancy_id, type, amount_cents, currency, due_date, description,
+      opening_adoption_id, opening_category, replaces_charge_id)
+    values (p_account_id, p_tenancy_id, 'opening_balance', new_opening, a.currency, coalesce(a.opening_on, a.adoption_date),
+      'Entered at setup (corrected)', a.id,
+      case lower(coalesce(basis, old_charge.opening_category, ''))
+        when 'rent' then 'rent' when 'fees' then 'fees' when 'utilities' then 'utilities'
+        when 'several' then 'mixed' when 'mixed' then 'mixed' else 'unspecified' end,
+      old_charge.id)
+    returning id into new_charge_id;
+  elsif new_opening < 0 then
+    insert into public.payments(account_id, tenancy_id, amount_cents, currency, method, received_at, receipt_date_unknown,
+      entry_source, opening_adoption_id, opening_credit_on, replaces_payment_id)
+    values (p_account_id, p_tenancy_id, -new_opening, a.currency, null, null, true, 'opening_credit', a.id,
+      coalesce(a.opening_on, a.adoption_date), old_payment.id)
+    returning id into new_payment_id;
+  end if;
+
+  -- Re-apply the same money oldest first, up to the new amount.
+  left_cents := abs(new_opening);
+  for alloc in select * from opening_correction_moves order by ord loop
+    applied := 0;
+    if new_charge_id is not null and old_charge.id is not null then
+      applied := least(left_cents, alloc.amount_cents);
+      if applied > 0 then
+        insert into public.payment_allocations(account_id, payment_id, charge_id, amount_cents)
+        values (p_account_id, alloc.payment_id, new_charge_id, applied);
+      end if;
+    elsif new_payment_id is not null and old_payment.id is not null then
+      applied := least(left_cents, alloc.amount_cents);
+      if applied > 0 then
+        insert into public.payment_allocations(account_id, payment_id, charge_id, amount_cents)
+        values (p_account_id, new_payment_id, alloc.charge_id, applied);
+      end if;
+    end if;
+    left_cents := left_cents - applied;
+    moves := moves || jsonb_build_array(jsonb_build_object('allocation_id', alloc.allocation_id,
+      'payment_id', alloc.payment_id, 'charge_id', alloc.charge_id, 'amount_cents', alloc.amount_cents,
+      'moved_cents', applied, 'released_cents', alloc.amount_cents - applied));
+  end loop;
+
+  insert into public.opening_balance_corrections(account_id, tenancy_id, adoption_id, previous_typed_cents,
+    previous_opening_cents, typed_cents, opening_cents, basis, reason, replaced_charge_id, replaced_payment_id,
+    new_charge_id, new_payment_id, allocations, corrected_by)
+  values (p_account_id, p_tenancy_id, a.id, cur.typed_cents, cur.opening_cents, new_typed, new_opening, basis, reason,
+    old_charge.id, old_payment.id, new_charge_id, new_payment_id, moves, auth.uid())
+  returning id into correction_id;
+  select to_jsonb(s) into owed_after from public.owed_summaries(p_account_id, p_tenancy_id) s where s.currency = a.currency;
+  return jsonb_build_object('correction_id', correction_id, 'adoption_id', a.id, 'currency', a.currency,
+    'previous', jsonb_build_object('typed_cents', cur.typed_cents, 'opening_cents', cur.opening_cents,
+      'entry', case when old_charge.id is not null then jsonb_build_object('kind', 'charge', 'id', old_charge.id)
+        when old_payment.id is not null then jsonb_build_object('kind', 'credit', 'id', old_payment.id)
+        else jsonb_build_object('kind', 'none', 'id', null) end),
+    'next', jsonb_build_object('typed_cents', new_typed, 'opening_cents', new_opening, 'added_receipts_cents', cur.added_cents,
+      'entry', case when new_charge_id is not null then jsonb_build_object('kind', 'charge', 'id', new_charge_id)
+        when new_payment_id is not null then jsonb_build_object('kind', 'credit', 'id', new_payment_id)
+        else jsonb_build_object('kind', 'none', 'id', null) end),
+    'allocations', moves, 'owed_before', owed_before, 'owed_after', owed_after);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."_apply_opening_correction"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb") OWNER TO "postgres";
+
+--
 -- Name: _assert_allocation_integrity(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -1500,6 +1649,64 @@ $$;
 
 ALTER FUNCTION "public"."_comm_threads_guard_update"() OWNER TO "postgres";
 
+SET default_tablespace = '';
+
+SET default_table_access_method = "heap";
+
+--
+-- Name: tenancy_adoptions; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."tenancy_adoptions" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "account_id" "uuid" NOT NULL,
+    "tenancy_id" "uuid" NOT NULL,
+    "adoption_date" "date" NOT NULL,
+    "opening_balance_cents" bigint DEFAULT 0 NOT NULL,
+    "currency" "text" NOT NULL,
+    "balance_basis" "text",
+    "needs_review" boolean DEFAULT false NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "deleted_at" timestamp with time zone,
+    "includes_current_rent" boolean,
+    "opening_on" "date",
+    "typed_opening_cents" bigint,
+    "earlier_receipts" "jsonb",
+    CONSTRAINT "tenancy_adoptions_balance_basis_check" CHECK ((("balance_basis" IS NULL) OR (("length"("balance_basis") >= 1) AND ("length"("balance_basis") <= 200)))),
+    CONSTRAINT "tenancy_adoptions_currency_check" CHECK (("char_length"("currency") = 3))
+);
+
+ALTER TABLE ONLY "public"."tenancy_adoptions" FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."tenancy_adoptions" OWNER TO "postgres";
+
+--
+-- Name: _current_opening("public"."tenancy_adoptions"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_current_opening"("p_adoption" "public"."tenancy_adoptions") RETURNS TABLE("typed_cents" bigint, "opening_cents" bigint, "added_cents" bigint)
+    LANGUAGE "sql" STABLE
+    SET "search_path" TO 'public'
+    AS $$
+  with latest as (
+    select c.typed_cents, c.opening_cents from public.opening_balance_corrections c
+    where c.account_id = p_adoption.account_id and c.adoption_id = p_adoption.id
+    order by c.corrected_at desc, c.id desc limit 1
+  ),
+  added as (
+    select coalesce(sum((e->>'amount_cents')::bigint) filter (where e->>'choice' = 'add_to_owed'), 0)::bigint as cents
+    from jsonb_array_elements(coalesce(p_adoption.earlier_receipts, '[]')) e
+  )
+  select coalesce((select l.typed_cents from latest l), p_adoption.typed_opening_cents, p_adoption.opening_balance_cents),
+    coalesce((select l.opening_cents from latest l), p_adoption.opening_balance_cents),
+    (select cents from added)
+$$;
+
+
+ALTER FUNCTION "public"."_current_opening"("p_adoption" "public"."tenancy_adoptions") OWNER TO "postgres";
+
 --
 -- Name: _date_context_without_warning("uuid", "uuid", "uuid", "uuid"); Type: FUNCTION; Schema: public; Owner: postgres
 --
@@ -2132,6 +2339,22 @@ $$;
 ALTER FUNCTION "public"."_freeze_document_version_provenance"() OWNER TO "postgres";
 
 --
+-- Name: _freeze_opening_balance_correction(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_freeze_opening_balance_correction"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  raise exception 'opening balance corrections are immutable' using errcode = '42501';
+end;
+$$;
+
+
+ALTER FUNCTION "public"."_freeze_opening_balance_correction"() OWNER TO "postgres";
+
+--
 -- Name: _freeze_payment_receipt_provenance(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -2237,9 +2460,9 @@ CREATE OR REPLACE FUNCTION "public"."_guard_charge_replacement"() RETURNS "trigg
     SET "search_path" TO 'public'
     AS $$
 begin
-  if (tg_op = 'INSERT' and new.replaces_charge_id is not null and current_user <> 'tenancy_date_writer')
+  if (tg_op = 'INSERT' and new.replaces_charge_id is not null and current_user not in ('tenancy_date_writer', 'postgres'))
     or (tg_op = 'UPDATE' and new.replaces_charge_id is distinct from old.replaces_charge_id) then
-    raise exception 'Move-out replacements are written by the tenancy command' using errcode = '42501';
+    raise exception 'Replacement charges are written by the tenancy commands' using errcode = '42501';
   end if;
   return new;
 end;
@@ -2370,6 +2593,26 @@ $$;
 
 
 ALTER FUNCTION "public"."_guard_opening_balance_provenance"() OWNER TO "postgres";
+
+--
+-- Name: _guard_payment_replacement(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_guard_payment_replacement"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  if (tg_op = 'INSERT' and new.replaces_payment_id is not null and current_user <> 'postgres')
+    or (tg_op = 'UPDATE' and new.replaces_payment_id is distinct from old.replaces_payment_id) then
+    raise exception 'Replacement payments are written by the correction command' using errcode = '42501';
+  end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."_guard_payment_replacement"() OWNER TO "postgres";
 
 --
 -- Name: _guard_recorded_tenancy_ending(); Type: FUNCTION; Schema: public; Owner: postgres
@@ -2783,39 +3026,6 @@ $$;
 
 ALTER FUNCTION "public"."_leases_guard"() OWNER TO "postgres";
 
-SET default_tablespace = '';
-
-SET default_table_access_method = "heap";
-
---
--- Name: tenancy_adoptions; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE IF NOT EXISTS "public"."tenancy_adoptions" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "account_id" "uuid" NOT NULL,
-    "tenancy_id" "uuid" NOT NULL,
-    "adoption_date" "date" NOT NULL,
-    "opening_balance_cents" bigint DEFAULT 0 NOT NULL,
-    "currency" "text" NOT NULL,
-    "balance_basis" "text",
-    "needs_review" boolean DEFAULT false NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "deleted_at" timestamp with time zone,
-    "includes_current_rent" boolean,
-    "opening_on" "date",
-    "typed_opening_cents" bigint,
-    "earlier_receipts" "jsonb",
-    CONSTRAINT "tenancy_adoptions_balance_basis_check" CHECK ((("balance_basis" IS NULL) OR (("length"("balance_basis") >= 1) AND ("length"("balance_basis") <= 200)))),
-    CONSTRAINT "tenancy_adoptions_currency_check" CHECK (("char_length"("currency") = 3))
-);
-
-ALTER TABLE ONLY "public"."tenancy_adoptions" FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE "public"."tenancy_adoptions" OWNER TO "postgres";
-
 --
 -- Name: _materialize_opening_balance("public"."tenancy_adoptions"); Type: FUNCTION; Schema: public; Owner: postgres
 --
@@ -2834,14 +3044,14 @@ begin
       case lower(btrim(p_adoption.balance_basis))
         when 'rent' then 'rent' when 'fees' then 'fees' when 'utilities' then 'utilities'
         when 'several' then 'mixed' when 'mixed' then 'mixed' else 'unspecified' end)
-    on conflict (account_id, opening_adoption_id) where opening_adoption_id is not null do nothing;
+    on conflict (account_id, opening_adoption_id) where opening_adoption_id is not null and voided_at is null do nothing;
   else
     insert into public.payments(account_id, tenancy_id, amount_cents, currency, method, received_at,
       receipt_date_unknown, entry_source, opening_adoption_id, opening_credit_on)
     values (p_adoption.account_id, p_adoption.tenancy_id, -p_adoption.opening_balance_cents,
       p_adoption.currency, null, null, true, 'opening_credit', p_adoption.id,
       coalesce(p_adoption.opening_on, p_adoption.adoption_date))
-    on conflict (account_id, opening_adoption_id) where opening_adoption_id is not null do nothing;
+    on conflict (account_id, opening_adoption_id) where opening_adoption_id is not null and voided_at is null do nothing;
   end if;
 end;
 $$;
@@ -8429,6 +8639,35 @@ $$;
 ALTER FUNCTION "public"."confirm_unverified_sender"("p_account_id" "uuid", "p_interaction_id" "uuid") OWNER TO "postgres";
 
 --
+-- Name: correct_opening_balance("uuid", "uuid", "jsonb", "text", "text"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."correct_opening_balance"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb", "p_idempotency_key" "text", "p_request_fingerprint" "text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare k public.idempotency_keys; result jsonb;
+begin
+  if auth.uid() is null or not exists (select 1 from public.account_members m where m.account_id = p_account_id
+    and m.user_id = auth.uid() and m.deleted_at is null and m.role in ('owner','manager')) then
+    raise exception 'not_found' using errcode = 'P0002';
+  end if;
+  select * into k from public.idempotency_keys where account_id = p_account_id and key = p_idempotency_key for update;
+  if not found or k.request_fingerprint is distinct from p_request_fingerprint then
+    raise exception 'invalid: idempotency claim missing or mismatched';
+  end if;
+  if k.completed_at is not null then return k.body; end if;
+  result := public._apply_opening_correction(p_account_id, p_tenancy_id, p_payload);
+  update public.idempotency_keys set status_code = 200, body = result, completed_at = clock_timestamp()
+    where account_id = p_account_id and key = p_idempotency_key;
+  return result;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."correct_opening_balance"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb", "p_idempotency_key" "text", "p_request_fingerprint" "text") OWNER TO "postgres";
+
+--
 -- Name: correct_tenancy_dates("uuid", "uuid", "text", "text", "jsonb"); Type: FUNCTION; Schema: public; Owner: tenancy_date_writer
 --
 
@@ -11797,6 +12036,32 @@ end $_$;
 ALTER FUNCTION "public"."preview_billing_setup_facts"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_intent" "jsonb", "p_tenancy" "jsonb", "p_lease" "jsonb") OWNER TO "postgres";
 
 --
+-- Name: preview_opening_balance_correction("uuid", "uuid", "jsonb"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."preview_opening_balance_correction"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare result jsonb;
+begin
+  if auth.uid() is null or not exists (select 1 from public.account_members m where m.account_id = p_account_id
+    and m.user_id = auth.uid() and m.deleted_at is null and m.role in ('owner','manager')) then
+    raise exception 'not_found' using errcode = 'P0002';
+  end if;
+  begin
+    result := public._apply_opening_correction(p_account_id, p_tenancy_id, p_payload) - 'correction_id';
+    raise exception 'opening_correction_preview' using errcode = 'P0099';
+  exception when sqlstate 'P0099' then null;
+  end;
+  return result;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."preview_opening_balance_correction"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb") OWNER TO "postgres";
+
+--
 -- Name: preview_payment("uuid", "jsonb"); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -12548,7 +12813,9 @@ CREATE OR REPLACE FUNCTION "public"."rent_rollup"("p_account_id" "uuid", "p_stat
   adopted as (
     select a.tenancy_id,a.currency,a.opening_balance_cents,jsonb_build_object('adoption_date',a.adoption_date,
       'opening_balance_cents',
-      a.opening_balance_cents,'recorded_in_ledger',(
+      coalesce((select c.opening_cents from public.opening_balance_corrections c where c.account_id=a.account_id
+        and c.adoption_id=a.id order by c.corrected_at desc, c.id desc limit 1), a.opening_balance_cents),
+      'recorded_in_ledger',(
         exists(select 1 from public.charges c where c.account_id=a.account_id and c.opening_adoption_id=a.id)
         or exists(select 1 from public.payments p where p.account_id=a.account_id and p.opening_adoption_id=a.id)
       ),'currency',a.currency,'balance_basis',a.balance_basis,
@@ -15937,6 +16204,36 @@ COMMENT ON COLUMN "public"."notices"."notice_class" IS 'Machine-readable functio
 
 
 --
+-- Name: opening_balance_corrections; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."opening_balance_corrections" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "account_id" "uuid" NOT NULL,
+    "tenancy_id" "uuid" NOT NULL,
+    "adoption_id" "uuid" NOT NULL,
+    "previous_typed_cents" bigint NOT NULL,
+    "previous_opening_cents" bigint NOT NULL,
+    "typed_cents" bigint NOT NULL,
+    "opening_cents" bigint NOT NULL,
+    "basis" "text",
+    "reason" "text" NOT NULL,
+    "replaced_charge_id" "uuid",
+    "replaced_payment_id" "uuid",
+    "new_charge_id" "uuid",
+    "new_payment_id" "uuid",
+    "allocations" "jsonb" DEFAULT '[]'::"jsonb" NOT NULL,
+    "corrected_by" "uuid" NOT NULL,
+    "corrected_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "opening_balance_corrections_reason_check" CHECK ((("length"("btrim"("reason")) >= 1) AND ("length"("btrim"("reason")) <= 500)))
+);
+
+ALTER TABLE ONLY "public"."opening_balance_corrections" FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."opening_balance_corrections" OWNER TO "postgres";
+
+--
 -- Name: owner_phone_verification_receipts; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -16009,6 +16306,7 @@ CREATE TABLE IF NOT EXISTS "public"."payments" (
     "entry_source" "text" DEFAULT 'manual'::"text" NOT NULL,
     "opening_adoption_id" "uuid",
     "opening_credit_on" "date",
+    "replaces_payment_id" "uuid",
     CONSTRAINT "payments_amount_cents_positive" CHECK (("amount_cents" > 0)),
     CONSTRAINT "payments_currency_check" CHECK (("length"("currency") = 3)),
     CONSTRAINT "payments_entry_source" CHECK (("entry_source" = ANY (ARRAY['manual'::"text", 'entered_at_setup'::"text", 'import'::"text", 'opening_credit'::"text"]))),
@@ -16018,7 +16316,8 @@ CASE
     WHEN ("entry_source" = 'opening_credit'::"text") THEN (("opening_adoption_id" IS NOT NULL) AND ("opening_credit_on" IS NOT NULL) AND ("received_at" IS NULL) AND ("method" IS NULL) AND ("payer_tenant_id" IS NULL) AND ("processor_ref" IS NULL))
     ELSE (("opening_adoption_id" IS NULL) AND ("opening_credit_on" IS NULL) AND ("method" IS NOT NULL))
 END),
-    CONSTRAINT "payments_receipt_date_knowledge" CHECK ((("received_at" IS NULL) = "receipt_date_unknown"))
+    CONSTRAINT "payments_receipt_date_knowledge" CHECK ((("received_at" IS NULL) = "receipt_date_unknown")),
+    CONSTRAINT "payments_replacement_shape" CHECK ((("replaces_payment_id" IS NULL) OR ("entry_source" = 'opening_credit'::"text")))
 );
 
 ALTER TABLE ONLY "public"."payments" FORCE ROW LEVEL SECURITY;
@@ -17381,6 +17680,14 @@ ALTER TABLE ONLY "public"."notices"
 
 
 --
+-- Name: opening_balance_corrections opening_balance_corrections_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."opening_balance_corrections"
+    ADD CONSTRAINT "opening_balance_corrections_pkey" PRIMARY KEY ("id");
+
+
+--
 -- Name: owner_phone_verification_receipts owner_phone_verification_receipts_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -18006,10 +18313,10 @@ CREATE UNIQUE INDEX "charges_one_live_late_fee_per_parent" ON "public"."charges"
 
 
 --
--- Name: charges_one_per_opening_adoption; Type: INDEX; Schema: public; Owner: postgres
+-- Name: charges_one_live_per_opening_adoption; Type: INDEX; Schema: public; Owner: postgres
 --
 
-CREATE UNIQUE INDEX "charges_one_per_opening_adoption" ON "public"."charges" USING "btree" ("account_id", "opening_adoption_id") WHERE ("opening_adoption_id" IS NOT NULL);
+CREATE UNIQUE INDEX "charges_one_live_per_opening_adoption" ON "public"."charges" USING "btree" ("account_id", "opening_adoption_id") WHERE (("opening_adoption_id" IS NOT NULL) AND ("voided_at" IS NULL));
 
 
 --
@@ -18860,6 +19167,13 @@ CREATE INDEX "notices_tenancy_id_idx" ON "public"."notices" USING "btree" ("tena
 
 
 --
+-- Name: opening_balance_corrections_adoption_idx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "opening_balance_corrections_adoption_idx" ON "public"."opening_balance_corrections" USING "btree" ("account_id", "adoption_id", "corrected_at");
+
+
+--
 -- Name: payment_allocation_request_key; Type: INDEX; Schema: public; Owner: postgres
 --
 
@@ -18902,10 +19216,10 @@ CREATE INDEX "payments_account_received_idx" ON "public"."payments" USING "btree
 
 
 --
--- Name: payments_one_per_opening_adoption; Type: INDEX; Schema: public; Owner: postgres
+-- Name: payments_one_live_per_opening_adoption; Type: INDEX; Schema: public; Owner: postgres
 --
 
-CREATE UNIQUE INDEX "payments_one_per_opening_adoption" ON "public"."payments" USING "btree" ("account_id", "opening_adoption_id") WHERE ("opening_adoption_id" IS NOT NULL);
+CREATE UNIQUE INDEX "payments_one_live_per_opening_adoption" ON "public"."payments" USING "btree" ("account_id", "opening_adoption_id") WHERE (("opening_adoption_id" IS NOT NULL) AND ("voided_at" IS NULL));
 
 
 --
@@ -19854,6 +20168,20 @@ CREATE OR REPLACE TRIGGER "notices_reject_anchored_mutation" BEFORE UPDATE ON "p
 
 
 --
+-- Name: opening_balance_corrections opening_balance_corrections_audit; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "opening_balance_corrections_audit" AFTER INSERT OR DELETE OR UPDATE ON "public"."opening_balance_corrections" FOR EACH ROW EXECUTE FUNCTION "public"."_emit_event"();
+
+
+--
+-- Name: opening_balance_corrections opening_balance_corrections_freeze; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "opening_balance_corrections_freeze" BEFORE UPDATE ON "public"."opening_balance_corrections" FOR EACH ROW EXECUTE FUNCTION "public"."_freeze_opening_balance_correction"();
+
+
+--
 -- Name: payment_allocations payment_allocations_audit; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
@@ -19879,6 +20207,13 @@ CREATE CONSTRAINT TRIGGER "payment_future_date_confirmation" AFTER INSERT ON "pu
 --
 
 CREATE OR REPLACE TRIGGER "payments_audit" AFTER INSERT OR DELETE OR UPDATE ON "public"."payments" FOR EACH ROW EXECUTE FUNCTION "public"."_emit_event"();
+
+
+--
+-- Name: payments payments_guard_replacement; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "payments_guard_replacement" BEFORE INSERT OR UPDATE OF "replaces_payment_id" ON "public"."payments" FOR EACH ROW EXECUTE FUNCTION "public"."_guard_payment_replacement"();
 
 
 --
@@ -21195,6 +21530,30 @@ ALTER TABLE ONLY "public"."notices"
 
 
 --
+-- Name: opening_balance_corrections opening_balance_corrections_account_id_adoption_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."opening_balance_corrections"
+    ADD CONSTRAINT "opening_balance_corrections_account_id_adoption_id_fkey" FOREIGN KEY ("account_id", "adoption_id") REFERENCES "public"."tenancy_adoptions"("account_id", "id");
+
+
+--
+-- Name: opening_balance_corrections opening_balance_corrections_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."opening_balance_corrections"
+    ADD CONSTRAINT "opening_balance_corrections_account_id_fkey" FOREIGN KEY ("account_id") REFERENCES "public"."accounts"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: opening_balance_corrections opening_balance_corrections_account_id_tenancy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."opening_balance_corrections"
+    ADD CONSTRAINT "opening_balance_corrections_account_id_tenancy_id_fkey" FOREIGN KEY ("account_id", "tenancy_id") REFERENCES "public"."tenancies"("account_id", "id");
+
+
+--
 -- Name: owner_phone_verification_receipts owner_phone_verification_receipts_account_id_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -21240,6 +21599,14 @@ ALTER TABLE ONLY "public"."payments"
 
 ALTER TABLE ONLY "public"."payments"
     ADD CONSTRAINT "payments_opening_adoption_fk" FOREIGN KEY ("account_id", "opening_adoption_id") REFERENCES "public"."tenancy_adoptions"("account_id", "id");
+
+
+--
+-- Name: payments payments_replaces_payment_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."payments"
+    ADD CONSTRAINT "payments_replaces_payment_fk" FOREIGN KEY ("account_id", "replaces_payment_id") REFERENCES "public"."payments"("account_id", "id");
 
 
 --
@@ -22483,6 +22850,21 @@ CREATE POLICY "notices_member_all" ON "public"."notices" USING (("account_id" IN
 
 
 --
+-- Name: opening_balance_corrections; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."opening_balance_corrections" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: opening_balance_corrections opening_balance_corrections_member_select; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "opening_balance_corrections_member_select" ON "public"."opening_balance_corrections" FOR SELECT USING (("account_id" IN ( SELECT "m"."account_id"
+   FROM "public"."account_members" "m"
+  WHERE (("m"."user_id" = ( SELECT "auth"."uid"() AS "uid")) AND ("m"."deleted_at" IS NULL)))));
+
+
+--
 -- Name: owner_phone_verification_receipts owner_phone_receipts_self_select; Type: POLICY; Schema: public; Owner: postgres
 --
 
@@ -22963,6 +23345,13 @@ GRANT ALL ON FUNCTION "public"."_applicable_date_findings"("p_account_id" "uuid"
 
 
 --
+-- Name: FUNCTION "_apply_opening_correction"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_apply_opening_correction"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb") FROM PUBLIC;
+
+
+--
 -- Name: FUNCTION "_assert_allocation_integrity"(); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -23197,6 +23586,24 @@ GRANT ALL ON FUNCTION "public"."_comm_threads_guard_update"() TO "service_role";
 
 
 --
+-- Name: TABLE "tenancy_adoptions"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT,INSERT,UPDATE ON TABLE "public"."tenancy_adoptions" TO "authenticated";
+GRANT SELECT,INSERT,UPDATE ON TABLE "public"."tenancy_adoptions" TO "service_role";
+GRANT SELECT,INSERT,UPDATE ON TABLE "public"."tenancy_adoptions" TO "tenancy_date_writer";
+
+
+--
+-- Name: FUNCTION "_current_opening"("p_adoption" "public"."tenancy_adoptions"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_current_opening"("p_adoption" "public"."tenancy_adoptions") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."_current_opening"("p_adoption" "public"."tenancy_adoptions") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."_current_opening"("p_adoption" "public"."tenancy_adoptions") TO "service_role";
+
+
+--
 -- Name: FUNCTION "_date_context_without_warning"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_lease_id" "uuid", "p_rent_schedule_id" "uuid"); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -23325,6 +23732,13 @@ GRANT ALL ON FUNCTION "public"."_freeze_document_version_provenance"() TO "servi
 
 
 --
+-- Name: FUNCTION "_freeze_opening_balance_correction"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_freeze_opening_balance_correction"() FROM PUBLIC;
+
+
+--
 -- Name: FUNCTION "_freeze_payment_receipt_provenance"(); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -23390,6 +23804,13 @@ REVOKE ALL ON FUNCTION "public"."_guard_opening_balance_parent"() FROM PUBLIC;
 --
 
 REVOKE ALL ON FUNCTION "public"."_guard_opening_balance_provenance"() FROM PUBLIC;
+
+
+--
+-- Name: FUNCTION "_guard_payment_replacement"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_guard_payment_replacement"() FROM PUBLIC;
 
 
 --
@@ -23493,15 +23914,6 @@ GRANT ALL ON FUNCTION "public"."_lease_agreed_terms_guard"() TO "service_role";
 GRANT ALL ON FUNCTION "public"."_leases_guard"() TO "anon";
 GRANT ALL ON FUNCTION "public"."_leases_guard"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."_leases_guard"() TO "service_role";
-
-
---
--- Name: TABLE "tenancy_adoptions"; Type: ACL; Schema: public; Owner: postgres
---
-
-GRANT SELECT,INSERT,UPDATE ON TABLE "public"."tenancy_adoptions" TO "authenticated";
-GRANT SELECT,INSERT,UPDATE ON TABLE "public"."tenancy_adoptions" TO "service_role";
-GRANT SELECT,INSERT,UPDATE ON TABLE "public"."tenancy_adoptions" TO "tenancy_date_writer";
 
 
 --
@@ -24350,6 +24762,15 @@ GRANT ALL ON FUNCTION "public"."confirm_unverified_sender"("p_account_id" "uuid"
 
 
 --
+-- Name: FUNCTION "correct_opening_balance"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb", "p_idempotency_key" "text", "p_request_fingerprint" "text"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."correct_opening_balance"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb", "p_idempotency_key" "text", "p_request_fingerprint" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."correct_opening_balance"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb", "p_idempotency_key" "text", "p_request_fingerprint" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."correct_opening_balance"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb", "p_idempotency_key" "text", "p_request_fingerprint" "text") TO "service_role";
+
+
+--
 -- Name: FUNCTION "correct_tenancy_dates"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_idempotency_key" "text", "p_request_fingerprint" "text", "p_payload" "jsonb"); Type: ACL; Schema: public; Owner: tenancy_date_writer
 --
 
@@ -24799,6 +25220,15 @@ REVOKE ALL ON FUNCTION "public"."preview_billing_setup_facts"("p_account_id" "uu
 GRANT ALL ON FUNCTION "public"."preview_billing_setup_facts"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_intent" "jsonb", "p_tenancy" "jsonb", "p_lease" "jsonb") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."preview_billing_setup_facts"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_intent" "jsonb", "p_tenancy" "jsonb", "p_lease" "jsonb") TO "service_role";
 GRANT ALL ON FUNCTION "public"."preview_billing_setup_facts"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_intent" "jsonb", "p_tenancy" "jsonb", "p_lease" "jsonb") TO "tenancy_date_writer";
+
+
+--
+-- Name: FUNCTION "preview_opening_balance_correction"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."preview_opening_balance_correction"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."preview_opening_balance_correction"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."preview_opening_balance_correction"("p_account_id" "uuid", "p_tenancy_id" "uuid", "p_payload" "jsonb") TO "service_role";
 
 
 --
@@ -25735,6 +26165,15 @@ GRANT ALL ON TABLE "public"."notices" TO "anon";
 GRANT ALL ON TABLE "public"."notices" TO "authenticated";
 GRANT ALL ON TABLE "public"."notices" TO "service_role";
 GRANT SELECT ON TABLE "public"."notices" TO "tenancy_date_writer";
+
+
+--
+-- Name: TABLE "opening_balance_corrections"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."opening_balance_corrections" TO "anon";
+GRANT ALL ON TABLE "public"."opening_balance_corrections" TO "authenticated";
+GRANT ALL ON TABLE "public"."opening_balance_corrections" TO "service_role";
 
 
 --
