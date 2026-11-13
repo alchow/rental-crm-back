@@ -390,4 +390,153 @@ begin
 end;
 $test$;
 
+-- WP-09: a deposit receipt dated before the itemized months is not an earlier receipt; it
+-- keeps its deposit allocation exactly as without itemize_from.
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  person uuid := current_setting('field_log.person')::uuid;
+  today date := public._account_date(account);
+  itemize date := (date_trunc('month',today) - interval '1 month')::date;
+  draft uuid := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Deposit before itemized');
+  setup jsonb;
+  review jsonb;
+  deposit_id uuid;
+begin
+  setup := pg_temp.setup(person,'2025-06-01',
+    jsonb_build_object('opening_balance',jsonb_build_object('amount_cents',65000,'basis','Rent',
+      'itemize_from',to_char(itemize,'YYYY-MM')),'charge_keys','[]'::jsonb),
+    '[{"draft_key":"deposit_paid","amount_cents":185000,"currency":"USD","received_at":"2025-06-01","method":"check",
+       "allocations":[{"charge_key":"deposit","amount_cents":185000}]}]'::jsonb);
+  setup := jsonb_set(jsonb_set(jsonb_set(setup,'{agreement,deposit_amount_cents}','185000'),
+    '{agreement,deposit_knowledge}','"amount"'),'{billing,deposit}',jsonb_build_object('decision','record',
+      'draft_key','deposit','amount_cents',185000,'currency','USD','due_date',today))
+    || '{"receipt_purposes":{"deposit_paid":"deposit"}}'::jsonb;
+  review := public.preview_tenancy_setup_session(account,draft,setup);
+  if not (review->>'can_confirm')::boolean
+    or exists (select 1 from jsonb_array_elements(review->'findings') f where f->>'rule_id' like 'opening_receipt_unanswered:%')
+    or review->'opening_result'->>'unanswered_count' is distinct from '0'
+    or review->'opening_result'->>'still_owed_cents' is distinct from '65000'
+    or review->'opening_result'->>'answered_receipts_cents' is distinct from '0'
+    or review->'billing_intent'->'payments'->0->'allocations' is distinct from '[{"charge_key":"deposit","amount_cents":185000}]'
+    or review->'billing_intent'->'payments'->0->>'purpose' is distinct from 'deposit' then
+    raise exception 'Deposit receipt was treated as an earlier receipt: %',review;
+  end if;
+  -- An answer naming the deposit receipt is refused: it is not an earlier receipt.
+  begin
+    perform public.preview_tenancy_setup_session(account,draft,jsonb_set(setup,'{billing,rent,opening_balance,earlier_receipts}',
+      '[{"payment_key":"deposit_paid","choice":"add_to_owed"}]'));
+    raise exception 'An earlier-receipt answer for a deposit receipt was accepted';
+  exception when raise_exception then
+    if sqlerrm not like 'invalid: each earlier-receipt answer names one receipt%' then raise; end if;
+  end;
+  perform pg_temp.commit_setup(draft,setup);
+  select id into strict deposit_id from public.charges where tenancy_id=draft and type='deposit';
+  if (select sum(x.amount_cents) from public.payment_allocations x where x.charge_id=deposit_id and x.voided_at is null) is distinct from 185000
+    or (select amount_cents from public.charges where tenancy_id=draft and type='opening_balance') is distinct from 65000
+    or exists (select 1 from public.payment_allocations x join public.charges c on c.id=x.charge_id
+      where c.tenancy_id=draft and c.type='opening_balance')
+    or (select earlier_receipts from public.tenancy_adoptions where tenancy_id=draft) is not null then
+    raise exception 'Deposit receipt lost its deposit allocation at commit';
+  end if;
+end;
+$test$;
+
+-- WP-09: an amount owed with itemize_from is recorded even when the first itemized cycle
+-- has not started (anchor day later than today); preview equals the committed ledger.
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  person uuid := current_setting('field_log.person')::uuid;
+  -- Setup decides "started" with the UTC date, so the anchor follows it.
+  today date := greatest(public._account_date(account), (now() at time zone 'UTC')::date);
+  month_start date := date_trunc('month',today)::date;
+  anchor_day integer := extract(day from today)::integer + 1;
+  start_on date := (month_start - interval '5 months')::date + anchor_day - 1;
+  draft uuid := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Itemized not started');
+  setup jsonb;
+  review jsonb;
+begin
+  if anchor_day > 28 or to_char(public._account_date(account),'YYYY-MM') <> to_char(today,'YYYY-MM') then
+    raise notice 'Skipped: no anchor day later than today in this month';
+    return;
+  end if;
+  setup := pg_temp.setup(person,start_on,jsonb_build_object('due_day',anchor_day,
+    'billing_due_rule',jsonb_build_object('kind','day_of_month','day',anchor_day),
+    'opening_balance',jsonb_build_object('amount_cents',200000,'basis','Rent','itemize_from',to_char(today,'YYYY-MM')),
+    'charge_keys','[]'::jsonb));
+  setup := jsonb_set(setup,'{agreement,rent_due_rule}',jsonb_build_object('kind','day_of_month','day',anchor_day));
+  review := public.preview_tenancy_setup_session(account,draft,setup);
+  if exists (select 1 from jsonb_array_elements(review->'history_periods') h where (h->>'is_elapsed')::boolean) then
+    raise exception 'Fixture: an itemized cycle has already started: %',review->'history_periods';
+  end if;
+  perform pg_temp.commit_setup(draft,setup);
+  if (select amount_cents from public.charges where tenancy_id=draft and type='opening_balance' and voided_at is null)
+      is distinct from (review->'opening_result'->>'still_owed_cents')::bigint
+    or (review->'opening_result'->>'still_owed_cents')::bigint <> 200000
+    or (select opening_on from public.tenancy_adoptions where tenancy_id=draft) is distinct from month_start + anchor_day - 2 then
+    raise exception 'Amount owed from before was dropped: preview %, ledger %',review->'opening_result',
+      (select jsonb_agg(to_jsonb(c)) from public.charges c where tenancy_id=draft);
+  end if;
+end;
+$test$;
+
+-- WP-02: "this month" and the adoption date are the account's date. The zone is chosen so
+-- the account date differs from the UTC date right now (UTC-12 before noon UTC, UTC+14 after).
+reset role;
+update public.accounts set time_zone = case when extract(hour from now() at time zone 'UTC') < 12
+  then 'Etc/GMT+12' else 'Pacific/Kiritimati' end where id=:'account_id';
+set local role authenticated;
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  person uuid := current_setting('field_log.person')::uuid;
+  today date := public._account_date(account);
+  month_start date := date_trunc('month',today)::date;
+  draft uuid := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Account date');
+begin
+  if today = (now() at time zone 'UTC')::date then raise exception 'Fixture: account date equals the UTC date'; end if;
+  perform pg_temp.commit_setup(draft,pg_temp.setup(person,(month_start - interval '2 months')::date,
+    jsonb_build_object('coverage_start',month_start,'regular_anchor',month_start,'history_mode','opening_balance',
+      'opening_balance','{"amount_cents":65000,"basis":"Rent","includes_current_rent":false}'::jsonb)));
+  if (select adoption_date from public.tenancy_adoptions where tenancy_id=draft) is distinct from today
+    or (select due_date from public.charges where tenancy_id=draft and type='opening_balance') is distinct from today
+    or (select cycle_key from public.charges where tenancy_id=draft and type='rent') is distinct from to_char(today,'YYYY-MM') then
+    raise exception 'Setup used the UTC date instead of the account date';
+  end if;
+  perform set_config('field_log.account_date_tenancy',draft::text,true);
+end;
+$test$;
+reset role;
+update public.accounts set time_zone='America/Los_Angeles' where id=:'account_id';
+
+-- WP-02: includes_current_rent skips rent for the adoption month, never a non-rent schedule.
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  person uuid := current_setting('field_log.person')::uuid;
+  month_start date := date_trunc('month',public._account_date(account))::date;
+  draft uuid := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Parking');
+begin
+  perform set_config('request.jwt.claims','{"sub":"dddddddd-dddd-dddd-dddd-dddddddddddd","role":"authenticated"}',true);
+  set local role authenticated;
+  perform pg_temp.commit_setup(draft,pg_temp.setup(person,(month_start - interval '2 months')::date,
+    jsonb_build_object('coverage_start',month_start,'regular_anchor',month_start,'history_mode','opening_balance',
+      'opening_balance','{"amount_cents":65000,"basis":"Rent","includes_current_rent":true}'::jsonb)));
+  reset role;
+  insert into public.rent_schedules(account_id,tenancy_id,kind,amount_cents,currency,due_day,start_date,period_policy_version,
+      regular_anchor,terms_snapshot,billing_due_rule,short_month_policy)
+    select account_id,tenancy_id,'parking',5000,currency,due_day,start_date,period_policy_version,
+      regular_anchor,terms_snapshot,billing_due_rule,short_month_policy
+    from public.rent_schedules where tenancy_id=draft and kind='rent';
+  perform public.generate_rent_charges(account,month_start::timestamp at time zone 'America/Los_Angeles' + interval '1 hour');
+  if exists (select 1 from public.charges where tenancy_id=draft and type='rent')
+    or not exists (select 1 from public.charges where tenancy_id=draft and type='other' and period_start=month_start
+      and amount_cents=5000) then
+    raise exception 'Adoption-month skip is wrong for rent or parking: %',
+      (select jsonb_agg(jsonb_build_object('type',type,'period_start',period_start)) from public.charges where tenancy_id=draft);
+  end if;
+end;
+$test$;
+
 rollback;

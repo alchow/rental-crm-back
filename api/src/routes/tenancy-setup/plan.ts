@@ -219,7 +219,12 @@ export async function planSetup(
       amount_cents: o.amount_cents,
       amount_source: o.amount_source,
     })),
-    opening_receipts: openingReceipts(rent, review, (setup.billing as Json).payments as Json[]),
+    opening_receipts: openingReceipts(
+      rent,
+      review,
+      (setup.billing as Json).payments as Json[],
+      (setup.receipt_purposes as Json) ?? {},
+    ),
   };
   return { setup, review, errors: blocking, failure: blocking.length ? failureOf(blocking) : null };
 }
@@ -245,8 +250,8 @@ function attributePayers(
   return { payments: out, errors };
 }
 
-/** Receipts dated before the itemized months, with the landlord's answer when given. */
-function openingReceipts(rent: Json, review: Json, payments: Json[] = []) {
+/** Rent receipts dated before the itemized months, with the landlord's answer when given. */
+function openingReceipts(rent: Json, review: Json, payments: Json[] = [], purposes: Json = {}) {
   const opening = rent.opening_balance as Json | undefined;
   const from = opening?.itemize_from as string | undefined;
   if (!from) return [];
@@ -265,6 +270,8 @@ function openingReceipts(rent: Json, review: Json, payments: Json[] = []) {
   return payments
     .map((payment, index) => ({ payment, index }))
     .filter(({ payment }) => {
+      // A deposit receipt keeps its deposit allocation; only rent can be owed from before.
+      if ((purposes[String(payment.draft_key)] ?? 'rent') !== 'rent') return false;
       const at = payment.received_at as string | null | undefined;
       return payment.receipt_date_unknown === true || !at || at.slice(0, 10) < start;
     })

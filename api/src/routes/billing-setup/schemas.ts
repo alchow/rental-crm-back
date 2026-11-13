@@ -46,7 +46,8 @@ const ConfigureRent = z
       .object({
         amount_cents: z.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER),
         basis: z.string().trim().min(1).max(200).optional().openapi({
-          description: 'What the amount is for. Required unless the amount owed from before itemized months is 0.',
+          description:
+            'What the amount is for. Required unless the amount owed from before itemized months is 0.',
         }),
         includes_current_rent: z.boolean().optional(),
         itemize_from: z
@@ -134,6 +135,10 @@ const Payment = z
     entry_source: z.enum(['manual', 'entered_at_setup', 'import']).optional(),
     payer_tenant_id: z.string().uuid().optional().openapi({
       description: 'Who paid. Setup fills it in for a one-person tenancy; omit when unsure.',
+    }),
+    purpose: z.enum(['rent', 'deposit']).optional().openapi({
+      description:
+        'What the receipt pays; omitted means rent. Only a rent receipt dated before opening_balance.itemize_from is an earlier receipt. Tenancy setup sets it from receipt_purposes.',
     }),
     reference: z.string().max(500).optional(),
     notes: z.string().max(2000).optional(),

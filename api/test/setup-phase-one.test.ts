@@ -436,6 +436,71 @@ await check(
   },
 );
 
+await check('a deposit paid before the itemized months keeps its deposit allocation', async () => {
+  await pool.query('update public.accounts set opening_balance_ledger_enabled=true where id=$1', [
+    accountId,
+  ]);
+  const id = await draft();
+  const month = new Date(`${today.slice(0, 7)}-01T12:00:00Z`);
+  month.setUTCMonth(month.getUTCMonth() - 1);
+  const itemizeFrom = month.toISOString().slice(0, 7);
+  const input = setup(
+    {
+      tenancy: { start_date: '2025-06-01', end_date: null },
+      agreement: { ...setup().agreement, term_start: '2025-06-01' },
+      deposit_answer: {
+        amount_cents: 185000,
+        paid: 'yes',
+        payment: { method: 'check', received_at: '2025-06-01' },
+      },
+    },
+    {
+      coverage_start: '2025-06-01',
+      regular_anchor: '2025-06-01',
+      opening_balance: { amount_cents: 65000, basis: 'Rent', itemize_from: itemizeFrom },
+    },
+  );
+  const review = await request('POST', `/tenancy-setup-sessions/${id}/preview`, input);
+  const r = review.body as {
+    can_confirm: boolean;
+    setup_context: string;
+    opening_receipts: unknown[];
+    opening_result: { still_owed_cents: number; unanswered_count: number; applied_cents: number };
+  };
+  assert(
+    review.status === 200 &&
+      r.can_confirm &&
+      r.opening_receipts.length === 0 &&
+      r.opening_result.unanswered_count === 0 &&
+      r.opening_result.applied_cents === 0 &&
+      r.opening_result.still_owed_cents === 65000,
+    JSON.stringify(review.body),
+  );
+  const committed = await request('POST', `/tenancy-setup-sessions/${id}/commit`, {
+    setup: input,
+    expected_context: r.setup_context,
+    accept_warnings: true,
+  });
+  assert(committed.status === 201, JSON.stringify(committed.body));
+  const tenancyId = (committed.body as { tenancy_id: string }).tenancy_id;
+  const money = await pool.query(
+    `select c.type, c.amount_cents,
+              coalesce((select sum(x.amount_cents) from public.payment_allocations x
+                where x.charge_id = c.id and x.voided_at is null), 0) as applied
+         from public.charges c
+        where c.tenancy_id = $1 and c.type in ('deposit', 'opening_balance') and c.voided_at is null`,
+    [tenancyId],
+  );
+  const byType = Object.fromEntries(
+    money.rows.map((row) => [row.type, [Number(row.amount_cents), Number(row.applied)]]),
+  );
+  assert(
+    JSON.stringify(byType.deposit) === '[185000,185000]' &&
+      JSON.stringify(byType.opening_balance) === '[65000,0]',
+    JSON.stringify(money.rows),
+  );
+});
+
 await check(
   'a period amount records whether it is the suggestion or the landlord own',
   async () => {
@@ -604,6 +669,12 @@ await check('a mistyped starting balance is voided and re-entered', async () => 
     off.status === 409 &&
       (off.body as { error: { code: string } }).error.code === 'opening_ledger_disabled',
     JSON.stringify(off.body),
+  );
+});
+  assert(
+    deleted.status === 409 &&
+      (deleted.body as { error: { code: string } }).error.code === 'opening_entry_deleted',
+    JSON.stringify(deleted.body),
   );
 });
 
