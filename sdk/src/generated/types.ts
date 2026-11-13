@@ -23062,8 +23062,11 @@ export interface components {
             }[];
             findings: {
                 rule_id: string;
-                /** @enum {string} */
-                severity: "review" | "error";
+                /**
+                 * @description info is explanatory only: it needs no acknowledgement or reason and never blocks.
+                 * @enum {string}
+                 */
+                severity: "review" | "error" | "info";
                 message: string;
                 reason_required: boolean;
                 version?: number;
@@ -23147,6 +23150,17 @@ export interface components {
             transition: {
                 ended_schedule_ids: string[];
                 voided_charge_ids: string[];
+            } | null;
+            /** @description With opening_balance.itemize_from: the combined result of the amount owed from before and the answered earlier receipts, exactly as commit records it. Unanswered receipts are left out and counted. */
+            opening_result?: {
+                typed_cents: number;
+                opening_charge_cents: number;
+                opening_credit_cents: number;
+                answered_receipts_cents: number;
+                applied_cents: number;
+                still_owed_cents: number;
+                paid_ahead_cents: number;
+                unanswered_count: number;
             } | null;
         };
         BillingSetupIntent: {
@@ -23236,7 +23250,8 @@ export interface components {
                 history_mode: "itemized" | "opening_balance";
                 opening_balance?: {
                     amount_cents: number;
-                    basis: string;
+                    /** @description What the amount is for. Required unless the amount owed from before itemized months is 0. */
+                    basis?: string;
                     includes_current_rent?: boolean;
                     /** @description With history_mode itemized: the first itemized month. The amount is owed from before that month and is dated the day before it. */
                     itemize_from?: string;

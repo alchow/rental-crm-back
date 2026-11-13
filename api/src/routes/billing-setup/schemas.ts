@@ -45,7 +45,9 @@ const ConfigureRent = z
     opening_balance: z
       .object({
         amount_cents: z.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER),
-        basis: z.string().trim().min(1).max(200),
+        basis: z.string().trim().min(1).max(200).optional().openapi({
+          description: 'What the amount is for. Required unless the amount owed from before itemized months is 0.',
+        }),
         includes_current_rent: z.boolean().optional(),
         itemize_from: z
           .string()
@@ -243,7 +245,10 @@ export const BillingSetupPreview = z
     findings: z.array(
       z.object({
         rule_id: z.string(),
-        severity: z.enum(['review', 'error']),
+        severity: z.enum(['review', 'error', 'info']).openapi({
+          description:
+            'info is explanatory only: it needs no acknowledgement or reason and never blocks.',
+        }),
         message: z.string(),
         reason_required: z.boolean(),
         version: z.number().int().optional(),
@@ -317,6 +322,23 @@ export const BillingSetupPreview = z
         voided_charge_ids: z.array(z.string().uuid()),
       })
       .nullable(),
+    opening_result: z
+      .object({
+        typed_cents: z.number().int(),
+        opening_charge_cents: z.number().int(),
+        opening_credit_cents: z.number().int(),
+        answered_receipts_cents: z.number().int(),
+        applied_cents: z.number().int(),
+        still_owed_cents: z.number().int(),
+        paid_ahead_cents: z.number().int(),
+        unanswered_count: z.number().int(),
+      })
+      .nullable()
+      .optional()
+      .openapi({
+        description:
+          'With opening_balance.itemize_from: the combined result of the amount owed from before and the answered earlier receipts, exactly as commit records it. Unanswered receipts are left out and counted.',
+      }),
   })
   .openapi('BillingSetupPreview');
 export const BillingSetupResult = z

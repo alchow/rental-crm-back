@@ -7885,8 +7885,10 @@
                   "type": "string",
                   "enum": [
                     "review",
-                    "error"
-                  ]
+                    "error",
+                    "info"
+                  ],
+                  "description": "info is explanatory only: it needs no acknowledgement or reason and never blocks."
                 },
                 "message": {
                   "type": "string"
@@ -8224,6 +8226,49 @@
               "ended_schedule_ids",
               "voided_charge_ids"
             ]
+          },
+          "opening_result": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "typed_cents": {
+                "type": "integer"
+              },
+              "opening_charge_cents": {
+                "type": "integer"
+              },
+              "opening_credit_cents": {
+                "type": "integer"
+              },
+              "answered_receipts_cents": {
+                "type": "integer"
+              },
+              "applied_cents": {
+                "type": "integer"
+              },
+              "still_owed_cents": {
+                "type": "integer"
+              },
+              "paid_ahead_cents": {
+                "type": "integer"
+              },
+              "unanswered_count": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "typed_cents",
+              "opening_charge_cents",
+              "opening_credit_cents",
+              "answered_receipts_cents",
+              "applied_cents",
+              "still_owed_cents",
+              "paid_ahead_cents",
+              "unanswered_count"
+            ],
+            "description": "With opening_balance.itemize_from: the combined result of the amount owed from before and the answered earlier receipts, exactly as commit records it. Unanswered receipts are left out and counted."
           }
         },
         "required": [
@@ -8601,7 +8646,8 @@
                       "basis": {
                         "type": "string",
                         "minLength": 1,
-                        "maxLength": 200
+                        "maxLength": 200,
+                        "description": "What the amount is for. Required unless the amount owed from before itemized months is 0."
                       },
                       "includes_current_rent": {
                         "type": "boolean"
@@ -8641,8 +8687,7 @@
                       }
                     },
                     "required": [
-                      "amount_cents",
-                      "basis"
+                      "amount_cents"
                     ],
                     "additionalProperties": false
                   },

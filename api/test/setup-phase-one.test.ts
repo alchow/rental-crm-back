@@ -385,9 +385,15 @@ await check(
       can_confirm: boolean;
       setup_context: string;
       opening_receipts: Array<{ choice: string }>;
+      opening_result: { still_owed_cents: number; applied_cents: number; paid_ahead_cents: number };
     };
     assert(
-      review.status === 200 && r.can_confirm && r.opening_receipts[0]?.choice === 'keep_owed',
+      review.status === 200 &&
+        r.can_confirm &&
+        r.opening_receipts[0]?.choice === 'keep_owed' &&
+        r.opening_result.still_owed_cents === 35000 &&
+        r.opening_result.applied_cents === 30000 &&
+        r.opening_result.paid_ahead_cents === 0,
       JSON.stringify(review.body),
     );
     const committed = await request('POST', `/tenancy-setup-sessions/${id}/commit`, {
@@ -406,6 +412,26 @@ await check(
       Number(opening.rows[0]?.amount_cents) === 65000 &&
         Number(opening.rows[0]?.typed_opening_cents) === 65000,
       JSON.stringify(opening.rows),
+    );
+    const zeroDraft = await draft();
+    const zero = input();
+    (zero.billing.rent as unknown as { opening_balance: Record<string, unknown> }).opening_balance =
+      {
+        amount_cents: 0,
+        itemize_from: itemizeFrom,
+      };
+    const zeroReview = await request('POST', `/tenancy-setup-sessions/${zeroDraft}/preview`, zero);
+    const z0 = zeroReview.body as {
+      can_confirm: boolean;
+      findings: Array<{ rule_id: string; severity: string }>;
+    };
+    assert(
+      zeroReview.status === 200 &&
+        z0.can_confirm &&
+        z0.findings.some(
+          (f) => f.rule_id === 'opening_months_treated_as_paid' && f.severity === 'info',
+        ),
+      JSON.stringify(zeroReview.body),
     );
   },
 );

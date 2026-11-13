@@ -173,3 +173,12 @@ already net of it); `keep_owed` records the typed amount. Either way the receipt
 its real date or unknown-date marker and is applied to the opening entry; anything
 beyond it stays unapplied credit. An unanswered receipt blocks confirm. The adoption
 keeps `typed_opening_cents` and `earlier_receipts` (the answers) as provenance.
+
+Owner decisions, 2026-11-12. A $0 amount with `itemize_from` is accepted ("allow but
+explain implication"): months before that month count as paid, are not listed and cannot
+be itemized, no opening entry is written, and the adoption keeps `opening_on` with amount
+0. Testimony (`basis`) is optional for 0. Preview explains it with the informational
+finding `opening_months_treated_as_paid` (severity `info`, never blocking, no
+acknowledgement). Preview also returns `opening_result` (typed amount, opening charge or
+credit, receipts applied, still owed, paid ahead, unanswered count), computed by
+`_opening_result` with the same rules the commit uses; paid ahead stays unapplied credit.

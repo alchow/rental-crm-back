@@ -240,6 +240,76 @@ begin
 end;
 $test$;
 
+-- WP-09: $0 owed before itemized months, and one combined result equal to the ledger.
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  person uuid := current_setting('field_log.person')::uuid;
+  month_start date := date_trunc('month',public._account_date(account))::date;
+  start_on date := (month_start - interval '4 months')::date;
+  itemize date := (month_start - interval '1 month')::date;
+  draft uuid;
+  setup jsonb;
+  review jsonb;
+  ledger jsonb;
+  label text;
+  typed bigint;
+  receipts jsonb;
+  answers jsonb;
+  expected jsonb;
+  payments jsonb;
+begin
+  for label, typed, receipts, answers, expected in select * from (values
+    ('owed 150', 65000, '[20000,30000]'::jsonb, '["keep_owed","keep_owed"]'::jsonb,
+      '{"opening_charge_cents":65000,"applied_cents":50000,"still_owed_cents":15000,"paid_ahead_cents":0,"unanswered_count":0}'::jsonb),
+    ('paid ahead 150', 65000, '[50000,30000]', '["keep_owed","keep_owed"]',
+      '{"opening_charge_cents":65000,"applied_cents":65000,"still_owed_cents":0,"paid_ahead_cents":15000,"unanswered_count":0}'),
+    ('zero, added', 0, '[30000]', '["add_to_owed"]',
+      '{"opening_charge_cents":30000,"applied_cents":30000,"still_owed_cents":0,"paid_ahead_cents":0,"unanswered_count":0}'),
+    ('zero, kept', 0, '[30000]', '["keep_owed"]',
+      '{"opening_charge_cents":0,"applied_cents":0,"still_owed_cents":0,"paid_ahead_cents":30000,"unanswered_count":0}'),
+    ('zero, no receipts', 0, '[]', '[]',
+      '{"opening_charge_cents":0,"applied_cents":0,"still_owed_cents":0,"paid_ahead_cents":0,"unanswered_count":0}')
+  ) cases(l, t, r, a, e) loop
+    draft := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Result '||label);
+    select coalesce(jsonb_agg(jsonb_build_object('draft_key','r'||n,'amount_cents',amount::bigint,'currency','USD',
+        'received_at',(itemize - 20 + n::integer)::text,'method','check','allocations','[]'::jsonb) order by n),'[]')
+      into payments from jsonb_array_elements_text(receipts) with ordinality x(amount, n);
+    setup := pg_temp.setup(person,start_on,
+      jsonb_build_object('opening_balance',jsonb_build_object('amount_cents',typed,
+        'itemize_from',to_char(itemize,'YYYY-MM'),
+        'earlier_receipts',(select coalesce(jsonb_agg(jsonb_build_object('payment_key','r'||n,'choice',choice) order by n),'[]')
+          from jsonb_array_elements_text(answers) with ordinality y(choice, n)))
+        || case when typed <> 0 then '{"basis":"Rent"}'::jsonb else '{}'::jsonb end,
+      'charge_keys','[]'::jsonb), payments);
+    review := public.preview_tenancy_setup_session(account,draft,setup);
+    if not (review->'opening_result' @> expected) or (review->'opening_result'->>'typed_cents')::bigint <> typed then
+      raise exception '% preview result wrong: %',label,review->'opening_result';
+    end if;
+    if typed = 0 and not exists (select 1 from jsonb_array_elements(review->'findings') f
+        where f->>'rule_id' = 'opening_months_treated_as_paid' and f->>'severity' = 'info') then
+      raise exception '% did not explain the paid months: %',label,review->'findings';
+    end if;
+    perform pg_temp.commit_setup(draft,setup);
+    select jsonb_build_object(
+      'opening_charge_cents',coalesce((select amount_cents from public.charges where tenancy_id=draft and type='opening_balance'),0),
+      'applied_cents',coalesce((select sum(x.amount_cents) from public.payment_allocations x join public.charges c on c.id=x.charge_id
+        where c.tenancy_id=draft and c.type='opening_balance' and x.voided_at is null),0),
+      'paid_ahead_cents',coalesce((select sum(p.amount_cents) - coalesce(sum((select sum(x.amount_cents) from public.payment_allocations x
+        where x.payment_id=p.id and x.voided_at is null)),0) from public.payments p where p.tenancy_id=draft and p.received_at < itemize),0))
+      into ledger;
+    if (ledger->>'opening_charge_cents')::bigint <> (expected->>'opening_charge_cents')::bigint
+      or (ledger->>'applied_cents')::bigint <> (expected->>'applied_cents')::bigint
+      or (ledger->>'opening_charge_cents')::bigint - (ledger->>'applied_cents')::bigint <> (expected->>'still_owed_cents')::bigint
+      or (ledger->>'paid_ahead_cents')::bigint <> (expected->>'paid_ahead_cents')::bigint
+      or (select opening_on from public.tenancy_adoptions where tenancy_id=draft) <> itemize - 1
+      or (select min(period_start) from public.charges where tenancy_id=draft and type='rent') < itemize then
+      raise exception '% ledger differs from preview: %',label,ledger;
+    end if;
+  end loop;
+end;
+$test$;
+
 -- WP-07: the account's 30-day method prorates a move-out's final period.
 reset role;
 update public.accounts set proration_method='thirty_day_month' where id=:'account_id';
