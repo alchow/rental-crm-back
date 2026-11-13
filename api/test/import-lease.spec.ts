@@ -108,6 +108,7 @@ function harness(fields: Record<string, string>) {
     accountId: 'account',
     row: { id: 'row', region_index: 0, row_index: 1, raw: fields, excluded: false },
     tenancyId: '11111111-1111-4111-8111-111111111111',
+    today: new Date().toISOString().slice(0, 10),
     fields: [],
     getValue: read(fields),
     block,

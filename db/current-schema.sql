@@ -3443,7 +3443,8 @@ CREATE OR REPLACE FUNCTION "public"."_owed_summaries_base"("p_account_id" "uuid"
         group by type) grouped), '[]'),
     coalesce((select sum(unpaid) from due, today where due.tenancy_id = k.tenancy_id and due.currency = k.currency
       and due.type <> 'opening_balance' and due.due_date + due.grace < today.d), 0)::bigint,
-    (select min(due_date) from due where due.tenancy_id = k.tenancy_id and due.currency = k.currency),
+    (select min(due_date) from due where due.tenancy_id = k.tenancy_id and due.currency = k.currency
+      and due.type <> 'opening_balance'),
     coalesce((select sum(unpaid) from balances b, today where b.tenancy_id = k.tenancy_id and b.currency = k.currency
       and b.type = 'deposit' and b.unpaid > 0 and b.due_date <= today.d), 0)::bigint,
     coalesce((select credit from receipts r where r.tenancy_id = k.tenancy_id and r.currency = k.currency), 0),
@@ -3842,7 +3843,8 @@ declare today date:=public._account_date(p_account,statement_timestamp());entere
 begin
   entered:=case when (p_payment->>'received_at') ~ '^\d{4}-\d{2}-\d{2}$' then public._tenancy_calendar_date(p_payment->>'received_at')
     else ((p_payment->>'received_at')::timestamptz at time zone 'UTC')::date end;
-  if entered is null or entered<=today then return '[]'; end if;
+  if entered is null or entered<=today or ((p_payment->>'received_at') !~ '^\d{4}-\d{2}-\d{2}$'
+    and (p_payment->>'received_at')::timestamptz<=statement_timestamp()) then return '[]'; end if;
   return jsonb_build_array(public._date_warning('receipt_in_future',jsonb_strip_nulls(jsonb_build_object('type','payment',
     'id',p_payment->'id','draft_key',p_payment->'draft_key')),array['payment.received_at'],
     jsonb_build_object('account_id',p_account,'tenancy_id',p_tenancy,'payment',p_payment,'as_of_date',today),
@@ -4570,6 +4572,7 @@ begin
     when TG_TABLE_NAME='tenancy_endings' then (to_jsonb(NEW)->>'effective_date')::date
     else (to_jsonb(NEW)->>'actual_move_in_date')::date end;
   if entered<=public._account_date(NEW.account_id,statement_timestamp()) or entered is null then return null; end if;
+  if TG_TABLE_NAME='payments' and (to_jsonb(NEW)->>'received_at')::timestamptz<=statement_timestamp() then return null; end if;
   if TG_TABLE_NAME='tenancy_endings' and to_jsonb(NEW)->>'kind'<>'ended' then return null; end if;
   if not exists(select 1 from public.tenancy_date_records r where r.account_id=NEW.account_id and r.kind='warning_confirmation'
     and case when TG_TABLE_NAME='payments' then r.subject_payment_id=NEW.id

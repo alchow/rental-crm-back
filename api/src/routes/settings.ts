@@ -133,7 +133,7 @@ settingsApp.openapi(patch, async (c) => {
     .select('auto_charge_enabled, proration_method, currency, multi_currency, time_zone')
     .maybeSingle();
   // accounts_validate_time_zone refuses a zone missing from pg_timezone_names.
-  if (error?.code === '22023' && body.time_zone !== undefined) {
+  if (error?.code === '22023' && /time zone/i.test(error.message)) {
     throw new ApiError(400, 'invalid_request', 'Choose an IANA time zone', {
       fieldErrors: { time_zone: ['Choose an IANA time zone'] },
     });

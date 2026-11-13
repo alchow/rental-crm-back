@@ -36,7 +36,13 @@ async function request(method: string, path: string, body?: unknown) {
 const property = await request('POST', '/properties', { name: '418 Juniper Avenue' });
 assert(property.status === 201, JSON.stringify(property.body));
 
-const today = new Date().toISOString().slice(0, 10);
+// The account's date (America/Los_Angeles), which is what the server calls today.
+const today = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Los_Angeles',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+}).format(new Date());
 const future = new Date(`${today.slice(0, 7)}-01T12:00:00Z`);
 future.setUTCMonth(future.getUTCMonth() + 1);
 const nextMonth = future.toISOString().slice(0, 10);
@@ -590,18 +596,22 @@ await check('settings read and set the time zone that decides "today"', async ()
     patched.status === 200 && (patched.body as { time_zone: string }).time_zone === zone,
     JSON.stringify(patched.body),
   );
-  const zoneToday = new Intl.DateTimeFormat('en-CA', {
-    timeZone: zone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date());
+  const zoneDate = () =>
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: zone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+  // Read the zone's date on both sides of the request: it may roll over in between.
+  const before = zoneDate();
   const rollup = await request('GET', '/rent-rollup');
+  const after = zoneDate();
   const asOf = (rollup.body as { as_of: string }).as_of;
   await request('PATCH', '/settings', { time_zone: 'America/Los_Angeles' });
   assert(
-    rollup.status === 200 && asOf === zoneToday && asOf !== new Date().toISOString().slice(0, 10),
-    JSON.stringify({ asOf, zoneToday }),
+    rollup.status === 200 && (asOf === before || asOf === after),
+    JSON.stringify({ asOf, before, after }),
   );
 });
 

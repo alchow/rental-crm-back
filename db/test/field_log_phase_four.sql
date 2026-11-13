@@ -130,7 +130,7 @@ begin
     jsonb_build_object('coverage_start',month_start,'regular_anchor',month_start,'history_mode','opening_balance',
       'opening_balance','{"amount_cents":65000,"basis":"Rent","includes_current_rent":true}'::jsonb)));
   select * into strict owed from public.owed_summaries(account,opening);
-  if owed.total_cents <> 65000 or owed.overdue_cents <> 0
+  if owed.total_cents <> 65000 or owed.overdue_cents <> 0 or owed.oldest_due_on is not null
     or owed.by_type <> '[{"type":"opening_balance","cents":65000}]'
     or exists (select 1 from public.late_fee_suggestions(account,opening)) then
     raise exception 'Starting balance owed summary or suggestions are wrong: %',to_jsonb(owed);
@@ -340,6 +340,10 @@ begin
   select * into strict replacement from public.charges where tenancy_id=draft and type='rent' and voided_at is null
     and replaces_charge_id is not null;
   select * into strict owed from public.owed_summaries(account,draft);
+  -- The oldest due date is the rent's, never the amount owed from before.
+  if owed.oldest_due_on is null or owed.oldest_due_on < month_start then
+    raise exception 'Oldest due date took the starting balance: %',to_jsonb(owed);
+  end if;
   if today > month_start + 5 then
     if (select fee->>'amount_cents' from public.late_fee_suggestions(account,draft) s where s.charge_id=replacement.id) is distinct from '7375'
       or (select eligible_on from public.late_fee_suggestions(account,draft) s where s.charge_id=replacement.id) is distinct from month_start + 6 then

@@ -159,6 +159,15 @@ begin
     or preview->'findings'->0->>'message' like '%UTC%' or preview->'findings'->0->>'message' like '%app date%' then
     raise exception 'West receipt warning did not use the account date: %', preview;
   end if;
+  -- A receipt timestamped now has happened, though its UTC date is the account's tomorrow.
+  preview := public.preview_payment(account, jsonb_build_object('tenancy_id',t,'amount_cents',5000,'currency','USD','received_at',statement_timestamp(),'method','check'));
+  if not (preview->>'can_commit')::boolean or jsonb_array_length(preview->'findings') <> 0 then
+    raise exception 'West receipt timestamped now was called future: %', preview;
+  end if;
+  preview := public.preview_payment(account, jsonb_build_object('tenancy_id',t,'amount_cents',5000,'currency','USD','received_at',statement_timestamp() + interval '2 days','method','check'));
+  if (preview->>'can_commit')::boolean or preview->'findings'->0->>'rule_id' <> 'receipt_in_future' then
+    raise exception 'West receipt timestamped in two days was not called future: %', preview;
+  end if;
   -- An ending dated the UTC date is in the future for the account.
   preview := public.preview_tenancy_ending(account, t, jsonb_build_object('kind','ended','effective_date',d,'reason_code','notice'));
   if preview->>'as_of_date' <> (d - 1)::text or preview->'findings'->0->>'rule_id' <> 'actual_ending_in_future'
@@ -209,11 +218,30 @@ begin
   set constraints payment_future_date_confirmation immediate;
   set constraints payment_future_date_confirmation deferred;
   perform pg_temp.zone(current_setting('field_log.west'));
+  -- A receipt timestamped now is accepted without confirmation.
+  insert into public.payments(account_id,tenancy_id,amount_cents,currency,received_at,method)
+    values(account,t,5000,'USD',statement_timestamp(),'check');
+  set constraints payment_future_date_confirmation immediate;
+  set constraints payment_future_date_confirmation deferred;
+  -- A date-only receipt for the account's tomorrow (noon UTC of the UTC date). In a real
+  -- zone (UTC-12 at most) that noon is still ahead whenever the account is a day behind;
+  -- the test's fixed offset can exceed 12 hours, so only check while it is.
+  if statement_timestamp() < d::timestamp at time zone 'UTC' + interval '12 hours' then
+    begin
+      insert into public.payments(account_id,tenancy_id,amount_cents,currency,received_at,method)
+        values(account,t,5000,'USD',d::timestamp at time zone 'UTC' + interval '12 hours','check');
+      set constraints payment_future_date_confirmation immediate;
+      raise exception 'West future receipt was accepted without confirmation';
+    exception when invalid_parameter_value then
+      if sqlerrm not like '%explicit date warning confirmation required%' then raise; end if;
+    end;
+  end if;
+  -- A receipt two days ahead is refused at any hour.
   begin
     insert into public.payments(account_id,tenancy_id,amount_cents,currency,received_at,method)
-      values(account,t,5000,'USD',d::timestamp at time zone 'UTC' + interval '12 hours','check');
+      values(account,t,5000,'USD',statement_timestamp() + interval '2 days','check');
     set constraints payment_future_date_confirmation immediate;
-    raise exception 'West future receipt was accepted without confirmation';
+    raise exception 'West receipt two days ahead was accepted without confirmation';
   exception when invalid_parameter_value then
     if sqlerrm not like '%explicit date warning confirmation required%' then raise; end if;
   end;
