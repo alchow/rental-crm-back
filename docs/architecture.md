@@ -351,7 +351,8 @@ activity has a cutoff. Import resolution considers old-start correction aliases
 under the same per-unit identity lock used by corrections.
 
 Date differences and future reported actual arrival, actual ending, and receipt
-dates use typed warnings. Preview returns exact values, rule/version, UTC clock,
+dates use typed warnings. Preview returns exact values, rule/version, the account's
+clock (`as_of_date` in `clock_basis`, the account's time zone),
 and a fingerprint; commit recomputes them and requires explicit
 `warning_acknowledgements`. Notes are optional. A `warning_confirmation` in
 `tenancy_date_records` records acceptance separately from an explanation, with
@@ -381,7 +382,9 @@ fail. Creation/import callers first create the base tenancy, then use the audite
 date preview/correction flow to confirm a future reported arrival; no field is
 silently rewritten or dropped.
 
-`effective_tenancy_status` uses a UTC calendar date, preserving explicit ended
+"Today" is the account's date (`accounts.time_zone`, default `UTC`, read through
+`_account_date`) for status, rent generation, overdue, drift and date warnings.
+`effective_tenancy_status` is applied with that date, preserving explicit ended
 and holdover states. `tenancy_current`, date context, progress, search, recipient
 tenancy selection and rollup use this same projection before the daily job
 materializes status. Billing/payment/condition completion is not a lifecycle

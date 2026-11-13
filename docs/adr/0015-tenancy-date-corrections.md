@@ -44,7 +44,8 @@ correction appends a record linked to the original immutable ending and prior
 correction. Current reads resolve the latest evidence; the original is not edited.
 An ended tenancy cannot reopen through a correction.
 
-Date context exposes review findings, UTC `as_of_date`/`clock_basis`, and effective
+Date context exposes review findings, `as_of_date`/`clock_basis` (the account's date and
+time zone; see the account-date amendment below), and effective
 status. GET/list, search, recipient discovery, date previews, bootstrap, and rent
 rollup use the same effective occupancy policy before the daily updater runs.
 Explicit ended/holdover statuses take priority over date-derived upcoming/active.
@@ -54,7 +55,7 @@ early actual receipt alone is not a contradiction.
 
 Date-warning acceptance is separate from justification. Notes on date corrections
 and warnings are optional. Explicit acknowledgements bind a rule/version, exact
-fields, UTC date, resulting facts and material context. A changed input requires
+fields, the account's date, resulting facts and material context. A changed input requires
 fresh review. Distinct `warning_confirmation` records retain the actor, time,
 context and request identity without labeling an empty note as an explanation.
 Future arrival remains landlord-reported; future ending still ends now (unless the
@@ -148,3 +149,12 @@ command with `move_out_changed`; money is never silently changed. A replacement 
 schedule of its own; grace and late-fee terms come from the charge it replaces. An actual ending
 recorded later replaces the plan and leaves recorded money as it is. With the flag
 off, the behavior above this amendment applies unchanged.
+
+## Amendment: today is the account's date
+
+"Today" in every date rule (future-date warnings and their commit check, effective
+status, rent generation, overdue, drift, the adoption date bound) is the calendar date
+in `accounts.time_zone` (default `UTC`), read through `_account_date`. `clock_basis` is
+that zone's name. An account on `UTC` behaves as before. Stored receipt instants keep
+their UTC calendar date (the snapshot rule), and date-only receipts are still stored at
+noon UTC; the receipt warning compares that date with the account's today.

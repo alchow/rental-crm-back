@@ -6,6 +6,7 @@ import { loadEnv } from '../env';
 import { ApiError, errorResponses } from './_lib/error';
 import { enableAgentForAccount } from '../admin/agent-grants';
 import { getLogger } from '../log';
+import { TimeZoneName } from '../schemas/time-zone';
 
 // /v1/auth/* fronts Supabase Auth. Clients only see this contract; the
 // underlying supabase-js calls and the atomic account-creation RPC are
@@ -30,19 +31,7 @@ const SignupBody = z
     email: z.string().email(),
     password: z.string().min(8).max(200),
     account_name: z.string().min(1).max(200),
-    time_zone: z
-      .string()
-      .min(1)
-      .max(80)
-      .refine((zone) => {
-        try {
-          new Intl.DateTimeFormat('en', { timeZone: zone });
-          return /^[A-Za-z][A-Za-z0-9_+/-]*$/.test(zone);
-        } catch {
-          return false;
-        }
-      }, 'Choose an IANA time zone')
-      .optional(),
+    time_zone: TimeZoneName.optional(),
   })
   .openapi('SignupRequest');
 

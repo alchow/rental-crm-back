@@ -9645,7 +9645,7 @@ export interface paths {
         };
         /**
          * Account-wide per-tenancy balances (rent / deposit / unapplied credit)
-         * @description One row per tenancy in the requested statuses (default active,holdover). Include ended to add past tenancies with money still owed, unapplied credit, or a held deposit. Derived on read — recomputed from charges + payments + allocations with exactly the per-tenancy ledger's rules; rent_balance_cents matches the ledger's legacy all-non-deposit semantics. Precise current open-balance buckets are classified against ?as_of (default current UTC date). Not paginated: bounded by the account’s tenancy count.
+         * @description One row per tenancy in the requested statuses (default active,holdover). Include ended to add past tenancies with money still owed, unapplied credit, or a held deposit. Derived on read — recomputed from charges + payments + allocations with exactly the per-tenancy ledger's rules; rent_balance_cents matches the ledger's legacy all-non-deposit semantics. Precise current open-balance buckets are classified against ?as_of (default today in the account's time zone). Not paginated: bounded by the account’s tenancy count.
          */
         get: {
             parameters: {
@@ -14356,7 +14356,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Update this account’s settings. Owner/manager only (RLS) — toggles account-wide automatic rent charging. */
+        /** Update this account’s settings. Owner/manager only (RLS) — automatic rent charging, proration, currency and the time zone that decides "today". */
         patch: {
             parameters: {
                 query?: never;
@@ -21679,8 +21679,11 @@ export interface components {
             effective_status: "upcoming" | "active" | "ended" | "holdover";
             /** Format: date */
             as_of_date: string;
-            /** @enum {string} */
-            clock_basis: "UTC";
+            /**
+             * @description The account's IANA time zone; as_of_date is today's date there.
+             * @example America/Los_Angeles
+             */
+            clock_basis: string;
             updated_at: string | null;
         };
         PatchTenancyOnboardingProgressBody: {
@@ -21865,8 +21868,11 @@ export interface components {
         DateWarningPreview: {
             /** Format: date */
             as_of_date: string;
-            /** @enum {string} */
-            clock_basis: "UTC";
+            /**
+             * @description The account's IANA time zone; as_of_date is today's date there.
+             * @example America/Los_Angeles
+             */
+            clock_basis: string;
             context_fingerprint: string;
             findings: components["schemas"]["DateWarningFinding"][];
             can_commit: boolean;
@@ -22041,8 +22047,11 @@ export interface components {
             } | null;
             /** Format: date */
             as_of_date: string;
-            /** @enum {string} */
-            clock_basis: "UTC";
+            /**
+             * @description The account's IANA time zone; as_of_date is today's date there.
+             * @example America/Los_Angeles
+             */
+            clock_basis: string;
             /** @enum {string} */
             effective_status: "upcoming" | "active" | "ended" | "holdover";
             findings: components["schemas"]["DateRelationshipFinding"][];
@@ -22085,8 +22094,11 @@ export interface components {
             context_fingerprint: string;
             /** Format: date */
             as_of_date: string;
-            /** @enum {string} */
-            clock_basis: "UTC";
+            /**
+             * @description The account's IANA time zone; as_of_date is today's date there.
+             * @example America/Los_Angeles
+             */
+            clock_basis: string;
             /** @enum {string} */
             effective_status: "upcoming" | "active" | "ended" | "holdover";
             findings: components["schemas"]["DateRelationshipFinding"][];
@@ -23273,8 +23285,11 @@ export interface components {
             version: 1;
             /** Format: date */
             as_of_date: string;
-            /** @enum {string} */
-            clock_basis: "UTC";
+            /**
+             * @description The account's IANA time zone; as_of_date is today's date there.
+             * @example America/Los_Angeles
+             */
+            clock_basis: string;
             context_fingerprint: string;
             /** @enum {string} */
             mode: "initial" | "initial_rent_existing_money" | "existing_rent" | "deposit_only" | "deferred";
@@ -23696,7 +23711,7 @@ export interface components {
             } | null;
         };
         RentRollupResponse: {
-            /** @description UTC date used to classify overdue, due-today, and upcoming balances. */
+            /** @description Date used to classify overdue, due-today, and upcoming balances: ?as_of, or today in the account's time zone. */
             as_of: string;
             data: components["schemas"]["RentRollupRow"][];
         };
@@ -24693,6 +24708,10 @@ export interface components {
             scheduled_move_out_enabled?: boolean;
             /** @description Read-only rollout flag: show the new setup wizard. Both setup payloads are accepted either way. */
             wizard_v2_enabled?: boolean;
+            /**
+             * @description IANA time zone. "Today" everywhere (status, rent generation, overdue, date warnings) is the date here.
+             * @example America/Los_Angeles
+             */
             time_zone?: string;
             /** @enum {string} */
             proration_method?: "actual_days" | "thirty_day_month";
@@ -24707,6 +24726,8 @@ export interface components {
             proration_method?: "actual_days" | "thirty_day_month";
             currency?: string;
             multi_currency?: boolean;
+            /** @description IANA time zone name PostgreSQL accepts (pg_timezone_names), e.g. America/Los_Angeles. */
+            time_zone?: string;
         };
         TenancySetupSession: {
             /** Format: uuid */

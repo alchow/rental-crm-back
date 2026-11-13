@@ -1692,9 +1692,8 @@
           },
           "clock_basis": {
             "type": "string",
-            "enum": [
-              "UTC"
-            ]
+            "description": "The account's IANA time zone; as_of_date is today's date there.",
+            "example": "America/Los_Angeles"
           },
           "updated_at": {
             "type": [
@@ -2290,9 +2289,8 @@
           },
           "clock_basis": {
             "type": "string",
-            "enum": [
-              "UTC"
-            ]
+            "description": "The account's IANA time zone; as_of_date is today's date there.",
+            "example": "America/Los_Angeles"
           },
           "context_fingerprint": {
             "type": "string"
@@ -2913,9 +2911,8 @@
           },
           "clock_basis": {
             "type": "string",
-            "enum": [
-              "UTC"
-            ]
+            "description": "The account's IANA time zone; as_of_date is today's date there.",
+            "example": "America/Los_Angeles"
           },
           "effective_status": {
             "type": "string",
@@ -3106,9 +3103,8 @@
           },
           "clock_basis": {
             "type": "string",
-            "enum": [
-              "UTC"
-            ]
+            "description": "The account's IANA time zone; as_of_date is today's date there.",
+            "example": "America/Los_Angeles"
           },
           "effective_status": {
             "type": "string",
@@ -7924,9 +7920,8 @@
           },
           "clock_basis": {
             "type": "string",
-            "enum": [
-              "UTC"
-            ]
+            "description": "The account's IANA time zone; as_of_date is today's date there.",
+            "example": "America/Los_Angeles"
           },
           "context_fingerprint": {
             "type": "string"
@@ -9636,7 +9631,7 @@
         "properties": {
           "as_of": {
             "type": "string",
-            "description": "UTC date used to classify overdue, due-today, and upcoming balances."
+            "description": "Date used to classify overdue, due-today, and upcoming balances: ?as_of, or today in the account's time zone."
           },
           "data": {
             "type": "array",
@@ -13882,7 +13877,9 @@
             "description": "Read-only rollout flag: show the new setup wizard. Both setup payloads are accepted either way."
           },
           "time_zone": {
-            "type": "string"
+            "type": "string",
+            "description": "IANA time zone. \"Today\" everywhere (status, rent generation, overdue, date warnings) is the date here.",
+            "example": "America/Los_Angeles"
           },
           "proration_method": {
             "type": "string",
@@ -13922,6 +13919,12 @@
           },
           "multi_currency": {
             "type": "boolean"
+          },
+          "time_zone": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "IANA time zone name PostgreSQL accepts (pg_timezone_names), e.g. America/Los_Angeles."
           }
         },
         "additionalProperties": false
@@ -31961,7 +31964,7 @@
           "ledger"
         ],
         "summary": "Account-wide per-tenancy balances (rent / deposit / unapplied credit)",
-        "description": "One row per tenancy in the requested statuses (default active,holdover). Include ended to add past tenancies with money still owed, unapplied credit, or a held deposit. Derived on read — recomputed from charges + payments + allocations with exactly the per-tenancy ledger's rules; rent_balance_cents matches the ledger's legacy all-non-deposit semantics. Precise current open-balance buckets are classified against ?as_of (default current UTC date). Not paginated: bounded by the account’s tenancy count.",
+        "description": "One row per tenancy in the requested statuses (default active,holdover). Include ended to add past tenancies with money still owed, unapplied credit, or a held deposit. Derived on read — recomputed from charges + payments + allocations with exactly the per-tenancy ledger's rules; rent_balance_cents matches the ledger's legacy all-non-deposit semantics. Precise current open-balance buckets are classified against ?as_of (default today in the account's time zone). Not paginated: bounded by the account’s tenancy count.",
         "parameters": [
           {
             "schema": {
@@ -38522,7 +38525,7 @@
         "tags": [
           "settings"
         ],
-        "summary": "Update this account’s settings. Owner/manager only (RLS) — toggles account-wide automatic rent charging.",
+        "summary": "Update this account’s settings. Owner/manager only (RLS) — automatic rent charging, proration, currency and the time zone that decides \"today\".",
         "parameters": [
           {
             "schema": {

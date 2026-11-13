@@ -5,6 +5,7 @@ import { ApiError, errorResponses } from './_lib/error';
 import { TenancyStatus } from '../schemas/importable';
 import { CalendarDate } from '../schemas/calendar-date';
 import { readAllPages } from '../lib/postgrest-pages';
+import { accountDate } from './_lib/account-date';
 
 // The account-scoped RPC is read in pages without per-tenancy HTTP requests.
 
@@ -67,7 +68,8 @@ const RentRollupRow = CurrencyBalances.extend({
 const RentRollupResponse = z
   .object({
     as_of: z.string().openapi({
-      description: 'UTC date used to classify overdue, due-today, and upcoming balances.',
+      description:
+        "Date used to classify overdue, due-today, and upcoming balances: ?as_of, or today in the account's time zone.",
     }),
     data: z.array(RentRollupRow),
   })
@@ -109,7 +111,7 @@ const get = createRoute({
     'read — recomputed from charges + payments + allocations with exactly the per-tenancy ' +
     "ledger's rules; rent_balance_cents matches the ledger's legacy all-non-deposit " +
     'semantics. Precise current open-balance buckets are classified against ?as_of ' +
-    '(default current UTC date). Not paginated: bounded by the account’s tenancy count.',
+    "(default today in the account's time zone). Not paginated: bounded by the account’s tenancy count.",
   request: { params: AccountParam, query: RollupQuery },
   responses: {
     200: {
@@ -125,7 +127,6 @@ export const rentRollupApp = newApiApp();
 rentRollupApp.openapi(get, async (c) => {
   const { accountId } = c.req.valid('param');
   const { status, as_of } = c.req.valid('query');
-  const asOf = as_of ?? new Date().toISOString().slice(0, 10);
 
   // Comma-separated status list, validated against the tenancy vocabulary.
   let statuses: string[] | undefined;
@@ -151,6 +152,7 @@ rentRollupApp.openapi(get, async (c) => {
   }
 
   const sb = getSb(c);
+  const asOf = as_of ?? (await accountDate(sb, accountId));
   const legacyRows = await readAllPages(
     () =>
       sb.rpc('rent_rollup', {
@@ -162,10 +164,13 @@ rentRollupApp.openapi(get, async (c) => {
     (row) => row.tenancy_id,
     'rent rollup',
   );
-  const data = z.array(RentRollupRow).parse(legacyRows).map((row) => ({
-    ...row,
-    opening_owed_cents: row.currency_totals?.find((totals) => totals.currency === row.currency)
-      ?.opening_owed_cents,
-  }));
+  const data = z
+    .array(RentRollupRow)
+    .parse(legacyRows)
+    .map((row) => ({
+      ...row,
+      opening_owed_cents: row.currency_totals?.find((totals) => totals.currency === row.currency)
+        ?.opening_owed_cents,
+    }));
   return c.json({ as_of: asOf, data }, 200);
 });

@@ -2,6 +2,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, dbError, errorResponses } from './_lib/error';
+import { TimeZoneName } from '../schemas/time-zone';
 
 // Narrow account-settings surface for auto_charge_enabled (ADR-0011), which
 // defaults true and serves primarily as opt-out. Reads are member-wide; RLS and
@@ -25,7 +26,11 @@ const AccountSettings = z
       description:
         'Read-only rollout flag: show the new setup wizard. Both setup payloads are accepted either way.',
     }),
-    time_zone: z.string().optional(),
+    time_zone: z.string().optional().openapi({
+      description:
+        'IANA time zone. "Today" everywhere (status, rent generation, overdue, date warnings) is the date here.',
+      example: 'America/Los_Angeles',
+    }),
     proration_method: z.enum(['actual_days', 'thirty_day_month']).optional(),
     currency: z.string().optional().openapi({ description: 'ISO 4217 code money defaults to.' }),
     multi_currency: z.boolean().optional().openapi({
@@ -34,7 +39,7 @@ const AccountSettings = z
   })
   .openapi('AccountSettings');
 
-// auto_charge_enabled, proration_method, currency and multi_currency are the ONLY writable fields. The RLS policy cannot
+// auto_charge_enabled, proration_method, currency, multi_currency and time_zone are the ONLY writable fields. The RLS policy cannot
 // restrict an UPDATE to a single column, so the column allow-list is enforced
 // HERE: this body admits nothing else.
 const PatchAccountSettingsBody = z
@@ -46,6 +51,10 @@ const PatchAccountSettingsBody = z
       .refine((code) => Intl.supportedValuesOf('currency').includes(code), 'currency.unsupported')
       .optional(),
     multi_currency: z.boolean().optional(),
+    time_zone: TimeZoneName.optional().openapi({
+      description:
+        'IANA time zone name PostgreSQL accepts (pg_timezone_names), e.g. America/Los_Angeles.',
+    }),
   })
   .strict()
   .refine((body) => Object.keys(body).length > 0, 'Send at least one setting.')
@@ -68,8 +77,8 @@ const patch = createRoute({
   path: '/accounts/{accountId}/settings',
   tags: ['settings'],
   summary:
-    'Update this account’s settings. Owner/manager only (RLS) — toggles ' +
-    'account-wide automatic rent charging.',
+    'Update this account’s settings. Owner/manager only (RLS) — automatic rent ' +
+    'charging, proration, currency and the time zone that decides "today".',
   request: {
     params: AccountParam,
     body: { content: { 'application/json': { schema: PatchAccountSettingsBody } }, required: true },
@@ -113,7 +122,7 @@ settingsApp.openapi(patch, async (c) => {
   const { accountId } = c.req.valid('param');
   const body = c.req.valid('json');
   const sb = getSb(c);
-  // Writes the ONLY writable field. Under the caller's JWT, the
+  // Writes only the allow-listed fields. Under the caller's JWT, the
   // accounts_manager_update RLS policy authorises the UPDATE only for
   // an owner/manager.
   const { data, error } = await sb
@@ -121,8 +130,14 @@ settingsApp.openapi(patch, async (c) => {
     .update(body)
     .eq('id', accountId)
     .is('deleted_at', null)
-    .select('auto_charge_enabled, proration_method, currency, multi_currency')
+    .select('auto_charge_enabled, proration_method, currency, multi_currency, time_zone')
     .maybeSingle();
+  // accounts_validate_time_zone refuses a zone missing from pg_timezone_names.
+  if (error?.code === '22023' && body.time_zone !== undefined) {
+    throw new ApiError(400, 'invalid_request', 'Choose an IANA time zone', {
+      fieldErrors: { time_zone: ['Choose an IANA time zone'] },
+    });
+  }
   if (error) throw dbError(error);
   // A viewer passes the account-membership middleware (they ARE a member and
   // can SELECT the account) but the UPDATE's USING clause filters their row
@@ -137,6 +152,7 @@ settingsApp.openapi(patch, async (c) => {
       proration_method: data.proration_method as 'actual_days' | 'thirty_day_month',
       currency: data.currency,
       multi_currency: data.multi_currency,
+      time_zone: data.time_zone,
     },
     200,
   );

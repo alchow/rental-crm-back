@@ -1,5 +1,6 @@
 import { z } from '@hono/zod-openapi';
 import { CalendarDate } from '../../schemas/calendar-date';
+import { ClockBasis } from '../../schemas/time-zone';
 import { TenancyStartDateBasis, TenancyStatus } from '../../schemas/importable';
 
 export const Tenancy = z
@@ -130,6 +131,6 @@ export const DateRelationshipFinding = z
   .openapi('DateRelationshipFinding');
 export const DateClock = {
   as_of_date: CalendarDate,
-  clock_basis: z.literal('UTC'),
+  clock_basis: ClockBasis,
   effective_status: TenancyStatus,
 };

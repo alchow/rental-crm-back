@@ -5,6 +5,7 @@ import {
   selectLedgerCurrency,
 } from '../lib/ledger-currencies';
 import { readAllById } from '../lib/postgrest-pages';
+import { accountDate } from './_lib/account-date';
 import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
@@ -307,6 +308,7 @@ ledgerApp.openapi(get, async (c) => {
   const { accountId, tenancyId } = c.req.valid('param');
   const { as_of, currency: requestedCurrency } = c.req.valid('query');
   const sb = getSb(c);
+  const scheduleDate = as_of ?? (await accountDate(sb, accountId));
 
   const [charges, payments, adoptions, rentSchedules] = await Promise.all([
     readAllById(
@@ -343,8 +345,8 @@ ledgerApp.openapi(get, async (c) => {
       .eq('tenancy_id', tenancyId)
       .eq('kind', 'rent')
       .is('deleted_at', null)
-      .lte('start_date', as_of ?? new Date().toISOString().slice(0, 10))
-      .or(`end_date.is.null,end_date.gte.${as_of ?? new Date().toISOString().slice(0, 10)}`)
+      .lte('start_date', scheduleDate)
+      .or(`end_date.is.null,end_date.gte.${scheduleDate}`)
       .order('start_date', { ascending: false })
       .order('id', { ascending: false })
       .limit(1),

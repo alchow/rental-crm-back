@@ -304,7 +304,8 @@ An **occupancy period** — who occupied which unit, when. This is the operation
 
 `status` values: `upcoming` → `active` → `holdover` / `ended`.
 
-Reads use UTC effective status: a possession start that has arrived is active
+Reads use effective status on the account's date (`time_zone` in account settings,
+default `UTC`): a possession start that has arrived is active
 before the daily materializer runs. Explicit ended/holdover states take priority.
 Physical arrival, inspection completion, payments and setup completion do not
 activate a tenancy. `POST /tenancies/bootstrap` atomically creates the tenancy
@@ -319,20 +320,20 @@ and never controls billing or activation. Creation accepts `start_date_basis`:
 `legacy_unverified` (default, including existing records) or `possession_entitlement`.
 The latter records the meaning asserted by the user, not legal certification.
 
-| Method  | Path                                                | Body / Notes                                                                                                                                                            |
-| ------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET`   | `/tenancies/{tenancyId}/date-context`               | Optional `lease_id` and `rent_schedule_id`; selected facts, deposit due dates, structured findings, fingerprint, UTC `as_of_date`/`clock_basis` and `effective_status`. |
-| `POST`  | `/tenancies/{tenancyId}/date-corrections/preview`   | `changes` plus optional selections; returns proposed facts/status, blockers and sampled money review counts.                                                            |
-| `POST`  | `/tenancies/{tenancyId}/date-corrections`           | Changes, expected revision/context/resulting status, reason code/note and optional source document.                                                                     |
-| `POST`  | `/tenancies/{tenancyId}/ending-corrections/preview` | Same preview shape; `changes.end_date` is required and non-null. Future actual dates produce a warning requiring explicit confirmation.                                 |
-| `POST`  | `/tenancies/{tenancyId}/ending-corrections`         | Same revision/context/reason contract; appends a correction linked to the original immutable ending and previous correction.                                            |
-| `POST`  | `/tenancies/{tenancyId}/date-explanations`          | Expected context, selections, reason code/note and optional source document; dates stay unchanged.                                                                      |
-| `GET`   | `/tenancies/{tenancyId}/date-history`               | Keyset page (`cursor`, `limit` up to 100) of immutable corrections/explanations.                                                                                        |
-| `GET`   | `/tenancies/{tenancyId}/onboarding-progress`        | Selected agreement, condition/rent/deposit decisions and possession confirmation against the current revision.                                                          |
-| `PATCH` | `/tenancies/{tenancyId}/onboarding-progress`        | Explicit selections, confirmations or deferrals with `expected_revision`; no money or occupancy write.                                                                  |
-| `POST`  | `/tenancies/bootstrap`                              | Atomic known-date tenancy and primary-member creation; normal idempotency applies.                                                                                      |
-| `POST`  | `/tenancies/{id}/end/preview`                       | Review the ending body without lifecycle writes; returns typed date warnings, UTC clock and context fingerprint.                                                        |
-| `POST`  | `/tenancies/{id}/end`                               | Atomic actual ending or cancellation; reviewed future actual endings require acknowledgements and still end the tenancy immediately.                                    |
+| Method  | Path                                                | Body / Notes                                                                                                                                                                                                           |
+| ------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`   | `/tenancies/{tenancyId}/date-context`               | Optional `lease_id` and `rent_schedule_id`; selected facts, deposit due dates, structured findings, fingerprint, `as_of_date` (the account's date) and `clock_basis` (the account's time zone) and `effective_status`. |
+| `POST`  | `/tenancies/{tenancyId}/date-corrections/preview`   | `changes` plus optional selections; returns proposed facts/status, blockers and sampled money review counts.                                                                                                           |
+| `POST`  | `/tenancies/{tenancyId}/date-corrections`           | Changes, expected revision/context/resulting status, reason code/note and optional source document.                                                                                                                    |
+| `POST`  | `/tenancies/{tenancyId}/ending-corrections/preview` | Same preview shape; `changes.end_date` is required and non-null. Future actual dates produce a warning requiring explicit confirmation.                                                                                |
+| `POST`  | `/tenancies/{tenancyId}/ending-corrections`         | Same revision/context/reason contract; appends a correction linked to the original immutable ending and previous correction.                                                                                           |
+| `POST`  | `/tenancies/{tenancyId}/date-explanations`          | Expected context, selections, reason code/note and optional source document; dates stay unchanged.                                                                                                                     |
+| `GET`   | `/tenancies/{tenancyId}/date-history`               | Keyset page (`cursor`, `limit` up to 100) of immutable corrections/explanations.                                                                                                                                       |
+| `GET`   | `/tenancies/{tenancyId}/onboarding-progress`        | Selected agreement, condition/rent/deposit decisions and possession confirmation against the current revision.                                                                                                         |
+| `PATCH` | `/tenancies/{tenancyId}/onboarding-progress`        | Explicit selections, confirmations or deferrals with `expected_revision`; no money or occupancy write.                                                                                                                 |
+| `POST`  | `/tenancies/bootstrap`                              | Atomic known-date tenancy and primary-member creation; normal idempotency applies.                                                                                                                                     |
+| `POST`  | `/tenancies/{id}/end/preview`                       | Review the ending body without lifecycle writes; returns typed date warnings, the account's clock and context fingerprint.                                                                                             |
+| `POST`  | `/tenancies/{id}/end`                               | Atomic actual ending or cancellation; reviewed future actual endings require acknowledgements and still end the tenancy immediately.                                                                                   |
 
 All POSTs require the normal `Idempotency-Key`, including previews. Refreshing a
 preview requires a new key. Correction/explanation commits and response storage
@@ -530,19 +531,20 @@ transaction as their confirmation history.
 
 ### Resumable whole-tenancy setup
 
-`/healthz` advertises `capabilities.tenancy_setup.version = 3` (UTC clock).
+`/healthz` advertises `capabilities.tenancy_setup.version = 3` (`clock_basis: account`:
+dates are the account's date in its time zone).
 Clients should check this before exposing the final-confirmation setup flow.
 The paths below use the account prefix `/v1/accounts/{accountId}`.
 
-| Method | Path                                    | Body / Notes                                                                                                                         |
-| ------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `GET`  | `/tenancy-setup-sessions`               | Active unfinished drafts, optionally filtered by `area_id` or `tenancy_id`.                                                          |
-| `GET`  | `/tenancy-setup-sessions/{id}`          | Account-scoped draft or its completed result, including after a lost response.                                                       |
+| Method | Path                                    | Body / Notes                                                                                                                           |
+| ------ | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/tenancy-setup-sessions`               | Active unfinished drafts, optionally filtered by `area_id` or `tenancy_id`.                                                            |
+| `GET`  | `/tenancy-setup-sessions/{id}`          | Account-scoped draft or its completed result, including after a lost response.                                                         |
 | `PUT`  | `/tenancy-setup-sessions/{id}`          | `area_id`, nullable existing `tenancy_id`, `expected_revision`, and resumable `payload`. Stale saves return 409 `setup_draft_changed`. |
-| `POST` | `/tenancy-setup-sessions/{id}/document` | Multipart `file`: private PDF or photo, owner/manager only. Returns server-issued receipt IDs; does not file a tenancy document yet. |
-| `POST` | `/tenancy-setup-sessions/{id}/preview`  | Proposed people, possession, agreement, billing and optional warning notes. Read-only domain review.                                 |
-| `POST` | `/tenancy-setup-sessions/{id}/commit`   | `{setup, expected_context, accept_warnings:true}` and the stable reviewed `Idempotency-Key`. All final facts commit together.        |
-| `GET`  | `/rent-defaults`                        | Account suggestions only; never substitute them for confirmed agreement terms.                                                       |
+| `POST` | `/tenancy-setup-sessions/{id}/document` | Multipart `file`: private PDF or photo, owner/manager only. Returns server-issued receipt IDs; does not file a tenancy document yet.   |
+| `POST` | `/tenancy-setup-sessions/{id}/preview`  | Proposed people, possession, agreement, billing and optional warning notes. Read-only domain review.                                   |
+| `POST` | `/tenancy-setup-sessions/{id}/commit`   | `{setup, expected_context, accept_warnings:true}` and the stable reviewed `Idempotency-Key`. All final facts commit together.          |
+| `GET`  | `/rent-defaults`                        | Account suggestions only; never substitute them for confirmed agreement terms.                                                         |
 
 Sessions expire after 90 days without a save. Saving a session or uploading its
 lease creates no tenancy, person, agreement or money. Setup does not collect lease
@@ -603,7 +605,8 @@ New callers save the renewal/amendment separately, then review a complete billin
 transition, including affected old charges, selected voids, and allocation reversals.
 Saving or activating an agreement alone does not change a schedule or create money.
 
-Automatic generation is on by default and runs daily at 08:00 UTC; account
+Automatic generation is on by default and runs daily at 08:00 UTC; which period is
+next is decided on the account's date (`PATCH /settings { time_zone }`). Account
 `auto_charge_enabled: false` opts out and `SCHEDULED_JOBS_ENABLED` is the operator
 kill switch. A live instruction must cover the candidate period. Version 1 keeps
 its due-grid advance window; version 2 selects the next eligible not-yet-due
@@ -639,7 +642,7 @@ Money received. Inline allocations are atomic: if any allocation fails (cross-te
 | Method | Path                                             | Body / Notes                                                                                                                                                   |
 | ------ | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET`  | `/payments`                                      | Supports `?tenancy_id=` filter.                                                                                                                                |
-| `POST` | `/payments/preview`                              | Read-only receipt review with the normal create body; returns UTC clock, context fingerprint, typed findings and `can_commit`.                                 |
+| `POST` | `/payments/preview`                              | Read-only receipt review with the normal create body; returns the account's clock, context fingerprint, typed findings and `can_commit`.                       |
 | `POST` | `/payments`                                      | `tenancy_id`, `amount_cents` (>0), `currency`, `received_at`, `method`, `reference`\|null, `payer_tenant_id`\|null, `notes`\|null, `allocations[]` (optional). |
 | `GET`  | `/payments/{id}`                                 | Returns `{payment, allocations[]}`.                                                                                                                            |
 | `POST` | `/payments/{id}/void`                            | `void_reason` (required).                                                                                                                                      |
@@ -675,7 +678,8 @@ money already exists. Itemized `charges[]` and `payments[]` are mutually exclusi
 with a signed `opening_balance_cents` and optional `balance_basis`/`needs_review`.
 Legacy charge coverage is snapped to the due-day grid while due dates remain
 verbatim; duplicate grid periods are rejected. Payment timestamps are bounded to
-adoption with one-day UTC slack and a pre-start year-typo guard. An optional held
+adoption with one-day UTC slack and a pre-start year-typo guard; `adoption_date` may be at
+most one day after the account's date. An optional held
 `deposit` has `amount_cents` and `received_on` (stored at noon UTC). The atomic
 response is `{adoption_id, schedule_id, charge_ids[], payment_ids[],
 deposit_charge_id}`, with request-order ids. The database enforces the virgin
@@ -802,7 +806,7 @@ rollup ≡ ledger per tenancy and currency. The primary currency is the currentl
 applicable rent schedule's currency, then the first available currency. A positive
 debt in another group sets `has_other_currency_balance`; clients must not show
 an all-clear merely because the primary balance is zero. Opening testimony is
-excluded from balances but returned separately. Status uses the same UTC-today
+excluded from balances but returned separately. Status uses the same account-today
 effective occupancy projection as tenancy GET/list; a financial `as_of` does not
 pretend to reconstruct historical occupancy.
 
@@ -1651,8 +1655,8 @@ _Build against `/v1` and the generated types. The OpenAPI spec at `GET /openapi.
 
 ## Owner phone confirmation
 
-| Method | Path | Behavior |
-|---|---|---|
+| Method | Path                                                         | Behavior                                                                                                          |
+| ------ | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
 | `POST` | `/v1/accounts/{accountId}/owner-phone-verifications/confirm` | Current human bearer plus dedicated verifier key; record that caller's verified phone without an assistant grant. |
 
 The body is `{verification_id, phone, expires_at}`; no target user is accepted.

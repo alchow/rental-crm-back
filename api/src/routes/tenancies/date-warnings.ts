@@ -1,5 +1,6 @@
 import { z } from '@hono/zod-openapi';
 import { CalendarDate } from '../../schemas/calendar-date';
+import { ClockBasis } from '../../schemas/time-zone';
 
 export const WarningAcknowledgement = z
   .object({
@@ -35,7 +36,7 @@ export const DateWarningFinding = z
 export const DateWarningPreview = z
   .object({
     as_of_date: CalendarDate,
-    clock_basis: z.literal('UTC'),
+    clock_basis: ClockBasis,
     context_fingerprint: z.string(),
     findings: z.array(DateWarningFinding),
     can_commit: z.boolean(),
