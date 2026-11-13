@@ -124,6 +124,9 @@ jobs:
       - name: Field Log starting-balance correction checks
         run: psql -v ON_ERROR_STOP=1 -f db/test/field_log_opening_correction.sql
 
+      - name: Field Log account-date checks (today in the account's time zone)
+        run: psql -v ON_ERROR_STOP=1 -f db/test/field_log_account_date.sql
+
       - name: Seed two-account fixture
         run: psql -v ON_ERROR_STOP=1 -f db/test/seed_two_accounts.sql
 

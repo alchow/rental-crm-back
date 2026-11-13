@@ -218,6 +218,22 @@ begin
   -- And back from 0 to an amount owed.
   result := pg_temp.correct(t,'{"amount_cents":5000,"basis":"Fees","reason":"A fee was owed after all"}');
   if (result->'owed_after'->>'total_cents')::bigint <> 5000 then raise exception 'Zero to owed correction is wrong: %',result; end if;
+
+  -- A starting balance answered as 0 at setup has no entry; correcting it writes the
+  -- entry setup would have written (dated opening_on or adoption_date), never overdue.
+  t := pg_temp.opening_tenancy('Answered zero', 0);
+  if exists (select 1 from public.charges where tenancy_id=t and type='opening_balance') then
+    raise exception 'Fixture: a 0 starting balance wrote an entry';
+  end if;
+  result := pg_temp.correct(t,'{"amount_cents":30000,"basis":"Rent","reason":"Answered 0 by mistake"}');
+  if result->'previous'->'entry'->>'kind' <> 'none' or (result->'previous'->>'opening_cents')::bigint <> 0
+    or result->'next'->'entry'->>'kind' <> 'charge' or (result->'owed_after'->>'total_cents')::bigint <> 30000
+    or (result->'owed_after'->>'overdue_cents')::bigint <> 0
+    or not exists (select 1 from public.charges c join public.tenancy_adoptions a on a.id=c.opening_adoption_id
+      where c.tenancy_id=t and c.type='opening_balance' and c.voided_at is null and c.amount_cents=30000
+        and c.replaces_charge_id is null and c.opening_category='rent' and c.due_date=coalesce(a.opening_on,a.adoption_date)) then
+    raise exception 'Answered-zero starting balance was not correctable: %',result;
+  end if;
 end;
 $test$;
 

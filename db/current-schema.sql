@@ -50,6 +50,20 @@ $$;
 ALTER FUNCTION "public"."_account_date"("p_account_id" "uuid", "p_as_of" timestamp with time zone) OWNER TO "postgres";
 
 --
+-- Name: _account_time_zone("uuid"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_account_time_zone"("p_account_id" "uuid") RETURNS "text"
+    LANGUAGE "sql" STABLE
+    SET "search_path" TO 'public'
+    AS $$
+  select coalesce((select time_zone from public.accounts where id = p_account_id), 'UTC')
+$$;
+
+
+ALTER FUNCTION "public"."_account_time_zone"("p_account_id" "uuid") OWNER TO "postgres";
+
+--
 -- Name: _actual_date_warnings("jsonb", "text"); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -57,16 +71,16 @@ CREATE OR REPLACE FUNCTION "public"."_actual_date_warnings"("p_facts" "jsonb", "
     LANGUAGE "plpgsql" STABLE
     SET "search_path" TO 'public'
     AS $$
-declare result jsonb:='[]';today date:=(statement_timestamp() at time zone 'UTC')::date;entered date;
+declare result jsonb:='[]';today date:=public._account_date((p_facts->>'account_id')::uuid,statement_timestamp());entered date;
 begin
   entered:=(p_facts->>'actual_move_in_date')::date;
   if entered>today then result:=result||jsonb_build_array(public._date_warning('actual_move_in_in_future',
     jsonb_build_object('type','tenancy','id',p_facts->'tenancy_id'),array['tenancy.actual_move_in_date'],
-    p_facts||jsonb_build_object('as_of_date',today),format('Actual arrival %s is after the app date %s (UTC). This is a landlord-reported date. Possession and billing dates stay unchanged.',entered,today),p_context)); end if;
+    p_facts||jsonb_build_object('as_of_date',today),format('Actual arrival %s is after today''s date %s. This is a landlord-reported date. Possession and billing dates stay unchanged.',entered,today),p_context)); end if;
   entered:=(p_facts->>'end_date')::date;
   if p_facts->>'status'='ended' and entered>today then result:=result||jsonb_build_array(public._date_warning('actual_ending_in_future',
     jsonb_build_object('type','ending'),array['tenancy.end_date'],p_facts||jsonb_build_object('as_of_date',today),
-    format('Actual ending %s is after the app date %s (UTC). The tenancy is ended now and automatic rent generation stops now. Correcting this date preserves ended status.',entered,today),p_context)); end if;
+    format('Actual ending %s is after today''s date %s. The tenancy is ended now and automatic rent generation stops now. Correcting this date preserves ended status.',entered,today),p_context)); end if;
   return result;
 end $$;
 
@@ -1721,7 +1735,7 @@ CREATE OR REPLACE FUNCTION "public"."_date_context_without_warning"("p_account_i
     SET "search_path" TO 'public'
     AS $$
 declare t public.tenancies;l jsonb;s jsonb;e jsonb;deps jsonb;v jsonb;h text;findings jsonb;
-  info text[]:='{}';explanation jsonb;today date:=(now() at time zone 'UTC')::date;
+  info text[]:='{}';explanation jsonb;today date:=public._account_date(p_account_id,now());
 begin
   if public._tenancy_date_actor() is null or not public.is_account_member(p_account_id) then
     raise exception 'not_found' using errcode='P0002'; end if;
@@ -1759,7 +1773,7 @@ begin
       order by r.created_at desc,r.id desc limit 1;
   return v||jsonb_build_object('context_fingerprint',h,'information',info,'findings',findings,
     'applicable_explanation',explanation,'can_correct_start',coalesce(e->>'kind','')<>'cancelled_before_move_in',
-    'as_of_date',today,'clock_basis','UTC','effective_status',public._tenancy_current_status(t));
+    'as_of_date',today,'clock_basis',public._account_time_zone(p_account_id),'effective_status',public._tenancy_current_status(t));
 end $$;
 
 
@@ -2005,7 +2019,7 @@ declare
   v_kind text;
 begin
   if NEW.status = 'ended' and OLD.status is distinct from NEW.status then
-    v_end := coalesce(NEW.end_date, current_date);
+    v_end := coalesce(NEW.end_date, public._account_date(NEW.account_id, now()));
 
     select te.kind
       into v_kind
@@ -3297,7 +3311,7 @@ CREATE OR REPLACE FUNCTION "public"."_normalize_tenancy_lifecycle"() RETURNS "tr
     SET "search_path" TO 'public'
     AS $$
 begin
-  NEW.status := public.effective_tenancy_status(NEW.status,NEW.start_date);
+  NEW.status := public.effective_tenancy_status(NEW.status,NEW.start_date,public._account_date(NEW.account_id,now()));
   return NEW;
 end $$;
 
@@ -3749,7 +3763,7 @@ CREATE OR REPLACE FUNCTION "public"."_preview_tenancy_date_change"("p_account_id
     SET "search_path" TO 'public'
     AS $$
 declare ctx jsonb;old_f jsonb;new_f jsonb;changes jsonb;info text[];blockers text[]:='{}';
-  new_start date;new_end date;actual date;new_status text;today date:=(now() at time zone 'UTC')::date;
+  new_start date;new_end date;actual date;new_status text;today date:=public._account_date(p_account_id,now());
   n_charges bigint;n_payments bigint;n_review bigint;n_fallback bigint;findings jsonb;
 begin
   if jsonb_typeof(p_payload) is distinct from 'object' then raise exception 'invalid_request' using errcode='22023'; end if;
@@ -3793,7 +3807,7 @@ begin
   findings:=public._applicable_date_findings(p_account_id,p_tenancy_id,public._tenancy_date_findings(new_f,ctx->'lease',ctx->'schedule',ctx->'deposits'));
   findings:=public._review_date_warnings(p_account_id,p_tenancy_id,public._scope_relationship_warnings(findings,new_f,public._date_warning_context(ctx))||public._actual_date_warnings(new_f,public._date_warning_context(ctx)),coalesce(p_payload->'warning_acknowledgements','[]'));
   return jsonb_build_object('current',old_f,'proposed',new_f,'context_fingerprint',ctx->>'context_fingerprint',
-    'blockers',blockers,'information',info,'findings',findings,'as_of_date',today,'clock_basis','UTC','effective_status',new_status,
+    'blockers',blockers,'information',info,'findings',findings,'as_of_date',today,'clock_basis',public._account_time_zone(p_account_id),'effective_status',new_status,
     'financial_review',jsonb_build_object('live_charges',n_charges,'live_payments',n_payments,
       'charges_in_changed_interval',n_review,'due_date_fallback_count',n_fallback,'sampled_at',now()));
 end $$;
@@ -3824,7 +3838,7 @@ CREATE OR REPLACE FUNCTION "public"."_receipt_date_warning"("p_account" "uuid", 
     LANGUAGE "plpgsql" STABLE
     SET "search_path" TO 'public'
     AS $_$
-declare today date:=(statement_timestamp() at time zone 'UTC')::date;entered date;
+declare today date:=public._account_date(p_account,statement_timestamp());entered date;
 begin
   entered:=case when (p_payment->>'received_at') ~ '^\d{4}-\d{2}-\d{2}$' then public._tenancy_calendar_date(p_payment->>'received_at')
     else ((p_payment->>'received_at')::timestamptz at time zone 'UTC')::date end;
@@ -3832,7 +3846,7 @@ begin
   return jsonb_build_array(public._date_warning('receipt_in_future',jsonb_strip_nulls(jsonb_build_object('type','payment',
     'id',p_payment->'id','draft_key',p_payment->'draft_key')),array['payment.received_at'],
     jsonb_build_object('account_id',p_account,'tenancy_id',p_tenancy,'payment',p_payment,'as_of_date',today),
-    format('Receipt date %s is after the app date %s (UTC). This records the %s %s payment now. Allocations change the current balance now; this does not schedule a transfer. Statements before the receipt date exclude it.',
+    format('Receipt date %s is after today''s date %s. This records the %s %s payment now. Allocations change the current balance now; this does not schedule a transfer. Statements before the receipt date exclude it.',
       entered,today,(p_payment->>'amount_cents')::numeric/100,p_payment->>'currency'),p_context));
 end $_$;
 
@@ -4555,7 +4569,7 @@ begin
   entered:=case when TG_TABLE_NAME='payments' then ((to_jsonb(NEW)->>'received_at')::timestamptz at time zone 'UTC')::date
     when TG_TABLE_NAME='tenancy_endings' then (to_jsonb(NEW)->>'effective_date')::date
     else (to_jsonb(NEW)->>'actual_move_in_date')::date end;
-  if entered<=(statement_timestamp() at time zone 'UTC')::date or entered is null then return null; end if;
+  if entered<=public._account_date(NEW.account_id,statement_timestamp()) or entered is null then return null; end if;
   if TG_TABLE_NAME='tenancy_endings' and to_jsonb(NEW)->>'kind'<>'ended' then return null; end if;
   if not exists(select 1 from public.tenancy_date_records r where r.account_id=NEW.account_id and r.kind='warning_confirmation'
     and case when TG_TABLE_NAME='payments' then r.subject_payment_id=NEW.id
@@ -4779,7 +4793,7 @@ CREATE OR REPLACE FUNCTION "public"."_scope_relationship_warnings"("p_findings" 
     AS $$
   select coalesce(jsonb_agg(public._date_warning(f->>'rule_id',jsonb_strip_nulls(jsonb_build_object('type','tenancy','id',p_facts->'tenancy_id')),
     array(select jsonb_array_elements_text(f->'fields')),f->'values'||jsonb_build_object('proposed_facts',p_facts,
-      'as_of_date',(statement_timestamp() at time zone 'UTC')::date),public._date_warning_message(f),p_context)||jsonb_build_object('explained',f->'explained','explanation_fingerprint',f->'relationship_fingerprint')),'[]')
+      'as_of_date',public._account_date((p_facts->>'account_id')::uuid,statement_timestamp())),public._date_warning_message(f),p_context)||jsonb_build_object('explained',f->'explained','explanation_fingerprint',f->'relationship_fingerprint')),'[]')
   from jsonb_array_elements(p_findings) f
 $$;
 
@@ -4956,7 +4970,7 @@ begin
     raise exception 'an adoption cannot be inserted already soft-deleted'
       using errcode = 'check_violation';
   end if;
-  if NEW.adoption_date > current_date + 1 then
+  if NEW.adoption_date > public._account_date(NEW.account_id, now()) + 1 then
     raise exception 'adoption_date cannot be in the future'
       using errcode = 'check_violation';
   end if;
@@ -5057,7 +5071,7 @@ CREATE OR REPLACE FUNCTION "public"."_tenancy_current_status"("p_tenancy" "publi
     LANGUAGE "sql" STABLE
     SET "search_path" TO 'public'
     AS $$
-  select case when p_tenancy.move_out_on is null then public.effective_tenancy_status(p_tenancy.status, p_tenancy.start_date)
+  select case when p_tenancy.move_out_on is null then public.effective_tenancy_status(p_tenancy.status, p_tenancy.start_date, public._account_date(p_tenancy.account_id, now()))
     else public._tenancy_status_on(p_tenancy.status, p_tenancy.start_date, p_tenancy.move_out_on,
       public._account_date(p_tenancy.account_id)) end
 $$;
@@ -5598,10 +5612,10 @@ begin
   if p_adoption_date is null then
     raise exception 'invalid: adoption_date is required';
   end if;
-  -- +1 day: a client whose local calendar is ahead of UTC (up to UTC+14) may
-  -- legitimately name "today" one day past current_date. Anything further is
+  -- +1 day of slack past the account's date, kept so a UTC account accepts exactly
+  -- what it accepted before. Anything further is
   -- a future-dated history — the fat-fingered-year case — and must not commit.
-  if p_adoption_date > current_date + 1 then
+  if p_adoption_date > public._account_date(p_account_id, now()) + 1 then
     raise exception 'invalid: adoption_date cannot be in the future';
   end if;
   if p_opening_balance_cents is null then
@@ -5918,7 +5932,7 @@ begin
            updated_at = now()
      where t.status = 'upcoming'
        and t.deleted_at is null
-       and t.start_date <= p_as_of::date
+       and t.start_date <= public._account_date(t.account_id, p_as_of)
     returning t.id, t.account_id, t.start_date;
 end;
 $$;
@@ -5959,7 +5973,7 @@ begin
   insert into public.tenancies(account_id,area_id,start_date,start_date_basis,actual_move_in_date,end_date,status)
   values(p_account_id,area,start_on,coalesce(p_payload->>'start_date_basis','legacy_unverified'),
     (p_payload->>'actual_move_in_date')::date,(p_payload->>'end_date')::date,
-    public.effective_tenancy_status(coalesce(p_payload->>'status','upcoming'),start_on)) returning * into t;
+    public.effective_tenancy_status(coalesce(p_payload->>'status','upcoming'),start_on,public._account_date(p_account_id,now()))) returning * into t;
   insert into public.tenancy_tenants(account_id,tenancy_id,tenant_id,role)
     values(p_account_id,t.id,tenant,'primary') returning * into m;
   result := jsonb_build_object('tenancy',to_jsonb(t),'member',to_jsonb(m));
@@ -9785,9 +9799,8 @@ CREATE OR REPLACE FUNCTION "public"."detect_rent_drift"("p_account_id" "uuid") R
     SET "search_path" TO 'public'
     AS $$
 begin
-  -- Pin the session to UTC so current_date (the open-schedule cutoff below) is
-  -- deterministic regardless of the caller's TimeZone -- same determinism
-  -- rationale generate_rent_charges documents. Transaction-local, never leaks.
+  -- The open-schedule cutoff is the account's date, independent of the session
+  -- TimeZone (pinned to UTC, transaction-local).
   perform set_config('timezone', 'UTC', true);
 
   return query
@@ -9814,8 +9827,8 @@ begin
         and s.tenancy_id = l.tenancy_id
         and s.kind       = 'rent'
         and s.deleted_at is null
-        and s.start_date <= current_date
-        and (s.end_date is null or s.end_date >= current_date)
+        and s.start_date <= public._account_date(p_account_id, now())
+        and (s.end_date is null or s.end_date >= public._account_date(p_account_id, now()))
     ) sch on true
     where l.account_id = p_account_id
       and l.status     = 'active'
@@ -10399,7 +10412,7 @@ CREATE OR REPLACE FUNCTION "public"."generate_rent_charges"("p_account_id" "uuid
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
     AS $$
-declare s public.rent_schedules;t public.tenancies;p jsonb;v_start date;v_cycle date;v_today date := (p_as_of at time zone 'UTC')::date;v_id uuid;v_i integer;
+declare s public.rent_schedules;t public.tenancies;p jsonb;v_start date;v_cycle date;v_today date := public._account_date(p_account_id,p_as_of);v_id uuid;v_i integer;
 begin
   if not exists(select 1 from public.accounts where id = p_account_id and deleted_at is null and auto_charge_enabled) then return; end if;
   perform set_config('audit.actor','system:cron:rent',true);
@@ -10410,8 +10423,7 @@ begin
     select * into t from public.tenancies where id = s.tenancy_id and account_id = p_account_id and deleted_at is null;
 
     if not found then continue; end if;
-    v_today := case when t.move_out_on is null then (p_as_of at time zone 'UTC')::date
-      else public._account_date(p_account_id,p_as_of) end;
+    v_today := public._account_date(p_account_id,p_as_of);
     if public._tenancy_status_on(t.status,t.start_date,t.move_out_on,v_today) = 'ended' then continue; end if;
 
     if s.period_policy_version = 1 then
@@ -10579,7 +10591,7 @@ begin
       when p.possession_confirmed_revision=t.date_revision then p.possession_confirmed_revision else null end,
     'rent_decision',rent,'deposit_decision',deposit,'revision',coalesce(p.revision,0),
     'date_revision',t.date_revision,'effective_status',public._tenancy_current_status(t),
-    'as_of_date',(now() at time zone 'UTC')::date,'clock_basis','UTC','updated_at',p.updated_at);
+    'as_of_date',public._account_date(p_account_id,now()),'clock_basis',public._account_time_zone(p_account_id),'updated_at',p.updated_at);
 end $$;
 
 
@@ -11625,7 +11637,7 @@ CREATE OR REPLACE FUNCTION "public"."preview_billing_setup_facts"("p_account_id"
     AS $_$
 declare t public.tenancies;l public.leases;r jsonb := p_intent->'rent';d jsonb := p_intent->'deposit';
   v_schedules jsonb;v_charges jsonb;v_payments jsonb;v_allocations jsonb;v_adoptions jsonb;
-  v_today date := (now() at time zone 'UTC')::date;v_mode text;v_existing_rent boolean;v_existing_money boolean;
+  v_today date := public._account_date(p_account_id,now());v_mode text;v_existing_rent boolean;v_existing_money boolean;
   v_findings jsonb := '[]';v_candidates jsonb := '[]';v_history jsonb := '[]';v_period jsonb;
   v_snapshot jsonb;v_enabled boolean;v_context jsonb;v_hash text;v_start date;v_month date;v_end date;
   v_elem jsonb;v_key jsonb;v_rule text;v_next jsonb;v_count integer := 0;v_seen text[] := '{}';v_amount bigint;
@@ -12053,7 +12065,7 @@ begin
   v_shared_findings:=public._review_date_warnings(p_account_id,p_tenancy_id,v_shared_findings,coalesce(p_intent->'warning_acknowledgements','[]'));
   select coalesce(jsonb_agg(f),'[]') into v_findings from jsonb_array_elements(v_findings) f where not coalesce((f->>'confirmation_required')::boolean,false);
   v_findings:=v_findings||v_shared_findings;
-  return jsonb_build_object('version',1,'as_of_date',v_today,'clock_basis','UTC','context_fingerprint',v_hash,
+  return jsonb_build_object('version',1,'as_of_date',v_today,'clock_basis',public._account_time_zone(p_account_id),'context_fingerprint',v_hash,
     'mode',v_mode,'auto_charge_enabled',coalesce(v_enabled,false),'charge_candidates',v_candidates,'history_periods',v_history,
     'findings',v_findings,'existing',jsonb_build_object('schedules',v_schedules,'charges',v_charges,'payments',v_payments),
     'terms_snapshot',v_snapshot,'can_commit',not exists(select 1 from jsonb_array_elements(v_findings) f where f->>'severity' = 'error' or (coalesce((f->>'confirmation_required')::boolean,false) and not (f->>'confirmed')::boolean)),
@@ -12108,13 +12120,13 @@ begin
   if not found then raise exception 'not_found' using errcode='P0002'; end if;
   if (p_payload->>'amount_cents')::bigint<=0 or length(p_payload->>'currency')<>3 or p_payload->>'received_at' is null then
     raise exception 'invalid_request' using errcode='22023'; end if;
-  context:=jsonb_build_object('intent',intent,'tenancy',to_jsonb(t),'as_of_date',(statement_timestamp() at time zone 'UTC')::date,
+  context:=jsonb_build_object('intent',intent,'tenancy',to_jsonb(t),'as_of_date',public._account_date(p_account_id,statement_timestamp()),
     'charges',(select coalesce(jsonb_agg(to_jsonb(c) order by c.id),'[]') from public.charges c where c.account_id=p_account_id and c.tenancy_id=t.id),
     'allocations',(select coalesce(jsonb_agg(to_jsonb(a) order by a.id),'[]') from public.payment_allocations a join public.charges c on c.account_id=a.account_id and c.id=a.charge_id
       where c.account_id=p_account_id and c.tenancy_id=t.id));
   fingerprint:=encode(sha256(convert_to(context::text,'UTF8')),'hex');
   findings:=public._review_date_warnings(p_account_id,t.id,public._receipt_date_warning(p_account_id,t.id,intent||jsonb_build_object('draft_key','receipt'),fingerprint),coalesce(p_payload->'warning_acknowledgements','[]'));
-  return jsonb_build_object('as_of_date',(statement_timestamp() at time zone 'UTC')::date,'clock_basis','UTC',
+  return jsonb_build_object('as_of_date',public._account_date(p_account_id,statement_timestamp()),'clock_basis',public._account_time_zone(p_account_id),
     'context_fingerprint',fingerprint,'findings',findings,'can_commit',not exists(select 1 from jsonb_array_elements(findings) f where not (f->>'confirmed')::boolean));
 end $$;
 
@@ -12144,22 +12156,19 @@ CREATE OR REPLACE FUNCTION "public"."preview_tenancy_ending"("p_account_id" "uui
     SET "search_path" TO 'public'
     AS $$
 declare ctx jsonb;intent jsonb:=p_payload-array['warning_acknowledgements','expected_context_fingerprint'];fingerprint text;
-  findings jsonb:='[]';today date:=(statement_timestamp() at time zone 'UTC')::date;entered date;
+  findings jsonb:='[]';today date:=public._account_date(p_account_id,statement_timestamp());entered date;
 begin
   ctx:=public.get_tenancy_date_context(p_account_id,p_tenancy_id);
 
-  if exists (select 1 from public.accounts where id=p_account_id and scheduled_move_out_enabled) then
-    today:=public._account_date(p_account_id);
-  end if;
   entered:=public._tenancy_calendar_date(p_payload->>'effective_date');
   if p_payload->>'kind'='ended' and entered<(ctx->'facts'->>'start_date')::date then raise exception 'invalid_date_order' using errcode='22023'; end if;
   fingerprint:=encode(sha256(convert_to(jsonb_build_object('intent',intent,'context',ctx->>'context_fingerprint','as_of_date',today)::text,'UTF8')),'hex');
   if p_payload->>'kind'='ended' and entered>today
     and not exists (select 1 from public.accounts where id=p_account_id and scheduled_move_out_enabled) then findings:=jsonb_build_array(public._date_warning('actual_ending_in_future',
     jsonb_build_object('type','ending'),array['ending.effective_date'],intent||jsonb_build_object('account_id',p_account_id,'tenancy_id',p_tenancy_id,'as_of_date',today,'resulting_status','ended'),
-    format('Actual ending %s is after the app date %s (UTC). Recording this ends the tenancy now and stops automatic rent generation now.',entered,today),fingerprint)); end if;
+    format('Actual ending %s is after today''s date %s. Recording this ends the tenancy now and stops automatic rent generation now.',entered,today),fingerprint)); end if;
   findings:=public._review_date_warnings(p_account_id,p_tenancy_id,findings,coalesce(p_payload->'warning_acknowledgements','[]'));
-  return jsonb_build_object('as_of_date',today,'clock_basis','UTC','context_fingerprint',fingerprint,'findings',findings,
+  return jsonb_build_object('as_of_date',today,'clock_basis',public._account_time_zone(p_account_id),'context_fingerprint',fingerprint,'findings',findings,
     'can_commit',not exists(select 1 from jsonb_array_elements(findings) f where not (f->>'confirmed')::boolean));
 end $$;
 
@@ -12191,7 +12200,7 @@ CREATE OR REPLACE FUNCTION "public"."preview_tenancy_setup_session"("p_account_i
 declare d public.tenancy_setup_sessions;actual_t public.tenancies;old_l public.leases;
   t jsonb;l jsonb;billing jsonb;r jsonb;preview jsonb;cycles jsonb;payments jsonb:='[]';
   p jsonb;c jsonb;targets jsonb;allocs jsonb;remaining jsonb:='{}';amount_left bigint;available bigint;applied bigint;ref text;
-  people_context jsonb:='[]';person jsonb;existing_person jsonb;fingerprint text;today date:=(now() at time zone 'UTC')::date;
+  people_context jsonb:='[]';person jsonb;existing_person jsonb;fingerprint text;today date:=public._account_date(p_account_id,now());
   tenant_id uuid;date_change jsonb;relationship_findings jsonb;extra_findings jsonb;
 begin
   if auth.uid() is null or not public.is_account_member(p_account_id) then raise exception 'not_found' using errcode='P0002';end if;
@@ -12805,7 +12814,7 @@ ALTER FUNCTION "public"."record_tenancy_ending"("p_account_id" "uuid", "p_tenanc
 -- Name: rent_rollup("uuid", "text"[], "date"); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
-CREATE OR REPLACE FUNCTION "public"."rent_rollup"("p_account_id" "uuid", "p_statuses" "text"[] DEFAULT ARRAY['active'::"text", 'holdover'::"text"], "p_as_of" "date" DEFAULT (("now"() AT TIME ZONE 'UTC'::"text"))::"date") RETURNS TABLE("tenancy_id" "uuid", "status" "text", "currency" "text", "rent_balance_cents" bigint, "deposit_balance_cents" bigint, "unapplied_credit_cents" bigint, "non_deposit_overdue_cents" bigint, "non_deposit_due_today_cents" bigint, "non_deposit_upcoming_cents" bigint, "deposit_owed_cents" bigint, "deposit_held_cents" bigint, "currency_totals" "jsonb", "has_other_currency_balance" boolean, "adoption" "jsonb")
+CREATE OR REPLACE FUNCTION "public"."rent_rollup"("p_account_id" "uuid", "p_statuses" "text"[] DEFAULT ARRAY['active'::"text", 'holdover'::"text"], "p_as_of" "date" DEFAULT NULL::"date") RETURNS TABLE("tenancy_id" "uuid", "status" "text", "currency" "text", "rent_balance_cents" bigint, "deposit_balance_cents" bigint, "unapplied_credit_cents" bigint, "non_deposit_overdue_cents" bigint, "non_deposit_due_today_cents" bigint, "non_deposit_upcoming_cents" bigint, "deposit_owed_cents" bigint, "deposit_held_cents" bigint, "currency_totals" "jsonb", "has_other_currency_balance" boolean, "adoption" "jsonb")
     LANGUAGE "sql" STABLE
     SET "search_path" TO 'public'
     AS $$
@@ -12833,9 +12842,9 @@ CREATE OR REPLACE FUNCTION "public"."rent_rollup"("p_account_id" "uuid", "p_stat
       coalesce(sum(cb.balance) filter(where cb.type<>'deposit'),0)::bigint as rent_balance_cents,
       coalesce(sum(cb.balance) filter(where cb.type='deposit'),0)::bigint as deposit_owed_cents,
       coalesce(sum(cb.allocated) filter(where cb.type='deposit'),0)::bigint as deposit_held_cents,
-      coalesce(sum(cb.balance) filter(where cb.type not in ('deposit','opening_balance') and cb.due_date<p_as_of),0)::bigint as non_deposit_overdue_cents,
-      coalesce(sum(cb.balance) filter(where cb.type not in ('deposit','opening_balance') and cb.due_date=p_as_of),0)::bigint as non_deposit_due_today_cents,
-      coalesce(sum(cb.balance) filter(where cb.type not in ('deposit','opening_balance') and cb.due_date>p_as_of),0)::bigint as non_deposit_upcoming_cents,
+      coalesce(sum(cb.balance) filter(where cb.type not in ('deposit','opening_balance') and cb.due_date<coalesce(p_as_of,public._account_date(p_account_id,now()))),0)::bigint as non_deposit_overdue_cents,
+      coalesce(sum(cb.balance) filter(where cb.type not in ('deposit','opening_balance') and cb.due_date=coalesce(p_as_of,public._account_date(p_account_id,now()))),0)::bigint as non_deposit_due_today_cents,
+      coalesce(sum(cb.balance) filter(where cb.type not in ('deposit','opening_balance') and cb.due_date>coalesce(p_as_of,public._account_date(p_account_id,now()))),0)::bigint as non_deposit_upcoming_cents,
       coalesce(sum(cb.balance) filter(where cb.type='opening_balance'),0)::bigint as opening_owed_cents,
       coalesce(sum(cb.allocated),0)::bigint as total_allocated
       from charge_balances cb group by cb.tenancy_id,cb.currency
@@ -12863,7 +12872,7 @@ CREATE OR REPLACE FUNCTION "public"."rent_rollup"("p_account_id" "uuid", "p_stat
     union select tenancy_id,currency from adopted
     union select s.tenancy_id,s.currency from public.rent_schedules s join t on t.id=s.tenancy_id
       where s.account_id=p_account_id and s.deleted_at is null and s.kind='rent'
-        and s.start_date<=(now() at time zone 'UTC')::date and (s.end_date is null or s.end_date>=(now() at time zone 'UTC')::date)
+        and s.start_date<=public._account_date(p_account_id,now()) and (s.end_date is null or s.end_date>=public._account_date(p_account_id,now()))
   ),
   currency_rows as (
     select a.tenancy_id,a.currency,jsonb_build_object('currency',a.currency,
@@ -12878,8 +12887,8 @@ CREATE OR REPLACE FUNCTION "public"."rent_rollup"("p_account_id" "uuid", "p_stat
   ),
   primary_currency as (
     select t.id,coalesce((select s.currency from public.rent_schedules s where s.account_id=p_account_id and s.tenancy_id=t.id
-      and s.deleted_at is null and s.kind='rent' and s.start_date<=(now() at time zone 'UTC')::date
-      and (s.end_date is null or s.end_date>=(now() at time zone 'UTC')::date)
+      and s.deleted_at is null and s.kind='rent' and s.start_date<=public._account_date(p_account_id,now())
+      and (s.end_date is null or s.end_date>=public._account_date(p_account_id,now()))
       order by s.start_date desc,s.created_at desc,s.id desc limit 1),
       (select min(a.currency) from available a where a.tenancy_id=t.id)) as currency from t
   )
@@ -16514,7 +16523,7 @@ CREATE OR REPLACE VIEW "public"."tenancy_current" WITH ("security_invoker"='true
             ELSE "t"."end_date"
         END AS "end_date",
         CASE
-            WHEN ("t"."move_out_on" IS NULL) THEN "public"."effective_tenancy_status"("t"."status", "t"."start_date")
+            WHEN ("t"."move_out_on" IS NULL) THEN "public"."effective_tenancy_status"("t"."status", "t"."start_date", (("now"() AT TIME ZONE "a"."time_zone"))::"date")
             ELSE "public"."_tenancy_status_on"("t"."status", "t"."start_date", "t"."move_out_on", "d"."account_date")
         END AS "status",
     "t"."created_at",
@@ -23356,6 +23365,17 @@ GRANT ALL ON FUNCTION "public"."_account_date"("p_account_id" "uuid", "p_as_of" 
 GRANT ALL ON FUNCTION "public"."_account_date"("p_account_id" "uuid", "p_as_of" timestamp with time zone) TO "service_role";
 GRANT ALL ON FUNCTION "public"."_account_date"("p_account_id" "uuid", "p_as_of" timestamp with time zone) TO "tenancy_date_writer";
 GRANT ALL ON FUNCTION "public"."_account_date"("p_account_id" "uuid", "p_as_of" timestamp with time zone) TO "tenancy_setup_writer";
+
+
+--
+-- Name: FUNCTION "_account_time_zone"("p_account_id" "uuid"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_account_time_zone"("p_account_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."_account_time_zone"("p_account_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."_account_time_zone"("p_account_id" "uuid") TO "service_role";
+GRANT ALL ON FUNCTION "public"."_account_time_zone"("p_account_id" "uuid") TO "tenancy_date_writer";
+GRANT ALL ON FUNCTION "public"."_account_time_zone"("p_account_id" "uuid") TO "tenancy_setup_writer";
 
 
 --

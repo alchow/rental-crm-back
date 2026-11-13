@@ -448,7 +448,7 @@ do $test$
 declare
   account uuid := current_setting('field_log.account_id')::uuid;
   person uuid := current_setting('field_log.person')::uuid;
-  -- Setup decides "started" with the UTC date, so the anchor follows it.
+  -- Setup decides "started" with the account date; the later of it and the UTC date keeps the anchor ahead.
   today date := greatest(public._account_date(account), (now() at time zone 'UTC')::date);
   month_start date := date_trunc('month',today)::date;
   anchor_day integer := extract(day from today)::integer + 1;
