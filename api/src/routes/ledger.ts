@@ -111,6 +111,10 @@ const LedgerAdoption = z
     balance_basis: z.string().nullable(),
     needs_review: z.boolean(),
     recorded_in_ledger: z.boolean().optional(),
+    corrected_at: z.string().optional().openapi({
+      description:
+        'When the starting balance was last corrected; the amount and basis shown are the corrected ones.',
+    }),
     created_at: z.string(),
   })
   .openapi('LedgerAdoption');
@@ -426,14 +430,27 @@ ledgerApp.openapi(get, async (c) => {
     created_at: string;
   }
   const adoptionRow = ((adoptions.data ?? []) as AdoptionRow[])[0] ?? null;
+  // A corrected starting balance shows its latest amount and basis (ADR-0013).
+  const correction = adoptionRow
+    ? (
+        await sb
+          .from('opening_balance_corrections')
+          .select('opening_cents, basis, corrected_at')
+          .eq('account_id', accountId)
+          .eq('adoption_id', adoptionRow.id)
+          .order('corrected_at', { ascending: false })
+          .limit(1)
+      ).data?.[0]
+    : undefined;
   const adoption =
     adoptionRow === null || (as_of !== undefined && adoptionRow.adoption_date > as_of)
       ? null
       : {
           adoption_date: adoptionRow.adoption_date,
-          opening_balance_cents: adoptionRow.opening_balance_cents,
+          opening_balance_cents: correction?.opening_cents ?? adoptionRow.opening_balance_cents,
           currency: adoptionRow.currency,
-          balance_basis: adoptionRow.balance_basis,
+          balance_basis: correction ? correction.basis : adoptionRow.balance_basis,
+          ...(correction ? { corrected_at: correction.corrected_at } : {}),
           needs_review: adoptionRow.needs_review,
           recorded_in_ledger:
             chargeRows.some((row) => row.opening_adoption_id === adoptionRow.id) ||

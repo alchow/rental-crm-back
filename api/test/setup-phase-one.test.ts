@@ -510,6 +510,103 @@ await check('settings change the proration method', async () => {
   );
 });
 
+await check('a mistyped starting balance is voided and re-entered', async () => {
+  await pool.query('update public.accounts set opening_balance_ledger_enabled=true where id=$1', [
+    accountId,
+  ]);
+  const id = await draft();
+  const monthStart = `${today.slice(0, 7)}-01`;
+  const startDate = new Date(`${monthStart}T12:00:00Z`);
+  startDate.setUTCMonth(startDate.getUTCMonth() - 2);
+  const startOn = startDate.toISOString().slice(0, 10);
+  const input = setup(
+    {
+      tenancy: { start_date: startOn, end_date: null },
+      agreement: { ...setup().agreement, term_start: startOn },
+    },
+    {
+      coverage_start: monthStart,
+      regular_anchor: monthStart,
+      history_mode: 'opening_balance',
+      opening_balance: { amount_cents: 650000, basis: 'Rent', includes_current_rent: true },
+    },
+  );
+  const review = await request('POST', `/tenancy-setup-sessions/${id}/preview`, input);
+  assert(review.status === 200, JSON.stringify(review.body));
+  const committed = await request('POST', `/tenancy-setup-sessions/${id}/commit`, {
+    setup: input,
+    expected_context: (review.body as { setup_context: string }).setup_context,
+    accept_warnings: true,
+  });
+  assert(committed.status === 201, JSON.stringify(committed.body));
+  const tenancyId = (committed.body as { tenancy_id: string }).tenancy_id;
+  const path = `/tenancies/${tenancyId}/opening-balance/correction`;
+  const body = { amount_cents: 65000, basis: 'Rent', reason: 'Typed one zero too many' };
+  const preview = await request('POST', `${path}/preview`, body);
+  const p = preview.body as {
+    previous: { opening_cents: number };
+    next: { opening_cents: number };
+    owed_before: { total_cents: number };
+    owed_after: { total_cents: number };
+  };
+  assert(
+    preview.status === 200 &&
+      p.previous.opening_cents === 650000 &&
+      p.next.opening_cents === 65000 &&
+      p.owed_before.total_cents === 650000 &&
+      p.owed_after.total_cents === 65000,
+    JSON.stringify(preview.body),
+  );
+  const key = crypto.randomUUID();
+  const first = await api('POST', base + path, {
+    token: auth.session.access_token,
+    body,
+    idempotencyKey: key,
+  });
+  assert(first.status === 200, JSON.stringify(first.body));
+  const replay = await api('POST', base + path, {
+    token: auth.session.access_token,
+    body,
+    idempotencyKey: key,
+  });
+  assert(
+    replay.status === 200 &&
+      replay.headers['idempotency-replay'] === 'true' &&
+      JSON.stringify(replay.body) === JSON.stringify(first.body),
+    JSON.stringify(replay.headers),
+  );
+  const ledger = await request('GET', `/tenancies/${tenancyId}/ledger`);
+  const entries = (
+    ledger.body as {
+      entries: Array<{ type?: string; amount_cents: number; voided_at?: string | null }>;
+    }
+  ).entries.filter((e) => e.type === 'opening_balance');
+  assert(
+    entries.length === 2 &&
+      entries.some((e) => e.amount_cents === 650000 && e.voided_at) &&
+      entries.some((e) => e.amount_cents === 65000 && !e.voided_at),
+    JSON.stringify(entries),
+  );
+  const unchanged = await request('POST', `${path}/preview`, body);
+  assert(
+    unchanged.status === 400 &&
+      (unchanged.body as { error: { code: string } }).error.code === 'opening_unchanged',
+    JSON.stringify(unchanged.body),
+  );
+  await pool.query('update public.accounts set opening_balance_ledger_enabled=false where id=$1', [
+    accountId,
+  ]);
+  const off = await request('POST', `${path}/preview`, { ...body, amount_cents: 70000 });
+  await pool.query('update public.accounts set opening_balance_ledger_enabled=true where id=$1', [
+    accountId,
+  ]);
+  assert(
+    off.status === 409 &&
+      (off.body as { error: { code: string } }).error.code === 'opening_ledger_disabled',
+    JSON.stringify(off.body),
+  );
+});
+
 await check('the wizard flag is read-only on settings and set in SQL', async () => {
   const off = await request('GET', '/settings');
   assert(

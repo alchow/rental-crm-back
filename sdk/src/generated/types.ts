@@ -8880,6 +8880,199 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/opening-balance/correction/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Show what correcting the starting balance would change, without writing it
+         * @description 409 opening_ledger_disabled when the starting-balance ledger is off; 409 opening_not_in_ledger for a legacy starting balance; 400 opening_unchanged when the amount is the same.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    tenancyId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["OpeningBalanceCorrectionBody"];
+                };
+            };
+            responses: {
+                /** @description Before and after */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["OpeningBalanceCorrection"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/opening-balance/correction": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Void the starting balance entry and re-enter it at the corrected amount */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400. */
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    accountId: string;
+                    tenancyId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["OpeningBalanceCorrectionBody"];
+                };
+            };
+            responses: {
+                /** @description Correction recorded */
+                200: {
+                    headers: {
+                        /** @description Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution. */
+                        "Idempotency-Replay"?: "true";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["OpeningBalanceCorrection"];
+                    };
+                };
+                /** @description invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description not found / not a member */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description conflict — error.code carries a fine-grained reason (see the route description) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description server error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+                /** @description service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key. */
+                503: {
+                    headers: {
+                        /** @description Seconds to wait before retrying. Present on 503 service_unavailable responses. */
+                        "Retry-After"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/accounts/{accountId}/tenancies/{tenancyId}/adoption": {
         parameters: {
             query?: never;
@@ -22790,6 +22983,8 @@ export interface components {
             balance_basis: string | null;
             needs_review: boolean;
             recorded_in_ledger?: boolean;
+            /** @description When the starting balance was last corrected; the amount and basis shown are the corrected ones. */
+            corrected_at?: string;
             created_at: string;
         } | null;
         LedgerTotalsByType: {
@@ -22941,6 +23136,60 @@ export interface components {
                 }[];
                 unattributed_cents: number;
             }[];
+        };
+        OpeningBalanceCorrection: {
+            /**
+             * Format: uuid
+             * @description Present after commit.
+             */
+            correction_id?: string;
+            /** Format: uuid */
+            adoption_id: string;
+            currency: string;
+            previous: {
+                typed_cents: number;
+                opening_cents: number;
+                entry: {
+                    /** @enum {string} */
+                    kind: "charge" | "credit" | "none";
+                    /** Format: uuid */
+                    id: string | null;
+                };
+            };
+            next: {
+                typed_cents: number;
+                /** @description typed_cents plus earlier receipts answered add_to_owed. */
+                opening_cents: number;
+                added_receipts_cents: number;
+                entry: {
+                    /** @enum {string} */
+                    kind: "charge" | "credit" | "none";
+                    /** Format: uuid */
+                    id: string | null;
+                };
+            };
+            allocations: {
+                /** Format: uuid */
+                allocation_id: string;
+                /** Format: uuid */
+                payment_id: string;
+                /** Format: uuid */
+                charge_id: string;
+                amount_cents: number;
+                /** @description Re-applied to the new opening entry. */
+                moved_cents: number;
+                /** @description No longer applied: unapplied credit on the payment, or owed again on the charge. */
+                released_cents: number;
+            }[];
+            owed_before: components["schemas"]["OwedSummary"] | null;
+            owed_after: components["schemas"]["OwedSummary"] | null;
+        };
+        OpeningBalanceCorrectionBody: {
+            /** @description The corrected typed amount: positive owed, negative a credit, 0 nothing. */
+            amount_cents: number;
+            /** @description What the amount is for; required unless the amount is 0. */
+            basis?: string;
+            reason: string;
         };
         AdoptionResult: {
             /** Format: uuid */

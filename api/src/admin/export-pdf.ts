@@ -549,8 +549,28 @@ export async function loadExportData(scope: ExportScope): Promise<ExportData> {
     adoptErr?.code === 'PGRST205' || /Could not find the table/i.test(adoptErr?.message ?? '');
   if (adoptErr && !adoptionTableMissing)
     throw new Error(`tenancy_adoptions query failed: ${adoptErr.message}`);
-  const adoption: Record<string, unknown> | null =
+  const adoptionRow: Record<string, unknown> | null =
     ((adoptRes.data as Record<string, unknown>[] | null) ?? [])[0] ?? null;
+  // A corrected starting balance prints its latest amount and basis (ADR-0013).
+  const corrected = adoptionRow
+    ? (
+        await admin
+          .from('opening_balance_corrections')
+          .select('opening_cents, basis')
+          .eq('account_id', scope.accountId)
+          .eq('adoption_id', adoptionRow.id as string)
+          .order('corrected_at', { ascending: false })
+          .limit(1)
+      ).data?.[0]
+    : undefined;
+  const adoption: Record<string, unknown> | null =
+    adoptionRow && corrected
+      ? {
+          ...adoptionRow,
+          opening_balance_cents: corrected.opening_cents,
+          balance_basis: corrected.basis,
+        }
+      : adoptionRow;
   const payments: Record<string, unknown>[] = paymentRows;
   const chargeIds = charges.map((c) => c.id).filter((id): id is string => typeof id === 'string');
   const allocations = await loadRelatedRows(

@@ -12,7 +12,7 @@ const AccountParam = z.object({ accountId: z.string().uuid() });
 const ChargeParam = z.object({ accountId: z.string().uuid(), id: z.string().uuid() });
 const TenancyQuery = z.object({ tenancy_id: z.string().uuid().optional() });
 
-const OwedSummary = z
+export const OwedSummary = z
   .object({
     tenancy_id: z.string().uuid(),
     currency: z.string(),

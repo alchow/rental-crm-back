@@ -6829,6 +6829,10 @@
           "recorded_in_ledger": {
             "type": "boolean"
           },
+          "corrected_at": {
+            "type": "string",
+            "description": "When the starting balance was last corrected; the amount and basis shown are the corrected ones."
+          },
           "created_at": {
             "type": "string"
           }
@@ -7443,6 +7447,203 @@
           "entries",
           "totals"
         ]
+      },
+      "OpeningBalanceCorrection": {
+        "type": "object",
+        "properties": {
+          "correction_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Present after commit."
+          },
+          "adoption_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "previous": {
+            "type": "object",
+            "properties": {
+              "typed_cents": {
+                "type": "integer"
+              },
+              "opening_cents": {
+                "type": "integer"
+              },
+              "entry": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "charge",
+                      "credit",
+                      "none"
+                    ]
+                  },
+                  "id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "id"
+                ]
+              }
+            },
+            "required": [
+              "typed_cents",
+              "opening_cents",
+              "entry"
+            ]
+          },
+          "next": {
+            "type": "object",
+            "properties": {
+              "typed_cents": {
+                "type": "integer"
+              },
+              "opening_cents": {
+                "type": "integer",
+                "description": "typed_cents plus earlier receipts answered add_to_owed."
+              },
+              "added_receipts_cents": {
+                "type": "integer"
+              },
+              "entry": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "charge",
+                      "credit",
+                      "none"
+                    ]
+                  },
+                  "id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "id"
+                ]
+              }
+            },
+            "required": [
+              "typed_cents",
+              "opening_cents",
+              "added_receipts_cents",
+              "entry"
+            ]
+          },
+          "allocations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "allocation_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "payment_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "charge_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "amount_cents": {
+                  "type": "integer"
+                },
+                "moved_cents": {
+                  "type": "integer",
+                  "description": "Re-applied to the new opening entry."
+                },
+                "released_cents": {
+                  "type": "integer",
+                  "description": "No longer applied: unapplied credit on the payment, or owed again on the charge."
+                }
+              },
+              "required": [
+                "allocation_id",
+                "payment_id",
+                "charge_id",
+                "amount_cents",
+                "moved_cents",
+                "released_cents"
+              ]
+            }
+          },
+          "owed_before": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OwedSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "owed_after": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OwedSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "adoption_id",
+          "currency",
+          "previous",
+          "next",
+          "allocations",
+          "owed_before",
+          "owed_after"
+        ]
+      },
+      "OpeningBalanceCorrectionBody": {
+        "type": "object",
+        "properties": {
+          "amount_cents": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991,
+            "description": "The corrected typed amount: positive owed, negative a credit, 0 nothing."
+          },
+          "basis": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "What the amount is for; required unless the amount is 0."
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "amount_cents",
+          "reason"
+        ],
+        "additionalProperties": false
       },
       "AdoptionResult": {
         "type": "object",
@@ -30646,6 +30847,271 @@
           },
           "404": {
             "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/opening-balance/correction/preview": {
+      "post": {
+        "tags": [
+          "ledger"
+        ],
+        "summary": "Show what correcting the starting balance would change, without writing it",
+        "description": "409 opening_ledger_disabled when the starting-balance ledger is off; 409 opening_not_in_ledger for a legacy starting balance; 400 opening_unchanged when the amount is the same.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "tenancyId",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpeningBalanceCorrectionBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Before and after",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpeningBalanceCorrection"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_unavailable: a dependency was temporarily unavailable (incl. a cold start) or the request exceeded the server time budget. Retryable -- back off and retry honouring Retry-After. Idempotent GETs are always safe to retry; for mutations reuse the same Idempotency-Key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying. Present on 503 service_unavailable responses.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{accountId}/tenancies/{tenancyId}/opening-balance/correction": {
+      "post": {
+        "tags": [
+          "ledger"
+        ],
+        "summary": "Void the starting balance entry and re-enter it at the corrected amount",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "accountId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "tenancyId",
+            "in": "path"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Required on every mutating request. Scoped to (account_id, key); retained 30 days. Replaying a key with a byte-identical body returns the original response with the `Idempotency-Replay: true` header; replaying with a different body returns 409 `idempotency_conflict`; a still-in-flight original returns 409 `idempotency_in_flight` (retry shortly). 8-200 chars of [A-Za-z0-9_-]. Omitting it yields 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]{8,200}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpeningBalanceCorrectionBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Correction recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpeningBalanceCorrection"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replay": {
+                "description": "Present and 'true' when this response was replayed from the idempotency cache (the original request was not re-executed). Absent on first execution.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found / not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict — error.code carries a fine-grained reason (see the route description)",
             "content": {
               "application/json": {
                 "schema": {

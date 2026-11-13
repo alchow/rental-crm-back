@@ -121,6 +121,9 @@ jobs:
       - name: Field Log Phase 4 checks (owed summary, late-fee suggestions, currency, duplicate properties)
         run: psql -v ON_ERROR_STOP=1 -f db/test/field_log_phase_four.sql
 
+      - name: Field Log starting-balance correction checks
+        run: psql -v ON_ERROR_STOP=1 -f db/test/field_log_opening_correction.sql
+
       - name: Seed two-account fixture
         run: psql -v ON_ERROR_STOP=1 -f db/test/seed_two_accounts.sql
 

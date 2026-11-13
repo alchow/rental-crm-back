@@ -182,3 +182,23 @@ finding `opening_months_treated_as_paid` (severity `info`, never blocking, no
 acknowledgement). Preview also returns `opening_result` (typed amount, opening charge or
 credit, receipts applied, still owed, paid ahead, unanswered count), computed by
 `_opening_result` with the same rules the commit uses; paid ahead stays unapplied credit.
+
+## Amendment, 2026-11-12: correcting a mistyped starting balance
+
+Owner-approved ("void and re-enter"). `POST .../tenancies/{id}/opening-balance/correction`
+(with a `/preview` that runs the same correction and rolls it back) takes the corrected
+typed amount, its basis (unless 0) and a reason, only while the starting-balance ledger
+is on and only for a starting balance that was recorded in the ledger.
+
+Nothing is edited in place. The live opening entry's allocations are voided with the
+reason, the entry is voided and stays in the ledger, and a new opening entry for typed
+amount plus earlier receipts answered `add_to_owed` is written with `replaces_charge_id`
+(a charge) or `replaces_payment_id` (a credit). The same payments, or for a credit the
+same charges, are re-applied oldest first up to the new amount; the rest becomes
+unapplied credit, or owed again on those charges. `opening_balance_corrections` records
+the previous and new typed and opening amounts, the basis, the reason, the replaced and
+new entries, every allocation moved or released, who corrected it and when; rows never
+change. The adoption row itself stays frozen; read paths that show the starting amount
+use the latest correction. One live opening entry per adoption is enforced by unique
+indexes that ignore voided entries. A corrected starting balance is still never overdue
+and never takes a late fee. `includes_current_rent` is not changed by a correction.
