@@ -45,7 +45,9 @@ export async function expandRentChange(
   if (error) throw new ApiError(500, 'database_error', error.message);
   const schedule = data?.[0];
   if (!schedule)
-    throw new ApiError(400, 'invalid_request', 'No rent schedule is in force for that month.');
+    throw new ApiError(400, 'invalid_request', 'No rent schedule is in force for that month.', {
+      field: 'rent_change.effective_month',
+    });
   const anchorDay =
     schedule.period_policy_version === 1
       ? schedule.due_day

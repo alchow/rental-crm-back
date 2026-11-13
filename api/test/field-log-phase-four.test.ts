@@ -310,6 +310,12 @@ await check('a future rent change on the landlord statement warns and adds a ste
     rent_change: { ...body.rent_change, effective_month: today.slice(0, 7) },
   });
   assert(current.status === 400, JSON.stringify(current.body));
+  // The refusal names the month so the client can put its message under that field.
+  assert(
+    (current.body as { error: { details?: { field?: string } } }).error.details?.field ===
+      'rent_change.effective_month',
+    JSON.stringify(current.body),
+  );
 });
 
 if (failures.length) {

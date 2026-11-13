@@ -58,7 +58,15 @@ function rpcError(error: { code?: string; message?: string }): never {
     ['22023', '22P02', '23514', '23503', '22007', '22008'].includes(error.code ?? '') ||
     message.startsWith('invalid:')
   )
-    throw new ApiError(400, 'invalid_request', message);
+    throw new ApiError(
+      400,
+      'invalid_request',
+      message,
+      // The client shows its month copy only when the refusal names the month.
+      message.includes('starts in a future month')
+        ? { field: 'rent_change.effective_month' }
+        : undefined,
+    );
   throw new ApiError(500, 'database_error', message);
 }
 billingSetupApp.openapi(preview, async (c) => {
