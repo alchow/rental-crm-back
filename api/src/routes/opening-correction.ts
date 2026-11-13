@@ -80,7 +80,7 @@ const preview = createRoute({
   tags: ['ledger'],
   summary: 'Show what correcting the starting balance would change, without writing it',
   description:
-    '409 opening_ledger_disabled when the starting-balance ledger is off; 409 opening_not_in_ledger for a legacy starting balance; 400 opening_unchanged when the amount is the same.',
+    '409 opening_ledger_disabled when the starting-balance ledger is off; 409 opening_not_in_ledger for a non-zero starting balance with no live ledger entry (legacy, or voided by hand); 409 opening_entry_deleted when the live entry was deleted; 400 opening_unchanged when the amount is the same. A starting amount of 0 has no entry and can be corrected.',
   request: {
     params: AccountAndTenancyParam,
     body: { required: true, content: { 'application/json': { schema: CorrectionBody } } },
@@ -126,6 +126,12 @@ function correctionError(error: { code?: string; message?: string }): never {
       409,
       'opening_not_in_ledger',
       'This starting balance was never recorded in the ledger.',
+    );
+  if (message === 'conflict: opening_entry_deleted')
+    throw new ApiError(
+      409,
+      'opening_entry_deleted',
+      'The starting balance entry was deleted from the ledger; restore or void it first.',
     );
   if (message === 'invalid: opening_unchanged')
     throw new ApiError(

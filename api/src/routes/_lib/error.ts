@@ -94,6 +94,7 @@ export type ErrorCode =
   | 'move_out_overlap'
   | 'opening_ledger_disabled'
   | 'opening_not_in_ledger'
+  | 'opening_entry_deleted'
   | 'opening_unchanged'
   | 'billing_transition_required'
   | 'tenancy_end_date_changed'

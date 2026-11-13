@@ -670,7 +670,12 @@ await check('a mistyped starting balance is voided and re-entered', async () => 
       (off.body as { error: { code: string } }).error.code === 'opening_ledger_disabled',
     JSON.stringify(off.body),
   );
-});
+  await pool.query(
+    `update public.charges set deleted_at=now(), updated_at=now()
+      where tenancy_id=$1 and type='opening_balance' and voided_at is null`,
+    [tenancyId],
+  );
+  const deleted = await request('POST', `${path}/preview`, { ...body, amount_cents: 70000 });
   assert(
     deleted.status === 409 &&
       (deleted.body as { error: { code: string } }).error.code === 'opening_entry_deleted',

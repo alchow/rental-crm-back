@@ -131,6 +131,12 @@ begin
     or (select count(*) from public.charges where tenancy_id=t and type='opening_balance') <> 3 then
     raise exception 'Second correction is wrong: %',result;
   end if;
+  -- Corrections in one transaction are strictly ordered, so "latest" is never a tie.
+  if (select count(distinct corrected_at) from public.opening_balance_corrections where tenancy_id=t) <> 2
+    or (select typed_cents from public.opening_balance_corrections where tenancy_id=t
+        order by corrected_at desc limit 1) <> 70000 then
+    raise exception 'Corrections are not strictly ordered by corrected_at';
+  end if;
   begin
     perform pg_temp.correct(t,'{"amount_cents":70000,"basis":"Rent","reason":"Same again"}');
     raise exception 'An unchanged amount was accepted';
@@ -167,12 +173,40 @@ begin
     or not exists (select 1 from public.payments where tenancy_id=t and entry_source='opening_credit' and amount_cents=20000 and voided_at is null) then
     raise exception 'Owed to credit correction is wrong: %',result;
   end if;
-  -- Credit -> credit keeps the link to the replaced credit; credit applied to charges moves with it.
+  -- Credit -> credit keeps the link to the replaced credit.
   result := pg_temp.correct(t,'{"amount_cents":-15000,"basis":"Rent","reason":"Smaller credit"}');
   if (result->'owed_after'->>'unapplied_credit_cents')::bigint <> 25000 or not exists (select 1 from public.payments
       where tenancy_id=t and entry_source='opening_credit' and amount_cents=15000 and voided_at is null and replaces_payment_id is not null) then
     raise exception 'Credit to credit correction is wrong: %',result;
   end if;
+
+  -- A credit applied to charges: 500 applied as 400 + 100, corrected to 200, is
+  -- re-applied oldest first (200 to the first charge), so the first owes 200 and the
+  -- second owes 100 again.
+  t := pg_temp.opening_tenancy('Credit applied', -50000);
+  declare credit uuid; first_charge uuid; second_charge uuid;
+    month_start date := date_trunc('month', public._account_date(account))::date;
+  begin
+    select id into strict credit from public.payments where tenancy_id=t and entry_source='opening_credit' and voided_at is null;
+    insert into public.charges(account_id,tenancy_id,type,amount_cents,currency,due_date,description)
+      values(account,t,'rent',40000,'USD',month_start-20,'Rent A') returning id into first_charge;
+    insert into public.charges(account_id,tenancy_id,type,amount_cents,currency,due_date,description)
+      values(account,t,'rent',10000,'USD',month_start-19,'Rent B') returning id into second_charge;
+    insert into public.payment_allocations(account_id,payment_id,charge_id,amount_cents)
+      values(account,credit,first_charge,40000),(account,credit,second_charge,10000);
+    result := pg_temp.correct(t,'{"amount_cents":-20000,"basis":"Rent","reason":"Credit was 200"}');
+    if (select amount_cents - coalesce((select sum(x.amount_cents) from public.payment_allocations x
+          where x.charge_id=c.id and x.voided_at is null),0) from public.charges c where c.id=first_charge) <> 20000
+      or (select amount_cents - coalesce((select sum(x.amount_cents) from public.payment_allocations x
+          where x.charge_id=c.id and x.voided_at is null),0) from public.charges c where c.id=second_charge) <> 10000
+      or (result->'owed_after'->>'total_cents')::bigint <> 30000
+      or (result->'owed_after'->>'unapplied_credit_cents')::bigint <> 0
+      or (result->'allocations'->0->>'charge_id')::uuid <> first_charge
+      or (result->'allocations'->0->>'moved_cents')::bigint <> 20000 or (result->'allocations'->0->>'released_cents')::bigint <> 20000
+      or (result->'allocations'->1->>'moved_cents')::bigint <> 0 or (result->'allocations'->1->>'released_cents')::bigint <> 10000 then
+      raise exception 'Applied credit correction is wrong: %',result;
+    end if;
+  end;
 
   -- Owed -> 0: no opening entry remains.
   t := pg_temp.opening_tenancy('To zero', 650000);
@@ -270,6 +304,49 @@ begin
     raise exception 'A legacy starting balance without a ledger entry was corrected';
   exception when raise_exception then
     if sqlerrm <> 'conflict: opening_not_in_ledger' then raise; end if;
+  end;
+end;
+$test$;
+
+-- A typed-0 itemized opening has no ledger entry and can still be corrected later.
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  month_start date := date_trunc('month',public._account_date(account))::date;
+  itemize date := (month_start - interval '1 month')::date;
+  draft uuid := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Typed zero');
+  result jsonb;
+begin
+  perform pg_temp.commit_setup(draft,pg_temp.setup(current_setting('field_log.person')::uuid,(month_start - interval '4 months')::date,
+    jsonb_build_object('opening_balance',jsonb_build_object('amount_cents',0,'itemize_from',to_char(itemize,'YYYY-MM')),
+      'charge_keys','[]'::jsonb)));
+  if exists (select 1 from public.charges where tenancy_id=draft and type='opening_balance') then
+    raise exception 'Fixture: a typed 0 wrote an opening entry';
+  end if;
+  result := pg_temp.correct(draft,'{"amount_cents":30000,"basis":"Rent","reason":"Statement showed 300 owed"}');
+  if result->'previous'->'entry'->>'kind' <> 'none' or result->'next'->'entry'->>'kind' <> 'charge'
+    or not exists (select 1 from public.charges where tenancy_id=draft and type='opening_balance' and voided_at is null
+      and amount_cents=30000 and replaces_charge_id is null and due_date=itemize-1) then
+    raise exception 'Typed-0 itemized opening was not correctable: %',result;
+  end if;
+  -- Corrected once, then the corrected entry is soft-deleted (not voided).
+  draft := pg_temp.opening_tenancy('Soft deleted', 650000);
+  perform pg_temp.correct(draft,'{"amount_cents":65000,"basis":"Rent","reason":"Typed one zero too many"}');
+  perform set_config('field_log.deleted_tenancy',draft::text,true);
+end;
+$test$;
+-- A soft-deleted (not voided) opening entry is refused with a clear code, not a unique-index error.
+reset role;
+update public.charges set deleted_at=now(), updated_at=now()
+  where tenancy_id=current_setting('field_log.deleted_tenancy')::uuid and type='opening_balance' and voided_at is null;
+set local role authenticated;
+do $test$
+begin
+  begin
+    perform pg_temp.correct(current_setting('field_log.deleted_tenancy')::uuid,'{"amount_cents":70000,"basis":"Rent","reason":"x"}');
+    raise exception 'A deleted opening entry was replaced';
+  exception when raise_exception then
+    if sqlerrm <> 'conflict: opening_entry_deleted' then raise; end if;
   end;
 end;
 $test$;
