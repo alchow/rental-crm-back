@@ -8891,7 +8891,7 @@ export interface paths {
         put?: never;
         /**
          * Show what correcting the starting balance would change, without writing it
-         * @description 409 opening_ledger_disabled when the starting-balance ledger is off; 409 opening_not_in_ledger for a legacy starting balance; 400 opening_unchanged when the amount is the same.
+         * @description 409 opening_ledger_disabled when the starting-balance ledger is off; 409 opening_not_in_ledger for a non-zero starting balance with no live ledger entry (legacy, or voided by hand); 409 opening_entry_deleted when the live entry was deleted; 400 opening_unchanged when the amount is the same. A starting amount of 0 has no entry and can be corrected.
          */
         post: {
             parameters: {
@@ -21429,12 +21429,14 @@ export interface components {
             grace_days: number;
             /** Format: date */
             eligible_on: string;
+            /** @description This charge amount; a partial month is less than the monthly rent. */
             rent_amount_cents: number;
             unpaid_cents: number;
             currency: string;
             fee: {
                 /** @enum {string} */
                 kind: "fixed" | "percent" | "other";
+                /** @description For percent: that percent of the monthly rent in force for the charge (its schedule amount), not of a partial charge. */
                 amount_cents: number | null;
                 percent?: number;
                 text?: string | null;
@@ -23552,6 +23554,11 @@ export interface components {
                  * @description Who paid. Setup fills it in for a one-person tenancy; omit when unsure.
                  */
                 payer_tenant_id?: string;
+                /**
+                 * @description What the receipt pays; omitted means rent. Only a rent receipt dated before opening_balance.itemize_from is an earlier receipt. Tenancy setup sets it from receipt_purposes.
+                 * @enum {string}
+                 */
+                purpose?: "rent" | "deposit";
                 reference?: string;
                 notes?: string;
                 /** @default [] */

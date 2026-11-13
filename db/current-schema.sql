@@ -140,15 +140,20 @@ begin
   if not exists (select 1 from public.accounts where id = p_account_id and opening_balance_ledger_enabled) then
     raise exception 'conflict: opening_ledger_disabled';
   end if;
+  if exists (select 1 from public.charges where account_id = p_account_id and opening_adoption_id = a.id
+      and voided_at is null and deleted_at is not null)
+    or exists (select 1 from public.payments where account_id = p_account_id and opening_adoption_id = a.id
+      and voided_at is null and deleted_at is not null) then
+    raise exception 'conflict: opening_entry_deleted';
+  end if;
   select * into old_charge from public.charges where account_id = p_account_id and opening_adoption_id = a.id
     and voided_at is null and deleted_at is null;
   select * into old_payment from public.payments where account_id = p_account_id and opening_adoption_id = a.id
     and voided_at is null and deleted_at is null;
-  if old_charge.id is null and old_payment.id is null and not exists (
-    select 1 from public.opening_balance_corrections c where c.account_id = p_account_id and c.adoption_id = a.id) then
+  select * into cur from public._current_opening(a);
+  if old_charge.id is null and old_payment.id is null and cur.opening_cents <> 0 then
     raise exception 'conflict: opening_not_in_ledger';
   end if;
-  select * into cur from public._current_opening(a);
   new_opening := new_typed + cur.added_cents;
   if new_typed = cur.typed_cents then raise exception 'invalid: opening_unchanged'; end if;
   marker := 'Starting balance corrected: ' || reason;
@@ -3331,7 +3336,7 @@ CREATE OR REPLACE FUNCTION "public"."_opening_result"("p_rent" "jsonb", "p_payme
     from jsonb_array_elements(coalesce(p_payments, '[]')) p
     left join lateral (select value as e from jsonb_array_elements(coalesce(p_rent->'opening_balance'->'earlier_receipts', '[]'))
       where value->>'payment_key' = p->>'draft_key' and value->>'choice' in ('add_to_owed','keep_owed') limit 1) answer on true
-    where public._receipt_before_itemized(p, p_itemized_start)
+    where coalesce(p->>'purpose','rent') = 'rent' and public._receipt_before_itemized(p, p_itemized_start)
   ),
   totals as (
     select coalesce((p_rent->'opening_balance'->>'amount_cents')::bigint, 0) as typed,
@@ -3382,7 +3387,7 @@ CREATE OR REPLACE FUNCTION "public"."_owed_summaries_base"("p_account_id" "uuid"
     where c.account_id = p_account_id and c.voided_at is null and c.deleted_at is null
   ),
   due as (
-    select b.*, case when b.type = 'rent' then coalesce((public._charge_late_terms(b.account_id, b.source_schedule_id, b.terms_snapshot)->>'grace_days')::integer, 0) else 0 end as grace
+    select b.*, case when b.type = 'rent' then coalesce((public._rent_charge_terms(b.account_id, b.source_schedule_id, b.terms_snapshot, b.replaces_charge_id)->>'grace_days')::integer, 0) else 0 end as grace
     from balances b, today where b.unpaid > 0 and b.type <> 'deposit'
       and (b.due_date <= today.d or b.type = 'opening_balance')
   ),
@@ -4462,6 +4467,25 @@ $$;
 
 
 ALTER FUNCTION "public"."_reject_tenancy_ending_mutation"() OWNER TO "postgres";
+
+--
+-- Name: _rent_charge_terms("uuid", "uuid", "jsonb", "uuid"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."_rent_charge_terms"("p_account_id" "uuid", "p_schedule_id" "uuid", "p_terms" "jsonb", "p_replaces_charge_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "sql" STABLE
+    SET "search_path" TO 'public'
+    AS $$
+  select public._charge_late_terms(p_account_id, coalesce(p_schedule_id, root.source_schedule_id),
+      coalesce(p_terms, root.terms_snapshot))
+    || jsonb_build_object('monthly_rent_cents', s.amount_cents)
+  from (select 1) one
+  left join public.charges root on p_schedule_id is null and root.account_id = p_account_id and root.id = p_replaces_charge_id
+  left join public.rent_schedules s on s.account_id = p_account_id and s.id = coalesce(p_schedule_id, root.source_schedule_id)
+$$;
+
+
+ALTER FUNCTION "public"."_rent_charge_terms"("p_account_id" "uuid", "p_schedule_id" "uuid", "p_terms" "jsonb", "p_replaces_charge_id" "uuid") OWNER TO "postgres";
 
 --
 -- Name: _rent_schedules_guard(); Type: FUNCTION; Schema: public; Owner: postgres
@@ -7760,14 +7784,18 @@ begin
       where account_id = p_account_id and id = any(v_voided);
   end if;
   if r->>'decision' = 'configure' then
-    if v_preview->>'mode' = 'initial' and (r->>'history_mode' = 'opening_balance' or exists(
+    if v_preview->>'mode' = 'initial' and (r->>'history_mode' = 'opening_balance'
+      or r->'opening_balance'->>'itemize_from' is not null or exists(
       select 1 from jsonb_array_elements(v_preview->'history_periods') h where coalesce((h->>'is_elapsed')::boolean,false))) then
       insert into public.tenancy_adoptions(account_id,tenancy_id,adoption_date,opening_balance_cents,currency,balance_basis,includes_current_rent,opening_on,typed_opening_cents,earlier_receipts)
-      values(p_account_id,p_tenancy_id,(v_preview->>'as_of_date')::date,
+      values(p_account_id,p_tenancy_id,case when exists (select 1 from public.accounts
+          where id = p_account_id and opening_balance_ledger_enabled)
+        then public._account_date(p_account_id) else (v_preview->>'as_of_date')::date end,
         coalesce((r->'opening_balance'->>'amount_cents')::bigint,0) + coalesce((select sum((rp->>'amount_cents')::bigint)
           from jsonb_array_elements(coalesce(p_intent->'payments','[]')) rp
           join jsonb_array_elements(coalesce(r->'opening_balance'->'earlier_receipts','[]')) ans
-            on ans->>'payment_key' = rp->>'draft_key' and ans->>'choice' = 'add_to_owed'),0),r->>'currency',r->'opening_balance'->>'basis',case when exists (select 1 from public.accounts
+            on ans->>'payment_key' = rp->>'draft_key' and ans->>'choice' = 'add_to_owed'
+          where coalesce(rp->>'purpose','rent') = 'rent'),0),r->>'currency',r->'opening_balance'->>'basis',case when exists (select 1 from public.accounts
         where id = p_account_id and opening_balance_ledger_enabled)
         then (r->'opening_balance'->>'includes_current_rent')::boolean end,
         case when r->'opening_balance'->>'itemize_from' is not null
@@ -7829,6 +7857,7 @@ begin
       left_cents := opening.amount_cents;
       for early in select rp from jsonb_array_elements(coalesce(p_intent->'payments','[]')) rp
         join jsonb_array_elements(coalesce(r->'opening_balance'->'earlier_receipts','[]')) ans on ans->>'payment_key' = rp->>'draft_key'
+        where coalesce(rp->>'purpose','rent') = 'rent'
         order by rp->>'received_at' nulls first, rp->>'draft_key' loop
         applied := least(left_cents, (early->>'amount_cents')::bigint);
         exit when applied <= 0;
@@ -10414,7 +10443,7 @@ begin
 
     if exists (select 1 from public.tenancy_adoptions a join public.accounts ac on ac.id = a.account_id
       where a.account_id = p_account_id and a.tenancy_id = s.tenancy_id and a.deleted_at is null
-        and ac.opening_balance_ledger_enabled and a.includes_current_rent
+        and s.kind = 'rent' and ac.opening_balance_ledger_enabled and a.includes_current_rent
         and v_start < (date_trunc('month', a.adoption_date) + interval '1 month')::date) then continue; end if;
     insert into public.charges(account_id,tenancy_id,type,amount_cents,currency,due_date,period_start,period_end,source_schedule_id,cycle_key)
     values(p_account_id,s.tenancy_id,case when s.kind = 'rent' then 'rent' else 'other' end,
@@ -11014,7 +11043,7 @@ CREATE OR REPLACE FUNCTION "public"."late_fee_suggestions"("p_account_id" "uuid"
     AS $$
   with today as (select public._account_date(p_account_id) as d),
   rent as (
-    select c.*, public._charge_late_terms(c.account_id, c.source_schedule_id, c.terms_snapshot) as terms,
+    select c.*, public._rent_charge_terms(c.account_id, c.source_schedule_id, c.terms_snapshot, c.replaces_charge_id) as terms,
       c.amount_cents - coalesce((select sum(a.amount_cents) from public.payment_allocations a
         join public.payments p on p.account_id = a.account_id and p.id = a.payment_id
         where a.account_id = c.account_id and a.charge_id = c.id and a.voided_at is null and a.deleted_at is null
@@ -11031,7 +11060,8 @@ CREATE OR REPLACE FUNCTION "public"."late_fee_suggestions"("p_account_id" "uuid"
     case r.terms->'late_fee_policy'->>'kind'
       when 'fixed' then jsonb_build_object('kind','fixed','amount_cents',(r.terms->'late_fee_policy'->>'amount_cents')::bigint)
       when 'percent' then jsonb_build_object('kind','percent','percent',(r.terms->'late_fee_policy'->>'percent')::numeric,
-        'amount_cents',round(r.amount_cents * (r.terms->'late_fee_policy'->>'percent')::numeric / 100)::bigint)
+        'amount_cents',round(coalesce((r.terms->>'monthly_rent_cents')::bigint, r.amount_cents)
+          * (r.terms->'late_fee_policy'->>'percent')::numeric / 100)::bigint)
       else jsonb_build_object('kind','other','amount_cents',null,'text',r.terms->'late_fee_policy'->>'text') end
   from rent r, today
   where r.unpaid > 0 and r.terms->>'grace_days' is not null
@@ -11785,7 +11815,8 @@ begin
         -- Setup previews once without receipts; answers are matched once receipts are present.
         for early, idx in select value, ordinality::integer
           from jsonb_array_elements(coalesce(p_intent->'payments','[]')) with ordinality loop
-          if public._receipt_before_itemized(early, (v_period->>'period_start')::date) then
+          if coalesce(early->>'purpose','rent') = 'rent'
+            and public._receipt_before_itemized(early, (v_period->>'period_start')::date) then
             early_keys := array_append(early_keys, early->>'draft_key');
             if jsonb_array_length(coalesce(early->'allocations','[]')) > 0 then
               raise exception 'invalid: a receipt from before the itemized months is applied to the amount owed from before';
@@ -11828,7 +11859,7 @@ begin
     if r->>'history_mode' = 'opening_balance'
       and r->'opening_balance'->>'includes_current_rent' = 'false'
       and exists (select 1 from public.accounts where id = p_account_id and opening_balance_ledger_enabled) then
-      v_period := public._billing_period_for_tenancy(p_account_id,t.id,r, to_char(v_today, 'YYYY-MM'));
+      v_period := public._billing_period_for_tenancy(p_account_id,t.id,r, to_char(public._account_date(p_account_id), 'YYYY-MM'));
       if v_period is null then
         raise exception 'invalid: choose billing coverage that includes this month to add its rent';
       end if;
@@ -11954,7 +11985,8 @@ begin
   end loop;
   v_seen := '{}';
   for v_elem in select value from jsonb_array_elements(coalesce(p_intent->'payments','[]')) loop
-    if v_elem - array['draft_key','amount_cents','currency','received_at','method','reference','notes','allocations','receipt_date_unknown','entry_source','payer_tenant_id'] <> '{}'
+    if v_elem - array['draft_key','amount_cents','currency','received_at','method','reference','notes','allocations','receipt_date_unknown','entry_source','payer_tenant_id','purpose'] <> '{}'
+      or coalesce(v_elem->>'purpose','rent') not in ('rent','deposit')
       or coalesce(v_elem->>'draft_key','') !~ '^[A-Za-z0-9_-]{1,100}$' or v_elem->>'draft_key' = any(v_seen)
       or (v_elem->>'amount_cents')::bigint is null or (v_elem->>'amount_cents')::bigint <= 0
       or length(coalesce(v_elem->>'currency','')) <> 3 or ((v_elem->>'received_at' is null) <> coalesce((v_elem->>'receipt_date_unknown')::boolean,false))
@@ -12230,7 +12262,8 @@ begin
     and not exists(select 1 from jsonb_array_elements_text(coalesce(preview->'transition'->'voided_charge_ids','[]')) cancelled(charge_id) where cancelled.charge_id=(value->>'id')));
   for p in select value from jsonb_array_elements(coalesce(billing->'payments','[]')) with ordinality order by value->>'received_at' nulls last,ordinality loop
     amount_left:=(p->>'amount_cents')::bigint;allocs:='[]';
-    if r->'opening_balance'->>'itemize_from' is not null and public._receipt_before_itemized(p,
+    if coalesce(p_setup->'receipt_purposes'->>(p->>'draft_key'),'rent')='rent'
+      and r->'opening_balance'->>'itemize_from' is not null and public._receipt_before_itemized(p,
       (public._billing_period(r, r->'opening_balance'->>'itemize_from')->>'period_start')::date) then
       payments:=payments||jsonb_build_array(p||jsonb_build_object('allocations','[]'::jsonb,'entry_source','entered_at_setup'));
       continue;
@@ -12245,7 +12278,8 @@ begin
       end if;
       exit when amount_left=0;
     end loop;
-    payments:=payments||jsonb_build_array(p||jsonb_build_object('allocations',allocs,'entry_source','entered_at_setup'));
+    payments:=payments||jsonb_build_array((p-'purpose')||jsonb_build_object('allocations',allocs,'entry_source','entered_at_setup')
+      ||case when p_setup->'receipt_purposes'->>(p->>'draft_key')='deposit' then '{"purpose":"deposit"}'::jsonb else '{}'::jsonb end);
   end loop;
   billing:=jsonb_set(billing,'{payments}',payments);
   preview:=public.preview_billing_setup_facts(p_account_id,tenant_id,billing,t,l);
@@ -16224,7 +16258,7 @@ CREATE TABLE IF NOT EXISTS "public"."opening_balance_corrections" (
     "new_payment_id" "uuid",
     "allocations" "jsonb" DEFAULT '[]'::"jsonb" NOT NULL,
     "corrected_by" "uuid" NOT NULL,
-    "corrected_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "corrected_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
     CONSTRAINT "opening_balance_corrections_reason_check" CHECK ((("length"("btrim"("reason")) >= 1) AND ("length"("btrim"("reason")) <= 500)))
 );
 
@@ -24245,6 +24279,15 @@ GRANT ALL ON FUNCTION "public"."_reject_schedule_delete_with_live_charges"() TO 
 GRANT ALL ON FUNCTION "public"."_reject_tenancy_ending_mutation"() TO "anon";
 GRANT ALL ON FUNCTION "public"."_reject_tenancy_ending_mutation"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."_reject_tenancy_ending_mutation"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "_rent_charge_terms"("p_account_id" "uuid", "p_schedule_id" "uuid", "p_terms" "jsonb", "p_replaces_charge_id" "uuid"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."_rent_charge_terms"("p_account_id" "uuid", "p_schedule_id" "uuid", "p_terms" "jsonb", "p_replaces_charge_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."_rent_charge_terms"("p_account_id" "uuid", "p_schedule_id" "uuid", "p_terms" "jsonb", "p_replaces_charge_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."_rent_charge_terms"("p_account_id" "uuid", "p_schedule_id" "uuid", "p_terms" "jsonb", "p_replaces_charge_id" "uuid") TO "service_role";
 
 
 --

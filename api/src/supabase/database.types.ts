@@ -5647,6 +5647,15 @@ export type Database = {
         Args: { p_account_id: string; p_from: string; p_tenancy_id: string };
         Returns: undefined;
       };
+      _rent_charge_terms: {
+        Args: {
+          p_account_id: string;
+          p_replaces_charge_id: string;
+          p_schedule_id: string;
+          p_terms: Json;
+        };
+        Returns: Json;
+      };
       _review_date_warnings: {
         Args: {
           p_account: string;

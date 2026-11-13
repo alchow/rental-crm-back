@@ -144,6 +144,7 @@ already generated are reconciled when the date is scheduled, changed or cancelle
 later periods are voided, the final period is voided and replaced by a charge that
 records `replaces_charge_id`, and a cancelled or later date restores periods the
 command voided. A payment allocation or late fee on an affected charge stops the
-command with `move_out_changed`; money is never silently changed. An actual ending
+command with `move_out_changed`; money is never silently changed. A replacement charge has no
+schedule of its own; grace and late-fee terms come from the charge it replaces. An actual ending
 recorded later replaces the plan and leaves recorded money as it is. With the flag
 off, the behavior above this amendment applies unchanged.

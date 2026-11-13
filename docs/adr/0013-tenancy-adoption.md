@@ -176,8 +176,7 @@ keeps `typed_opening_cents` and `earlier_receipts` (the answers) as provenance.
 
 Owner decisions, 2026-11-12. A $0 amount with `itemize_from` is accepted ("allow but
 explain implication"): months before that month count as paid, are not listed and cannot
-be itemized, no opening entry is written, and the adoption keeps `opening_on` with amount
-0. Testimony (`basis`) is optional for 0. Preview explains it with the informational
+be itemized, no opening entry is written, and the adoption keeps `opening_on` with amount 0. Testimony (`basis`) is optional for 0. Preview explains it with the informational
 finding `opening_months_treated_as_paid` (severity `info`, never blocking, no
 acknowledgement). Preview also returns `opening_result` (typed amount, opening charge or
 credit, receipts applied, still owed, paid ahead, unanswered count), computed by
@@ -202,3 +201,18 @@ change. The adoption row itself stays frozen; read paths that show the starting 
 use the latest correction. One live opening entry per adoption is enforced by unique
 indexes that ignore voided entries. A corrected starting balance is still never overdue
 and never takes a late fee. `includes_current_rent` is not changed by a correction.
+
+Clarifications, 2026-11-12 (review fixes, no new owner decision):
+
+- Only a rent receipt is an earlier receipt. A receipt whose setup purpose is deposit
+  (`receipt_purposes`, carried to billing as `payments[].purpose`) keeps its deposit
+  allocation even when dated before `itemize_from` and takes no answer.
+- An amount owed with `itemize_from` always writes the adoption and its opening entry,
+  even when no itemized cycle has started yet (the amount 0 writes the adoption only).
+- With the ledger on, "this month" for `includes_current_rent` and `adoption_date` are the
+  account's date (`accounts.time_zone`); the generator's skip reads the stored
+  `adoption_date` and applies to rent schedules only.
+- `opening_balance_corrections.corrected_at` is the insert time, so the latest correction
+  is never a tie. A live opening entry that was soft-deleted is refused
+  (`opening_entry_deleted`); with no live entry only a starting amount of 0 can be
+  corrected, and a non-zero amount stays `opening_not_in_ledger`.
