@@ -129,6 +129,8 @@ await check('one owed summary with the type split, overdue and the next charge',
       JSON.stringify(row.by_type) === '[{"type":"rent","cents":370000}]' &&
       row.oldest_due_on === start &&
       row.rent_tracked === true &&
+      row.headline_cents === 370000 &&
+      row.credit_remaining_cents === 0 &&
       (row.next_charge as { source: string; cents: number }).cents === 185000,
     JSON.stringify(row),
   );

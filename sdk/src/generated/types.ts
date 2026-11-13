@@ -21221,6 +21221,10 @@ export interface components {
             } | null;
             /** @description False when no rent schedule covers today or later. */
             rent_tracked: boolean;
+            /** @description What to show as owed: total_cents minus unapplied credit, never below 0. Deposits stay separate. */
+            headline_cents: number;
+            /** @description Unapplied credit beyond what is owed (paid ahead); 0 while the headline is positive. */
+            credit_remaining_cents: number;
         };
         LateFeeSuggestion: {
             /** Format: uuid */

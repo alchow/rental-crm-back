@@ -42,6 +42,14 @@ const OwedSummary = z
     rent_tracked: z
       .boolean()
       .openapi({ description: 'False when no rent schedule covers today or later.' }),
+    headline_cents: z.number().int().openapi({
+      description:
+        'What to show as owed: total_cents minus unapplied credit, never below 0. Deposits stay separate.',
+    }),
+    credit_remaining_cents: z.number().int().openapi({
+      description:
+        'Unapplied credit beyond what is owed (paid ahead); 0 while the headline is positive.',
+    }),
   })
   .openapi('OwedSummary');
 

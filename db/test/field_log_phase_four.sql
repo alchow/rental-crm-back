@@ -81,6 +81,9 @@ begin
   select id into strict last_month from public.charges where tenancy_id=draft and type='rent' and period_start=start_on;
   select id into strict this_month from public.charges where tenancy_id=draft and type='rent' and period_start=month_start;
   select * into strict owed from public.owed_summaries(account,draft);
+  if owed.headline_cents <> owed.total_cents or owed.credit_remaining_cents <> 0 then
+    raise exception 'Without credit the headline should equal the total: %',to_jsonb(owed);
+  end if;
   if owed.total_cents <> 295000 or owed.by_type <> '[{"type":"rent","cents":295000}]'
     or owed.oldest_due_on <> start_on
     or owed.overdue_cents <> (case when today > month_start + 5 then 295000 else 147500 end)
@@ -148,6 +151,36 @@ begin
   perform pg_temp.commit_setup(draft,setup);
   if exists (select 1 from public.owed_summaries(account,draft) where rent_tracked or next_charge is not null) then
     raise exception 'A tenancy without rent tracking reported a next charge';
+  end if;
+end;
+$test$;
+
+-- WP-22 headline: owed minus unapplied credit, never negative; deposits separate.
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  person uuid := current_setting('field_log.person')::uuid;
+  today date := public._account_date(account);
+  draft uuid := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Unit H');
+  setup jsonb := pg_temp.setup(person,(date_trunc('month',now()) - interval '1 month')::date,'{}');
+  owed record;
+begin
+  perform pg_temp.commit_setup(draft,jsonb_set(setup,'{billing,rent}','{"decision":"defer"}'));
+  insert into public.charges(account_id,tenancy_id,type,amount_cents,currency,due_date,description) values
+    (account,draft,'other',50000,'USD',today-10,'November rent'),
+    (account,draft,'late_fee',7500,'USD',today-1,'Late fee'),
+    (account,draft,'deposit',50000,'USD',today-10,'Deposit');
+  perform public.create_payment_with_allocations(account,draft,10000,'USD',now()-interval '1 day','check',null,null,null,'[]'::jsonb);
+  select * into strict owed from public.owed_summaries(account,draft);
+  if owed.total_cents <> 57500 or owed.unapplied_credit_cents <> 10000 or owed.headline_cents <> 47500
+    or owed.credit_remaining_cents <> 0 or owed.deposit_owed_cents <> 50000 then
+    raise exception 'Headline 575 - 100 is wrong: %',to_jsonb(owed);
+  end if;
+  perform public.create_payment_with_allocations(account,draft,60000,'USD',now()-interval '1 day','check',null,null,null,'[]'::jsonb);
+  select * into strict owed from public.owed_summaries(account,draft);
+  if owed.headline_cents <> 0 or owed.credit_remaining_cents <> 12500 or owed.total_cents <> 57500
+    or owed.deposit_owed_cents <> 50000 then
+    raise exception 'Credit beyond what is owed is wrong: %',to_jsonb(owed);
   end if;
 end;
 $test$;

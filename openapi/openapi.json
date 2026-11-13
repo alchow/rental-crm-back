@@ -596,6 +596,14 @@
           "rent_tracked": {
             "type": "boolean",
             "description": "False when no rent schedule covers today or later."
+          },
+          "headline_cents": {
+            "type": "integer",
+            "description": "What to show as owed: total_cents minus unapplied credit, never below 0. Deposits stay separate."
+          },
+          "credit_remaining_cents": {
+            "type": "integer",
+            "description": "Unapplied credit beyond what is owed (paid ahead); 0 while the headline is positive."
           }
         },
         "required": [
@@ -609,7 +617,9 @@
           "deposit_owed_cents",
           "unapplied_credit_cents",
           "next_charge",
-          "rent_tracked"
+          "rent_tracked",
+          "headline_cents",
+          "credit_remaining_cents"
         ]
       },
       "LateFeeSuggestion": {
