@@ -112,6 +112,18 @@ jobs:
       - name: Check SECURITY DEFINER grants (no anon/authenticated-executable DEFINER fns)
         run: psql -v ON_ERROR_STOP=1 -f db/test/check_definer_grants.sql
 
+      - name: Field Log Phase 0 checks (contact matching, starting balances, scheduled move-out)
+        run: psql -v ON_ERROR_STOP=1 -f db/test/field_log_phase_zero.sql
+
+      - name: Field Log Phase 1 checks (matching, lease billing, combined opening balance, rent steps)
+        run: psql -v ON_ERROR_STOP=1 -f db/test/field_log_phase_one.sql
+
+      - name: Field Log Phase 4 checks (owed summary, late-fee suggestions, currency, duplicate properties)
+        run: psql -v ON_ERROR_STOP=1 -f db/test/field_log_phase_four.sql
+
+      - name: Field Log starting-balance correction checks
+        run: psql -v ON_ERROR_STOP=1 -f db/test/field_log_opening_correction.sql
+
       - name: Seed two-account fixture
         run: psql -v ON_ERROR_STOP=1 -f db/test/seed_two_accounts.sql
 

@@ -1,7 +1,7 @@
 # ADR-0015: Independent tenancy dates and reasoned corrections
 
-Status: accepted/current, amended by ADR-0016 and the onboarding date/read-model
-extensions. Deployment requires the coordinated rollout
+Status: accepted/current, amended by ADR-0016, the onboarding date/read-model
+extensions, and the scheduled move-out amendment below (per-account flag). Deployment requires the coordinated rollout
 below; no production migration is implied by this document.
 
 ## Decision
@@ -57,8 +57,9 @@ and warnings are optional. Explicit acknowledgements bind a rule/version, exact
 fields, UTC date, resulting facts and material context. A changed input requires
 fresh review. Distinct `warning_confirmation` records retain the actor, time,
 context and request identity without labeling an empty note as an explanation.
-Future arrival remains landlord-reported; future ending still ends now; future
-receipts still affect current balances now. The dated statement cutoff stays in
+Future arrival remains landlord-reported; future ending still ends now (unless the
+scheduled move-out amendment applies); future receipts still affect current
+balances now. The dated statement cutoff stays in
 force. Payment/ending references resolve inside the same transaction as the fact.
 
 ## Refactor boundaries
@@ -117,3 +118,33 @@ Import/adoption and PDF tests exercise the dependent behavior. The definer-grant
 allowlist explicitly names the authorized correction/explanation/ending wrappers
 and the narrow billing explanation writer; helper functions gain no public write
 authority.
+
+## Amendment: scheduled move-out (per-account flag)
+
+Accepted 2026-11-11 by the owner for the Field Log fix plan. With
+`accounts.scheduled_move_out_enabled` on, an ending whose date is after today in the
+account's time zone (`accounts.time_zone`, IANA, set at signup) is a planned
+move-out, not an actual ending: `record_tenancy_ending` stores `move_out_on` and the
+request as `move_out_plan`, writes no ending row, and keeps the stored status. Dates
+today or earlier still record the actual ending as above. Only the date-writer role
+may change these columns; `cancel_scheduled_move_out` clears them while the tenancy
+is still occupied and no later tenancy exists, and a new tenancy on the door may
+start only after `move_out_on`.
+
+Status is derived on read; no job flips it. From the day after `move_out_on` the
+tenancy reads as ended in `tenancy_current`, date context, onboarding progress,
+billing setup, rent generation, inbound routing and intake links, and
+`GET /tenancies/{id}/ending` derives the ending from the plan (`source:
+'scheduled_move_out'`, null id). A passed move-out cannot be rescheduled, cancelled
+or ended again.
+
+Rent generation stops after `move_out_on`; the final period ends on that day and is
+prorated by actual days unless the plan gives an amount for that schedule. Charges
+already generated are reconciled when the date is scheduled, changed or cancelled:
+later periods are voided, the final period is voided and replaced by a charge that
+records `replaces_charge_id`, and a cancelled or later date restores periods the
+command voided. A payment allocation or late fee on an affected charge stops the
+command with `move_out_changed`; money is never silently changed. A replacement charge has no
+schedule of its own; grace and late-fee terms come from the charge it replaces. An actual ending
+recorded later replaces the plan and leaves recorded money as it is. With the flag
+off, the behavior above this amendment applies unchanged.

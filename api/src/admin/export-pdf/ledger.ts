@@ -10,6 +10,7 @@ export interface DerivedLedger {
   // Landlord-stated adoption balance is separate from row-derived opening debt.
   adoption_opening_balance_cents: number;
   adoption_date: string | null;
+  adoption_in_ledger?: boolean;
   adoption_needs_review: boolean;
   adoption_balance_basis: string | null;
   deposit_charges_cents: number;
@@ -36,7 +37,12 @@ export function exportLedgerAt(data: ExportData, cutoff: string | null): ExportD
     charges: ledgerRowsAt(data.charges, (row) => String(row.due_date), cutoff),
     payments: ledgerRowsAt(
       data.payments,
-      (row) => (typeof row.received_at === 'string' ? row.received_at : null),
+      (row) =>
+        typeof row.opening_credit_on === 'string'
+          ? row.opening_credit_on
+          : typeof row.received_at === 'string'
+            ? row.received_at
+            : null,
       cutoff,
     ),
     allocations: ledgerRowsAt(data.allocations, (row) => String(row.created_at), cutoff),
@@ -75,6 +81,7 @@ export function paymentActivityInRange(
   const within = (date: unknown) => typeof date === 'string' && inRangeISO(date, from, to);
   return (
     within(payment.received_at) ||
+    within(payment.opening_credit_on) ||
     within(payment.voided_at) ||
     allocations.some((row) => within(row.created_at) || within(row.voided_at))
   );
@@ -123,12 +130,16 @@ export function deriveLedger(
   const adoption =
     data.adoption && to && String(data.adoption.adoption_date) > to ? null : data.adoption;
   const adoptionOpening = Number(adoption?.opening_balance_cents ?? 0);
+  const recorded =
+    adoption?.id != null &&
+    [...data.charges, ...data.payments].some((row) => row.opening_adoption_id === adoption.id);
   return {
     opening_balance_cents: start.charged - start.applied,
     rent_charges_in_range_cents: end.charged - start.charged,
     rent_payments_in_range_cents: end.applied - start.applied,
-    closing_balance_cents: adoptionOpening + end.charged - end.applied,
+    closing_balance_cents: (recorded ? 0 : adoptionOpening) + end.charged - end.applied,
     adoption_opening_balance_cents: adoptionOpening,
+    ...(recorded ? { adoption_in_ledger: true } : {}),
     adoption_date: (adoption?.adoption_date as string | undefined) ?? null,
     adoption_needs_review: Boolean(adoption?.needs_review),
     adoption_balance_basis: (adoption?.balance_basis as string | null | undefined) ?? null,

@@ -30,7 +30,7 @@ const Payment = z
     received_at: z.string().nullable(),
     receipt_date_unknown: z.boolean().optional(),
     entry_source: z.string().optional(),
-    method: PaymentMethod,
+    method: PaymentMethod.nullable(),
     reference: z.string().nullable(),
     payer_tenant_id: z.string().uuid().nullable(),
     processor_ref: z.string().nullable(),
@@ -92,7 +92,10 @@ const CreatePaymentBody = z
     received_at: z.string(),
     method: PaymentMethod,
     reference: z.string().optional(),
-    payer_tenant_id: z.string().uuid().optional(),
+    payer_tenant_id: z.string().uuid().optional().openapi({
+      description:
+        'Who paid. Must be on the lease. Omitted on a one-person lease, it is that person; omitted otherwise, the payment is not attributed.',
+    }),
     notes: z.string().optional(),
     // Optional inline allocations. The DB trigger enforces all the
     // integrity rules (sums, currency, same tenancy/account, no voided).
@@ -293,9 +296,27 @@ paymentsApp.openapi(create, async (c) => {
   // and lets postgres roll back the lot on any failure.
   const claim = c.get('idempotencyClaim');
   if (!claim) throw new ApiError(500, 'database_error', 'idempotency claim unavailable');
+  // A one-person lease names its payer; with several, a named payer must be on the lease.
+  const members = await sb
+    .from('tenancy_tenants')
+    .select('tenant_id')
+    .eq('account_id', accountId)
+    .eq('tenancy_id', body.tenancy_id)
+    .is('deleted_at', null)
+    .neq('role', 'guarantor');
+  if (members.error) throw new ApiError(500, 'database_error', members.error.message);
+  const people = (members.data ?? []).map((m) => m.tenant_id as string);
+  if (body.payer_tenant_id && !people.includes(body.payer_tenant_id))
+    throw new ApiError(400, 'invalid_request', 'payer_tenant_id is not on this lease');
+  const payload = {
+    ...body,
+    ...(body.payer_tenant_id === undefined && people.length === 1
+      ? { payer_tenant_id: people[0] }
+      : {}),
+  };
   const { data: rpcData, error: rpcErr } = await sb.rpc('record_payment', {
     p_account_id: accountId,
-    p_payload: asJson(body),
+    p_payload: asJson(payload),
     p_idempotency_key: claim.key,
     p_request_fingerprint: claim.fingerprint,
   });

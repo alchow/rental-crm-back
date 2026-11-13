@@ -307,3 +307,31 @@ feature — courts distrust altered records, not corrected ones.
 - **Evidence exports grow an instrument view** → surface the
   instrument → schedule → charge chain and the "no document attached"
   completeness flag in export-pdf.
+
+## Amendment, 2026-11-12: future-month change on the landlord's statement
+
+Owner decision, 2026-11-12. Asked whether a landlord may type a future rent change
+when the existing feature accepts only a change pointing to a lease or a served
+notice, the owner answered: "allow it but give a warning that it needs to be
+documented to the tenant".
+
+Narrow exception, recorded as such:
+
+- Only a future month: the change's first period starts after the current month in
+  the account's time zone. Past and current months keep the instrument rule above.
+- `POST .../billing-transition/preview|commit` accepts `{ rent_change: { basis:
+  { kind: 'landlord_statement', note? }, effective_month, amount_cents } }`. Every other
+  billing term carries over from the schedule in force.
+- The new schedule step stores `basis_kind = 'landlord_statement'` and `basis_note`, has
+  no `source_lease_id` or `source_notice_id`, and is never presented as an instrument.
+  Existing steps were backfilled to `lease` or `notice` from their anchors.
+- Preview raises the warning `rent_change_undocumented` (the change has no lease or
+  served notice behind it and must be documented to the tenant). It is acknowledged
+  through the route's ordinary `warning_acknowledgements`, like every other warning.
+  No lead time is computed or enforced.
+- The step records `follows_lease = false`; the lease is not changed.
+- Advance charges for the effective month onward are voided as for any transition,
+  except that the change is refused when a payment is applied to one of them, so it
+  only adds a future step and never changes money a payment relies on.
+
+Everything else in this ADR stands.

@@ -9,22 +9,46 @@ import { ApiError, dbError, errorResponses } from './_lib/error';
 // Both use the caller JWT, and PATCH inherits the shared idempotency contract.
 
 const AccountParam = z.object({
-  accountId: z.string().uuid().openapi({ param: { name: 'accountId', in: 'path' } }),
+  accountId: z
+    .string()
+    .uuid()
+    .openapi({ param: { name: 'accountId', in: 'path' } }),
 });
 
 const AccountSettings = z
   .object({
     auto_charge_enabled: z.boolean(),
+    person_match_enabled: z.boolean().optional(),
+    opening_balance_ledger_enabled: z.boolean().optional(),
+    scheduled_move_out_enabled: z.boolean().optional(),
+    wizard_v2_enabled: z.boolean().optional().openapi({
+      description:
+        'Read-only rollout flag: show the new setup wizard. Both setup payloads are accepted either way.',
+    }),
+    time_zone: z.string().optional(),
+    proration_method: z.enum(['actual_days', 'thirty_day_month']).optional(),
+    currency: z.string().optional().openapi({ description: 'ISO 4217 code money defaults to.' }),
+    multi_currency: z.boolean().optional().openapi({
+      description: 'False: show no currency control or code; setup refuses other currencies.',
+    }),
   })
   .openapi('AccountSettings');
 
-// auto_charge_enabled is the ONLY writable field. The RLS policy cannot
+// auto_charge_enabled, proration_method, currency and multi_currency are the ONLY writable fields. The RLS policy cannot
 // restrict an UPDATE to a single column, so the column allow-list is enforced
 // HERE: this body admits nothing else.
 const PatchAccountSettingsBody = z
   .object({
-    auto_charge_enabled: z.boolean(),
+    auto_charge_enabled: z.boolean().optional(),
+    proration_method: z.enum(['actual_days', 'thirty_day_month']).optional(),
+    currency: z
+      .string()
+      .refine((code) => Intl.supportedValuesOf('currency').includes(code), 'currency.unsupported')
+      .optional(),
+    multi_currency: z.boolean().optional(),
   })
+  .strict()
+  .refine((body) => Object.keys(body).length > 0, 'Send at least one setting.')
   .openapi('PatchAccountSettingsBody');
 
 const get = createRoute({
@@ -63,31 +87,41 @@ settingsApp.openapi(get, async (c) => {
   const sb = getSb(c);
   const { data, error } = await sb
     .from('accounts')
-    .select('auto_charge_enabled')
+    .select('*')
     .eq('id', accountId)
     .is('deleted_at', null)
     .maybeSingle();
   if (error) throw new ApiError(500, 'database_error', error.message);
   if (!data) throw new ApiError(404, 'not_found', 'account not found');
   return c.json(
-    { auto_charge_enabled: (data as { auto_charge_enabled: boolean }).auto_charge_enabled },
+    {
+      auto_charge_enabled: data.auto_charge_enabled,
+      person_match_enabled: data.person_match_enabled,
+      opening_balance_ledger_enabled: data.opening_balance_ledger_enabled,
+      scheduled_move_out_enabled: data.scheduled_move_out_enabled,
+      wizard_v2_enabled: data.wizard_v2_enabled,
+      time_zone: data.time_zone,
+      proration_method: data.proration_method as 'actual_days' | 'thirty_day_month',
+      currency: data.currency,
+      multi_currency: data.multi_currency,
+    },
     200,
   );
 });
 
 settingsApp.openapi(patch, async (c) => {
   const { accountId } = c.req.valid('param');
-  const { auto_charge_enabled } = c.req.valid('json');
+  const body = c.req.valid('json');
   const sb = getSb(c);
   // Writes the ONLY writable field. Under the caller's JWT, the
   // accounts_manager_update RLS policy authorises the UPDATE only for
   // an owner/manager.
   const { data, error } = await sb
     .from('accounts')
-    .update({ auto_charge_enabled })
+    .update(body)
     .eq('id', accountId)
     .is('deleted_at', null)
-    .select('auto_charge_enabled')
+    .select('auto_charge_enabled, proration_method, currency, multi_currency')
     .maybeSingle();
   if (error) throw dbError(error);
   // A viewer passes the account-membership middleware (they ARE a member and
@@ -98,7 +132,12 @@ settingsApp.openapi(patch, async (c) => {
     throw new ApiError(403, 'forbidden', 'only an account owner or manager may change settings');
   }
   return c.json(
-    { auto_charge_enabled: (data as { auto_charge_enabled: boolean }).auto_charge_enabled },
+    {
+      auto_charge_enabled: data.auto_charge_enabled,
+      proration_method: data.proration_method as 'actual_days' | 'thirty_day_month',
+      currency: data.currency,
+      multi_currency: data.multi_currency,
+    },
     200,
   );
 });

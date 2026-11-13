@@ -30,6 +30,19 @@ const SignupBody = z
     email: z.string().email(),
     password: z.string().min(8).max(200),
     account_name: z.string().min(1).max(200),
+    time_zone: z
+      .string()
+      .min(1)
+      .max(80)
+      .refine((zone) => {
+        try {
+          new Intl.DateTimeFormat('en', { timeZone: zone });
+          return /^[A-Za-z][A-Za-z0-9_+/-]*$/.test(zone);
+        } catch {
+          return false;
+        }
+      }, 'Choose an IANA time zone')
+      .optional(),
   })
   .openapi('SignupRequest');
 
@@ -40,7 +53,6 @@ const SignupSuccess = z
     session: Session,
   })
   .openapi('SignupResponse');
-
 
 const LoginBody = z
   .object({
@@ -56,13 +68,9 @@ const LoginResponse = z
   })
   .openapi('LoginResponse');
 
-const RefreshBody = z
-  .object({ refresh_token: z.string().min(1) })
-  .openapi('RefreshRequest');
+const RefreshBody = z.object({ refresh_token: z.string().min(1) }).openapi('RefreshRequest');
 
-const RefreshResponse = z
-  .object({ session: Session })
-  .openapi('RefreshResponse');
+const RefreshResponse = z.object({ session: Session }).openapi('RefreshResponse');
 
 const LogoutBody = z
   .object({
@@ -93,8 +101,16 @@ const loginRoute = createRoute({
     body: { content: { 'application/json': { schema: LoginBody } }, required: true },
   },
   responses: {
-    200: { description: 'authenticated', content: { 'application/json': { schema: LoginResponse } } },
-    401: { description: 'invalid credentials', content: { 'application/json': { schema: errorResponses[400].content['application/json'].schema } } },
+    200: {
+      description: 'authenticated',
+      content: { 'application/json': { schema: LoginResponse } },
+    },
+    401: {
+      description: 'invalid credentials',
+      content: {
+        'application/json': { schema: errorResponses[400].content['application/json'].schema },
+      },
+    },
     ...errorResponses,
   },
 });
@@ -109,8 +125,18 @@ const refreshRoute = createRoute({
   },
   responses: {
     200: { description: 'refreshed', content: { 'application/json': { schema: RefreshResponse } } },
-    401: { description: 'refresh failed', content: { 'application/json': { schema: errorResponses[400].content['application/json'].schema } } },
-    503: { description: 'auth upstream unavailable — retry with the same refresh token', content: { 'application/json': { schema: errorResponses[400].content['application/json'].schema } } },
+    401: {
+      description: 'refresh failed',
+      content: {
+        'application/json': { schema: errorResponses[400].content['application/json'].schema },
+      },
+    },
+    503: {
+      description: 'auth upstream unavailable — retry with the same refresh token',
+      content: {
+        'application/json': { schema: errorResponses[400].content['application/json'].schema },
+      },
+    },
     ...errorResponses,
   },
 });
@@ -125,7 +151,12 @@ const logoutRoute = createRoute({
   },
   responses: {
     204: { description: 'revoked' },
-    401: { description: 'token invalid', content: { 'application/json': { schema: errorResponses[400].content['application/json'].schema } } },
+    401: {
+      description: 'token invalid',
+      content: {
+        'application/json': { schema: errorResponses[400].content['application/json'].schema },
+      },
+    },
     ...errorResponses,
   },
 });
@@ -147,16 +178,24 @@ auth.openapi(signupRoute, async (c) => {
     throw new ApiError(400, 'invalid_request', error.message);
   }
   if (!data.user || !data.session) {
-    throw new ApiError(400, 'invalid_request', 'email confirmation is required; disable it in Supabase Auth settings to use this endpoint');
+    throw new ApiError(
+      400,
+      'invalid_request',
+      'email confirmation is required; disable it in Supabase Auth settings to use this endpoint',
+    );
   }
 
   const userClient = getUserClient(data.session.access_token);
-  const { data: rpcData, error: rpcError } = await userClient.rpc(
-    'create_account_for_new_user',
-    { p_account_name: body.account_name, p_display_name: body.email },
-  );
+  const { data: rpcData, error: rpcError } = await userClient.rpc('create_account_for_new_user', {
+    p_account_name: body.account_name,
+    p_display_name: body.email,
+    ...(body.time_zone ? { p_time_zone: body.time_zone } : {}),
+  });
   if (rpcError) throw new ApiError(500, 'database_error', rpcError.message);
-  const row = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as { account_id: string; role: string } | null;
+  const row = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as {
+    account_id: string;
+    role: string;
+  } | null;
   if (!row?.account_id) {
     throw new ApiError(500, 'database_error', 'RPC returned no account row');
   }
@@ -176,11 +215,14 @@ auth.openapi(signupRoute, async (c) => {
     );
   }
 
-  return c.json({
-    user: { id: data.user.id, email: data.user.email ?? null },
-    account: { id: row.account_id, role: row.role },
-    session: data.session as unknown as z.infer<typeof Session>,
-  }, 200);
+  return c.json(
+    {
+      user: { id: data.user.id, email: data.user.email ?? null },
+      account: { id: row.account_id, role: row.role },
+      session: data.session as unknown as z.infer<typeof Session>,
+    },
+    200,
+  );
 });
 
 auth.openapi(loginRoute, async (c) => {
@@ -188,10 +230,13 @@ auth.openapi(loginRoute, async (c) => {
   const anon = getAnonClient();
   const { data, error } = await anon.auth.signInWithPassword(body);
   if (error) throw new ApiError(401, 'unauthenticated', error.message);
-  return c.json({
-    user: data.user ? { id: data.user.id, email: data.user.email ?? null } : null,
-    session: data.session as unknown as z.infer<typeof Session>,
-  }, 200);
+  return c.json(
+    {
+      user: data.user ? { id: data.user.id, email: data.user.email ?? null } : null,
+      session: data.session as unknown as z.infer<typeof Session>,
+    },
+    200,
+  );
 });
 
 auth.openapi(refreshRoute, async (c) => {
@@ -246,7 +291,7 @@ auth.openapi(logoutRoute, async (c) => {
   // (it manages cookies), which is the wrong abstraction for a stateless
   // API.
   const env = loadEnv();
-  const body = (c.req.valid('json') ?? { scope: 'global' as const });
+  const body = c.req.valid('json') ?? { scope: 'global' as const };
   const header = c.req.header('authorization') ?? '';
   if (!/^bearer\s+/i.test(header)) {
     return c.body(null, 204);

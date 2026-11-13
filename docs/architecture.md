@@ -148,8 +148,19 @@ Balances are derived from immutable/reversible facts rather than mutable total
 columns. The ledger groups totals by currency; the account rollup returns one
 row per tenancy with `currency_totals`, a primary currency and scalar totals
 for that currency only. A paid USD balance does not hide unpaid EUR debt.
-Opening-balance testimony is returned separately as `adoption`; it never becomes
-a charge, receipt, late-fee parent, or received-income total.
+Starting balances depend on `accounts.opening_balance_ledger_enabled`. With the
+flag off, the adoption's opening balance is testimony returned separately as
+`adoption`; it never becomes a charge, receipt, late-fee parent, or received-income
+total. With the flag on, inserting the adoption also writes one ledger entry keyed
+by the adoption: an amount owed becomes an `opening_balance` charge (counted in
+balances, never overdue, never a late-fee parent), a credit becomes an
+`opening_credit` payment with no method or receipt date (unapplied credit, not cash
+received). `adoption.recorded_in_ledger` tells readers not to add the testimony
+again. An amount owed must say whether it includes this month's rent: "no" adds the
+current period in the same commit, "yes" stops the generator billing it.
+`db/scripts/backfill-opening-balances.sql` converts existing adoptions per account
+with a before/after report; `revert-opening-balance-backfill.sql` reverses untouched
+entries.
 
 Agreement saving belongs to `routes/leases.ts` and writes only a lease. Due
 rules preserve days 1–31, last day, other written text, and unknown. Grace is
@@ -176,6 +187,40 @@ pending-request metadata cannot invalidate its own review. The exact commit key,
 setup and context can therefore be parked before sending. A session GET by ID
 also returns a completed result when a response was lost; completed session facts
 cannot be rewritten.
+
+Validate, preview and confirm share one planning step (`routes/tenancy-setup/plan.ts`,
+pure rules in `lib/setup-plan.ts`):
+
+```text
+request -> billing derived from the lease (billing.rent.follows_lease = true)
+  -> deposit_answer expanded into lease term, deposit charge and payment
+  -> rent_steps turned into explicit amounts for past cycles
+  -> shape checks -> database preview -> blocking findings as field errors
+```
+
+`POST .../tenancy-setup-sessions/{id}/validate` returns `{ ok, errors }`; preview and
+confirm failures carry the same `FieldError` list in `error.details.errors`. A draft that
+validates therefore cannot fail confirm on a field error. Omitted new fields keep the
+old payload behaviour. `GET /accounts/{id}/people/match` reads existing people by
+normalized email/phone (exact) or name (possible) while `person_match_enabled` is on.
+`rent_schedules.follows_lease` records whether billing was derived from the lease.
+Partial periods carry suggestions from `accounts.proration_method`, which also
+prorates a move-out's final period. With the starting-balance ledger on, an amount owed
+from before may accompany itemized months (`opening_balance.itemize_from`): it is dated
+the day before the first itemized month and earlier cycles cannot be itemized; a receipt
+dated earlier needs an `earlier_receipts` answer unless its purpose is deposit (ADR-0013).
+
+Owed amounts come from one read, `owed_summaries()` (`GET .../owed-summaries`): unpaid
+charges due today in the account's time zone by type, the overdue part (due date plus
+grace, never a starting balance), the next charge (an unpaid future charge or an unbilled
+schedule period) and whether rent is tracked. `late_fee_suggestions()` lists unpaid rent
+past grace with the lease fee (fixed, a percent of the monthly rent in force for that
+charge, or other; a move-out replacement uses the terms of the charge it replaces); adding the fee is an
+ordinary late_fee charge parented on the rent charge, skipping writes
+`late_fee_decisions`. Nothing is charged automatically and no message is sent. Payments
+may name a payer on the lease (automatic for a one-person lease); the ledger shows payer
+names and a per-month split while balances stay joint. `accounts.currency` and
+`multi_currency` (settings) drive the single-currency check in setup.
 
 The transaction supports new tenancy setup and explicit existing-agreement reuse,
 correction, renewal or billing-only work. Existing possession changes call the
@@ -254,6 +299,30 @@ The new setup command also handles initial rent with an existing deposit/credit,
 without reopening adoption or overwriting opening testimony. The generator
 continues to create the next eligible period rather than historical backfill.
 
+## Field Log rollout flags
+
+Per-account booleans on `accounts`, default off, read-only on
+`GET /v1/accounts/{id}/settings` and set by an operator in SQL:
+
+| Flag                             | Effect                                                                                   |
+| -------------------------------- | ---------------------------------------------------------------------------------------- |
+| `person_match_enabled`           | setup refuses a new person whose email/phone is on file; people match returns results    |
+| `opening_balance_ledger_enabled` | a starting balance is written to the ledger (ADR-0013 amendment)                         |
+| `scheduled_move_out_enabled`     | a future ending schedules a move-out (ADR-0015 amendment)                                |
+| `wizard_v2_enabled`              | the frontend shows the new setup wizard; the API accepts old and new payloads either way |
+
+```sql
+update public.accounts
+   set person_match_enabled = true,
+       opening_balance_ledger_enabled = true,
+       scheduled_move_out_enabled = true,
+       wizard_v2_enabled = true
+ where id = '<account uuid>';
+```
+
+Turn the starting-balance ledger on for an account that already has adoptions with
+`db/scripts/backfill-opening-balances.sql`, not with the update above.
+
 ## Imports and Background Work
 
 Tenancy possession facts, lease terms, and rent-effective eras are independent.
@@ -292,7 +361,19 @@ and history commit atomically under the existing financial lock; transport retri
 return the same saved IDs. The narrow date-writer role retains FORCE-RLS and live
 account membership when writing billing setup and reviewed receipt/ending commands.
 
-Future actual ending still ends the tenancy and stops generation immediately.
+With `accounts.scheduled_move_out_enabled` off, a future actual ending still ends
+the tenancy and stops generation immediately. With it on, a future ending date
+schedules a move-out instead (`tenancies.move_out_on` and `move_out_plan`): no
+ending row is written and the stored status stays active. Status is derived on read
+in the account's time zone (`accounts.time_zone`): the tenancy reads as ended from
+the day after `move_out_on` in `tenancy_current`, the generator, intake links, date
+context, billing setup and inbound routing, and `GET .../ending` derives the ending
+from the saved plan. No job materializes it. Scheduling, changing or cancelling the
+date reconciles already-generated scheduled rent: later periods are voided, the final
+period is voided and replaced at its move-out amount, and a cancelled or later date
+restores what the command voided. Money a payment or late fee relies on is never
+changed; the command returns `move_out_changed` for review. Another tenancy cannot
+start on the door until after `move_out_on`.
 Future receipts still affect today's allocations/balance immediately; an explicit
 ledger/PDF cutoff before the receipt date excludes them. Direct inserts, legacy
 RPCs, bootstrap and imports cannot bypass confirmation: unreviewed future facts

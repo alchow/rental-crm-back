@@ -97,6 +97,7 @@ const create = createRoute({
   responses: {
     201: { description: 'created', content: { 'application/json': { schema: Tenancy } } },
     ...errorResponses,
+    ...conflictResponse,
   },
 });
 const patch = createRoute({
@@ -193,6 +194,12 @@ tenancyRecordsApp.openapi(create, async (c) => {
     if (error.code === '23503') {
       throw new ApiError(404, 'not_found', 'area_id does not belong to this account');
     }
+    if (error.message === 'move_out_overlap')
+      throw new ApiError(
+        409,
+        'move_out_overlap',
+        'The dates overlap another tenancy on this door.',
+      );
     if (error.code === '23514') {
       throw new ApiError(400, 'invalid_request', error.message);
     }

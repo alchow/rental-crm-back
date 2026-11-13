@@ -28,18 +28,21 @@ const ChargeType = z.enum([
 ]);
 const CurrencyCode = z.string().length(3);
 
+const ReadChargeType = z.union([ChargeType, z.literal('opening_balance')]);
+
 const Charge = z
   .object({
     id: z.string().uuid(),
     account_id: z.string().uuid(),
     tenancy_id: z.string().uuid(),
-    type: ChargeType,
+    type: ReadChargeType,
     amount_cents: z.number().int().nonnegative(),
     currency: CurrencyCode,
     due_date: z.string(),
     period_start: z.string().nullable(),
     period_end: z.string().nullable(),
     description: z.string().nullable(),
+    opening_category: z.string().nullable().optional(),
     source_schedule_id: z.string().uuid().nullable(),
     cycle_key: z.string().nullable(),
     terms_snapshot: z.record(z.unknown()).nullable(),
@@ -74,7 +77,10 @@ const CreateChargeBody = z
       .optional(),
     description: z.string().optional(),
     source_schedule_id: z.string().uuid().optional(),
-    cycle_key: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+    cycle_key: z
+      .string()
+      .regex(/^\d{4}-\d{2}$/)
+      .optional(),
     parent_charge_id: z
       .string()
       .uuid()
@@ -139,7 +145,7 @@ const ListQuery = z.object({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().positive().max(100).default(50),
   tenancy_id: z.string().uuid().optional(),
-  type: ChargeType.optional(),
+  type: ReadChargeType.optional(),
 });
 const ListResponse = z
   .object({ data: z.array(Charge), next_cursor: z.string().nullable() })
@@ -245,7 +251,7 @@ chargesApp.openapi(create, async (c) => {
   if (body.parent_charge_id !== undefined) {
     const parent = await sb
       .from('charges')
-      .select('id, tenancy_id, voided_at')
+      .select('id, tenancy_id, voided_at, type')
       .eq('account_id', accountId)
       .eq('id', body.parent_charge_id)
       .is('deleted_at', null)
@@ -254,7 +260,11 @@ chargesApp.openapi(create, async (c) => {
     if (!parent.data) {
       throw new ApiError(404, 'not_found', 'parent_charge_id does not belong to this account');
     }
-    const parentRow = parent.data as { tenancy_id: string; voided_at: string | null };
+    const parentRow = parent.data as {
+      tenancy_id: string;
+      voided_at: string | null;
+      type: string;
+    };
     if (parentRow.tenancy_id !== body.tenancy_id) {
       // WHICH id is wrong decides the status. A tenancy_id this account cannot
       // see earns the same 404 the insert's FK would have produced had there
@@ -290,6 +300,10 @@ chargesApp.openapi(create, async (c) => {
     // exception, and only because it is the system unwinding its own generated
     // charge -- change_tenancy_rent voids the fees derived from the advance rent
     // charges it supersedes, and returns their ids in voided_charge_ids.
+    // INVARIANT: a starting balance is owed but never late (DB-enforced too).
+    if (parentRow.type === 'opening_balance') {
+      throw new ApiError(400, 'invalid_request', 'A starting balance cannot take a late fee.');
+    }
     if (parentRow.voided_at !== null) {
       throw new ApiError(
         409,

@@ -85,8 +85,11 @@ const AdoptionBody = z
       .openapi({
         description:
           'Signed: > 0 the tenant owed money at adoption, < 0 the tenant held a credit. ' +
-          'A recorded fact, not a charge — it can never take a late fee and is never ' +
-          'part of payment-dated income exports. Mutually exclusive with itemized ' +
+          'Always kept as the adoption record. On accounts with the starting-balance ledger ' +
+          'enabled it is also written once to the ledger: an amount owed as an ' +
+          'opening_balance charge (owed, never overdue, never a late-fee parent), a credit as ' +
+          'an opening_credit payment with no receipt date (unapplied credit, not income). ' +
+          'Otherwise it is not a charge or payment. Mutually exclusive with itemized ' +
           'charges/payments.',
       }),
     balance_basis: z.string().min(1).max(200).optional(),

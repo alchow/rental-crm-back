@@ -10,14 +10,29 @@ export const RentDueRule = z.discriminatedUnion('kind', [
 export const LateFeePolicy = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('unknown') }).strict(),
   z.object({ kind: z.literal('none') }).strict(),
-  z.object({ kind: z.literal('fixed'), amount_cents: z.number().int().positive(), currency: z.string().length(3) }).strict(),
+  z
+    .object({
+      kind: z.literal('fixed'),
+      amount_cents: z.number().int().positive(),
+      currency: z.string().length(3),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('percent'),
+      percent: z.number().positive().max(100).multipleOf(0.01),
+    })
+    .strict()
+    .openapi({ description: 'Percent of the monthly rent.' }),
   z.object({ kind: z.literal('other'), text: WrittenTerm }).strict(),
 ]);
-export const TermsSource = z.object({
-  kind: z.enum(['manual', 'document', 'import']),
-  document_id: z.string().uuid().optional(),
-  note: WrittenTerm.optional(),
-}).strict();
+export const TermsSource = z
+  .object({
+    kind: z.enum(['manual', 'document', 'import']),
+    document_id: z.string().uuid().optional(),
+    note: WrittenTerm.optional(),
+  })
+  .strict();
 
 export const LeaseTermsFields = {
   rent_due_rule: RentDueRule.optional(),

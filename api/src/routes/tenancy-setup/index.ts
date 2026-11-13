@@ -3,7 +3,7 @@ import { newApiApp } from '../_lib/app';
 import { getSb } from '../../supabase/request-client';
 import { asJson } from '../../supabase/db-types';
 import { ApiError, errorResponses, conflictResponse } from '../_lib/error';
-import { dateRpc } from '../tenancies/rpc';
+import { dateRpc, mapDateRpcError } from '../tenancies/rpc';
 import { requireManager } from '../_lib/guards';
 import { stageDocumentUpload, MAX_BYTES, renderStoredImageToJpeg } from '../../admin/storage';
 import { renderDocumentImagePdf } from '../../admin/document-image';
@@ -18,7 +18,14 @@ import {
   SetupResult,
   SetupDocument,
   RentDefaults,
+  SetupValidation,
+  PeopleMatch,
+  PeopleMatchParams,
 } from './schemas';
+import { planSetup, setupFailure } from './plan';
+import { fieldErrorsFromIssues } from '../../lib/setup-plan';
+import type { Context } from 'hono';
+import type { ZodError } from 'zod';
 
 export const tenancySetupApp = newApiApp();
 const responses = { ...errorResponses, ...conflictResponse };
@@ -67,6 +74,16 @@ const save = createRoute({
     ...responses,
   },
 });
+const discard = createRoute({
+  method: 'delete',
+  path: '/accounts/{accountId}/tenancy-setup-sessions/{id}',
+  tags: ['tenancy_setup'],
+  request: { params: SetupParam },
+  responses: {
+    204: { description: 'Draft discarded' },
+    ...responses,
+  },
+});
 const preview = createRoute({
   method: 'post',
   path: '/accounts/{accountId}/tenancy-setup-sessions/{id}/preview',
@@ -112,6 +129,57 @@ const commit = createRoute({
     ...responses,
   },
 });
+const validate = createRoute({
+  method: 'post',
+  path: '/accounts/{accountId}/tenancy-setup-sessions/{id}/validate',
+  tags: ['tenancy_setup'],
+  summary: 'Run the checks confirm runs and list every field error',
+  request: {
+    params: SetupParam,
+    body: { required: true, content: { 'application/json': { schema: SetupInput } } },
+  },
+  responses: {
+    200: {
+      description: 'ok = true when confirm would not fail on a field error',
+      content: { 'application/json': { schema: SetupValidation } },
+    },
+    ...responses,
+  },
+});
+const peopleMatch = createRoute({
+  method: 'get',
+  path: '/accounts/{accountId}/people/match',
+  tags: ['tenancy_setup'],
+  summary: 'People already recorded with the same email, phone or name',
+  request: { params: SetupAccount, query: PeopleMatchParams },
+  responses: {
+    200: {
+      description:
+        'exact: same normalized email or E.164 phone; possible: same normalized name only. Empty with enabled = false while person matching is off.',
+      content: { 'application/json': { schema: PeopleMatch } },
+    },
+    ...responses,
+  },
+});
+// Setup body validation failures carry the same field errors confirm returns.
+function setupBodyHook(
+  result: { success: boolean; error?: ZodError; target?: string },
+  c: Context,
+): Response | undefined {
+  if (result.success || !result.error) return undefined;
+  const errors = fieldErrorsFromIssues(result.error.issues as never);
+  if (c.req.path.endsWith('/validate')) return c.json({ ok: false, errors }, 200);
+  return c.json(
+    {
+      error: {
+        code: 'invalid_request',
+        message: 'request validation failed',
+        details: { ...result.error.flatten(), errors },
+      },
+    },
+    400,
+  );
+}
 const upload = createRoute({
   method: 'post',
   path: '/accounts/{accountId}/tenancy-setup-sessions/{id}/document',
@@ -189,33 +257,79 @@ tenancySetupApp.openapi(save, async (c) => {
     200,
   );
 });
-tenancySetupApp.openapi(preview, async (c) => {
+tenancySetupApp.openapi(discard, async (c) => {
+  requireManager(c);
   const { accountId, id } = c.req.valid('param');
-  return c.json(
-    await dateRpc<z.infer<typeof SetupReview>>(c, 'preview_tenancy_setup_session', {
-      p_account_id: accountId,
-      p_id: id,
-      p_setup: asJson(c.req.valid('json')),
-    }),
-    200,
-  );
-});
-tenancySetupApp.openapi(commit, async (c) => {
-  const { accountId, id } = c.req.valid('param');
-  const body = c.req.valid('json');
-  const claim = c.get('idempotencyClaim');
-  if (!claim) throw new ApiError(500, 'database_error', 'Idempotency claim unavailable');
-  const result = await dateRpc<z.infer<typeof SetupResult>>(c, 'commit_tenancy_setup_session', {
+  const { error } = await getSb(c).rpc('discard_tenancy_setup_session', {
     p_account_id: accountId,
     p_id: id,
-    p_setup: asJson(body.setup),
-    p_expected_context: body.expected_context,
-    p_accept_warnings: true,
-    p_idempotency_key: claim.key,
-    p_request_fingerprint: claim.fingerprint,
   });
-  c.set('idempotencyCompletedAtomically', true);
-  return c.json(result, 201);
+  if (error) mapDateRpcError(error);
+  return c.body(null, 204);
+});
+tenancySetupApp.openapi(
+  preview,
+  async (c) => {
+    const { accountId, id } = c.req.valid('param');
+    const planned = await planSetup(c, accountId, id, c.req.valid('json'));
+    if (!planned.review) {
+      const f = planned.failure!;
+      throw new ApiError(f.status, f.code as never, f.message, f.details);
+    }
+    return c.json(planned.review as z.infer<typeof SetupReview>, 200);
+  },
+  setupBodyHook as never,
+);
+tenancySetupApp.openapi(
+  validate,
+  async (c) => {
+    const { accountId, id } = c.req.valid('param');
+    const planned = await planSetup(c, accountId, id, c.req.valid('json'));
+    return c.json({ ok: planned.errors.length === 0, errors: planned.errors }, 200);
+  },
+  setupBodyHook as never,
+);
+tenancySetupApp.openapi(
+  commit,
+  async (c) => {
+    const { accountId, id } = c.req.valid('param');
+    const body = c.req.valid('json');
+    const claim = c.get('idempotencyClaim');
+    if (!claim) throw new ApiError(500, 'database_error', 'Idempotency claim unavailable');
+    const planned = await planSetup(c, accountId, id, body.setup);
+    if (planned.failure) {
+      const f = planned.failure;
+      throw new ApiError(f.status, f.code as never, f.message, f.details);
+    }
+    const { data, error } = await getSb(c).rpc('commit_tenancy_setup_session', {
+      p_account_id: accountId,
+      p_id: id,
+      p_setup: asJson(planned.setup),
+      p_expected_context: body.expected_context,
+      p_accept_warnings: true,
+      p_idempotency_key: claim.key,
+      p_request_fingerprint: claim.fingerprint,
+    });
+    if (error) {
+      const f = await setupFailure(c, accountId, error);
+      throw new ApiError(f.status, f.code as never, f.message, f.details);
+    }
+    c.set('idempotencyCompletedAtomically', true);
+    return c.json(data as unknown as z.infer<typeof SetupResult>, 201);
+  },
+  setupBodyHook as never,
+);
+tenancySetupApp.openapi(peopleMatch, async (c) => {
+  const { accountId } = c.req.valid('param');
+  const { email, phone, name } = c.req.valid('query');
+  const { data, error } = await getSb(c).rpc('match_setup_people', {
+    p_account_id: accountId,
+    p_email: email ?? '',
+    p_phone: phone ?? '',
+    p_name: name ?? '',
+  });
+  if (error) mapDateRpcError(error);
+  return c.json(data as unknown as z.infer<typeof PeopleMatch>, 200);
 });
 tenancySetupApp.openapi(defaults, async (c) => {
   const { accountId } = c.req.valid('param');

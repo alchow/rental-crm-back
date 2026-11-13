@@ -1,7 +1,8 @@
 # ADR-0013: Tenancy adoption — atomic historical backfill and opening balance
 
 Status: current legacy-adoption behavior, amended by ADR-0015/0016 for audited
-date corrections, reviewed billing setup, and currency-grouped read models.
+date corrections, reviewed billing setup, and currency-grouped read models, and
+by the starting-balance ledger amendment below (per-account flag).
 Accepted 2026-08-10. Implements the architecture agreed in
 `docs/statement-setup-design-reply.md`. Not yet triggered in production until
 the Field Log adoption wizard ships.
@@ -84,7 +85,8 @@ carry their invariants at the DB, not only in routes). After commit the row
 is frozen testimony — a `BEFORE UPDATE` trigger permits only `needs_review`
 (resolved via `PATCH /tenancies/{id}/adoption`) and the audited soft-delete.
 
-**Opening balance is a recorded fact, not a ledger row.** It is returned by
+**Opening balance is a recorded fact, not a ledger row** — on accounts with
+`opening_balance_ledger_enabled` off (see the amendment at the end). It is returned by
 the ledger endpoint in a separate `adoption` block, never mixed into
 charge/payment totals. Consequences fall out of the data model instead of
 being enforced by code: it cannot take a late fee (the fee walker iterates
@@ -130,3 +132,87 @@ period_start)` makes cron emission and backfilled periods collision-safe in
 - After a successful adoption the account's default-on auto-charging bills the
   next window from the new schedule on the next 08:00 UTC run; the current
   not-yet-due period intentionally appears then, not at commit time.
+
+## Amendment: starting balance in the ledger (per-account flag)
+
+Accepted 2026-11-11 by the owner for the Field Log fix plan. With
+`accounts.opening_balance_ledger_enabled` on, inserting an adoption with a non-zero
+opening balance also writes exactly one ledger entry keyed by the adoption
+(`opening_adoption_id`, unique): an amount owed becomes a charge of type
+`opening_balance` due on the adoption date with no period, schedule or parent; a
+credit becomes a payment with `entry_source = 'opening_credit'`, no method, no
+receipt date and `opening_credit_on` set to the adoption date. Both are written only
+by the adoption trigger, and their tenancy, amount and currency cannot change.
+
+The adoption row remains provenance. Read paths (ledger, `rent_rollup`, PDF export)
+report `recorded_in_ledger` and stop adding the testimony on top. The legal posture
+is kept by rule rather than by data shape: an `opening_balance` charge counts as owed
+but is excluded from overdue, due-today and upcoming classification, and the
+database refuses any charge parented on it, so it never takes a late fee. The
+opening credit is unapplied credit, not cash received, and is labelled as entered at
+setup in exports.
+
+An amount owed must answer whether it includes the current month's rent: "no" adds
+the current period as a charge in the same commit; "yes" stops the generator billing
+any period starting before next month. A credit does not take the question and the
+current month bills normally. Existing adoptions convert per account with
+`db/scripts/backfill-opening-balances.sql` (idempotent, before/after report) and can
+be reversed with `revert-opening-balance-backfill.sql` while untouched. With the flag
+off, behavior is exactly as described above.
+
+Combined with itemized months (same flag): billing setup accepts `history_mode =
+'itemized'` with `opening_balance.itemize_from`. The opening entry is dated the day
+before the first itemized period (`tenancy_adoptions.opening_on`), cycles before that
+month cannot be itemized or overridden. The timeline must still be virgin, and without
+`itemize_from` the two remain exclusive.
+
+A receipt dated before the itemized months (or with an unknown date) is not refused.
+The landlord answers per receipt in `opening_balance.earlier_receipts`: `add_to_owed`
+records the opening entry as the typed amount plus the receipt (the typed amount was
+already net of it); `keep_owed` records the typed amount. Either way the receipt keeps
+its real date or unknown-date marker and is applied to the opening entry; anything
+beyond it stays unapplied credit. An unanswered receipt blocks confirm. The adoption
+keeps `typed_opening_cents` and `earlier_receipts` (the answers) as provenance.
+
+Owner decisions, 2026-11-12. A $0 amount with `itemize_from` is accepted ("allow but
+explain implication"): months before that month count as paid, are not listed and cannot
+be itemized, no opening entry is written, and the adoption keeps `opening_on` with amount 0. Testimony (`basis`) is optional for 0. Preview explains it with the informational
+finding `opening_months_treated_as_paid` (severity `info`, never blocking, no
+acknowledgement). Preview also returns `opening_result` (typed amount, opening charge or
+credit, receipts applied, still owed, paid ahead, unanswered count), computed by
+`_opening_result` with the same rules the commit uses; paid ahead stays unapplied credit.
+
+## Amendment, 2026-11-12: correcting a mistyped starting balance
+
+Owner-approved ("void and re-enter"). `POST .../tenancies/{id}/opening-balance/correction`
+(with a `/preview` that runs the same correction and rolls it back) takes the corrected
+typed amount, its basis (unless 0) and a reason, only while the starting-balance ledger
+is on and only for a starting balance that was recorded in the ledger.
+
+Nothing is edited in place. The live opening entry's allocations are voided with the
+reason, the entry is voided and stays in the ledger, and a new opening entry for typed
+amount plus earlier receipts answered `add_to_owed` is written with `replaces_charge_id`
+(a charge) or `replaces_payment_id` (a credit). The same payments, or for a credit the
+same charges, are re-applied oldest first up to the new amount; the rest becomes
+unapplied credit, or owed again on those charges. `opening_balance_corrections` records
+the previous and new typed and opening amounts, the basis, the reason, the replaced and
+new entries, every allocation moved or released, who corrected it and when; rows never
+change. The adoption row itself stays frozen; read paths that show the starting amount
+use the latest correction. One live opening entry per adoption is enforced by unique
+indexes that ignore voided entries. A corrected starting balance is still never overdue
+and never takes a late fee. `includes_current_rent` is not changed by a correction.
+
+Clarifications, 2026-11-12 (review fixes, no new owner decision):
+
+- Only a rent receipt is an earlier receipt. A receipt whose setup purpose is deposit
+  (`receipt_purposes`, carried to billing as `payments[].purpose`) keeps its deposit
+  allocation even when dated before `itemize_from` and takes no answer.
+- An amount owed with `itemize_from` always writes the adoption and its opening entry,
+  even when no itemized cycle has started yet (the amount 0 writes the adoption only).
+- With the ledger on, "this month" for `includes_current_rent` and `adoption_date` are the
+  account's date (`accounts.time_zone`); the generator's skip reads the stored
+  `adoption_date` and applies to rent schedules only.
+- `opening_balance_corrections.corrected_at` is the insert time, so the latest correction
+  is never a tie. A live opening entry that was soft-deleted is refused
+  (`opening_entry_deleted`); with no live entry only a starting amount of 0 can be
+  corrected, and a non-zero amount stays `opening_not_in_ledger`.

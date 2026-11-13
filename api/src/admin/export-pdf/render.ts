@@ -195,7 +195,9 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
           `Opening balance at adoption (${ledger.adoption_date ?? 'date unrecorded'}):  ` +
             fmtMoney(adoptionBalance, ledger.currency) +
             (adoptionBalance > 0 ? '  (carried in)' : '') +
-            '  (from landlord statement; no itemized transactions)' +
+            (ledger.adoption_in_ledger
+              ? '  (entered at setup)'
+              : '  (from landlord statement; no itemized transactions)') +
             stated,
         );
         doc.text(
@@ -228,7 +230,7 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
       ledger.unapplied_credit_cents > 0
         ? `  (before ${fmtMoney(ledger.unapplied_credit_cents, ledger.currency)} unapplied credit — see below)`
         : '';
-    if (adoptionBalance !== 0) {
+    if (adoptionBalance !== 0 && !ledger.adoption_in_ledger) {
       // Show the arithmetic rather than folding the assertion into one number:
       // the itemized figure is what these rows prove, the total is what the
       // landlord claims, and GET /ledger returns both parts separately.
@@ -317,7 +319,9 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
     if (renderedCharges === 0) doc.text('  (none in range)');
 
     doc.moveDown(0.3);
-    doc.text(`Payments + allocations${fromDate || toDate ? ' (in range)' : ''}:`);
+    doc.text(
+      `Payments, starting credit and allocations${fromDate || toDate ? ' (in range)' : ''}:`,
+    );
     const paymentsSorted = [...money.payments].sort((a, b) =>
       String(a.received_at).localeCompare(String(b.received_at)),
     );
@@ -327,7 +331,9 @@ export async function renderExportPdf(input: RenderInput): Promise<Uint8Array> {
       if (!paymentActivityInRange(pr, allocs, fromDate, toDate)) continue;
       const v = pr.voided_at ? ' [VOID]' : '';
       doc.text(
-        `  ${typeof pr.received_at === 'string' ? pr.received_at : 'receipt date unknown'}  via ${pr.method as string}  ${fmtMoney(pr.amount_cents as number, pr.currency as string)}${v}`,
+        pr.entry_source === 'opening_credit'
+          ? `  ${pr.opening_credit_on as string}  Starting credit entered at setup  ${fmtMoney(pr.amount_cents as number, pr.currency as string)}${v}`
+          : `  ${typeof pr.received_at === 'string' ? pr.received_at : 'receipt date unknown'}  via ${pr.method as string}  ${fmtMoney(pr.amount_cents as number, pr.currency as string)}${v}`,
       );
       if (pr.created_at) doc.text(`     Recorded: ${String(pr.created_at)}`);
       for (const a of allocs) {

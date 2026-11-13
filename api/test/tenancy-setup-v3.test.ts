@@ -1270,6 +1270,113 @@ await check('preview blocks a correction that conflicts with anchored billing', 
   });
   assert(saved.status === 400, JSON.stringify(saved.body));
 });
+await check('preview and commit reject a matching contact and allow reuse', async () => {
+  const { id, setup } = await fixture();
+  const path = `/tenancy-setup-sessions/${id}`;
+  const preview = await request('POST', `${path}/preview`, setup);
+  assert(preview.status === 200, JSON.stringify(preview.body));
+  const context = (preview.body as { setup_context: string }).setup_context;
+  const email = `dana-${randomToken()}@example.test`;
+  const existing = await request('POST', '/tenants', {
+    full_name: 'Dana Whitfield',
+    emails: [email],
+    phones: ['+15035550123'],
+  });
+  assert(existing.status === 201, JSON.stringify(existing.body));
+  const existingId = (existing.body as { id: string }).id;
+  await pool.query('update public.accounts set person_match_enabled=true where id=$1', [
+    auth.account.id,
+  ]);
+  for (const field of ['email', 'phone'] as const) {
+    const duplicate = {
+      ...setup,
+      people: [
+        {
+          ...setup.people[0],
+          emails: field === 'email' ? [email.toUpperCase()] : [],
+          phones: field === 'phone' ? ['+15035550123'] : [],
+        },
+      ],
+    };
+    const review = await request('POST', `${path}/preview`, duplicate);
+    assert(review.status === 409, JSON.stringify(review.body));
+    const key = crypto.randomUUID();
+    const commit = await request(
+      'POST',
+      `${path}/commit`,
+      {
+        setup: duplicate,
+        expected_context: context,
+        accept_warnings: true,
+      },
+      key,
+    );
+    assert(commit.status === 409, JSON.stringify(commit.body));
+    const problem = (
+      commit.body as {
+        error: { code: string; details: { personIndex: number; field: string; tenantId: string } };
+      }
+    ).error;
+    assert(
+      problem.code === 'setup_person_contact_conflict' &&
+        problem.details.personIndex === 0 &&
+        problem.details.field === field &&
+        problem.details.tenantId === existingId,
+      JSON.stringify(problem),
+    );
+    const claim = await pool.query(
+      'select key from public.idempotency_keys where account_id=$1 and key=$2',
+      [auth.account.id, key],
+    );
+    assert(claim.rowCount === 0, 'failed setup confirmation still holds its key');
+  }
+  const reused = { ...setup, people: [{ ...setup.people[0], tenant_id: existingId }] };
+  const revised = await request('POST', `${path}/preview`, reused);
+  assert(revised.status === 200, JSON.stringify(revised.body));
+  const committed = await request('POST', `${path}/commit`, {
+    setup: reused,
+    expected_context: (revised.body as { setup_context: string }).setup_context,
+    accept_warnings: true,
+  });
+  assert(committed.status === 201, JSON.stringify(committed.body));
+  const tenancyId = (committed.body as { tenancy_id: string }).tenancy_id;
+  const membership = await pool.query(
+    'select tenant_id from public.tenancy_tenants where tenancy_id=$1',
+    [tenancyId],
+  );
+  assert(
+    membership.rowCount === 1 && membership.rows[0]?.tenant_id === existingId,
+    'existing tenant was not linked',
+  );
+  const discard = await request('DELETE', path);
+  assert(discard.status === 409, JSON.stringify(discard.body));
+  await pool.query('update public.accounts set person_match_enabled=false where id=$1', [
+    auth.account.id,
+  ]);
+});
+
+await check('discard clears a setup draft and blocks a stale browser from saving it', async () => {
+  const { id, area_id, setup } = await fixture();
+  const path = `/tenancy-setup-sessions/${id}`;
+  const discarded = await request('DELETE', path);
+  assert(discarded.status === 204, JSON.stringify(discarded.body));
+  const repeated = await request('DELETE', path);
+  assert(repeated.status === 204, JSON.stringify(repeated.body));
+  const list = await request('GET', `/tenancy-setup-sessions?area_id=${area_id}`);
+  assert(
+    list.status === 200 && Array.isArray(list.body) && list.body.length === 0,
+    JSON.stringify(list.body),
+  );
+  const stale = await request('PUT', path, {
+    area_id,
+    expected_revision: 1,
+    payload: { screen: 'who', name: 'Stale browser' },
+  });
+  assert(stale.status === 409, JSON.stringify(stale.body));
+  const preview = await request('POST', `${path}/preview`, setup);
+  assert(preview.status === 404, JSON.stringify(preview.body));
+});
+
 await pool.end();
 if (failures.length) {
   console.error(failures);

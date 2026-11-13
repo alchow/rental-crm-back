@@ -58,9 +58,14 @@ DECLARE
     'commit_billing_setup',
     -- Setup commands retain JWT RLS; only their owner can finalize setup evidence.
     'save_tenancy_setup_session',
+    'discard_tenancy_setup_session',
     'commit_tenancy_setup_session',
     'record_payment',
     'record_tenancy_ending',
+    'cancel_scheduled_move_out',
+    -- Owner/manager-checked starting-balance correction (preview rolls back).
+    'preview_opening_balance_correction',
+    'correct_opening_balance',
     'create_payment_with_allocations',
     'set_owner_phone_verified',
     'is_approver_member',
