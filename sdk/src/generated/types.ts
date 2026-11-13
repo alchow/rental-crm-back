@@ -9259,7 +9259,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Review a complete successor billing instruction and the advance charges it supersedes */
+        /**
+         * Review a complete successor billing instruction and the advance charges it supersedes
+         * @description Send either a complete successor intent anchored to a lease or served notice, or { rent_change } for a future-month change resting on the landlord's own statement (warning rent_change_undocumented must be acknowledged).
+         */
         post: {
             parameters: {
                 query?: never;
@@ -9275,7 +9278,7 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json": components["schemas"]["BillingSetupIntent"];
+                    "application/json": components["schemas"]["BillingTransitionIntent"];
                 };
             };
             responses: {
@@ -9370,7 +9373,7 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json": components["schemas"]["BillingSetupCommit"];
+                    "application/json": components["schemas"]["BillingTransitionCommit"];
                 };
             };
             responses: {
@@ -23346,6 +23349,23 @@ export interface components {
         BillingSetupCommit: components["schemas"]["BillingSetupIntent"] & {
             expected_context: string;
         };
+        LandlordRentChange: {
+            rent_change: {
+                basis: {
+                    /** @enum {string} */
+                    kind: "landlord_statement";
+                    note?: string;
+                };
+                /** @description First month at the new rent; must be after the current month in the account's time zone. */
+                effective_month: string;
+                amount_cents: number;
+            };
+            warning_acknowledgements?: components["schemas"]["WarningAcknowledgement"][];
+        };
+        BillingTransitionIntent: components["schemas"]["BillingSetupIntent"] | components["schemas"]["LandlordRentChange"];
+        BillingTransitionCommit: components["schemas"]["BillingSetupCommit"] | (components["schemas"]["LandlordRentChange"] & {
+            expected_context: string;
+        });
         RentRollupCurrencyTotals: {
             currency: string;
             /** @description All NON-DEPOSIT charge types minus active allocations in this currency. Includes starting balances recorded in the ledger. */

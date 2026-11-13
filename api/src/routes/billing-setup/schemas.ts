@@ -177,6 +177,41 @@ export const BillingSetupIntent = z
 export const BillingSetupCommit = BillingSetupIntent.extend({
   expected_context: z.string().min(1).max(256),
 }).openapi('BillingSetupCommit');
+// A future-month rent change resting on the landlord's own statement (ADR-0012
+// amendment). The other billing terms carry over from the schedule in force.
+export const LandlordRentChange = z
+  .object({
+    rent_change: z
+      .object({
+        basis: z
+          .object({
+            kind: z.literal('landlord_statement'),
+            note: z.string().trim().min(1).max(2000).optional(),
+          })
+          .strict(),
+        effective_month: z
+          .string()
+          .regex(/^\d{4}-(0[1-9]|1[0-2])$/)
+          .openapi({
+            description:
+              "First month at the new rent; must be after the current month in the account's time zone.",
+          }),
+        amount_cents: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+      })
+      .strict(),
+    warning_acknowledgements: WarningAcknowledgements,
+  })
+  .strict()
+  .openapi('LandlordRentChange');
+export const BillingTransitionIntent = z
+  .union([BillingSetupIntent, LandlordRentChange])
+  .openapi('BillingTransitionIntent');
+export const BillingTransitionCommit = z
+  .union([
+    BillingSetupCommit,
+    LandlordRentChange.extend({ expected_context: z.string().min(1).max(256) }),
+  ])
+  .openapi('BillingTransitionCommit');
 export const ChargeCandidate = z.object({
   draft_key: z.string(),
   cycle_key: z.string().optional(),

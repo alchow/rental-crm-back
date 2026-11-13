@@ -138,7 +138,12 @@ await check('late fees are suggested past grace, added or skipped once', async (
   const listed = await request('GET', `/late-fee-suggestions?tenancy_id=${pair.tenancyId}`);
   const rows = (
     listed.body as {
-      data: Array<{ charge_id: string; due_date: string; fee: { amount_cents: number } }>;
+      data: Array<{
+        charge_id: string;
+        due_date: string;
+        eligible_on: string;
+        fee: { amount_cents: number };
+      }>;
     }
   ).data;
   const first = rows.find((r) => r.due_date === start);
@@ -148,7 +153,7 @@ await check('late fees are suggested past grace, added or skipped once', async (
     type: 'late_fee',
     amount_cents: 7500,
     currency: 'USD',
-    due_date: today,
+    due_date: first!.eligible_on,
     parent_charge_id: first!.charge_id,
   });
   assert(added.status === 201, JSON.stringify(added.body));
@@ -238,6 +243,71 @@ await check('the account currency and duplicate properties are readable', async 
     (read.body as { address: { city: string; provider_id: string } }).address.city === 'Reedsport',
     JSON.stringify(read.body),
   );
+});
+
+await check('a future rent change on the landlord statement warns and adds a step', async () => {
+  const month = new Date(`${today.slice(0, 7)}-01T12:00:00Z`);
+  month.setUTCMonth(month.getUTCMonth() + 2);
+  const effective = month.toISOString().slice(0, 7);
+  const body = {
+    rent_change: {
+      basis: { kind: 'landlord_statement', note: 'Told both tenants in writing' },
+      effective_month: effective,
+      amount_cents: 195000,
+    },
+  };
+  const review = await request(
+    'POST',
+    `/tenancies/${single.tenancyId}/billing-transition/preview`,
+    body,
+  );
+  assert(review.status === 200, JSON.stringify(review.body));
+  const r = review.body as {
+    can_commit: boolean;
+    context_fingerprint: string;
+    findings: Array<{
+      rule_id: string;
+      confirmation_required?: boolean;
+      relationship_fingerprint?: string;
+    }>;
+  };
+  const warning = r.findings.find((f) => f.rule_id === 'rent_change_undocumented');
+  assert(warning?.confirmation_required === true && !r.can_commit, JSON.stringify(r.findings));
+  const acknowledged = {
+    ...body,
+    warning_acknowledgements: r.findings
+      .filter((f) => f.confirmation_required)
+      .map((f) => ({ relationship_fingerprint: f.relationship_fingerprint })),
+  };
+  const again = await request(
+    'POST',
+    `/tenancies/${single.tenancyId}/billing-transition/preview`,
+    acknowledged,
+  );
+  const a = again.body as { can_commit: boolean; context_fingerprint: string };
+  assert(again.status === 200 && a.can_commit, JSON.stringify(again.body));
+  const committed = await request(
+    'POST',
+    `/tenancies/${single.tenancyId}/billing-transition/commit`,
+    {
+      ...acknowledged,
+      expected_context: a.context_fingerprint,
+    },
+  );
+  assert(committed.status === 201, JSON.stringify(committed.body));
+  const schedule = (committed.body as { rent_schedule: Record<string, unknown> }).rent_schedule;
+  assert(
+    schedule.basis_kind === 'landlord_statement' &&
+      schedule.basis_note === 'Told both tenants in writing' &&
+      schedule.follows_lease === false &&
+      schedule.amount_cents === 195000 &&
+      schedule.start_date === `${effective}-01`,
+    JSON.stringify(schedule),
+  );
+  const current = await request('POST', `/tenancies/${pair.tenancyId}/billing-transition/preview`, {
+    rent_change: { ...body.rent_change, effective_month: today.slice(0, 7) },
+  });
+  assert(current.status === 400, JSON.stringify(current.body));
 });
 
 if (failures.length) {

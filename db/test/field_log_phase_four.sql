@@ -152,6 +152,80 @@ begin
 end;
 $test$;
 
+-- WP-10 / ADR-0012 amendment: a future-month change on the landlord's own statement.
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  person uuid := current_setting('field_log.person')::uuid;
+  month_start date := date_trunc('month',public._account_date(account))::date;
+  draft uuid := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Unit E');
+  intent jsonb;
+  review jsonb;
+  key text := 'change-'||gen_random_uuid()::text;
+  finding jsonb;
+begin
+  perform pg_temp.commit_setup(draft,pg_temp.setup(person,(month_start - interval '2 months')::date,
+    jsonb_build_object('coverage_start',month_start,'regular_anchor',month_start,'history_mode','opening_balance',
+      'opening_balance','{"amount_cents":1000,"basis":"Rent","includes_current_rent":true}'::jsonb,'follows_lease',true)));
+  if (select follows_lease from public.rent_schedules where tenancy_id=draft) is distinct from true then
+    raise exception 'Fixture should be a wizard schedule that follows the lease';
+  end if;
+  intent := jsonb_build_object('operation','transition',
+    'rent',jsonb_build_object('decision','configure','coverage_start',(month_start+interval '2 months')::date,
+      'regular_anchor',(month_start+interval '2 months')::date,'due_day',1,
+      'billing_due_rule','{"kind":"day_of_month","day":1}'::jsonb,'short_month_policy','last_day',
+      'amount_cents',155000,'currency','USD','grace_days',5,'late_fee_policy','{"kind":"percent","percent":5}'::jsonb,
+      'manual_basis','Told the tenant in October','history_mode','itemized','charge_keys','[]'::jsonb,
+      'period_overrides','[]'::jsonb,'follows_lease',false,
+      'basis','{"kind":"landlord_statement","note":"Told the tenant in October"}'::jsonb),
+    'deposit','{"decision":"keep"}'::jsonb,'payments','[]'::jsonb,'credit_allocations','[]'::jsonb,'explanations','[]'::jsonb);
+  review := public.preview_billing_setup(account,draft,intent);
+  select value into finding from jsonb_array_elements(review->'findings') where value->>'rule_id' = 'rent_change_undocumented';
+  if finding is null or not (finding->>'confirmation_required')::boolean or (review->>'can_commit')::boolean then
+    raise exception 'Landlord-statement change did not warn and wait for acknowledgement: %',review->'findings';
+  end if;
+  intent := intent || jsonb_build_object('warning_acknowledgements',(select jsonb_agg(jsonb_build_object(
+    'relationship_fingerprint',f->'relationship_fingerprint')) from jsonb_array_elements(review->'findings') f
+    where coalesce((f->>'confirmation_required')::boolean,false)));
+  review := public.preview_billing_setup(account,draft,intent);
+  if not (review->>'can_commit')::boolean then raise exception 'Acknowledged change still blocked: %',review->'findings'; end if;
+  perform public.claim_idempotency_key(account,key,md5(key)||md5(key));
+  perform public.commit_billing_setup(account,draft,intent||jsonb_build_object('expected_context',review->'context_fingerprint'),key,md5(key)||md5(key));
+  if not exists (select 1 from public.rent_schedules where tenancy_id=draft and start_date=(month_start+interval '2 months')::date
+      and amount_cents=155000 and basis_kind='landlord_statement' and basis_note='Told the tenant in October'
+      and follows_lease is false and source_lease_id is null and source_notice_id is null)
+    or (select count(*) from public.leases where tenancy_id=draft and rent_amount_cents=147500) <> 1 then
+    raise exception 'Landlord-statement step was not recorded as such';
+  end if;
+  begin
+    perform public.preview_billing_setup(account,draft,jsonb_set(jsonb_set(intent,'{rent,coverage_start}',to_jsonb(month_start)),
+      '{rent,regular_anchor}',to_jsonb(month_start)));
+    raise exception 'A current-month landlord-statement change was accepted';
+  exception when raise_exception then
+    if sqlerrm not like 'invalid: a rent change on the landlord''s statement starts in a future month%' then raise; end if;
+  end;
+  perform set_config('field_log.step_tenancy',draft::text,true);
+end;
+$test$;
+reset role;
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  tenancy uuid := current_setting('field_log.step_tenancy')::uuid;
+  month_start date := date_trunc('month',public._account_date(account))::date;
+begin
+  perform public.generate_rent_charges(account,(month_start+interval '1 month')::timestamp at time zone 'America/Los_Angeles');
+  perform public.generate_rent_charges(account,(month_start+interval '2 months')::timestamp at time zone 'America/Los_Angeles');
+  if (select string_agg(period_start||'='||amount_cents,' ' order by period_start) from public.charges
+      where tenancy_id=tenancy and type='rent' and voided_at is null)
+    <> (month_start+interval '1 month')::date||'=147500 '||(month_start+interval '2 months')::date||'=155000' then
+    raise exception 'Landlord-statement step did not apply from its month: %',
+      (select string_agg(period_start||'='||amount_cents,' ' order by period_start) from public.charges where tenancy_id=tenancy and type='rent');
+  end if;
+end;
+$test$;
+set local role authenticated;
+
 -- WP-15 and WP-26.
 do $test$
 declare account uuid := current_setting('field_log.account_id')::uuid; found jsonb;
