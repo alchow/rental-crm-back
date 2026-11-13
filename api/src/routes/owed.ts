@@ -75,12 +75,17 @@ const LateFeeSuggestion = z
     due_date: CalendarDate,
     grace_days: z.number().int(),
     eligible_on: CalendarDate,
-    rent_amount_cents: z.number().int(),
+    rent_amount_cents: z.number().int().openapi({
+      description: 'This charge amount; a partial month is less than the monthly rent.',
+    }),
     unpaid_cents: z.number().int(),
     currency: z.string(),
     fee: z.object({
       kind: z.enum(['fixed', 'percent', 'other']),
-      amount_cents: z.number().int().nullable(),
+      amount_cents: z.number().int().nullable().openapi({
+        description:
+          'For percent: that percent of the monthly rent in force for the charge (its schedule amount), not of a partial charge.',
+      }),
       percent: z.number().optional(),
       text: z.string().nullable().optional(),
     }),

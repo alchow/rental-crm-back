@@ -279,4 +279,81 @@ begin
 end;
 $test$;
 
+-- WP-23: a percent fee is a percent of the monthly rent, not of a partial charge.
+-- Rent 1800, 5%, first partial month billed 600 -> suggested fee 90.
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  person uuid := current_setting('field_log.person')::uuid;
+  month_start date := date_trunc('month',public._account_date(account))::date;
+  start_on date := (month_start - interval '2 months')::date + 19;
+  draft uuid := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Partial first month');
+  setup jsonb;
+  review jsonb;
+  partial jsonb;
+  partial_id uuid;
+begin
+  setup := pg_temp.setup(person,start_on,jsonb_build_object('amount_cents',180000,
+    'regular_anchor',(month_start - interval '1 month')::date));
+  setup := jsonb_set(setup,'{agreement,rent_amount_cents}','180000');
+  review := public.preview_tenancy_setup_session(account,draft,setup);
+  select value into strict partial from jsonb_array_elements(review->'history_periods')
+    where (value->>'period_start')::date = start_on;
+  setup := jsonb_set(setup,'{billing,rent,period_overrides}',jsonb_build_array(jsonb_build_object(
+    'cycle_key',partial->>'cycle_key','period_start',partial->>'period_start','period_end',partial->>'period_end',
+    'due_date',partial->>'due_date','amount_cents',60000,'reason','First partial month')));
+  perform pg_temp.commit_setup(draft,setup);
+  select id into strict partial_id from public.charges where tenancy_id=draft and type='rent' and period_start=start_on
+    and amount_cents=60000;
+  if (select fee from public.late_fee_suggestions(account,draft) s where s.charge_id=partial_id)
+      is distinct from '{"kind":"percent","percent":5,"amount_cents":9000}'::jsonb then
+    raise exception 'Percent fee is not a percent of the monthly rent: %',
+      (select jsonb_agg(to_jsonb(s)) from public.late_fee_suggestions(account,draft) s);
+  end if;
+end;
+$test$;
+
+-- WP-03/WP-23: a move-out replacement charge keeps the replaced charge's terms: its grace,
+-- its late-fee policy, and a percent of the monthly rent.
+do $test$
+declare
+  account uuid := current_setting('field_log.account_id')::uuid;
+  person uuid := current_setting('field_log.person')::uuid;
+  today date := public._account_date(account);
+  month_start date := date_trunc('month',today)::date;
+  draft uuid := pg_temp.new_draft(current_setting('field_log.place')::uuid,'Moving out');
+  key text := 'end-'||gen_random_uuid()::text;
+  replacement public.charges;
+  terms jsonb;
+  owed record;
+begin
+  perform pg_temp.commit_setup(draft,pg_temp.setup(person,(month_start - interval '2 months')::date,
+    jsonb_build_object('coverage_start',month_start,'regular_anchor',month_start,'history_mode','opening_balance',
+      'opening_balance','{"amount_cents":65000,"basis":"Rent","includes_current_rent":false}'::jsonb)));
+  if today + 1 >= (month_start + interval '1 month')::date then
+    raise notice 'Skipped: the move-out must fall inside this month';
+    return;
+  end if;
+  perform public.claim_idempotency_key(account,key,md5(key)||md5(key));
+  perform public.record_tenancy_ending(account,draft,jsonb_build_object('kind','ended','effective_date',today+1,
+    'initiated_by','tenant','reason_code','notice'),key,md5(key)||md5(key));
+  select * into strict replacement from public.charges where tenancy_id=draft and type='rent' and voided_at is null
+    and replaces_charge_id is not null;
+  select * into strict owed from public.owed_summaries(account,draft);
+  if today > month_start + 5 then
+    if (select fee->>'amount_cents' from public.late_fee_suggestions(account,draft) s where s.charge_id=replacement.id) is distinct from '7375'
+      or (select eligible_on from public.late_fee_suggestions(account,draft) s where s.charge_id=replacement.id) is distinct from month_start + 6 then
+      raise exception 'Replacement charge has no late-fee suggestion after its grace';
+    end if;
+  elsif owed.overdue_cents <> 0 then
+    raise exception 'Replacement charge is overdue inside its grace: %',to_jsonb(owed);
+  end if;
+  terms := public._rent_charge_terms(account,replacement.source_schedule_id,replacement.terms_snapshot,replacement.replaces_charge_id);
+  if replacement.amount_cents >= 147500 or (terms->>'grace_days')::integer <> 5
+    or terms->'late_fee_policy' <> '{"kind":"percent","percent":5}' or (terms->>'monthly_rent_cents')::bigint <> 147500 then
+    raise exception 'Replacement charge lost its terms: %, %',to_jsonb(replacement),terms;
+  end if;
+end;
+$test$;
+
 rollback;
