@@ -2,6 +2,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import { newApiApp } from './_lib/app';
 import { getSb } from '../supabase/request-client';
 import { ApiError, errorResponses } from './_lib/error';
+import { accountTimeZone } from './_lib/account-date';
 import { keysetPage } from './_lib/cursor';
 import { paginated } from './_lib/list-response';
 import { buildEvidenceExport } from '../admin/export-pdf';
@@ -199,7 +200,7 @@ evidenceExportsApp.openapi(create, async (c) => {
     .insert({
       account_id: accountId,
       tenant_id: body.tenant_id ?? null,
-      timezone: body.timezone ?? 'UTC',
+      timezone: body.timezone ?? (await accountTimeZone(sb, accountId)),
       tenancy_id: body.tenancy_id ?? null,
       area_id: body.area_id ?? null,
       from_date: body.from_date ?? null,

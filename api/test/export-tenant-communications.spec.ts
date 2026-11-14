@@ -65,6 +65,10 @@ describe('tenant communication PDF layout', () => {
       expect(page).toBeGreaterThan(2);
       const headers = fragments.filter((f) => f.text.startsWith('Communication log'));
       expect(headers).toHaveLength(page);
+      // Every clock time names its zone.
+      expect(fragments.some((f) => f.text.includes('Generated Oct 1, 2026, 12:00 PM UTC'))).toBe(
+        true,
+      );
       const records = fragments.filter((f) => f.x === 220 && f.size === 10 && f.text !== 'Record');
       expect(
         records

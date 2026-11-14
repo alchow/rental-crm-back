@@ -305,3 +305,23 @@ assert(
   'protected PDF download',
 );
 console.info('PASS person export queue, completion, integrity metadata and protected download');
+
+// An export that names no zone is written in the account's own.
+assertStatus(
+  await api('PATCH', `/v1/accounts/${account}/settings`, {
+    token,
+    body: { time_zone: 'America/New_York' },
+  }),
+  200,
+  'set account time zone',
+);
+const zoned = assertStatus(
+  await api('POST', `/v1/accounts/${account}/evidence-exports`, {
+    token,
+    body: { tenant_id: tenant.id },
+  }),
+  202,
+  'queue export without a zone',
+) as { timezone: string };
+assert(zoned.timezone === 'America/New_York', `export defaults to account zone: ${zoned.timezone}`);
+console.info('PASS export defaults to the account time zone');
