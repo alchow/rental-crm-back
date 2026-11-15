@@ -91,4 +91,50 @@ describe('tenant communication PDF layout', () => {
       addPage.mockRestore();
     }
   });
+
+  it('names the zone on every clock time', async () => {
+    const texts: string[] = [];
+    const prototype = PDFDocument.prototype as unknown as {
+      _fragment(text: string, x: number, y: number, options: unknown): unknown;
+    };
+    const original = prototype._fragment;
+    const spy = vi.spyOn(prototype, '_fragment').mockImplementation(function (
+      this: PDFKit.PDFDocument,
+      text,
+      x,
+      y,
+      options,
+    ) {
+      texts.push(text);
+      return original.call(this, text, x, y, options);
+    });
+    try {
+      await renderTenantCommunicationLog(
+        { accountId: 'account', tenantId: 'tenant', timezone: 'America/New_York' } as ExportScope,
+        new Date('2026-07-01T16:00:00Z'),
+        { ok: true, message: 'verified', broken_at: null, broken_event_no: null },
+        {
+          name: 'Test person',
+          casts: new Map(),
+          entries: [
+            {
+              id: 'record-one',
+              body: 'Rent is late',
+              channel: 'sms',
+              thread_id: 'thread',
+              author_type: 'tenant',
+              occurred_at: '2026-01-15T17:30:00Z',
+              logged_at: '2026-01-15T17:31:00Z',
+            },
+          ],
+        },
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    const all = texts.join('|');
+    // Summer header and winter row: each time carries the label in force at that moment.
+    expect(all).toContain('Generated Jul 1, 2026, 12:00 PM EDT');
+    expect(all).toContain('Jan 15, 2026, 12:31 PM EST');
+  });
 });

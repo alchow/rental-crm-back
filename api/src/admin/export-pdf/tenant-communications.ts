@@ -125,6 +125,8 @@ export async function renderTenantCommunicationLog(
   attachments: AttachmentRow[] = [],
 ): Promise<Uint8Array> {
   const zone = scope.timezone ?? 'UTC';
+  // Every clock time in the document names its zone: a reader elsewhere must not
+  // have to find the header line to know which clock a time was read on.
   const stamp = (value: unknown) =>
     new Intl.DateTimeFormat('en-US', {
       timeZone: zone,
@@ -133,6 +135,7 @@ export async function renderTenantCommunicationLog(
       day: 'numeric',
       hour: 'numeric',
       minute: '2-digit',
+      timeZoneName: 'short',
     }).format(new Date(String(value)));
   const doc = new PDFDocument({ margin: 45, size: 'A4', bufferPages: true });
   const chunks: Buffer[] = [];
